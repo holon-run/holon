@@ -10,6 +10,22 @@ use crate::context::ContextConfig;
 #[cfg(test)]
 use crate::provider::provider_definitions;
 
+/// Admission for allocations in the original selected-model resolution path.
+/// The observer borrows fields before the existing algorithm copies them.
+pub(crate) trait SelectedModelObserver {
+    fn observe_raw_bytes(&mut self, bytes: u64, native_slots: usize) -> anyhow::Result<()>;
+    fn observe<T: Serialize + ?Sized>(&mut self, value: &T, copies: usize) -> anyhow::Result<()>;
+}
+pub(crate) struct UnobservedSelectedModel;
+impl SelectedModelObserver for UnobservedSelectedModel {
+    fn observe_raw_bytes(&mut self, _bytes: u64, _native_slots: usize) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn observe<T: Serialize + ?Sized>(&mut self, _value: &T, _copies: usize) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
 const DEFAULT_COMPACTION_TRIGGER_PERCENT: u8 = 90;
 const DEFAULT_KEEP_RECENT_PERCENT: u8 = 38;
@@ -762,10 +778,19 @@ impl BuiltInModelCatalog {
     /// Resolve a legacy model ref to its canonical form.
     /// Returns the input unchanged if no alias exists.
     pub fn canonicalize_model_ref(&self, model_ref: &ModelRef) -> ModelRef {
-        self.aliases
-            .get(model_ref)
-            .cloned()
-            .unwrap_or_else(|| model_ref.clone())
+        self.canonicalize_model_ref_observed(model_ref, &mut UnobservedSelectedModel)
+            .expect("unobserved model canonicalization cannot fail")
+    }
+    pub(crate) fn canonicalize_model_ref_observed(
+        &self,
+        model_ref: &ModelRef,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ModelRef> {
+        let selected = self.aliases.get(model_ref).unwrap_or(model_ref);
+        // ModelRef's public serializer formats an owned string. Admission uses
+        // the borrowed components instead.
+        observer.observe(&(selected.provider.as_str(), selected.model.as_str()), 1)?;
+        Ok(selected.clone())
     }
 
     /// Legacy model ref → canonical model ref aliases for backward compatibility.
@@ -847,8 +872,30 @@ impl BuiltInModelCatalog {
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
     ) -> ResolvedRuntimeModelPolicy {
+        self.resolve_route_policy_observed(
+            route_ref,
+            overrides,
+            discovered_models,
+            unknown_fallback,
+            base_context_config,
+            configured_runtime_max_output_tokens,
+            &mut UnobservedSelectedModel,
+        )
+        .expect("unobserved model policy cannot fail")
+    }
+    pub(crate) fn resolve_route_policy_observed(
+        &self,
+        route_ref: &ModelRouteRef,
+        overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        unknown_fallback: Option<&ModelRuntimeOverride>,
+        base_context_config: &ContextConfig,
+        configured_runtime_max_output_tokens: u32,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ResolvedRuntimeModelPolicy> {
+        observer.observe(&(route_ref.provider.as_str(), route_ref.model.as_str()), 1)?;
         let model_ref = route_ref.model_ref();
-        self.resolve_metadata(
+        self.resolve_metadata_observed(
             &model_ref,
             self.route_entries.get(route_ref),
             self.get(&model_ref),
@@ -858,8 +905,9 @@ impl BuiltInModelCatalog {
             base_context_config,
             configured_runtime_max_output_tokens,
             Some(&route_ref.endpoint),
+            observer,
         )
-        .policy
+        .map(|metadata| metadata.policy)
     }
 
     pub fn resolve_policy(
@@ -921,6 +969,34 @@ impl BuiltInModelCatalog {
         configured_runtime_max_output_tokens: u32,
         endpoint: Option<&ProviderEndpointId>,
     ) -> ResolvedModelMetadata {
+        self.resolve_metadata_observed(
+            model_ref,
+            route_builtin,
+            model_builtin,
+            overrides,
+            discovered_models,
+            unknown_fallback,
+            base_context_config,
+            configured_runtime_max_output_tokens,
+            endpoint,
+            &mut UnobservedSelectedModel,
+        )
+        .expect("unobserved model metadata cannot fail")
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_metadata_observed(
+        &self,
+        model_ref: &ModelRef,
+        route_builtin: Option<&BuiltInModelRoutePolicy>,
+        model_builtin: Option<&BuiltInModelMetadata>,
+        overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
+        unknown_fallback: Option<&ModelRuntimeOverride>,
+        base_context_config: &ContextConfig,
+        configured_runtime_max_output_tokens: u32,
+        endpoint: Option<&ProviderEndpointId>,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ResolvedModelMetadata> {
         let discovered = discovered_models.get(model_ref);
         let override_config = overrides.get(model_ref);
         let has_metadata =
@@ -930,6 +1006,43 @@ impl BuiltInModelCatalog {
         } else {
             None
         };
+        // These are the actual same-key eager candidates below, not the
+        // complete catalog. The selected value is copied again into policy.
+        observer.observe(
+            &(
+                model_ref.provider.as_str(),
+                model_ref.model.as_str(),
+                endpoint,
+            ),
+            3,
+        )?;
+        observer.observe(
+            &(
+                (
+                    override_config.and_then(|v| v.display_name.as_deref()),
+                    discovered.map(|v| v.display_name.as_str()),
+                    route_builtin.and_then(|v| v.display_name.as_deref()),
+                    model_builtin.map(|v| v.display_name.as_str()),
+                    fallback_override.and_then(|v| v.display_name.as_deref()),
+                ),
+                (
+                    override_config.and_then(|v| v.description.as_deref()),
+                    discovered.map(|v| v.description.as_str()),
+                    route_builtin.and_then(|v| v.description.as_deref()),
+                    model_builtin.map(|v| v.description.as_str()),
+                    fallback_override.and_then(|v| v.description.as_deref()),
+                ),
+                (
+                    route_builtin.and_then(|v| v.reasoning_effort_options.as_deref()),
+                    discovered.map(|v| v.reasoning_effort_options.as_slice()),
+                    model_builtin.map(|v| v.reasoning_effort_options.as_slice()),
+                ),
+            ),
+            2,
+        )?;
+        // The scalar policy/catalog DTOs, evidence entries, derived option
+        // constants and bounded endpoint constraints have no unbounded strings.
+        observer.observe(&[(); 128].as_slice(), 1)?;
         let mut evidence = ModelMetadataEvidence::default();
         let source = if override_config.is_some() {
             ModelMetadataSource::ConfigOverride
@@ -1604,10 +1717,10 @@ impl BuiltInModelCatalog {
             source,
             endpoint: endpoint.cloned(),
         };
-        ResolvedModelMetadata {
+        Ok(ResolvedModelMetadata {
             policy,
             catalog_entry,
-        }
+        })
     }
 
     pub fn apply_policy(

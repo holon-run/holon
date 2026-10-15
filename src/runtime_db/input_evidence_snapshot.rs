@@ -15,8 +15,8 @@ use crate::{
         LEGACY_INPUT_WINDOW, MAX_COMMAND_PREVIEW_INPUT_BYTES, OVERSIZED_COMMAND_PREVIEW,
     },
     types::{
-        AgentIdentityRecord, AgentRegistryStatus, BriefRecord, MessageEnvelope,
-        ToolExecutionRecord, TranscriptEntry, TurnOwner, TurnRecord,
+        AgentIdentityRecord, AgentRegistryStatus, BriefRecord, DeliverySummaryRecord,
+        MessageEnvelope, ToolExecutionRecord, TranscriptEntry, TurnOwner, TurnRecord,
     },
 };
 use anyhow::{ensure, Context, Result};
@@ -28,6 +28,25 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
 };
+
+#[path = "input_tool_writer.rs"]
+pub(in crate::runtime_db) mod tool_writer;
+
+#[path = "input_tool_run_report.rs"]
+pub(in crate::runtime_db) mod tool_run_report;
+
+#[path = "input_native_birth.rs"]
+pub(in crate::runtime_db) mod native_birth;
+pub(crate) use native_birth::CommittedInputQueryAdvance;
+
+#[path = "input_query_source.rs"]
+mod query_source;
+
+#[path = "input_read_material.rs"]
+pub(in crate::runtime_db) mod read_material;
+
+#[path = "input_legacy_delivery.rs"]
+pub(in crate::runtime_db) mod legacy_delivery;
 
 #[path = "input_evidence_task_output.rs"]
 mod task_output;
@@ -193,6 +212,7 @@ pub(crate) enum CanonicalInputEvidence {
     Turn(TurnRecord),
     ToolExecution(ToolExecutionRecord),
     Brief(BriefRecord),
+    LegacyDelivery(DeliverySummaryRecord),
     Transcript(TranscriptEntry),
     Attempt(ExecutionAttempt),
     Outcome(ExecutionOutcomeRecord),
@@ -208,6 +228,7 @@ impl CanonicalInputEvidence {
             Self::Turn(x) => Key::new(Family::Turn, &x.turn_id),
             Self::ToolExecution(x) => Key::new(Family::ToolExecution, &x.id),
             Self::Brief(x) => Key::new(Family::Brief, &x.id),
+            Self::LegacyDelivery(x) => Key::new(Family::LegacyDelivery, &x.id),
             Self::Transcript(x) => Key::new(Family::Transcript, &x.id),
             Self::Attempt(x) => Key::new(Family::Attempt, &x.attempt_id),
             Self::Outcome(x) => Key::new(Family::Outcome, &x.outcome_id),
@@ -514,7 +535,7 @@ pub(crate) fn register_committed_input_evidence_tx(
     scope: &InputEvidenceScope,
     records: &[CanonicalInputEvidence],
 ) -> Result<CommittedInputEvidenceDelta> {
-    register_committed_input_evidence_inner_tx(tx, scope, records, None)
+    register_committed_input_evidence_inner_tx(tx, scope, records, None, None)
 }
 
 /// Minted before the original typed cleanup writes. It authorizes only its
@@ -703,15 +724,26 @@ pub(crate) fn register_committed_cleanup_input_evidence_tx(
     records: &[CanonicalInputEvidence],
     proof: &ExistingAdmissionInputProof,
 ) -> Result<CommittedInputEvidenceDelta> {
-    register_committed_input_evidence_inner_tx(tx, scope, records, Some(proof))
+    register_committed_input_evidence_inner_tx(tx, scope, records, Some(proof), None)
 }
 
 fn canonical_input_work_id(record: &CanonicalInputEvidence) -> Option<&str> {
     match record {
         CanonicalInputEvidence::Brief(brief) => brief.work_item_id.as_deref(),
+        CanonicalInputEvidence::LegacyDelivery(summary) => Some(summary.work_item_id.as_str()),
         CanonicalInputEvidence::ToolExecution(tool) => tool.work_item_id.as_deref(),
         _ => None,
     }
+}
+
+pub(in crate::runtime_db) fn register_committed_input_evidence_with_tool_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    records: &[CanonicalInputEvidence],
+    cleanup: Option<&ExistingAdmissionInputProof>,
+    writer: &dyn tool_writer::OriginalToolInputWriter,
+) -> Result<CommittedInputEvidenceDelta> {
+    register_committed_input_evidence_inner_tx(tx, scope, records, cleanup, Some(writer))
 }
 
 fn register_committed_input_evidence_inner_tx(
@@ -719,6 +751,7 @@ fn register_committed_input_evidence_inner_tx(
     scope: &InputEvidenceScope,
     records: &[CanonicalInputEvidence],
     cleanup: Option<&ExistingAdmissionInputProof>,
+    tool_writer: Option<&dyn tool_writer::OriginalToolInputWriter>,
 ) -> Result<CommittedInputEvidenceDelta> {
     if let Some(proof) = cleanup {
         proof.validate_scope_tx(tx, scope)?;
@@ -728,6 +761,8 @@ fn register_committed_input_evidence_inner_tx(
                 .all(|record| proof.allowed.contains(&record.key())),
             "committed facts exceed the original cleanup footprint"
         );
+    } else if let Some(writer) = tool_writer {
+        writer.validate_scope(tx, scope, &scope.agent_id, None)?;
     } else {
         require_current_scope(tx, scope)?;
     }
@@ -755,6 +790,12 @@ fn register_committed_input_evidence_inner_tx(
     let mut final_records = BTreeMap::new();
     for supplied in &actual_records {
         let supplied = supplied.as_ref();
+        if let (Some(writer), CanonicalInputEvidence::ToolExecution(tool)) = (tool_writer, supplied)
+        {
+            let record = writer.register_tool(tx, scope, tool, cleanup)?;
+            final_records.insert(record.locator.key.clone(), Arc::new(record));
+            continue;
+        }
         let key = supplied.key();
         let payload = payload_on(tx, &scope.agent_id, &key)?
             .context("committed input evidence is missing")?;
@@ -825,11 +866,19 @@ fn register_committed_input_evidence_inner_tx(
         if let PreparedInputEvidence::Turn(turn) = &record.record {
             turn_transcript_keys.insert(
                 turn.turn_id.clone(),
-                qualified_turn_transcript_keys(tx, scope, &binding, &turn.turn_id, MAX_RECORDS)?,
+                qualified_turn_transcript_keys(
+                    tx,
+                    scope,
+                    &binding,
+                    &turn.turn_id,
+                    MAX_RECORDS,
+                    None,
+                )?,
             );
         }
     }
     Ok(CommittedInputEvidenceDelta {
+        query_advance: None,
         output_recall_invalidation: None,
         execution: execution::register_tx(tx, scope, &binding, records)?,
         records: final_records.into_values().collect(),
@@ -1062,12 +1111,13 @@ fn affected_projection_keys_for_agent_tx(
 /// Activation/OwnerChange/PolicyExpansion only: selected legacy IDs already
 /// belong to the frozen eligibility set. This never extends that set by scanning
 /// current agent history and never rewrites canonical payloads.
+#[cfg(test)]
 pub(crate) fn prepare_input_evidence_snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_tx(tx, scope, request, true, false)
+    snapshot_tx(tx, scope, request, true, false, None, None)
 }
 /// A fresh coherent read transaction, requiring previously prepared membership.
 #[cfg(test)]
@@ -1076,25 +1126,205 @@ pub(crate) fn load_input_evidence_snapshot_tx(
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_tx(tx, scope, request, false, false)
+    snapshot_tx(tx, scope, request, false, false, None, None)
 }
 /// Only a positive original receipt resolver may prepare a Deleting scope.
 /// This reads existing qualification; it cannot adopt an unrelated incarnation.
+#[cfg(test)]
 pub(crate) fn prepare_original_input_recovery_snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_tx(tx, scope, request, true, true)
+    snapshot_tx(tx, scope, request, true, true, None, None)
 }
+/// Production preparation borrows the original actor's actual accounting phase.
+pub(in crate::runtime_db) fn prepare_input_evidence_snapshot_with_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &InputEvidenceLoadRequest,
+    original_recovery: bool,
+    material: &mut read_material::InputReadMaterial<'_>,
+) -> Result<InputEvidenceBootstrapSnapshot> {
+    material.validate_binding(scope)?;
+    snapshot_tx(
+        tx,
+        scope,
+        request,
+        true,
+        original_recovery,
+        Some(material),
+        None,
+    )
+}
+/// Named original owner preparation; it collects selectors, never new body authority.
+/// The whole writer/Host adapter must opt in only after its source hooks are complete.
+pub(in crate::runtime_db) fn prepare_input_evidence_snapshot_with_query_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &InputEvidenceLoadRequest,
+    original_recovery: bool,
+    material: &mut read_material::InputReadMaterial<'_>,
+    roles: Option<&crate::runtime::input_queries::InputQuerySnapshot>,
+    owner_epoch: u64,
+) -> Result<InputEvidenceBootstrapSnapshot> {
+    material.validate_binding(scope)?;
+    ensure!(
+        owner_epoch > 0,
+        "Input query preparation requires the original owner epoch"
+    );
+    snapshot_tx(
+        tx,
+        scope,
+        request,
+        true,
+        original_recovery,
+        Some(material),
+        Some(query_source::InputSourceRead { roles, owner_epoch }),
+    )
+}
+
+/// Exercise the genuine named Source factory, without enabling ordinary reads.
+#[cfg(test)]
+pub(crate) fn prepare_named_run_input_for_fixture(
+    db: &super::RuntimeDb,
+    scope: &InputEvidenceScope,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    roles: Option<&crate::runtime::input_queries::InputQuerySnapshot>,
+    owner_epoch: u64,
+) -> Result<ResidentInputEvidence> {
+    let request = InputEvidenceLoadRequest {
+        windows: Vec::new(),
+        mandatory_roots: BTreeSet::new(),
+        interrupted_sources: BTreeSet::new(),
+        selected_completion_brief_ids: BTreeSet::new(),
+        byte_limit: 64 * 1024 * 1024,
+        record_limit: 65_536,
+    };
+    db.transaction(|tx| {
+        let mut material = read_material::InputReadMaterial::new(scope, &request, ledger, (0, 0))?;
+        let InputEvidenceBootstrapSnapshot::Current(current) =
+            prepare_input_evidence_snapshot_with_query_material_tx(
+                tx,
+                scope,
+                &request,
+                false,
+                &mut material,
+                roles,
+                owner_epoch,
+            )?
+        else {
+            anyhow::bail!("actual named Input fixture scope retired");
+        };
+        current.resident.with_budget(ledger.clone())
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn prepare_named_run_sources_for_fixture(
+    db: &super::RuntimeDb,
+    scope: &InputEvidenceScope,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    roles: Option<&crate::runtime::input_queries::InputQuerySnapshot>,
+    owner_epoch: u64,
+    state: &crate::types::AgentState,
+    events: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
+) -> Result<(
+    ResidentInputEvidence,
+    Arc<crate::runtime::current_read_facts::ResidentCurrentReadFacts>,
+)> {
+    let request = InputEvidenceLoadRequest {
+        windows: Vec::new(),
+        mandatory_roots: BTreeSet::new(),
+        interrupted_sources: BTreeSet::new(),
+        selected_completion_brief_ids: BTreeSet::new(),
+        byte_limit: 64 * 1024 * 1024,
+        record_limit: 65_536,
+    };
+    prepare_named_run_sources_with_request_for_fixture(
+        db,
+        scope,
+        ledger,
+        roles,
+        owner_epoch,
+        state,
+        events,
+        &request,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn prepare_named_run_sources_with_request_for_fixture(
+    db: &super::RuntimeDb,
+    scope: &InputEvidenceScope,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    roles: Option<&crate::runtime::input_queries::InputQuerySnapshot>,
+    owner_epoch: u64,
+    state: &crate::types::AgentState,
+    events: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
+    request: &InputEvidenceLoadRequest,
+) -> Result<(
+    ResidentInputEvidence,
+    Arc<crate::runtime::current_read_facts::ResidentCurrentReadFacts>,
+)> {
+    if let Some(events) = events {
+        events.validate(scope, owner_epoch, ledger)?;
+    }
+    db.transaction(|tx| {
+        let event_prior = events.map_or((0, 0), |events| events.material_estimate());
+        let mut material =
+            read_material::InputReadMaterial::new(scope, request, ledger, event_prior)?;
+        let InputEvidenceBootstrapSnapshot::Current(input) =
+            prepare_input_evidence_snapshot_with_query_material_tx(
+                tx,
+                scope,
+                request,
+                false,
+                &mut material,
+                roles,
+                owner_epoch,
+            )?
+        else {
+            anyhow::bail!("actual named Run fixture retired");
+        };
+        let remaining = material.remaining_material_limits()?;
+        let mut current_request = crate::runtime::current_read_facts::CurrentReadRequest::current(
+            remaining.0,
+            remaining.1,
+        );
+        if let Some(events) = events {
+            events.prepare_request(scope, ledger, &mut current_request)?;
+        }
+        let current = super::current_read_snapshot::prepare_current_read_using_input_material_tx(
+            tx,
+            scope,
+            state,
+            &current_request,
+            ledger,
+            &mut material,
+            false,
+        )?;
+        Ok((
+            input.resident.with_budget(ledger.clone())?,
+            current.resident,
+        ))
+    })
+}
+
 fn snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
     prepare: bool,
     original_recovery: bool,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
+    source: Option<query_source::InputSourceRead<'_>>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
+    let facts = if let Some(material) = material.as_deref_mut() {
+        material.scope_facts_tx(tx)?
+    } else {
+        ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?
+    };
     if !facts.identity.as_ref().is_some_and(|x| {
         x.agent_id == scope.agent_id
             && x.incarnation == scope.identity_incarnation
@@ -1106,11 +1336,33 @@ fn snapshot_tx(
             current_identity: facts.identity,
         });
     }
+    if let Some(material) = material.as_deref_mut() {
+        material.binding_metadata_tx(tx)?;
+    }
     let binding = binding_on(tx, scope)?;
     ensure!(
         request.record_limit > 0 && request.byte_limit > 0,
         "input evidence budget is empty"
     );
+    if let Some(material) = material.as_deref_mut() {
+        material.selectors(request)?;
+    }
+    let query = if let Some(source) = source {
+        ensure!(
+            facts.state.is_some(),
+            InputEvidenceSnapshotError::NeedsPreparation("Input query owner has no State".into())
+        );
+        query_source::prepare_tx(
+            tx,
+            scope,
+            source,
+            material
+                .as_deref_mut()
+                .context("Input query requires its original material phase")?,
+        )?
+    } else {
+        query_source::PreparedInputSource::default()
+    };
     let mut windows = Vec::new();
     let mut mandatory_roots = request.mandatory_roots.clone();
 
@@ -1119,8 +1371,10 @@ fn snapshot_tx(
         scope,
         &binding,
         request.record_limit.min(MAX_RECORDS),
+        material.as_deref_mut(),
     )?);
     let mut selected = mandatory_roots.clone();
+    selected.extend(query.roots);
     selected.extend(
         request
             .selected_completion_brief_ids
@@ -1141,6 +1395,7 @@ fn snapshot_tx(
             &binding,
             &requested.selector,
             requested.limit.saturating_add(1),
+            material.as_deref_mut(),
         )?;
         let exhaustive = keys.len() <= requested.limit;
         keys.truncate(requested.limit);
@@ -1162,6 +1417,9 @@ fn snapshot_tx(
         .iter()
         .filter(|key| key.family == Family::Attempt)
     {
+        if let Some(material) = material.as_deref_mut() {
+            material.execution_source_id_tx(tx, &key.id)?;
+        }
         let source:Option<String> = tx.query_row("SELECT json_extract(payload_json,'$.source_message_id') FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2",params![scope.agent_id,key.id],|r|r.get(0)).optional()?.flatten();
         if let Some(source) = source {
             execution_sources.insert(source);
@@ -1175,9 +1433,16 @@ fn snapshot_tx(
         &execution_sources,
         request.record_limit,
         request.byte_limit,
+        material.as_deref_mut(),
     )?;
-    execution_coverage.work_items =
-        execution_work::load_tx(tx, scope, &binding, &mandatory_roots, &execution_sources)?;
+    execution_coverage.work_items = execution_work::load_with_material_tx(
+        tx,
+        scope,
+        &binding,
+        &mandatory_roots,
+        &execution_sources,
+        material.as_deref_mut(),
+    )?;
     let mut execution_bodies = execution_coverage.required_body_keys(&mandatory_roots);
     execution_bodies
         .extend(execution_coverage.required_interrupted_body_keys(&request.interrupted_sources)?);
@@ -1261,13 +1526,14 @@ fn snapshot_tx(
                     }
                 }
             }
-            for (child, child_path) in completion_references(
-                record,
-                &path,
-                head,
-                &completion_source_observations,
-                record.references(),
-            )? {
+            for (child, child_path) in
+                completion_references(record, &path, head, &completion_source_observations, {
+                    if let Some(material) = material.as_deref_mut() {
+                        material.reference_selectors(record)?;
+                    }
+                    record.references()
+                })?
+            {
                 selected.insert(child.clone());
                 pending.push_back((child, depth + 1, child_path));
             }
@@ -1280,6 +1546,9 @@ fn snapshot_tx(
             || records.len() + unavailable.len() >= request.record_limit.min(MAX_RECORDS)
         {
             return Err(InputEvidenceSnapshotError::ResourceExhausted("record count/depth").into());
+        }
+        if let Some(material) = material.as_deref_mut() {
+            material.record_metadata_tx(tx, &binding, &key)?;
         }
         let Some(fingerprint) = fingerprint_on(tx, &scope.agent_id, &key)? else {
             if key.family == Family::WorkExecution && execution_coverage.work_items.get(&key.id)
@@ -1312,7 +1581,30 @@ fn snapshot_tx(
             if !prepare {
                 return Err(InputEvidenceSnapshotError::NeedsPreparation(key.id.clone()).into());
             }
-            fixed_body_digests = require_eligible_metadata(tx, &binding, &key, &fingerprint)?;
+            fixed_body_digests = if key.family == Family::LegacyDelivery {
+                // This family has only sealed original sources. A report role
+                // selects a key; it cannot manufacture its body qualification.
+                let phase = material.as_deref_mut().context(
+                    InputEvidenceSnapshotError::NeedsPreparation(
+                        "LegacyDelivery body requires its original Input material phase".into(),
+                    ),
+                )?;
+                legacy_delivery::heads::initialize_scope_tx(tx, scope, binding.seed_id.as_deref())?;
+                BTreeSet::from([legacy_delivery::heads::qualify_metadata_tx(
+                    tx,
+                    scope,
+                    &key,
+                    &fingerprint,
+                    |b, r| phase.observe_projected(b, r),
+                )?])
+            } else {
+                if let Some(material) = material.as_deref_mut() {
+                    if let Some(seed) = binding.seed_id.as_deref() {
+                        material.origin_context_tx(tx, seed, &key)?;
+                    }
+                }
+                require_eligible_metadata(tx, &binding, &key, &fingerprint)?
+            };
         }
         if key.family != Family::ToolExecution
             && fingerprint.payload_bytes > request.byte_limit.saturating_sub(bytes)
@@ -1320,6 +1612,9 @@ fn snapshot_tx(
             return Err(
                 InputEvidenceSnapshotError::ResourceExhausted("prepared body bytes").into(),
             );
+        }
+        if let Some(material) = material.as_deref_mut() {
+            material.record_body_tx(tx, &key)?;
         }
         // One materialization per selected body, reused for decode and digest.
         let payload = if key.family == Family::ToolExecution {
@@ -1348,7 +1643,19 @@ fn snapshot_tx(
             .transpose()?;
         let attempt_turn_proof = match canonical.as_ref() {
             Some(CanonicalInputEvidence::Attempt(attempt)) => {
-                Some(attempt_turn::for_current(tx, scope, &binding, attempt)?)
+                Some(if let Some(material) = material.as_deref_mut() {
+                    attempt_turn::for_current_from_observation(
+                        tx,
+                        scope,
+                        &binding,
+                        attempt,
+                        alias.as_ref().and_then(|a| a.attempt_turn_proof.as_ref()),
+                        facts.state.as_ref(),
+                        material,
+                    )?
+                } else {
+                    attempt_turn::for_current(tx, scope, &binding, attempt)?
+                })
             }
             _ => None,
         };
@@ -1392,9 +1699,15 @@ fn snapshot_tx(
                 binding.seed_id.as_deref(),
             )?
         };
-        let record = prepare_record_on(tx, &scope.agent_id, &key, canonical)?;
+        let record = prepare_record_with_material_on(
+            tx,
+            &scope.agent_id,
+            &key,
+            canonical,
+            material.as_deref_mut(),
+        )?;
         let digest = actual_digest;
-        let qualified = Arc::new(qualified(
+        let mut qualified = qualified(
             scope,
             key.clone(),
             revision,
@@ -1402,13 +1715,32 @@ fn snapshot_tx(
             fingerprint,
             record,
             attempt_turn_proof,
-        )?);
+        )?;
+        // Only an original live birth query asks for this finite report. Old
+        // dependencies and ordinary prompt preparation retain their contract.
+        if key.family == Family::ToolExecution && query.coverage.born_key_seqs.contains_key(&key) {
+            qualified.tool_run_report =
+                Some(tool_run_report::prepare_qualified_tool_run_report_on(
+                    tx,
+                    &qualified,
+                    material
+                        .as_deref_mut()
+                        .context("born Tool report requires original Input material")?,
+                )?);
+        }
+        let qualified = Arc::new(qualified);
         bytes = bytes.saturating_add(qualified.resident_bytes);
         if bytes > request.byte_limit {
             return Err(InputEvidenceSnapshotError::ResourceExhausted("resident bytes").into());
         }
+        if let Some(material) = material.as_deref_mut() {
+            material.reference_selectors(&qualified)?;
+        }
         let mut refs = qualified.references();
         if let PreparedInputEvidence::Message(message) = &qualified.record {
+            if let Some(material) = material.as_deref_mut() {
+                material.message_assignment_id_tx(tx, &message.id)?;
+            }
             let assigned = actual_input_turn_on(tx, &scope.agent_id, &message.id)?;
             if let Some(turn) = assigned.as_ref() {
                 refs.insert(Key::new(Family::Turn, turn));
@@ -1459,6 +1791,7 @@ fn snapshot_tx(
                 &binding,
                 &turn.turn_id,
                 request.record_limit.min(MAX_RECORDS),
+                material.as_deref_mut(),
             )?;
             refs.extend(keys.iter().cloned());
             turn_transcript_keys.insert(turn.turn_id.clone(), keys);
@@ -1582,6 +1915,7 @@ fn snapshot_tx(
                     &execution_sources,
                     request.record_limit,
                     request.byte_limit,
+                    material.as_deref_mut(),
                 )?;
                 // The original read transaction fixes these frontiers. Keep the
                 // independently prepared Work observations and replace sources.
@@ -1608,6 +1942,7 @@ fn snapshot_tx(
         scope.clone(),
         records.into_values().collect(),
         InputEvidenceCoverage {
+            query: query.coverage,
             selected_completion_brief_ids: request.selected_completion_brief_ids.clone(),
             completion_source_observations,
             recovery_source_absences,
@@ -1702,13 +2037,18 @@ fn qualified(
     revision: u64,
     digest: String,
     fingerprint: Fingerprint,
-    record: PreparedInputEvidence,
+    mut record: PreparedInputEvidence,
     attempt_turn_proof: Option<AttemptTurnProof>,
 ) -> Result<QualifiedInputEvidence> {
     ensure!(
         record.key() == key,
         "prepared evidence key projection mismatch"
     );
+    // The original SQL prompt contract uses the accepted normalized column.
+    // Canonical raw Tool time/hash remain untouched by this finite projection.
+    if let PreparedInputEvidence::ToolExecution(tool) = &mut record {
+        tool.created_at = fingerprint.created_at.parse()?;
+    }
     let attempt_turn_keys = attempt_turn_proof.map(|proof| proof.turn_keys);
     ensure!(
         matches!(record, PreparedInputEvidence::Attempt(_)) == attempt_turn_keys.is_some(),
@@ -1732,6 +2072,18 @@ fn qualified(
             "Transcript payload and normalized Turn linkage differ"
         );
     }
+    if let PreparedInputEvidence::LegacyDelivery(delivery) = &record {
+        ensure!(
+            delivery.id == key.id
+                && fingerprint.owner_kind.as_deref() == Some("delivery_summary")
+                && fingerprint.revision_marker == "[null,null]"
+                && delivery.agent_id == scope.agent_id
+                && Some(delivery.work_item_id.as_str()) == fingerprint.owner_id.as_deref()
+                && delivery.turn_id.as_deref() == fingerprint.related_turn_id.as_deref()
+                && super::repositories::timestamp(delivery.created_at) == fingerprint.created_at,
+            "LegacyDelivery normalized address/time differs"
+        );
+    }
     let owner = match &record {
         PreparedInputEvidence::Turn(x) => Some(x.effective_owner()),
         _ => None,
@@ -1750,6 +2102,7 @@ fn qualified(
         owner,
         resident_bytes,
         attempt_turn_keys,
+        tool_run_report: None,
     })
 }
 fn require_current_scope(
@@ -1967,6 +2320,11 @@ fn upsert_alias_tx(
             && stored.attempt_turn_proof.as_ref() == attempt_turn_proof,
         "input evidence alias exact readback mismatch"
     );
+    if key.family == Family::LegacyDelivery {
+        // Called only after this original alias's exact readback; hydration
+        // keeps Source revision zero, and actual removal preserves a tombstone.
+        legacy_delivery::heads::after_alias_tx(tx, scope, key, qualification, present, seed)?;
+    }
     Ok(revision)
 }
 fn normalized_payload_digest(hash: &str) -> Result<String> {
@@ -1991,6 +2349,7 @@ fn table(family: Family) -> (&'static str, &'static str) {
         Family::Turn => ("turn_records", "turn_id"),
         Family::ToolExecution => ("tool_executions", "evidence_id"),
         Family::Brief => ("briefs", "evidence_id"),
+        Family::LegacyDelivery => ("delivery_summaries", "evidence_id"),
         Family::Transcript => ("transcript_entries", "evidence_id"),
         Family::Attempt => ("execution_protocol_attempts", "attempt_id"),
         Family::Outcome => ("execution_protocol_outcomes", "outcome_id"),
@@ -2057,12 +2416,13 @@ fn fingerprint_on(
  Family::Transcript=>("r.content_hash","r.transcript_seq","NULL","r.created_at","NULL","NULL","'canonical_body'"),
  Family::ToolExecution=>("r.content_hash","NULL","NULL","r.created_at","NULL","NULL","'canonical_body'"),
  Family::Brief=>("r.content_hash","NULL","NULL","r.created_at","NULL","NULL","CAST(COALESCE(r.created_event_seq,0) AS TEXT)"),
+ Family::LegacyDelivery=>("r.content_hash","NULL","NULL","r.created_at","r.kind","r.work_item_id","json_array(r.message_id,r.task_id)"),
  Family::Attempt=>("NULL","NULL","NULL","COALESCE(json_extract(r.payload_json,'$.admitted_at'),'')","NULL","NULL","r.lifecycle_state||':'||r.source_generation||':'||COALESCE(r.terminal_outcome_id,'')||':'||COALESCE(r.recovery_of_attempt_id,'')"),
  Family::Outcome=>("NULL","NULL","NULL","COALESCE(json_extract(r.payload_json,'$.created_at'),'')","NULL","NULL","r.attempt_id"),
  Family::WorkExecution=>("NULL","NULL","NULL","''","NULL","NULL","r.source_revision||':'||r.generation||':'||r.lifecycle_state"),
  };
     let related_turn = match key.family {
-        Family::Transcript => "r.turn_id",
+        Family::Transcript | Family::LegacyDelivery => "r.turn_id",
         Family::Message => "(SELECT a.turn_id FROM conversation_input_assignments a WHERE a.agent_id=r.agent_id AND a.message_id=r.evidence_id)",
         _ => "NULL",
     };
@@ -2151,6 +2511,7 @@ fn qualified_window_keys(
     binding: &Binding,
     selector: &InputWindowSelector,
     limit: usize,
+    material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<Vec<Key>> {
     let (family, filter, order, extra) = window_query(selector);
     let (table, id) = table(family);
@@ -2173,6 +2534,9 @@ fn qualified_window_keys(
     let current=format!("c.agent_id=r.agent_id AND c.identity_incarnation=?{inc_index} AND c.family='{}' AND c.record_id=r.{id}",family.as_str());
     let qualification=format!("(EXISTS(SELECT 1 FROM input_evidence_current c WHERE {current} AND c.availability='present') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current c WHERE {current}) AND EXISTS(SELECT 1 FROM input_evidence_seed_membership e WHERE e.seed_id=?{seed_index} AND e.family='{}' AND e.record_id=r.{id})))",family.as_str());
     let sql=format!("SELECT r.{id} FROM {table} r WHERE r.agent_id=?1 AND {filter} AND {qualification} ORDER BY {order} LIMIT ?2");
+    if let Some(material) = material {
+        material.selected_id_pool_tx(tx, &sql, id, rusqlite::params_from_iter(values.iter()))?;
+    }
     let mut statement = tx.prepare(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(values), |r| {
         r.get::<_, String>(0)
@@ -2212,9 +2576,9 @@ fn qualified_turn_transcript_keys(
     binding: &Binding,
     turn_id: &str,
     limit: usize,
+    material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<BTreeSet<Key>> {
-    let mut statement = tx.prepare(
-        "SELECT record_id FROM input_evidence_current
+    let sql = "SELECT record_id FROM input_evidence_current
          WHERE agent_id=?1 AND identity_incarnation=?2 AND family='transcript'
            AND json_extract(fingerprint_json,'$.related_turn_id')=?4
          UNION
@@ -2223,7 +2587,22 @@ fn qualified_turn_transcript_keys(
            AND json_extract(e.fingerprint_json,'$.related_turn_id')=?4
            AND NOT EXISTS(SELECT 1 FROM input_evidence_current c
              WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.family=e.family AND c.record_id=e.record_id)
-         ORDER BY record_id LIMIT ?5")?;
+         ORDER BY record_id LIMIT ?5";
+    if let Some(material) = material {
+        material.selected_id_pool_tx(
+            tx,
+            sql,
+            "record_id",
+            params![
+                scope.agent_id,
+                i64::try_from(scope.identity_incarnation)?,
+                binding.seed_id,
+                turn_id,
+                i64::try_from(limit.saturating_add(1))?
+            ],
+        )?;
+    }
+    let mut statement = tx.prepare(sql)?;
     let rows = statement.query_map(
         params![
             scope.agent_id,
@@ -2249,6 +2628,7 @@ fn qualified_live_protocol_keys(
     scope: &InputEvidenceScope,
     binding: &Binding,
     limit: usize,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<Vec<Key>> {
     let mut result = Vec::new();
     for (family, filter) in [
@@ -2259,6 +2639,9 @@ fn qualified_live_protocol_keys(
         let matching=format!("c.agent_id=r.agent_id AND c.identity_incarnation=?2 AND c.family='{}' AND c.record_id=r.{id}",family.as_str());
         let qualified=format!("(EXISTS(SELECT 1 FROM input_evidence_current c WHERE {matching} AND c.availability='present') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current c WHERE {matching}) AND EXISTS(SELECT 1 FROM input_evidence_seed_membership e WHERE e.seed_id=?3 AND e.family='{}' AND e.record_id=r.{id})))",family.as_str());
         let sql=format!("SELECT r.{id} FROM {table} r WHERE r.agent_id=?1 AND {filter} AND {qualified} ORDER BY r.{id} LIMIT ?4");
+        if let Some(material) = material.as_deref_mut() {
+            material.execution_live_keys_tx(tx, &sql, id, binding, limit)?;
+        }
         let mut statement = tx.prepare(&sql)?;
         let rows = statement.query_map(
             params![
@@ -2352,7 +2735,7 @@ fn metadata_closure(
                 ("$.related_message_id", Family::Message, false),
                 ("$.content_source.entry_id", Family::Transcript, false),
             ],
-            Family::Message => &[],
+            Family::Message | Family::LegacyDelivery => &[],
             Family::Transcript => &[("$.related_message_id", Family::Message, false)],
             Family::Attempt => &[
                 ("$.source_message_id", Family::Message, false),
@@ -2457,6 +2840,9 @@ fn decode_canonical(key: &Key, payload: &str) -> Result<CanonicalInputEvidence> 
             CanonicalInputEvidence::ToolExecution(serde_json::from_str(payload)?)
         }
         Family::Brief => CanonicalInputEvidence::Brief(serde_json::from_str(payload)?),
+        Family::LegacyDelivery => {
+            CanonicalInputEvidence::LegacyDelivery(serde_json::from_str(payload)?)
+        }
         Family::Transcript => CanonicalInputEvidence::Transcript(serde_json::from_str(payload)?),
         Family::Attempt => CanonicalInputEvidence::Attempt(serde_json::from_str(payload)?),
         Family::Outcome => CanonicalInputEvidence::Outcome(serde_json::from_str(payload)?),
@@ -2466,11 +2852,23 @@ fn decode_canonical(key: &Key, payload: &str) -> Result<CanonicalInputEvidence> 
         },
     })
 }
+// Existing actual canonical readback and independently qualified D4/Output
+// adapters preserve their source contract; selected production loads pass the
+// original actor material explicitly below.
 fn prepare_record_on(
     tx: &Transaction<'_>,
     agent: &str,
     key: &Key,
     canonical: Option<CanonicalInputEvidence>,
+) -> Result<PreparedInputEvidence> {
+    prepare_record_with_material_on(tx, agent, key, canonical, None)
+}
+fn prepare_record_with_material_on(
+    tx: &Transaction<'_>,
+    agent: &str,
+    key: &Key,
+    canonical: Option<CanonicalInputEvidence>,
+    material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<PreparedInputEvidence> {
     if key.family == Family::ToolExecution {
         let projected = match canonical {
@@ -2482,7 +2880,13 @@ fn prepare_record_on(
                 project_tool_record(&actual)?
             }
             Some(_) => anyhow::bail!("wrong canonical Tool family"),
-            None => tool_projection_on(tx, agent, &key.id)?,
+            None => {
+                if let Some(material) = material {
+                    tool_run_report::prepare_tool_prompt_on(tx, agent, &key.id, material)?
+                } else {
+                    tool_projection_on(tx, agent, &key.id)?
+                }
+            }
         };
         return Ok(PreparedInputEvidence::ToolExecution(projected));
     }
@@ -2505,6 +2909,13 @@ fn prepare_record_on(
         CanonicalInputEvidence::Brief(x) => {
             ensure!(x.agent_id == agent, "Brief payload scope mismatch");
             PreparedInputEvidence::Brief(x)
+        }
+        CanonicalInputEvidence::LegacyDelivery(x) => {
+            ensure!(
+                x.agent_id == agent && x.id == key.id,
+                "LegacyDelivery payload scope/ID mismatch"
+            );
+            PreparedInputEvidence::LegacyDelivery(x)
         }
         CanonicalInputEvidence::Transcript(x) => {
             ensure!(x.agent_id == agent, "transcript payload scope mismatch");
@@ -2638,6 +3049,7 @@ pub(crate) fn register_pruned_input_evidence_tx(
         );
     }
     Ok(CommittedInputEvidenceDelta {
+        query_advance: None,
         output_recall_invalidation,
         execution: execution::prune_tx(tx, scope, &binding, keys)?,
         records: Vec::new(),

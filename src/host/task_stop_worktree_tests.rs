@@ -33,7 +33,7 @@ fn request() -> TaskDomainLoadRequest {
     TaskDomainLoadRequest {
         query: Default::default(),
         capture: TaskCaptureRequest::current(),
-        record_limit: 4096,
+        record_limit: 65536,
         byte_limit: 16 * 1024 * 1024,
     }
 }
@@ -495,3 +495,6 @@ async fn unfinished_original_phase_attempt_blocks_git_until_receipt_absence_is_r
     f.host.shutdown().await?;
     Ok(())
 }
+
+#[path = "task_stop_current_event_tests.rs"]
+mod current_event_tests;

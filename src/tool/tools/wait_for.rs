@@ -1,4 +1,4 @@
-use anyhow::{Error, Result};
+use anyhow::{Context, Error, Result};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::{
-    work_item_query::{query_context, view_for_record, WorkItemView},
+    work_item_query::{query_context_from_work_items, view_for_planned_work_item, WorkItemView},
     BuiltinToolDefinition,
 };
 
@@ -148,8 +148,21 @@ async fn settle_impl(
     let reason = validate_non_empty(args.reason, NAME, "reason")?;
     let resource = optional_resource(args.resource);
 
-    let context = query_context(runtime).await?;
-    let state = runtime.agent_state().await?;
+    let selection = runtime.capture_work_query_snapshot().await?;
+    let mut selection_material = runtime.retain_wait_selection_material(
+        &selection,
+        &(
+            agent_id,
+            &reason,
+            &resource,
+            &args.work_item_id,
+            &selection.state.current_execution_binding,
+            &selection.state.current_turn_work_item_id,
+            &selection.state.current_work_item_id,
+        ),
+    )?;
+    let context = query_context_from_work_items(&selection.state, &selection.items);
+    let state = &selection.state;
     let requested_work_item_id = optional_resource(args.work_item_id.clone());
     let (work_item_id, owner_selection) = resolve_wait_work_item_id(
         requested_work_item_id.clone(),
@@ -168,7 +181,11 @@ async fn settle_impl(
             .as_deref()
             .is_some_and(|requested| work_item_id.as_deref() != Some(requested)),
     };
-    let (registration, prepared_wait_for) = if prepare_only {
+    // No later operation reads this publication. Only admitted owner IDs and
+    // their actual small material carrier survive preparation and serialization.
+    drop(context);
+    drop(selection);
+    let (registration, prepared_wait_for, result_read) = if prepare_only {
         match runtime
             .prepare_wait_for_outcome(
                 agent_id,
@@ -182,13 +199,20 @@ async fn settle_impl(
         {
             Ok(outcome) => match outcome {
                 crate::runtime::PrepareWaitForOutcome::Prepared(mut prepared) => {
+                    prepared.retain_owner_selection_material(selection_material.clone());
+                    prepared.prepare_owner_selection_result_material(runtime)?;
+                    selection_material = prepared
+                        .owner_selection_result_material()
+                        .context("Wait actual metadata material absent")?
+                        .clone();
                     prepared.delivery = args.delivery;
                     if prepared.command.task_result_admission.is_some() {
                         let mut result = immediate_result(prepared.outcome(), &disclosure)?;
                         result.prepared_wait_for = Some(prepared);
                         return Ok(result);
                     }
-                    (prepared.registration.clone(), Some(prepared))
+                    let result_read = prepared.prepare_result_read(runtime)?;
+                    (prepared.registration.clone(), Some(prepared), result_read)
                 }
                 crate::runtime::PrepareWaitForOutcome::Immediate(outcome) => {
                     return immediate_result(outcome, &disclosure);
@@ -198,49 +222,55 @@ async fn settle_impl(
         }
     } else {
         let outcome = match runtime
-            .register_wait_for_outcome(
+            .register_wait_for_outcome_with_selection(
                 agent_id,
                 work_item_id.clone(),
                 args.wake.into(),
                 resource.clone(),
                 reason.clone(),
                 args.recheck_after_ms,
+                &selection_material,
             )
             .await
         {
             Ok(outcome) => outcome,
             Err(error) => return timer_wait_error_result(error),
         };
+        let (outcome, result_read, returned_material) = outcome;
+        selection_material = returned_material;
         match outcome {
-            WaitForRegistrationOutcome::Registered { registration } => (registration, None),
+            WaitForRegistrationOutcome::Registered { registration } => {
+                (registration, None, result_read)
+            }
             outcome => return immediate_result(outcome, &disclosure),
         }
     };
-    let updated_context = query_context(runtime).await?;
+    let snapshot = runtime
+        .capture_work_query_snapshot_for_wait(
+            result_read.as_ref().map(|read| read.material()),
+            &selection_material,
+        )
+        .await?;
+    let updated_context = query_context_from_work_items(&snapshot.state, &snapshot.items);
     let pending_condition = registration.condition.clone();
     let work_item_id = registration.condition.work_item_id.clone();
-    let work_item = match registration.work_item {
-        Some(record) => Some(
-            view_for_record(
-                runtime,
-                &updated_context,
-                record.clone(),
-                true,
-                None,
-                Some(crate::work_item_scheduling::derive_work_item_scheduling(
-                    crate::work_item_scheduling::WorkItemSchedulingFacts {
-                        work_item: &record,
-                        is_current: updated_context.current_work_item_id.as_deref()
-                            == Some(record.id.as_str()),
-                        is_yielded: false,
-                        active_wait_conditions: std::slice::from_ref(&pending_condition),
-                        trigger_delivery_by_id: &std::collections::BTreeMap::new(),
-                    },
-                )),
-            )
-            .await?,
-        ),
-        None => None,
+    let (work_item, _result_material) = match (registration.work_item, result_read) {
+        (Some(record), Some(read)) => {
+            let projection = crate::work_item_scheduling::derive_work_item_scheduling(
+                crate::work_item_scheduling::WorkItemSchedulingFacts {
+                    work_item: &record,
+                    is_current: updated_context.current_work_item_id.as_deref()
+                        == Some(record.id.as_str()),
+                    is_yielded: false,
+                    active_wait_conditions: std::slice::from_ref(&pending_condition),
+                    trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+                },
+            );
+            let (view, material) = view_for_planned_work_item(runtime, snapshot, read, projection)?;
+            (Some(view), Some(material))
+        }
+        (None, None) => (None, None),
+        _ => anyhow::bail!("Wait original result/material differ"),
     };
     let owner = work_item_id
         .clone()

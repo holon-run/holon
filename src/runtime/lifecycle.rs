@@ -25,6 +25,7 @@ pub(crate) struct LightweightAgentStateProjection {
     pub(crate) work_queue: WorkQueueReadModel,
     pub(crate) _work_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     pub(crate) _scheduling_material: Option<super::SchedulingReadMaterial>,
+    pub(crate) _ordinary_material: Option<Box<super::compact_agent_read::CompactAgentReadMaterial>>,
 }
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -101,7 +102,7 @@ impl RuntimeHandle {
         drop(mutation);
         let closure = Self::closure_decision_from_projection(&read.state, &read.projection, None);
         let Some(latest) = read.work.work_item(&work_item_id)?.cloned() else {
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_owned_runtime_audit_event(AuditEvent::legacy(
                 "work_item_turn_end_commit_skipped",
                 serde_json::json!({
                     "agent_id": self.agent_id().await?,
@@ -110,7 +111,8 @@ impl RuntimeHandle {
                     "reason": "missing_bound_work_item",
                     "closure": closure,
                 }),
-            ))?;
+            ))
+            .await?;
             return Ok(None);
         };
 
@@ -132,10 +134,42 @@ impl RuntimeHandle {
             None => (None, None),
         };
         let mut refreshed = latest.clone();
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut refreshed,
-        )?;
+        let mut prior = read.material_estimate()?;
+        prior.0 = prior
+            .0
+            .checked_add(_planning_owned.owned_material_bytes()?)
+            .context("turn-end Work plan combined bytes overflow")?;
+        let selected = read
+            .work
+            .lookup(&super::resident_work::WorkKey::new(
+                super::resident_work::WorkFamily::Work,
+                &latest.id,
+            ))?
+            .context("turn-end qualified Work is absent")?;
+        prior.1 = prior
+            .1
+            .checked_add(
+                selected
+                    .record
+                    .resident_material_estimate()?
+                    .1
+                    .checked_mul(2)
+                    .context("turn-end Work plan count overflow")?,
+            )
+            .context("turn-end Work plan combined count overflow")?;
+        let plan_read = self
+            .prepare_observed_work_plan_with_prior(
+                &latest.id,
+                latest.revision,
+                Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(
+                    &read.state,
+                    &read.work,
+                    &read.resource_stamp,
+                    prior,
+                )),
+            )
+            .await?;
+        let plan_artifact_changed = plan_read.apply(&mut refreshed)?;
         let work_item_state_changed =
             latest.state == WorkItemState::Open && latest.blocked_by != blocked_by;
         let wrote_new_snapshot = work_item_state_changed || plan_artifact_changed;
@@ -161,6 +195,9 @@ impl RuntimeHandle {
             ));
             let agent_id = self.agent_id().await?;
             let mut mutation = self.begin_mutation().await?;
+            mutation.retain_work_resource_material(super::WorkResourceMaterialLoan::plan(
+                plan_read.clone(),
+            ))?;
             let command = crate::runtime_db::transitions::WorkItemTransitionCommand {
                 agent_id,
                 mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -190,7 +227,7 @@ impl RuntimeHandle {
             latest
         };
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "work_item_turn_end_committed",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -202,7 +239,8 @@ impl RuntimeHandle {
                 "work_item_state_changed": work_item_state_changed,
                 "closure": closure,
             }),
-        ))?;
+        ))
+        .await?;
         Ok(Some(committed))
     }
 
@@ -351,6 +389,7 @@ impl RuntimeHandle {
         }))
     }
 
+    #[cfg(test)]
     pub(super) fn append_state_changed_events(&self, state: &AgentState) -> Result<()> {
         let state_payload = AgentStateChangedEvent::from_state(state);
         self.inner.storage.append_event(&AuditEvent::typed(
@@ -536,28 +575,10 @@ impl RuntimeHandle {
 
     pub(crate) async fn request_service_shutdown(&self) -> Result<()> {
         self.retire_instance_locally("daemon_shutdown").await;
-        let outcome = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+        let audits = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .request_shutdown(super::scheduler_executor::ShutdownReason::DaemonShutdown)
             .await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "runtime_service_shutdown_requested",
-            serde_json::json!({
-                "aborted_run_id": &outcome.aborted_run_id,
-                "status": outcome.status,
-                "current_run_id": &outcome.current_run_id,
-            }),
-        ))?;
-        if let Some(run_id) = outcome.aborted_run_id {
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "current_run_aborted",
-                serde_json::json!({
-                    "agent_id": self.agent_id().await?,
-                    "run_id": run_id,
-                    "mode": "shutdown",
-                    "reason": "daemon_shutdown",
-                }),
-            ))?;
-        }
+        self.finish_owned_runtime_shutdown_audits(audits).await?;
         self.inner.notify.notify_one();
         Ok(())
     }
@@ -643,13 +664,14 @@ impl RuntimeHandle {
             &read.projection,
             runtime_error_override,
         );
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "closure_decided",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
                 "closure": closure,
             }),
-        ))?;
+        ))
+        .await?;
         Ok(closure)
     }
 
@@ -661,44 +683,7 @@ impl RuntimeHandle {
     pub(crate) async fn lightweight_agent_state_projection(
         &self,
     ) -> Result<LightweightAgentStateProjection> {
-        let read = self.capture_scheduler_projection().await?;
-        let agent = read.state.as_ref().clone();
-        let posture_timer = attribution::POSTURE.start();
-        let scheduling_posture = read.scheduling_posture.clone();
-        drop(posture_timer);
-        let closure_timer = attribution::CLOSURE.start();
-        let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
-        drop(closure_timer);
-        let scheduling_material = self.scheduling_observation_material(read.scheduling)?;
-        let children_timer = attribution::CHILDREN.start();
-        let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.child_summaries(&agent.id).await?
-        } else {
-            Vec::new()
-        };
-        drop(children_timer);
-        let identity_timer = attribution::IDENTITY.start();
-        let identity = self.agent_identity_view().await?;
-        drop(identity_timer);
-        let tasks_timer = attribution::ACTIVE_TASKS.start();
-        let active_task_count = read.projection.active_tasks.len();
-        drop(tasks_timer);
-        Ok(LightweightAgentStateProjection {
-            identity,
-            active_task_count,
-            lifecycle: crate::types::AgentLifecycleHint::from_status(
-                &agent.id,
-                agent.status.clone(),
-            ),
-            model: self.model_state_for(&agent),
-            agent,
-            scheduling_posture,
-            closure,
-            active_children,
-            work_queue: read.work_queue,
-            _work_budget: Some(read._owned_budget),
-            _scheduling_material: Some(scheduling_material),
-        })
+        self.capture_compact_agent_projection().await
     }
 
     /// Get a full AgentSummary for a different agent through the host bridge
@@ -714,44 +699,40 @@ impl RuntimeHandle {
 
     async fn build_agent_summary(&self) -> Result<OwnedAgentSummaryRead> {
         let started_at = std::time::Instant::now();
-        let read = self.capture_scheduler_projection().await?;
+        let super::agent_summary_read::SummaryProjectionRead {
+            read,
+            resources,
+            owned: summary_owned,
+            trigger_prior,
+            identity,
+            model,
+            model_material,
+        } = self.capture_summary_projection().await?;
+        let wire_scope = read.work.scope.clone();
         let agent = read.state.as_ref().clone();
         let active_task_count = read.projection.active_tasks.len();
-        let model = self.model_state_for(&agent);
+        let recent_brief_count = read.recent_brief_count;
+        let recent_event_count = read.current.recent_event_count;
         let scheduling_posture = read.scheduling_posture.clone();
         let closure = Self::closure_decision_from_projection(&agent, &read.projection, None);
         let (active_external_triggers, scheduling_material) =
-            self.summary_triggers_from_capture(read.scheduling)?;
-        let identity = self.agent_identity_view().await?;
+            self.summary_triggers_from_capture(read.scheduling, trigger_prior)?;
+        let loaded_agents_md = (&resources.observation.body.guidance).into();
+        let skills = resources.skills_with_visibility(
+            &agent.active_skills,
+            matches!(
+                self.skill_visibility(&identity),
+                crate::skills::SkillVisibility::DefaultAgent
+            ),
+        );
         let active_wait_conditions: Vec<crate::types::WaitConditionSummary> = read
             .active_waits
             .iter()
             .cloned()
             .map(crate::types::WaitConditionSummary::from)
             .collect();
-        // Internal summaries remain owned across the joins below. The final
-        // public wire DTO starts only at the synchronous return boundary.
-        let _wait_summary_owned = self.inner.input_evidence_budget.register_owned_bytes(
-            &read.work.scope,
-            super::input_evidence_budget::InputMemoryCategory::Pins,
-            super::input_evidence_budget::OwnedBytesEstimate {
-                payload_bytes: super::input_evidence_budget::serialized_bytes(
-                    &active_wait_conditions,
-                )?,
-                metadata_estimate_bytes: 0,
-            },
-        )?;
-        let (
-            execution,
-            loaded_agents_md,
-            skills,
-            active_workspace_occupancy,
-            active_children,
-            recent_operator_notifications,
-        ) = tokio::join!(
+        let (execution, active_workspace_occupancy, active_children, recent_operator_notifications) = tokio::join!(
             self.execution_snapshot(),
-            self.loaded_agents_md(),
-            self.skills_runtime_view(&identity),
             async {
                 if let (Some(bridge), Some(entry)) = (
                     self.inner.host_bridge.as_ref(),
@@ -768,18 +749,29 @@ impl RuntimeHandle {
             },
             async {
                 if let Some(bridge) = self.inner.host_bridge.as_ref() {
-                    bridge.child_summaries(&agent.id).await
+                    if let Some(children) = bridge
+                        .try_loaded_owned_child_summaries(
+                            &agent.id,
+                            &self.inner.input_evidence_budget,
+                            (usize::MAX, usize::MAX),
+                            scheduling_material.material_estimate()?,
+                        )
+                        .await?
+                    {
+                        let (summaries, material) = children.into_parts();
+                        Ok::<_, anyhow::Error>((summaries, Some(material)))
+                    } else {
+                        Ok((bridge.child_summaries(&agent.id).await?, None))
+                    }
                 } else {
-                    Ok(Vec::new())
+                    Ok((Vec::new(), None))
                 }
             },
             self.recent_operator_notifications(10),
         );
         let execution = execution?;
-        let loaded_agents_md = loaded_agents_md?;
-        let skills = skills?;
         let active_workspace_occupancy = active_workspace_occupancy?;
-        let active_children = active_children?;
+        let (active_children, children_material) = active_children?;
         let recent_operator_notifications = recent_operator_notifications?;
         let token_usage = AgentTokenUsageSummary {
             total: TokenUsage::new(agent.total_input_tokens, agent.total_output_tokens),
@@ -800,21 +792,26 @@ impl RuntimeHandle {
             closure,
             execution,
             active_workspace_occupancy,
-            loaded_agents_md: (&loaded_agents_md).into(),
+            loaded_agents_md,
             skills,
             active_children,
             active_wait_conditions,
             active_external_triggers,
             recent_operator_notifications,
-            recent_brief_count: self.inner.storage.read_recent_briefs(50)?.len(),
-            recent_event_count: self.inner.storage.read_recent_events(100)?.len(),
+            recent_brief_count,
+            recent_event_count,
         };
         crate::diagnostics::record_agent_summary_projection(started_at.elapsed());
         Ok(OwnedAgentSummaryRead::new(
             summary,
             scheduling_material,
-            vec![_wait_summary_owned],
-        ))
+            vec![summary_owned],
+            wire_scope,
+            &self.inner.input_evidence_budget,
+        )
+        .with_resource_observations(resources)
+        .with_selected_model_material(model_material)
+        .with_children_material(children_material))
     }
 
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
@@ -1126,6 +1123,26 @@ impl RuntimeHandle {
         reasoning_effort: Option<String>,
         service_tier: Option<crate::config::ServiceTier>,
     ) -> Result<crate::types::AgentModelState> {
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        // Own the entire original request before any Provider side effect.
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .set_model_override_owned(model_override, reasoning_effort, service_tier)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Model override worker ended before its ACK")?
+    }
+
+    pub(crate) async fn set_model_override_owned(
+        &self,
+        model_override: crate::config::ModelRouteRef,
+        reasoning_effort: Option<String>,
+        service_tier: Option<crate::config::ServiceTier>,
+    ) -> Result<crate::types::AgentModelState> {
         if let Some(tier) = service_tier {
             let snap = self.inner.config_snapshot.load();
             let route = snap
@@ -1167,29 +1184,42 @@ impl RuntimeHandle {
         }
 
         let model_state = self.model_state_for(&next_state);
-        {
+        let audit = self.prepare_original_model_override_audit(
+            &next_state.id,
+            &model_state,
+            turn_in_progress,
+            false,
+        )?;
+        let pending_audit = {
             let mut guard = self.begin_mutation().await?;
             guard.state.model_override = Some(model_override);
             guard.state.model_override_reasoning_effort = reasoning_effort;
             guard.state.model_override_service_tier = service_tier;
-            guard.persist_state(&self.inner.storage).await?;
+            guard
+                .persist_model_override_with_original_audit(audit)
+                .await?
+        };
+        if let Some(pending) = pending_audit {
+            self.finish_owned_lifecycle_noop_audit(pending).await?;
         }
-        self.append_audit_event(
-            if turn_in_progress {
-                "agent_model_override_requested"
-            } else {
-                "agent_model_override_set"
-            },
-            to_json_value(&AgentModelOverrideAuditEvent::from_model_state(
-                next_state.id,
-                &model_state,
-                turn_in_progress,
-            )),
-        )?;
         Ok(model_state)
     }
 
     pub async fn clear_model_override(&self) -> Result<crate::types::AgentModelState> {
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime.clear_model_override_owned().await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Model clear worker ended before its ACK")?
+    }
+
+    pub(in crate::runtime) async fn clear_model_override_owned(
+        &self,
+    ) -> Result<crate::types::AgentModelState> {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = None;
         next_state.model_override_reasoning_effort = None;
@@ -1200,25 +1230,24 @@ impl RuntimeHandle {
         }
 
         let model_state = self.model_state_for(&next_state);
-        {
+        let audit = self.prepare_original_model_override_audit(
+            &next_state.id,
+            &model_state,
+            turn_in_progress,
+            true,
+        )?;
+        let pending_audit = {
             let mut guard = self.begin_mutation().await?;
             guard.state.model_override = None;
             guard.state.model_override_reasoning_effort = None;
             guard.state.model_override_service_tier = None;
-            guard.persist_state(&self.inner.storage).await?;
+            guard
+                .persist_model_override_with_original_audit(audit)
+                .await?
+        };
+        if let Some(pending) = pending_audit {
+            self.finish_owned_lifecycle_noop_audit(pending).await?;
         }
-        self.append_audit_event(
-            if turn_in_progress {
-                "agent_model_override_clear_requested"
-            } else {
-                "agent_model_override_cleared"
-            },
-            to_json_value(&AgentModelOverrideAuditEvent::from_model_state(
-                next_state.id,
-                &model_state,
-                turn_in_progress,
-            )),
-        )?;
         Ok(model_state)
     }
 
@@ -1260,10 +1289,32 @@ impl RuntimeHandle {
     }
 
     pub async fn attach_workspace(&self, workspace: &WorkspaceEntry) -> Result<()> {
-        let _admission = self.execution_admission_lease()?;
-        // Workspace cleanup is a mutation concern. Keep GET projections read-only while
-        // opportunistically repairing stale attachments before applying a new binding.
-        self.prune_stale_attached_workspaces().await?;
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(workspace)?;
+        // The actual borrowed request is observed before its first owned copy.
+        let workspace = workspace.clone();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .attach_workspace_owned(&workspace, material, &admission)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace attach worker ended before its ACK")?
+    }
+    pub(in crate::runtime) async fn attach_workspace_owned(
+        &self,
+        workspace: &WorkspaceEntry,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
+        // Preserve the original stale repair before the new binding. Every
+        // resulting State command borrows this same request accounting loan.
+        self.prune_stale_attached_workspaces_with_request(Some(&material))
+            .await?;
         let mut guard = self.begin_mutation().await?;
         if !guard
             .state
@@ -1277,16 +1328,14 @@ impl RuntimeHandle {
                 .push(workspace.workspace_id.clone());
         }
         self.inner.storage.append_workspace_entry(workspace)?;
-        guard.persist_state(&self.inner.storage).await?;
+        guard
+            .persist_state_with_original_workspace_request(material.clone())
+            .await?;
         let state = guard.state.clone();
+        let audit = self.prepare_original_workspace_attached_observation(material, workspace)?;
         drop(guard);
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "workspace_attached",
-            serde_json::json!({
-                "workspace_id": workspace.workspace_id,
-                "workspace_anchor": workspace.workspace_anchor,
-            }),
-        ))?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
         Ok(())
     }
@@ -1296,6 +1345,27 @@ impl RuntimeHandle {
         if workspace_id.is_empty() {
             return Err(anyhow!("workspace_id is required"));
         }
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&workspace_id)?;
+        let workspace_id = workspace_id.to_owned();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .detach_workspace_owned(&workspace_id, material, &admission)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace detachment worker ended before its ACK")?
+    }
+    pub(in crate::runtime) async fn detach_workspace_owned(
+        &self,
+        workspace_id: &str,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
         let state = self.agent_state().await?;
         let canonical_agent_home_id = crate::types::agent_home_workspace_id(&state.id);
         if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id == canonical_agent_home_id {
@@ -1321,11 +1391,11 @@ impl RuntimeHandle {
             .as_ref()
             .is_some_and(|entry| entry.workspace_id == workspace_id)
         {
-            self.activate_agent_home(WorkspaceAccessMode::SharedRead, None)
+            self.activate_agent_home_owned(WorkspaceAccessMode::SharedRead, None, material.clone())
                 .await?;
         }
 
-        let detached_agent_id = {
+        {
             let mut guard = self.begin_mutation().await?;
             let before_len = guard.state.attached_workspaces.len();
             guard
@@ -1338,17 +1408,19 @@ impl RuntimeHandle {
                     guard.state.id
                 ));
             }
-            guard.persist_state(&self.inner.storage).await?;
-            guard.state.id.clone()
+            let audits = self.prepare_original_workspace_detachment_audits(
+                &guard.state.id,
+                std::iter::once(workspace_id),
+                None,
+            )?;
+            guard
+                .persist_state_with_original_lifecycle_audits_and_workspace_request(
+                    audits,
+                    Some(material),
+                )
+                .await?;
         };
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "workspace_detached",
-            serde_json::json!({
-                "agent_id": detached_agent_id,
-                "workspace_id": workspace_id,
-            }),
-        ))?;
         Ok(())
     }
 
@@ -1363,6 +1435,13 @@ impl RuntimeHandle {
     /// changed). Each pruned ID emits a `workspace_detached` audit event with
     /// `reason: "stale_workspace_anchor"`.
     pub async fn prune_stale_attached_workspaces(&self) -> Result<Vec<String>> {
+        self.prune_stale_attached_workspaces_with_request(None)
+            .await
+    }
+    async fn prune_stale_attached_workspaces_with_request(
+        &self,
+        material: Option<&Arc<super::OriginalWorkspaceRequestMaterial>>,
+    ) -> Result<Vec<String>> {
         let bridge = match self.inner.host_bridge.as_ref() {
             Some(b) => b,
             None => return Ok(Vec::new()), // no registry to check against
@@ -1434,18 +1513,17 @@ impl RuntimeHandle {
                 .state
                 .attached_workspaces
                 .retain(|id| !stale_ids.contains(id));
-            guard.persist_state(&self.inner.storage).await?;
-        }
-
-        for ws_id in &stale_ids {
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "workspace_detached",
-                serde_json::json!({
-                    "agent_id": &agent_id,
-                    "workspace_id": ws_id,
-                    "reason": "stale_workspace_anchor",
-                }),
-            ))?;
+            let audits = self.prepare_original_workspace_detachment_audits(
+                &agent_id,
+                stale_ids.iter().map(String::as_str),
+                Some("stale_workspace_anchor"),
+            )?;
+            guard
+                .persist_state_with_original_lifecycle_audits_and_workspace_request(
+                    audits,
+                    material.cloned(),
+                )
+                .await?;
         }
 
         Ok(stale_ids)
@@ -1549,6 +1627,29 @@ impl RuntimeHandle {
         access_mode: WorkspaceAccessMode,
         cwd: Option<PathBuf>,
     ) -> Result<()> {
+        let material = self.prepare_original_workspace_request_material(&(
+            self.inner.storage.data_dir(),
+            access_mode,
+            &cwd,
+        ))?;
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .activate_agent_home_owned(access_mode, cwd, material)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original AgentHome activation worker ended before its ACK")?
+    }
+    pub(in crate::runtime) async fn activate_agent_home_owned(
+        &self,
+        access_mode: WorkspaceAccessMode,
+        cwd: Option<PathBuf>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+    ) -> Result<()> {
         let state = self.agent_state().await?;
         let workspace = Self::agent_home_workspace_entry(self.inner.storage.data_dir(), &state.id);
         let execution_root = crate::system::workspace::normalize_path(&workspace.workspace_anchor)?;
@@ -1600,7 +1701,9 @@ impl RuntimeHandle {
             }
             guard.state.active_workspace_entry = Some(entry);
             guard.state.worktree_session = None;
-            guard.persist_state(&self.inner.storage).await?;
+            guard
+                .persist_state_with_original_workspace_request(material.clone())
+                .await?;
             self.inner.storage.mark_memory_index_dirty()?;
         }
         if let Some(occupancy_id) = previous_occupancy_id.as_deref() {
@@ -1608,18 +1711,16 @@ impl RuntimeHandle {
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "workspace_used",
-            serde_json::json!({
-                "workspace_id": workspace.workspace_id,
-                "workspace_anchor": workspace.workspace_anchor,
-                "execution_root_id": execution_root_id,
-                "execution_root": execution_root,
-                "projection_kind": WorkspaceProjectionKind::CanonicalRoot,
-                "access_mode": access_mode,
-                "cwd": selected_cwd,
-            }),
-        ))?;
+        let audit = self.prepare_original_workspace_used_observation(
+            material,
+            &workspace,
+            &execution_root_id,
+            &execution_root,
+            access_mode,
+            &selected_cwd,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(())
     }
 
@@ -1627,11 +1728,15 @@ impl RuntimeHandle {
         &self,
         entry: &ActiveWorkspaceEntry,
         worktree_session: Option<WorktreeSession>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
     ) -> Result<()> {
         let mut guard = self.begin_mutation().await?;
         guard.state.active_workspace_entry = Some(entry.clone());
         guard.state.worktree_session = worktree_session;
-        if let Err(error) = guard.persist_state(&self.inner.storage).await {
+        if let Err(error) = guard
+            .persist_state_with_original_workspace_request(material)
+            .await
+        {
             // Finish only the acknowledged candidate; unknown SQL keeps both
             // the publication fence and its filesystem/occupancy resources.
             if !matches!(guard.reconcile_known_commit().await, Ok(true)) {
@@ -1649,7 +1754,45 @@ impl RuntimeHandle {
         cwd: Option<PathBuf>,
         branch_name: Option<String>,
     ) -> Result<()> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&(
+            workspace,
+            projection_kind,
+            access_mode,
+            &cwd,
+            &branch_name,
+        ))?;
+        let workspace = workspace.clone();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .enter_workspace_owned(
+                    &workspace,
+                    projection_kind,
+                    access_mode,
+                    cwd,
+                    branch_name,
+                    material,
+                    &admission,
+                )
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace entry worker ended before its ACK")?
+    }
+    pub(in crate::runtime) async fn enter_workspace_owned(
+        &self,
+        workspace: &WorkspaceEntry,
+        projection_kind: WorkspaceProjectionKind,
+        access_mode: WorkspaceAccessMode,
+        cwd: Option<PathBuf>,
+        branch_name: Option<String>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
         let agent_id = self.agent_id().await?;
         let existing_state = self.agent_state().await?;
         if !existing_state
@@ -1772,7 +1915,7 @@ impl RuntimeHandle {
         }
 
         let write_result = self
-            .persist_workspace_activation(&entry, worktree_session)
+            .persist_workspace_activation(&entry, worktree_session, material.clone())
             .await;
         if let Err(error) = write_result {
             if crate::runtime_db::persistence_certainty(&error)
@@ -1800,24 +1943,19 @@ impl RuntimeHandle {
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "workspace_entered",
-            serde_json::json!({
-                "workspace_id": workspace.workspace_id,
-                "workspace_anchor": workspace.workspace_anchor,
-                "execution_root_id": execution_root_id,
-                "execution_root": execution_root,
-                "projection_kind": projection_kind,
-                "access_mode": access_mode,
-                "cwd": selected_cwd,
-                "boundary": crate::system::HostLocalBoundary::from_parts(
-                    &state.execution_profile,
-                    Some(projection_kind),
-                    Some(access_mode),
-                    Some(execution_root_id),
-                ).audit_metadata(),
-            }),
-        ))?;
+        let audit = self.prepare_original_workspace_entered_observation(
+            material,
+            workspace,
+            &execution_root_id,
+            &execution_root,
+            projection_kind,
+            access_mode,
+            &selected_cwd,
+            &state.execution_profile,
+            false,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(())
     }
 
@@ -1828,7 +1966,42 @@ impl RuntimeHandle {
         access_mode: WorkspaceAccessMode,
         cwd: Option<PathBuf>,
     ) -> Result<()> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&(
+            workspace,
+            &worktree_root,
+            access_mode,
+            &cwd,
+        ))?;
+        let workspace = workspace.clone();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .enter_existing_git_worktree_owned(
+                    &workspace,
+                    worktree_root,
+                    access_mode,
+                    cwd,
+                    material,
+                    &admission,
+                )
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original existing-worktree entry worker ended before its ACK")?
+    }
+    async fn enter_existing_git_worktree_owned(
+        &self,
+        workspace: &WorkspaceEntry,
+        worktree_root: PathBuf,
+        access_mode: WorkspaceAccessMode,
+        cwd: Option<PathBuf>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
         let execution_root = crate::system::workspace::normalize_path(&worktree_root)?;
         let base_execution_root_id = Self::build_execution_root_id(
             &workspace.workspace_id,
@@ -1846,16 +2019,19 @@ impl RuntimeHandle {
             }
             _ => base_execution_root_id,
         };
-        self.enter_existing_git_worktree_with_id(
+        self.enter_existing_git_worktree_with_id_owned(
             workspace,
             worktree_root,
             access_mode,
             cwd,
             execution_root_id,
+            material,
+            admission,
         )
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn enter_existing_git_worktree_with_id(
         &self,
         workspace: &WorkspaceEntry,
@@ -1863,6 +2039,45 @@ impl RuntimeHandle {
         access_mode: WorkspaceAccessMode,
         cwd: Option<PathBuf>,
         execution_root_id: String,
+    ) -> Result<()> {
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&(
+            workspace,
+            &worktree_root,
+            access_mode,
+            &cwd,
+            &execution_root_id,
+        ))?;
+        let workspace = workspace.clone();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .enter_existing_git_worktree_with_id_owned(
+                    &workspace,
+                    worktree_root,
+                    access_mode,
+                    cwd,
+                    execution_root_id,
+                    material,
+                    &admission,
+                )
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original named existing-worktree entry worker ended before its ACK")?
+    }
+    pub(in crate::runtime) async fn enter_existing_git_worktree_with_id_owned(
+        &self,
+        workspace: &WorkspaceEntry,
+        worktree_root: PathBuf,
+        access_mode: WorkspaceAccessMode,
+        cwd: Option<PathBuf>,
+        execution_root_id: String,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: &super::execution_admission::ExecutionLease,
     ) -> Result<()> {
         let agent_id = self.agent_id().await?;
         let existing_state = self.agent_state().await?;
@@ -1955,7 +2170,9 @@ impl RuntimeHandle {
             );
         }
 
-        let write_result = self.persist_workspace_activation(&entry, None).await;
+        let write_result = self
+            .persist_workspace_activation(&entry, None, material.clone())
+            .await;
         if let Err(error) = write_result {
             if crate::runtime_db::persistence_certainty(&error)
                 != Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
@@ -1979,53 +2196,55 @@ impl RuntimeHandle {
         }
         let state = self.agent_state().await?;
         self.sync_effective_skill_roots_for_state(&state).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "workspace_entered",
-            serde_json::json!({
-                "workspace_id": workspace.workspace_id,
-                "workspace_anchor": workspace.workspace_anchor,
-                "execution_root_id": execution_root_id,
-                "execution_root": execution_root,
-                "projection_kind": WorkspaceProjectionKind::GitWorktreeRoot,
-                "access_mode": access_mode,
-                "cwd": selected_cwd,
-                "detected_kind": "existing_git_worktree",
-                "ownership": "external",
-                "boundary": crate::system::HostLocalBoundary::from_parts(
-                    &state.execution_profile,
-                    Some(WorkspaceProjectionKind::GitWorktreeRoot),
-                    Some(access_mode),
-                    Some(execution_root_id),
-                ).audit_metadata(),
-            }),
-        ))?;
+        let audit = self.prepare_original_workspace_entered_observation(
+            material,
+            workspace,
+            &execution_root_id,
+            &execution_root,
+            WorkspaceProjectionKind::GitWorktreeRoot,
+            access_mode,
+            &selected_cwd,
+            &state.execution_profile,
+            true,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(())
     }
 
     pub async fn exit_workspace(&self) -> Result<()> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let material =
+            self.prepare_original_workspace_request_material(&self.inner.storage.data_dir())?;
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime.exit_workspace_owned(material, admission).await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace exit worker ended before its ACK")?
+    }
+    async fn exit_workspace_owned(
+        &self,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
         let state = self.agent_state().await?;
-        let Some(active_entry) = state.active_workspace_entry.clone() else {
+        let Some(active_entry) = state.active_workspace_entry.as_ref() else {
             return Err(anyhow!("agent has no active workspace entry"));
         };
 
-        self.activate_agent_home(WorkspaceAccessMode::SharedRead, None)
+        self.activate_agent_home_owned(WorkspaceAccessMode::SharedRead, None, material.clone())
             .await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "workspace_exited",
-            serde_json::json!({
-                "workspace_id": active_entry.workspace_id,
-                "execution_root_id": active_entry.execution_root_id,
-                "projection_kind": active_entry.projection_kind,
-                "access_mode": active_entry.access_mode,
-                "boundary": crate::system::HostLocalBoundary::from_parts(
-                    &state.execution_profile,
-                    Some(active_entry.projection_kind),
-                    Some(active_entry.access_mode),
-                    Some(active_entry.execution_root_id.clone()),
-                ).audit_metadata(),
-            }),
-        ))?;
+        let audit = self.prepare_original_workspace_exited_observation(
+            material,
+            active_entry,
+            &state.execution_profile,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(())
     }
 
@@ -2044,42 +2263,17 @@ impl RuntimeHandle {
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
         if sleeping_until.is_none() && allow_runnable_work_override {
-            if let Some((work_item, generation, reason, _owned)) =
-                self.indefinite_sleep_runnable_work().await?
-            {
-                let state = self.inner.agent.lock().await.state.clone();
+            if let Some(observation) = self.indefinite_sleep_runnable_work().await? {
                 let decision = super::scheduler::SchedulerDecision::new(
                     super::scheduler::SchedulerDecisionKind::EmitSystemTick,
-                    reason,
+                    observation.reason,
                 )
                 .boundary(super::scheduler::SchedulerBoundary::LifecycleSleep.as_str())
                 .model_reentry(true)
-                .work_item_id(work_item.id.clone())
+                .work_item_id(observation.work_item.id.clone())
                 .evidence("lifecycle_sleep_overridden_by_runnable_work");
-                self.emit_system_tick_from_work_queue(
-                    &work_item,
-                    generation,
-                    reason,
-                    Some(&decision),
-                )
-                .await?;
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "scheduler_posture_decision",
-                    serde_json::json!({
-                        "boundary": "lifecycle_sleep",
-                        "reason": "sleep_overridden_runnable_work",
-                        "previous_status": state.status,
-                        "next_status": state.status,
-                        "evidence": [
-                            format!("previous_run_id={:?}", state.current_run_id),
-                            "sleeping_until=None".to_string(),
-                            format!("work_item_id={}", work_item.id),
-                            format!("work_queue_reason={reason}"),
-                            "work_item_scheduling_state=Runnable".to_string(),
-                        ],
-                    }),
-                ))?;
-                self.append_state_changed_events(&state)?;
+                self.start_owned_sleep_override(observation, decision)
+                    .await?;
                 return Ok(());
             }
         }
@@ -2089,9 +2283,6 @@ impl RuntimeHandle {
                 super::scheduler_executor::SleepTransitionBoundary::LifecycleSleep,
             )
             .await?;
-        if transition.posture_changed {
-            self.append_state_changed_events(&transition.state)?;
-        }
         if sleeping_until.is_none() {
             self.observe_indefinite_sleep_without_wake_source(&transition.state)
                 .await?;
@@ -2124,7 +2315,7 @@ impl RuntimeHandle {
             return Ok(());
         }
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "orphan_sleep_observed",
             serde_json::json!({
                 "agent_id": state.id,
@@ -2141,44 +2332,28 @@ impl RuntimeHandle {
                 ],
                 "severity": "warning",
             }),
-        ))?;
+        ))
+        .await?;
         Ok(())
     }
 
     async fn indefinite_sleep_runnable_work(
         &self,
-    ) -> Result<
-        Option<(
-            crate::types::WorkItemRecord,
-            Option<u64>,
-            &'static str,
-            Arc<super::input_evidence_budget::BudgetViewGuard>,
-        )>,
-    > {
+    ) -> Result<Option<super::sleep_override_audits::OriginalSleepOverrideObservation>> {
         let read = self.capture_scheduler_projection().await?;
-        let Some((work_item, mode, generation)) = read
+        let Some((work, mode, generation)) = read
             .projection
             .work_reactivation_work_item_with_generation()
         else {
             return Ok(None);
         };
-        let owned = self.inner.input_evidence_budget.register_owned_bytes(
-            &read.work.scope,
-            super::input_evidence_budget::InputMemoryCategory::Pins,
-            super::input_evidence_budget::OwnedBytesEstimate {
-                payload_bytes: super::input_evidence_budget::serialized_bytes(work_item)?,
-                metadata_estimate_bytes: 0,
-            },
-        )?;
-        Ok(Some((
-            work_item.clone(),
-            generation,
-            match mode {
-                crate::types::WorkReactivationMode::ContinueActive => "continue_active",
-                crate::types::WorkReactivationMode::ActivateQueued => "queued_available",
-            },
-            owned,
-        )))
+        let reason = match mode {
+            crate::types::WorkReactivationMode::ContinueActive => "continue_active",
+            crate::types::WorkReactivationMode::ActivateQueued => "queued_available",
+        };
+        Ok(Some(self.prepare_original_sleep_override_observation(
+            &read, work, generation, reason,
+        )?))
     }
 
     fn spawn_session_sleep_wake(
@@ -2223,17 +2398,19 @@ impl RuntimeHandle {
                     "sleeping_until": sleeping_until,
                 }
             }));
-            let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
-                "system_tick_emitted",
-                serde_json::json!({
-                    "subsystem": "sleep_duration",
-                    "sleep_wait": message
-                        .metadata
-                        .as_ref()
-                        .and_then(|value| value.get("sleep_wait"))
-                        .cloned(),
-                }),
-            ));
+            let _ = runtime
+                .append_owned_runtime_audit_event(AuditEvent::legacy(
+                    "system_tick_emitted",
+                    serde_json::json!({
+                        "subsystem": "sleep_duration",
+                        "sleep_wait": message
+                            .metadata
+                            .as_ref()
+                            .and_then(|value| value.get("sleep_wait"))
+                            .cloned(),
+                    }),
+                ))
+                .await;
             let _ = runtime.enqueue(message).await;
         });
         self.track_owned_task(handle);
@@ -2305,6 +2482,36 @@ fn build_child_agent_observability_with_active_tasks<'a>(
     active_tasks: &[&TaskRecord],
     briefs: impl DoubleEndedIterator<Item = &'a BriefRecord> + Clone,
 ) -> ChildAgentObservabilitySnapshot {
+    build_child_agent_observability_with_active_tasks_observed(
+        agent,
+        waiting_reason,
+        active_tasks,
+        briefs,
+        &mut None,
+    )
+    .expect("unobserved child projection is infallible")
+}
+
+pub(in crate::runtime) fn build_child_agent_observability_with_active_tasks_observed<'a>(
+    agent: &AgentState,
+    waiting_reason: Option<WaitingReason>,
+    active_tasks: &[&TaskRecord],
+    briefs: impl DoubleEndedIterator<Item = &'a BriefRecord> + Clone,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<ChildAgentObservabilitySnapshot> {
+    if let Some(observe) = observer.as_deref_mut() {
+        // child_blocked_reason's original temporary borrowed Task vector.
+        let nodes = active_tasks
+            .len()
+            .checked_add(1)
+            .context("child Task slots overflow")?;
+        observe(
+            u64::try_from(nodes)?
+                .checked_mul(256)
+                .context("child Task bytes overflow")?,
+            nodes,
+        )?;
+    }
     let blocked_reason = child_blocked_reason(&agent.status, &active_tasks);
     let phase = if agent.last_turn_terminal.is_some()
         && agent.current_run_id.is_none()
@@ -2327,30 +2534,53 @@ fn build_child_agent_observability_with_active_tasks<'a>(
         ChildAgentPhase::Waiting
     };
 
-    ChildAgentObservabilitySnapshot {
+    let current_work_item_id = agent
+        .working_memory
+        .current_working_memory
+        .current_work_item_id
+        .as_ref();
+    let work_summary = agent
+        .working_memory
+        .current_working_memory
+        .work_summary
+        .as_ref();
+    let last_progress_brief = briefs
+        .clone()
+        .rev()
+        .find(|brief| brief.kind == BriefKind::Ack)
+        .map(|brief| &brief.text);
+    let last_result_brief = briefs
+        .rev()
+        .find(|brief| brief.kind.is_terminal())
+        .map(|brief| &brief.text);
+    if let Some(observe) = observer.as_deref_mut() {
+        let (bytes, nodes) = super::input_evidence_budget::borrowed_json_material(&(
+            current_work_item_id,
+            work_summary,
+            last_progress_brief,
+            last_result_brief,
+        ))?;
+        let nodes = nodes
+            .checked_add(1)
+            .context("child projection native overflow")?;
+        let bytes = bytes
+            .checked_add(
+                u64::try_from(nodes)?
+                    .checked_mul(256)
+                    .context("child projection bytes overflow")?,
+            )
+            .context("child projection bytes overflow")?;
+        observe(bytes, nodes)?;
+    }
+    Ok(ChildAgentObservabilitySnapshot {
         phase,
         blocked_reason,
         waiting_reason,
-        current_work_item_id: agent
-            .working_memory
-            .current_working_memory
-            .current_work_item_id
-            .clone(),
-        work_summary: agent
-            .working_memory
-            .current_working_memory
-            .work_summary
-            .clone(),
-        last_progress_brief: briefs
-            .clone()
-            .rev()
-            .find(|brief| brief.kind == BriefKind::Ack)
-            .map(|brief| brief.text.clone()),
-        last_result_brief: briefs
-            .rev()
-            .find(|brief| brief.kind.is_terminal())
-            .map(|brief| brief.text.clone()),
-    }
+        current_work_item_id: current_work_item_id.cloned(),
+        work_summary: work_summary.cloned(),
+        last_progress_brief: last_progress_brief.cloned(),
+        last_result_brief: last_result_brief.cloned(),
+    })
 }
 
 fn blocking_tasks<'a>(active_tasks: &[&'a TaskRecord]) -> Vec<&'a TaskRecord> {

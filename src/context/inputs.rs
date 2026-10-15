@@ -674,6 +674,7 @@ mod resident_tests {
     fn evidence(record: PreparedInputEvidence) -> Arc<QualifiedInputEvidence> {
         Arc::new(QualifiedInputEvidence {
             attempt_turn_keys: None,
+            tool_run_report: None,
             locator: EvidenceLocator {
                 scope: scope(),
                 key: record.key(),

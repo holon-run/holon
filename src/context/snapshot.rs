@@ -112,6 +112,20 @@ pub struct ContextSnapshot {
     resources: ContextResourceObservation,
 }
 impl ContextSnapshot {
+    pub(crate) fn with_resource_observations(
+        mut self,
+        pins: Arc<crate::runtime::resource_observation::CapturedResourceObservations>,
+    ) -> Self {
+        self.resources.generation = pins.observation.epoch;
+        self.resources.digest = pins.observation.digest.clone();
+        self.resources.pins = Some(pins);
+        self
+    }
+    pub(crate) fn resource_pins(
+        &self,
+    ) -> Option<Arc<crate::runtime::resource_observation::CapturedResourceObservations>> {
+        self.resources.pins.clone()
+    }
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -444,6 +458,7 @@ pub(crate) struct DurableContextInputs {
 pub(crate) struct ContextResourceObservation {
     pub generation: u64,
     pub digest: String,
+    pub pins: Option<Arc<crate::runtime::resource_observation::CapturedResourceObservations>>,
 }
 
 /// Filesystem-only resource capability. Cannot query SQLite or durable records.
@@ -458,7 +473,10 @@ pub(crate) struct FilesystemContextResources<'a> {
 }
 impl ContextResources for FilesystemContextResources<'_> {
     fn plan(&self, item: &WorkItemRecord) -> Option<WorkItemPlanArtifact> {
-        crate::work_item_plan::ensure_plan_artifact(self.data_dir, item, None).ok()
+        match crate::work_item_plan::query_plan_artifact(self.data_dir, item) {
+            crate::work_item_plan::PlanArtifactQuery::Available(plan) => Some(plan),
+            _ => None,
+        }
     }
     fn notes(&self) -> Option<String> {
         crate::notes_catalog::render_agent_home_notes_catalog_section(self.agent_home)
@@ -479,6 +497,36 @@ pub fn capture_context_from_storage(
     config: &ContextConfig,
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
+) -> Result<ContextSnapshot> {
+    capture_context_from_storage_with_resources(
+        storage,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        default_external_ingress_override,
+        &FilesystemContextResources {
+            data_dir: storage.data_dir(),
+            agent_home,
+        },
+        0,
+    )
+}
+/// Explicit durable SQL preparation with already observed file dependencies.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn capture_context_from_storage_with_resources(
+    storage: &AppStorage,
+    agent: &AgentState,
+    execution: &ExecutionSnapshot,
+    skills: &SkillsRuntimeView,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    config: &ContextConfig,
+    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+    resources: &impl ContextResources,
+    resource_generation: u64,
 ) -> Result<ContextSnapshot> {
     // Preserve the legacy full acquisition span: Episode reads through resources.
     let _timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
@@ -505,14 +553,7 @@ pub fn capture_context_from_storage(
         episodes,
         report,
     )?;
-    observe_context_resources(
-        durable,
-        &FilesystemContextResources {
-            data_dir: storage.data_dir(),
-            agent_home,
-        },
-        0,
-    )
+    observe_context_resources(durable, resources, resource_generation)
 }
 
 /// The caller owns the coherent SQLite snapshot and validates it against the
@@ -777,8 +818,8 @@ pub(crate) fn observe_context_resources(
     let current_work_item = data.current_work_item.as_ref();
     let work_queue_projection = &data.work_queue_projection;
     let completion_reports = &data.completion_reports;
-    // Preserve existing creation/error handling at the explicit I/O boundary.
-    // WorkItem/file workflows will own creation once resource residency lands.
+    // Resource previews are already observed. Only original Work/file
+    // workflows create plans; capture and render cannot create files.
     let mut plan_observations = BTreeMap::new();
     if let Some(item) = current_work_item {
         let artifact = read!("plan_observations", Ok(resources.plan(item)), |v| {
@@ -792,7 +833,6 @@ pub(crate) fn observe_context_resources(
         if current_work_item
             .as_ref()
             .is_some_and(|current| current.id == item.id)
-            || item.plan_artifact.is_some()
             || plan_observations.contains_key(&item.id)
         {
             continue;
@@ -831,6 +871,7 @@ pub(crate) fn observe_context_resources(
         resources: ContextResourceObservation {
             generation: resource_generation,
             digest,
+            pins: None,
         },
     })
 }

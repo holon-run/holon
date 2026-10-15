@@ -13,6 +13,17 @@ pub(crate) struct LegacyImporter<'a> {
     storage: &'a AppStorage,
 }
 
+/// Only the original storage importer constructs this borrowed source witness.
+/// It grants no ordinary Input read or native insertion.
+pub(crate) struct OriginalEpisodeImport<'a> {
+    agent_id: &'a str,
+}
+impl OriginalEpisodeImport<'_> {
+    pub(crate) fn agent_id(&self) -> &str {
+        self.agent_id
+    }
+}
+
 impl<'a> LegacyImporter<'a> {
     pub(super) fn new(storage: &'a AppStorage) -> Self {
         Self { storage }
@@ -124,26 +135,22 @@ impl<'a> LegacyImporter<'a> {
         let runtime_db = &self.storage.runtime_db;
         let turn_records_complete = self.storage_domain_complete("turn_records")?;
         let evidence_complete = self.storage_domain_complete("evidence")?;
-        let legacy_messages = (!turn_records_complete || !evidence_complete)
-            .then(|| self.storage.read_all_message_values())
-            .transpose()?;
+        if turn_records_complete && evidence_complete {
+            return Ok(());
+        }
+        let agent_id = self
+            .storage
+            .agent_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("original episode import requires agent-scoped storage"))?;
+        let source = OriginalEpisodeImport { agent_id };
+        runtime_db.freeze_original_episode_import(&source)?;
         if !turn_records_complete {
-            runtime_db.turn_records().import_legacy(
-                legacy_messages.clone().unwrap_or_default(),
-                self.storage.read_recent_tool_executions(usize::MAX)?,
-                self.storage.read_recent_briefs(usize::MAX)?,
-                self.storage.read_recent_delivery_summaries(usize::MAX)?,
-                self.storage.read_recent_wait_conditions(usize::MAX)?,
-            )?;
+            runtime_db.freeze_original_turn_wait_source(&source)?;
+            runtime_db.import_original_turn_records(&source)?;
         }
         if !evidence_complete {
-            runtime_db.evidence().import_legacy(
-                legacy_messages.unwrap_or_default(),
-                self.storage.read_all_transcript()?,
-                self.storage.read_recent_tool_executions(usize::MAX)?,
-                self.storage.read_recent_briefs(usize::MAX)?,
-                self.storage.read_recent_delivery_summaries(usize::MAX)?,
-            )?;
+            runtime_db.import_original_episode_evidence(&source)?;
         }
         Ok(())
     }
@@ -188,3 +195,15 @@ impl<'a> LegacyImporter<'a> {
             .storage_domain_is_complete(expected.domain, expected.canonical_source)
     }
 }
+
+#[cfg(test)]
+#[path = "legacy_episode_import_tests.rs"]
+mod episode_import_tests;
+
+#[cfg(test)]
+#[path = "original_turn_import_tests.rs"]
+mod original_turn_import_tests;
+
+#[cfg(test)]
+#[path = "original_work_import_tests.rs"]
+mod original_work_import_tests;

@@ -15,7 +15,7 @@ use super::{
     work_item_action::{
         convert_todo_list, parse_work_item_action_args, TodoItemArgs, WorkItemMutationResult,
     },
-    work_item_query::{query_context, view_for_record},
+    work_item_query::view_for_created_work_item,
     BuiltinToolDefinition,
 };
 
@@ -80,14 +80,15 @@ pub(crate) async fn execute(
         .transpose()?
         .unwrap_or_default();
     let work_item = runtime
-        .create_work_item(
+        .create_work_item_owned_result(
             objective,
             args.plan_status.map(Into::into),
             normalize_optional_non_empty(plan),
             todo_list,
         )
         .await?;
-    let context = query_context(runtime).await?;
-    let work_item = view_for_record(runtime, &context, work_item, true, None, None).await?;
-    serialize_success(NAME, &WorkItemMutationResult::new(work_item))
+    let (work_item, material) = view_for_created_work_item(runtime, work_item).await?;
+    let result = serialize_success(NAME, &WorkItemMutationResult::new(work_item));
+    drop(material);
+    result
 }

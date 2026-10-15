@@ -99,8 +99,9 @@ pub(crate) fn prepare_original_result_predicate_tx<'tx, 'connection>(
             "TaskResult predicate scope mismatch"
         );
         let key = TaskKey::new(TaskFamily::ResultSettlement, &record.result_identity);
-        let bytes = checkpoint_material_size_on(tx, &key)?.context("selected Result missing")?;
-        material.charge_record(&key, bytes)?;
+        let bytes = material
+            .admit_stored_tx(tx, &scope.agent_id, &key)?
+            .context("selected Result missing")?;
         let task_key = TaskKey::new(TaskFamily::Task, &record.task_id);
         let result_alias_bytes = alias_material_tx(tx, scope, &key)?;
         let task_alias_bytes = alias_material_tx(tx, scope, &task_key)?;

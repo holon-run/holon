@@ -15,6 +15,22 @@ pub(crate) fn register_task_source_metadata_tx(
     ledger: &InputEvidenceBudgetLedger,
     memory: Option<&mut super::super::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<Option<(CommittedTaskDelta, Vec<Arc<BudgetViewGuard>>)>> {
+    let mut material = read_preparation::TaskReadMaterial::new(scope, request, Some(ledger))
+        .with_memory_budget(memory);
+    let delta = register_task_source_metadata_using_material_tx(tx, scope, input, ledger, &mut material)?;
+    Ok(delta.map(|delta| (delta, material.into_guards())))
+}
+
+/// The original Input phase lends its exact remaining allowance and retains
+/// these actual guards. This changes no Task or source qualification.
+pub(in crate::runtime_db) fn register_task_source_metadata_using_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    input: &CommittedInputEvidenceDelta,
+    ledger: &InputEvidenceBudgetLedger,
+    material: &mut read_preparation::TaskReadMaterial<'_>,
+) -> Result<Option<CommittedTaskDelta>> {
+    material.validate_accounting_binding(scope, ledger)?;
     if !input
         .records
         .iter()
@@ -33,21 +49,25 @@ pub(crate) fn register_task_source_metadata_tx(
             "focused Output prune crossed scope"
         );
     }
-    let mut material = read_preparation::TaskReadMaterial::new(scope, request, Some(ledger))
-        .with_memory_budget(memory);
     let Some(mut coverage) = material.read_current_metadata(tx)? else {
         return Ok(None);
     };
     if coverage.output.window.is_none() {
         return Ok(None);
     }
+    // Only the original identity and continuity header are needed here;
+    // no State body or unused fixed capture is read for a metadata-only ACK.
     let identity_size:usize=tx.query_row("SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB))+length(CAST(status AS BLOB))+length(CAST(agent_id AS BLOB)) FROM agent_identities WHERE agent_id=?1),0)",[&scope.agent_id],|row|row.get(0))?;
-    material.charge_ids(
-        identity_size
-            .checked_add(scope.agent_id.len() + 256)
-            .context("Task source scope bytes overflow")?,
-        1,
-    )?;
+    material.charge_writer_material(identity_size.checked_add(scope.agent_id.len())
+        .and_then(|n|n.checked_add(256)).context("Task source scope bytes overflow")?,4,8)?;
+    let identity_nodes:usize=tx.query_row(
+        "SELECT COUNT(*)+COUNT(CASE WHEN typeof(j.key)='text' THEN 1 END) FROM agent_identities i,json_tree(i.payload_json) j WHERE i.agent_id=?1",
+        [&scope.agent_id],|row|row.get(0))?;
+    material.charge_writer_material(0,identity_nodes,8)?;
+    let binding_size:usize=tx.query_row(
+        "SELECT COALESCE(SUM(length(CAST(mode AS BLOB))+COALESCE(length(CAST(seed_id AS BLOB)),0)),0) FROM agent_episode_continuity WHERE agent_id=?1 AND identity_incarnation=?2 AND policy_version=1",
+        params![scope.agent_id,scope.identity_incarnation],|row|row.get(0))?;
+    material.charge_ids(binding_size,3)?;
     maintenance::require_existing_maintenance_scope_tx(tx, scope)?;
     let has_state: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_states WHERE agent_id=?1)",
@@ -118,8 +138,7 @@ pub(crate) fn register_task_source_metadata_tx(
         coverage.owned_metadata_record_count()?,
     )?;
     loader::persist_coverage(tx, scope, &coverage)?;
-    Ok(Some((
-        CommittedTaskDelta {
+    Ok(Some(CommittedTaskDelta {
             scope: scope.clone(),
             base_revision,
             revision: coverage.revision,
@@ -127,7 +146,9 @@ pub(crate) fn register_task_source_metadata_tx(
             records: Vec::new(),
             stop_records: Vec::new(),
             removals: BTreeMap::new(),
-        },
-        material.into_guards(),
-    )))
+        }))
 }
+
+#[cfg(test)]
+#[path = "source_material_tests.rs"]
+mod tests;

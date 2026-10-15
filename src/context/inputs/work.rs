@@ -228,6 +228,7 @@ pub(super) mod tests {
                 is_exhaustive: true,
             },
             latest_results,
+            legacy_delivery_heads: Default::default(),
             observations: records
                 .iter()
                 .map(|r| (r.key.clone(), WorkAvailability::Present))
@@ -247,6 +248,7 @@ pub(super) mod tests {
             },
             record,
             attempt_turn_keys: None,
+            tool_run_report: None,
             created_at: "2026-10-13T00:00:00Z".into(),
             order_sequence: None,
             turn_index: None,

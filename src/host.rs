@@ -1,12 +1,20 @@
 #[path = "host/task_stop_original.rs"]
 mod task_stop_original;
 pub(crate) use task_stop_original::OriginalTaskStopMetadataRead;
+#[path = "host/task_input_followup.rs"]
+mod task_input_followup;
+mod agent_skills_read;
 mod child_monitor_binding;
+mod child_summary_read;
 mod child_task_producer;
 #[cfg(test)]
 #[path = "host/child_task_summaries_read_tests.rs"]
 mod child_task_summaries_read_tests;
 mod cold_scheduling;
+pub(crate) use agent_skills_read::{AgentSkillsReadMaterial, OwnedAgentSkillsRead};
+pub(crate) use child_summary_read::{
+    ChildAgentSummariesReadMaterial, OwnedChildAgentSummariesRead,
+};
 mod command_task_producer;
 mod input_evidence;
 #[path = "host/child_task_spawn.rs"]
@@ -20,6 +28,12 @@ mod task_status_metadata;
 mod task_stop_phases;
 mod task_stop_worktree;
 pub(crate) use task_stop_worktree::TaskStopWorktreeCleanupObserved;
+#[path = "host/context_resources.rs"]
+mod context_resources;
+pub(crate) use context_resources::HostResourceWriteLease;
+pub(crate) use resource_writes::HostResourceProcessChanges;
+#[path = "host/resource_writes.rs"]
+mod resource_writes;
 mod task_stop_supervisor;
 
 use std::{
@@ -346,6 +360,7 @@ pub(crate) struct HostInner {
     mutation_owners: MutationOwnerRegistry,
     input_evidence_budget: crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     external_mutation_tasks: Mutex<Vec<JoinHandle<()>>>,
+    resource_writes: Arc<resource_writes::HostResourceWriteTracker>,
     #[cfg(test)]
     external_publication_fault: AtomicBool,
     runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
@@ -754,12 +769,11 @@ enum InvocationSettlementCursor {
     WorkItem(String),
 }
 
-async fn apply_spawn_model_resolution(
-    runtime: &RuntimeHandle,
+fn spawn_model_override_request(
     resolution: &AgentModelResolution,
-) -> Result<()> {
+) -> Result<Option<(crate::config::ModelRouteRef, Option<String>)>> {
     if resolution.resolution_status == AgentModelResolutionStatus::Inherited {
-        return Ok(());
+        return Ok(None);
     }
     let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
     let model_ref = crate::config::ModelRouteRef::from_legacy_model_ref(
@@ -771,9 +785,29 @@ async fn apply_spawn_model_resolution(
         .and_then(|parameters| parameters.get("reasoning_effort"))
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    runtime
-        .set_model_override(model_ref, reasoning_effort)
-        .await?;
+    Ok(Some((model_ref, reasoning_effort)))
+}
+async fn apply_spawn_model_resolution(
+    runtime: &RuntimeHandle,
+    resolution: &AgentModelResolution,
+) -> Result<()> {
+    if let Some((model, effort)) = spawn_model_override_request(resolution)? {
+        // Bootstrap checkpoint/repair does not own a live Host worker. The
+        // Runtime registers this whole Model request before Provider effects.
+        runtime.set_model_override(model, effort).await?;
+    }
+    Ok(())
+}
+async fn apply_original_child_model_resolution_owned(
+    runtime: &RuntimeHandle,
+    resolution: &AgentModelResolution,
+) -> Result<()> {
+    if let Some((model, effort)) = spawn_model_override_request(resolution)? {
+        // Only the original registered Child producer uses this continuation.
+        runtime
+            .set_model_override_owned(model, effort, None)
+            .await?;
+    }
     Ok(())
 }
 
@@ -936,6 +970,7 @@ impl RuntimeHost {
                 mutation_owners: MutationOwnerRegistry::default(),
                 input_evidence_budget,
                 external_mutation_tasks: Mutex::new(Vec::new()),
+                resource_writes: Arc::new(Default::default()),
                 #[cfg(test)]
                 external_publication_fault: AtomicBool::new(false),
                 runtime_recovery_tx,
@@ -2306,10 +2341,11 @@ impl RuntimeHost {
                 } else {
                     None
                 };
-                Ok(IdentityMutationFacts {
-                    identity: identity.map(Arc::new),
+                IdentityMutationFacts::budgeted_owned(
+                    identity,
                     state,
-                })
+                    &self.inner.input_evidence_budget,
+                )
             })
             .collect()
     }
@@ -2393,10 +2429,11 @@ impl RuntimeHost {
             )
             .await?;
         }
-        crate::runtime::episode_recovery::resolve_episode_recovery(
+        crate::runtime::episode_recovery::resolve_episode_recovery_with_budget(
             &self.inner.runtime_db,
             reservations,
             self.config().recent_episode_candidates,
+            &self.inner.input_evidence_budget,
         )?;
         let known = MutationReservation::validate_group_known(reservations)?;
         let mut notifications = Vec::new();
@@ -2522,6 +2559,7 @@ impl RuntimeHost {
                     "external State scope mismatch"
                 );
                 Ok(KnownCommit::State {
+                    current_reads: None,
                     state: Arc::new(state),
                     episodes: reservation.prepared_episodes_for_state_only_commit()?,
                     input_evidence: reservation.prepared_inputs_for_state_only_commit()?,
@@ -2632,6 +2670,7 @@ impl RuntimeHost {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
                 HostRuntimePhase::Open => {
+                    self.inner.resource_writes.close_new_writers()?;
                     registry.phase = HostRuntimePhase::Closing;
                     let entries = std::mem::take(&mut registry.agents)
                         .into_values()
@@ -2763,6 +2802,12 @@ impl RuntimeHost {
             for agent_id in retired_temporary {
                 registry.temporary_runtimes.remove(&agent_id);
             }
+        }
+        // Every original Runtime producer has joined. Seal the readiness
+        // tracker and wait for detached physical kernels before releasing the
+        // original Host maintenance lease to another Host.
+        if let Some(error) = self.inner.resource_writes.seal_and_drain().await? {
+            mutation_error.get_or_insert(error);
         }
         self.inner
             .runtime_db_maintenance_lock
@@ -3416,10 +3461,7 @@ impl RuntimeHost {
         // do not decode a second full State before its material preflight.
         let mut facts = reservations
             .iter()
-            .map(|_| IdentityMutationFacts {
-                identity: None,
-                state: None,
-            })
+            .map(|_| IdentityMutationFacts::absent())
             .collect::<Vec<_>>();
         let agent_ids = reservations
             .iter()
@@ -3578,42 +3620,134 @@ impl RuntimeHost {
     pub(crate) async fn operator_agent_skills_view(
         &self,
         agent_id: &str,
-    ) -> std::result::Result<crate::types::SkillsRuntimeView, PublicAgentError> {
-        let identity = self.active_agent_identity(agent_id)?;
-        let identity_view =
-            AgentIdentityView::from_record(&identity, &self.config().default_agent_id);
-        let storage = self
-            .agent_storage_read_only(agent_id)
-            .map_err(PublicAgentError::Runtime)?;
-        let state = storage
-            .read_agent()
+    ) -> std::result::Result<OwnedAgentSkillsRead, PublicAgentError> {
+        if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
+            let _identity = runtime
+                .capture_active_identity_read()
+                .await
+                .map_err(|error| match error.downcast::<PublicAgentError>() {
+                    Ok(public) => public,
+                    Err(error) => PublicAgentError::Runtime(error),
+                })?;
+            return runtime
+                .capture_agent_skills_read()
+                .await
+                .map_err(|error| match error.downcast::<PublicAgentError>() {
+                    Ok(public) => public,
+                    Err(error) => PublicAgentError::Runtime(error),
+                });
+        }
+        let limits = self.inner.input_evidence_budget.limits();
+        let mut request = crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+            capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .ok_or_else(|| PublicAgentError::Runtime(anyhow!("skill read limit overflow")))?
+                    .min(64 * 1024 * 1024),
+            )
+            .map_err(|error| PublicAgentError::Runtime(error.into()))?,
+            record_limit: usize::try_from(limits.record_limit.min(65_536))
+                .map_err(|error| PublicAgentError::Runtime(error.into()))?,
+        };
+        let locator = self
+            .runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::scheduling_snapshot::read_cold_resource_locator_tx(
+                    tx,
+                    agent_id,
+                    &request,
+                    &self.inner.input_evidence_budget,
+                )
+            })
             .map_err(PublicAgentError::Runtime)?
-            .unwrap_or_else(|| AgentState::new(agent_id));
-        let agent_home = self.agent_data_dir(agent_id);
-        let workspace_skill_root = state
-            .active_workspace_entry
-            .as_ref()
-            .map(|entry| entry.execution_root.as_path());
-        let config = self.config();
-        let skill_roots = effective_skill_root_registrations(
-            skill_visibility(&identity_view),
-            config.user_home_dir.as_deref(),
-            agent_id,
-            &agent_home,
-            workspace_skill_root,
-        );
-        let mut registry = self.inner.skills_registry.write().await;
-        registry
-            .sync_effective_roots(skill_roots.clone())
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_owned(),
+            })?;
+        match locator.status {
+            AgentRegistryStatus::Active => {}
+            AgentRegistryStatus::Deleting => {
+                return Err(PublicAgentError::Deleting {
+                    agent_id: agent_id.to_owned(),
+                })
+            }
+            AgentRegistryStatus::Deleted => {
+                return Err(PublicAgentError::Deleted {
+                    agent_id: agent_id.to_owned(),
+                })
+            }
+        }
+        request.byte_limit = request
+            .byte_limit
+            .checked_sub(locator.usage.0)
+            .ok_or_else(|| {
+                PublicAgentError::Runtime(anyhow!("ResourceExhausted: skill locator bytes"))
+            })?;
+        request.record_limit = request
+            .record_limit
+            .checked_sub(locator.usage.1)
+            .ok_or_else(|| {
+                PublicAgentError::Runtime(anyhow!("ResourceExhausted: skill locator records"))
+            })?;
+        let scope = locator.scope;
+        let _reservations = self
+            .reserve_mutation_scopes(&[(scope.agent_id.clone(), scope.identity_incarnation)])
+            .await
             .map_err(PublicAgentError::Runtime)?;
-        let mut skills = skills_runtime_view_from_catalog(
-            registry.catalog_for_roots(&skill_roots, None),
-            &skill_roots,
-            &state.active_skills,
+        let published_state = _reservations[0]
+            .capture_ready_snapshot()
+            .map_err(|error| PublicAgentError::Runtime(error.into()))?
+            .map(|root| root.state.clone());
+        let (identity, state, usage, guards) = if let Some(state) = published_state {
+            let (identity, usage, guards) = self
+                .runtime_db()
+                .transaction(|tx| {
+                    crate::runtime_db::scheduling_snapshot::read_cold_resource_identity_tx(
+                        tx,
+                        &scope,
+                        &request,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+                .map_err(PublicAgentError::Runtime)?;
+            (identity, state, usage, guards)
+        } else {
+            let (mut facts, usage, guards) = self
+                .runtime_db()
+                .transaction(|tx| {
+                    crate::runtime_db::scheduling_snapshot::read_cold_resource_scope_tx(
+                        tx,
+                        &scope,
+                        &request,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+                .map_err(PublicAgentError::Runtime)?;
+            let identity = facts.identity.take().ok_or_else(|| {
+                PublicAgentError::Runtime(anyhow!("cold skill read identity missing"))
+            })?;
+            let state = Arc::new(
+                facts
+                    .state
+                    .take()
+                    .unwrap_or_else(|| AgentState::new(agent_id)),
+            );
+            (identity, state, usage, guards)
+        };
+        let prior = (
+            u64::try_from(locator.usage.0.checked_add(usage.0).ok_or_else(|| {
+                PublicAgentError::Runtime(anyhow!("skill identity byte overflow"))
+            })?)
+            .map_err(|error| PublicAgentError::Runtime(error.into()))?,
+            locator.usage.1.checked_add(usage.1).ok_or_else(|| {
+                PublicAgentError::Runtime(anyhow!("skill identity record overflow"))
+            })?,
         );
-        skills.agent_templates_catalog =
-            discover_agent_templates_catalog(config.user_home_dir.as_deref(), &agent_home);
-        Ok(skills)
+        let mut retained_guards = locator.guards;
+        retained_guards.extend(guards);
+        self.cold_agent_skills_from_state(&identity, &state, prior, retained_guards)
+            .map_err(PublicAgentError::Runtime)
     }
 
     pub(crate) async fn search_memory_read_only(
@@ -3737,18 +3871,20 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> std::result::Result<crate::runtime::OwnedAgentSummaryRead, PublicAgentError> {
-        self.active_agent_identity(agent_id)?;
         if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
+            let _identity = runtime
+                .capture_active_identity_read()
+                .await
+                .map_err(|error| match error.downcast::<PublicAgentError>() {
+                    Ok(public) => public,
+                    Err(error) => PublicAgentError::Runtime(error),
+                })?;
             return runtime
                 .agent_summary()
                 .await
                 .map_err(PublicAgentError::Runtime);
         }
         // Storage-backed fallback: build AgentSummary without activating runtime.
-        let identity = self.active_agent_identity(agent_id)?;
-        let storage = self
-            .agent_storage_read_only(agent_id)
-            .map_err(PublicAgentError::Runtime)?;
         let cold_scheduling::HeldColdSchedulingRead {
             identity,
             state,
@@ -3757,8 +3893,10 @@ impl RuntimeHost {
             reservations,
             ..
         } = self
-            .acquire_cold_scheduling_query(&identity, 0)
-            .await
+            .acquire_cold_scheduling_query_by_id(agent_id, 0)
+            .await?;
+        let storage = self
+            .agent_storage_read_only(agent_id)
             .map_err(PublicAgentError::Runtime)?;
         let agent_state = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
         let work_queue = storage
@@ -3849,14 +3987,30 @@ impl RuntimeHost {
             .read_recent_events(100)
             .map_err(PublicAgentError::Runtime)?
             .len();
+        // The same held cold identity/State selects skill roots before any
+        // child await; no helper rereads a second State or activates Runtime.
+        let (skills, skills_material) = self
+            .cold_agent_skills_from_state(
+                &identity,
+                &agent_state,
+                scheduling_material
+                    .material_estimate()
+                    .map_err(PublicAgentError::Runtime)?,
+                Vec::new(),
+            )
+            .map_err(PublicAgentError::Runtime)?
+            .into_parts();
         // Primary facts are frozen before waiting on another agent.
         drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
             .await
             .map_err(PublicAgentError::Runtime)?;
-        let skills = self.operator_agent_skills_view(agent_id).await?;
         let loaded_agents_md = LoadedAgentsMdView::default();
+        let wire_scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: identity.agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        };
         let summary = AgentSummary {
             identity: identity_view,
             lifecycle: AgentLifecycleHint::from_status(agent_id, agent_state.status.clone()),
@@ -3881,19 +4035,24 @@ impl RuntimeHost {
             summary,
             scheduling_material,
             Vec::new(),
-        ))
+            wire_scope,
+            &self.inner.input_evidence_budget,
+        )
+        .with_skills_material(skills_material))
     }
 
     pub(crate) async fn local_agent_lightweight_projection(
         &self,
         agent_id: &str,
     ) -> std::result::Result<LightweightAgentStateProjection, PublicAgentError> {
-        self.active_agent_identity(agent_id)?;
         if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
             return runtime
                 .lightweight_agent_state_projection()
                 .await
-                .map_err(PublicAgentError::Runtime);
+                .map_err(|error| match error.downcast::<PublicAgentError>() {
+                    Ok(public) => public,
+                    Err(error) => PublicAgentError::Runtime(error),
+                });
         }
 
         let identity = self.active_agent_identity(agent_id)?;
@@ -3956,6 +4115,7 @@ impl RuntimeHost {
             work_queue,
             _work_budget: None,
             _scheduling_material: Some(scheduling_material),
+            _ordinary_material: None,
         })
     }
 
@@ -4501,6 +4661,7 @@ impl RuntimeHost {
             work_queue,
             _work_budget: None,
             _scheduling_material: None,
+            _ordinary_material: None,
         };
         crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
         Ok(AgentStateReadProjection {
@@ -5123,12 +5284,12 @@ impl RuntimeHost {
                             (record, bootstrap, relations)
                         },
                     )?;
-                let facts = (0..scope_count)
-                    .map(|_| IdentityMutationFacts {
-                        identity: Some(Arc::new(identity.clone())),
-                        state: None,
-                    })
-                    .collect();
+                let identity_fact = IdentityMutationFacts::budgeted(
+                    Some(&identity),
+                    None,
+                    &self.inner.input_evidence_budget,
+                )?;
+                let facts = (0..scope_count).map(|_| identity_fact.clone()).collect();
                 acknowledged = Some(identity.clone());
                 Ok((identity, facts))
             })
@@ -7191,7 +7352,12 @@ impl RuntimeHost {
             child_runtime
                 .inherit_from_parent_state(&parent_state)
                 .await?;
-            apply_spawn_model_resolution(&child_runtime, &model_resolution).await?;
+            if original_source.is_some() {
+                apply_original_child_model_resolution_owned(&child_runtime, &model_resolution)
+                    .await?;
+            } else {
+                apply_spawn_model_resolution(&child_runtime, &model_resolution).await?;
+            }
             let child_turn_baseline = child_runtime.agent_state().await?.turn_index;
 
             let mut task_detail = json!({
@@ -7230,14 +7396,13 @@ impl RuntimeHost {
                         }),
                     ))
                     .await?;
-                child_runtime
-                    .enter_worktree(
-                        seed.original_cwd.clone(),
-                        seed.original_branch.clone(),
-                        seed.worktree_path.clone(),
-                        seed.worktree_branch.clone(),
-                    )
-                    .await?;
+                if let Some(source) = original_source {
+                    child_runtime
+                        .enter_worktree_for_original_child_spawn(source, &seed)
+                        .await?;
+                } else {
+                    child_runtime.enter_worktree_from_seed(&seed).await?;
+                }
                 task_detail["worktree"] = json!({
                     "worktree_path": seed.worktree_path,
                     "worktree_branch": seed.worktree_branch,
@@ -8979,6 +9144,18 @@ impl RuntimeHostBridge {
             .latest(agent_id)
     }
 
+    pub(crate) async fn try_loaded_owned_child_summaries(
+        &self,
+        parent_agent_id: &str,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+        caller_prior: (u64, usize),
+    ) -> Result<Option<OwnedChildAgentSummariesRead>> {
+        self.host()?
+            .try_loaded_owned_child_summaries(parent_agent_id, ledger, limits, caller_prior)
+            .await
+    }
+
     pub(crate) async fn child_summaries(
         &self,
         parent_agent_id: &str,
@@ -9169,6 +9346,7 @@ impl RuntimeHostBridge {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn deliver_child_followup(
         &self,
         parent_agent_id: &str,
@@ -9215,6 +9393,7 @@ impl RuntimeHostBridge {
         self.enqueue_child_followup(runtime, message).await
     }
 
+    #[cfg(test)]
     async fn enqueue_child_followup(
         &self,
         mut runtime: RuntimeHandle,
@@ -9379,6 +9558,8 @@ mod memory_indexer_retry_tests {
 
 #[cfg(test)]
 mod tests {
+    #[path = "../task_input_followup_tests.rs"]
+    mod original_task_input_followup_tests;
     #[path = "agent_summary_scheduling_tests.rs"]
     mod agent_summary_scheduling_tests;
     #[path = "callback_discovery_tests.rs"]
@@ -14822,6 +15003,13 @@ mod tests {
                     .and_then(|value| value.as_array())
                     .is_some_and(|ids| ids.iter().any(|value| value == "task-recover-child"))
         }));
+        task_recovery_audit_tests::assert_published(
+            &restarted,
+            &runtime,
+            "supervised_child_task_monitor_reattached",
+            "task-recover-child",
+        )
+        .unwrap();
         assert!(!events.iter().any(|event| {
             event.kind == "task_interrupted_on_restart"
                 && event.data.get("id").and_then(|value| value.as_str())
@@ -21569,6 +21757,8 @@ mod tests {
         );
         host.shutdown().await.unwrap();
     }
+    #[path = "task_recovery_audit_tests.rs"]
+    mod task_recovery_audit_tests;
     #[path = "task_stop_phase_tests.rs"]
     mod task_stop_phase_tests;
     #[path = "task_stop_supervisor_tests.rs"]

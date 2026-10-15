@@ -190,3 +190,39 @@ fn cold_preparation_native_state_budget_and_retired_scope_precede_corrupt_decode
     assert_eq!(ledger.report()?.observed_bytes, baseline);
     Ok(())
 }
+
+#[tokio::test]
+async fn cold_summary_first_locator_native_budget_precedes_identity_decoder() -> Result<()> {
+    let (_home, host) = test_host();
+    let identity = host.ensure_default_agent_identity()?;
+    let baseline = host.inner.input_evidence_budget.report()?.observed_bytes;
+    let unexpected = serde_json::to_string(&vec![0; 9000])?;
+    host.runtime_db().transaction(|tx| {
+        tx.execute("UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation','bad-incarnation','$.unexpected_native',json(?2)) WHERE agent_id=?1",
+            rusqlite::params![identity.agent_id, unexpected])?;
+        Ok(())
+    })?;
+    let error = host
+        .local_agent_summary(&identity.agent_id)
+        .await
+        .err()
+        .context("first locator must reject before identity decoder")?;
+    assert!(
+        matches!(error,PublicAgentError::Runtime(ref cause)
+        if matches!(cause.downcast_ref::<SchedulingSnapshotError>(),
+          Some(SchedulingSnapshotError::ResourceExhausted("cold resource identity locator")))),
+        "{error:?}"
+    );
+    assert_eq!(
+        host.inner.input_evidence_budget.report()?.observed_bytes,
+        baseline
+    );
+    assert!(host.inner.runtimes.read().await.agents.is_empty());
+    assert!(host
+        .runtime_db()
+        .agent_states()
+        .latest(&identity.agent_id)?
+        .is_none());
+    host.shutdown().await?;
+    Ok(())
+}

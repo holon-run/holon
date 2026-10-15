@@ -7843,17 +7843,20 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
         .await
         .unwrap();
 
-    let registration = runtime
-        .register_wait_for_outcome(
+    runtime.refresh_context_resources().await.unwrap();
+    let resource_observer = runtime.pause_resource_observer_for_test().await;
+    let registration =
+        crate::diagnostics::resource_io::deny_readers(runtime.register_wait_for_outcome(
             "default",
             None,
             WaitForWakeKind::TaskResult,
             Some(terminal_task.id.clone()),
             "waiting for terminal task handoff".into(),
             None,
-        )
+        ))
         .await
         .unwrap();
+    drop(resource_observer);
     let WaitForRegistrationOutcome::TaskResultQueued {
         task_id,
         wait_condition_id,
@@ -15926,18 +15929,27 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .capture_work_read(&crate::runtime::work_reads::live_work_request())
         .await
         .unwrap();
+    let target = runtime
+        .wait_resolution_plan_target(&message, &observed_work.work)
+        .unwrap()
+        .unwrap();
+    let observed_plan = runtime
+        .prepare_observed_work_plan(&target.id, target.revision)
+        .await
+        .unwrap();
     let planned_wait_resolution = runtime
-        .wait_resolution_transition_for_message(&message, &observed_work.work)
+        .wait_resolution_transition_for_message(&message, &observed_work.work, Some(&observed_plan))
         .unwrap()
         .expect("triggered task wait should plan claim-time resolution");
     assert!(
         planned_wait_resolution.work_item.is_some(),
         "claim-time wait resolution should clear the matching WorkItem blocker"
     );
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
+    let poll = crate::diagnostics::resource_io::deny_readers(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll(),
+    )
+    .await
+    .unwrap();
     let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
         panic!("canonical task result should be claimed");
     };

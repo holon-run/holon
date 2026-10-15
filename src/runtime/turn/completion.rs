@@ -77,7 +77,7 @@ impl RuntimeHandle {
                     tool_results,
                     &tool_result_envelopes[index],
                 )?;
-                self.record_work_item_completion_warning(
+                self.record_owned_work_item_completion_warning(
                     work_item_id,
                     "missing_completion_report",
                     "CompleteWorkItem succeeded without nearby preceding same-round operator-facing report text; no canonical completion report was promoted.",

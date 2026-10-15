@@ -9,11 +9,13 @@ use super::resident_input_evidence::{CapturedInputEvidence, ResidentInputEvidenc
 use super::resident_scheduling::{CapturedScheduling, ResidentSchedulingDomain};
 use super::resident_task::{CapturedTasks, ResidentTaskDomain};
 use super::resident_work::{CapturedWork, ResidentWorkDomain};
-use crate::types::{AgentState, ContextEpisodeRecord};
+use crate::types::{AgentIdentityRecord, AgentState, ContextEpisodeRecord};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentSnapshot {
     pub token: PublicationToken,
+    pub identity: Option<Arc<AgentIdentityRecord>>,
+    pub(crate) _identity_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     pub state: Arc<AgentState>,
     // None is an unprepared domain, never a ready empty collection.
     pub episodes: Option<Arc<ResidentEpisodes>>,
@@ -21,6 +23,7 @@ pub(crate) struct AgentSnapshot {
     pub work: Option<Arc<ResidentWorkDomain>>,
     pub tasks: Option<Arc<ResidentTaskDomain>>,
     pub scheduling: Option<Arc<ResidentSchedulingDomain>>,
+    pub current_reads: Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>>,
 }
 
 /// Only the selected immutable records survive request preparation. This value
@@ -38,6 +41,32 @@ pub(crate) struct CapturedAgentContext {
 }
 
 impl AgentSnapshot {
+    pub(crate) fn active_identity(&self) -> Result<&Arc<AgentIdentityRecord>> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("actual identity header requires preparation"))?;
+        ensure!(
+            identity.agent_id == self.state.id
+                && identity.incarnation == self.token.identity_incarnation,
+            "published identity belongs to another incarnation"
+        );
+        match identity.status {
+            crate::types::AgentRegistryStatus::Active => Ok(identity),
+            crate::types::AgentRegistryStatus::Deleting => {
+                Err(crate::host::PublicAgentError::Deleting {
+                    agent_id: identity.agent_id.clone(),
+                }
+                .into())
+            }
+            crate::types::AgentRegistryStatus::Deleted => {
+                Err(crate::host::PublicAgentError::Deleted {
+                    agent_id: identity.agent_id.clone(),
+                }
+                .into())
+            }
+        }
+    }
     pub(crate) fn capture_context(&self, episode_limit: usize) -> Result<CapturedAgentContext> {
         let episodes = self
             .episodes
@@ -250,10 +279,13 @@ mod tests {
         let old_record = Arc::downgrade(&episodes.get("a").unwrap());
         let domain = Arc::downgrade(&episodes);
         let root = Arc::new(AgentSnapshot {
+            identity: None,
+            _identity_budget: None,
             input_evidence: None,
             work: None,
             tasks: None,
             scheduling: None,
+            current_reads: None,
             token: PublicationToken {
                 identity_incarnation: 2,
                 owner_epoch: 1,

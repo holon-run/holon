@@ -553,7 +553,7 @@ fn registration(f: &Fixture, id: &str) -> WaitTransitionCommand {
 }
 #[test]
 fn bound_queue_wait_and_memory_finish_share_the_original_whole_receipt() -> Result<()> {
-    let f = Fixture::new(true)?;
+    let f = Fixture::new(false)?;
     let dequeued = QueueEntryRecord {
         message_id: f.source.id.clone(),
         agent_id: f.scope.agent_id.clone(),
@@ -562,9 +562,59 @@ fn bound_queue_wait_and_memory_finish_share_the_original_whole_receipt() -> Resu
         created_at: f.source.created_at,
         updated_at: f.at,
     };
-    // The fixture already owns the real canonical Start/assignment. Seed the
-    // corresponding admitted queue checkpoint; this test exercises settlement.
-    f.db.transaction(|tx| upsert_queue_entry_tx(tx, &dequeued))?;
+    // Qualify the original source's Queue through real Admit/Claim ACKs before
+    // Started installs its unfinished dispatch gate. No synthetic Turn is made.
+    let mut queued = dequeued.clone();
+    queued.status = QueueEntryStatus::Queued;
+    for (operation, mutation, nonce, pending) in [
+        (
+            QueueOperation::Admit,
+            QueueMutation::Upsert(queued),
+            "bound-seed-admit",
+            1,
+        ),
+        (
+            QueueOperation::Claim,
+            QueueMutation::Consume(dequeued.clone()),
+            "bound-seed-claim",
+            0,
+        ),
+    ] {
+        let before = state(&f)?;
+        let mut after = before.clone();
+        after.pending = pending;
+        let command = PreparedInputTransition::queue(
+            f.scope.clone(),
+            nonce.into(),
+            f.at,
+            PreparedQueueTransition::new(QueueTransitionCommand {
+                agent_id: f.scope.agent_id.clone(),
+                operation,
+                mutation,
+                scheduler_claim_work_item: None,
+                agent_state: Some(AgentStateMutation {
+                    expected: Some(Box::new(before)),
+                    record: Box::new(after),
+                }),
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: true,
+                fault: None,
+                brief_evidence: Vec::new(),
+            }),
+        )?;
+        assert!(matches!(
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&command)?,
+            InputMutationExecution::Committed { .. }
+        ));
+    }
+    let start = prepare_start_command(&f.db, &f.scope, &f.start, f.at)?;
+    assert_eq!(start.descriptor(), &f.original_start);
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&start)?;
     let before = state(&f)?;
     let mut after = before.clone();
     after.current_run_id = None;
@@ -1162,6 +1212,121 @@ fn nonempty_final_work_observations_are_metered_and_released() -> Result<()> {
     Ok(())
 }
 
+/// Use the real closed Work/M2 accounting APIs, then discard this readback TX.
+/// The complete whole-ACK negative below still verifies original business rollback.
+fn assert_work_phase_fits_before_two_source_memory_amplification(
+    f: &Fixture,
+    request: &WorkDomainLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<()> {
+    let baseline = ledger.report()?.owned;
+    let mut connection = f.db.connection()?;
+    let tx = connection.transaction()?;
+    {
+        let intent = DispatchMemoryIntent::Finish {
+            binding: DispatchMemoryBinding::from_start(&f.start),
+            frozen: f.frozen("large-work-finish"),
+        };
+        let mut budget =
+            DispatchMemoryTransactionBudget::prepare_tx(&tx, &intent, request, ledger)?;
+        let initial = budget.material_usage_for_test();
+        let proof = crate::runtime_db::work_snapshot::WorkWriteMaterial::new(
+            &f.scope,
+            request,
+            ledger,
+            Some(&mut budget),
+        )?
+        .prepare_tx(&tx, &f.scope, &Default::default(), false)?;
+        let preflight_request = budget.work_request(request)?;
+        let preflight =
+            crate::runtime_db::work_snapshot::preflight_work_write_snapshot_with_shared_phase_tx(
+                &tx,
+                &proof,
+                &preflight_request,
+                Some(&mut budget),
+            )?;
+        let after_preflight = budget.material_usage_for_test();
+        budget.before_finalizer_tx(&tx)?;
+        let final_request = budget.work_request(request)?;
+        let mut material = crate::runtime_db::work_snapshot::WorkWriteMaterial::for_readback(
+            &proof,
+            &final_request,
+            Some(&mut budget),
+        )?
+        .context("actual Work readback material")?;
+        let final_state = material.final_state_tx(&tx, &proof)?;
+        let (facts, selected) = material.register_tx(
+            &tx,
+            &proof,
+            &Default::default(),
+            &Default::default(),
+            &final_state,
+            &final_request,
+            true,
+        )?;
+        let selected = selected.context("real final Work capture")?;
+        for id in [
+            "work:dispatch-memory",
+            "work:dispatch-memory-amplification-peer",
+        ] {
+            assert!(selected.records.iter().any(|r| matches!(&r.record,
+                crate::runtime::resident_work::CanonicalWorkRecord::Work(work)
+                    if work.id == id && work.objective.len() == 512 * 1024)));
+        }
+        let (native_bytes, native_records) = selected.records.iter().try_fold(
+            (0usize, 0usize),
+            |(bytes, count), r| -> Result<_> {
+                let (size, nodes) = r.record.resident_material_estimate()?;
+                Ok((
+                    bytes
+                        .checked_add(size.max(r.resident_bytes))
+                        .context("derived bytes")?,
+                    count.checked_add(nodes).context("derived records")?,
+                ))
+            },
+        )?;
+        let derived_bytes = native_bytes
+            .checked_add(usize::try_from(
+                selected.encoded_selected_metadata_bytes()?,
+            )?)
+            .and_then(|n| {
+                native_records
+                    .checked_mul(256)
+                    .and_then(|m| n.checked_add(m))
+            })
+            .and_then(|n| n.checked_mul(48))
+            .context("original M2 derived copies")?;
+        let before_derived = budget.material_usage_for_test();
+        assert!(
+            derived_bytes > request.byte_limit,
+            "two real sources must exceed M2 even before retained material: {derived_bytes}"
+        );
+        eprintln!("M2 actual two-source material: initial={initial:?} preflight_retained={preflight:?} after_preflight={after_preflight:?} work_final_remaining=({}, {}) before_derived={before_derived:?} derived_bytes={derived_bytes} cap={}",
+            final_request.byte_limit, final_request.record_limit, request.byte_limit);
+        let error = budget
+            .capture_final_work(&selected)
+            .err()
+            .context("actual derived charge must reject")?;
+        assert!(
+            matches!(
+                error.downcast_ref::<DispatchMemoryError>(),
+                Some(DispatchMemoryError::ResourceExhausted)
+            ),
+            "{error:#}"
+        );
+        assert_eq!(
+            budget.material_usage_for_test(),
+            before_derived,
+            "rejected M2 charge must not mutate its allowance"
+        );
+        drop((facts, selected, proof, budget));
+    }
+    tx.rollback()?;
+    drop(connection);
+    assert_eq!(ledger.report()?.owned, baseline);
+    Ok(())
+}
+
 #[test]
 fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -> Result<()> {
     let f = Fixture::new(true)?;
@@ -1173,11 +1338,57 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
             &objective,
             false,
         )?)?;
+    // One source admits no useful gap between the Work /4 read allowance and
+    // M2's derived copies. Two actual qualified Open sources make that gap
+    // explicit: their 48-copy payload alone exceeds 48MiB.
+    let mut peer =
+        f.db.work_items()
+            .latest("work:dispatch-memory")?
+            .context("original Work")?;
+    peer.id = "work:dispatch-memory-amplification-peer".into();
+    peer.revision = 1;
+    let peer = PreparedInputTransition::work(
+        f.scope.clone(),
+        "large-current-work-peer".into(),
+        f.at,
+        WorkItemTransitionCommand {
+            agent_id: f.scope.agent_id.clone(),
+            mutation: WorkItemMutation::Insert { record: peer },
+            agent_state: None,
+            brief_evidence: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+            notify_scheduler: true,
+            fault: None,
+        },
+        Default::default(),
+        false,
+    )?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&peer)?;
     // Real owned Open Work exists and is qualified. Keep the old memory small,
     // so only the new derived snapshot/planner growth exercises this limit.
-    let mut focused = state(&f)?;
+    let original = state(&f)?;
+    let mut focused = original.clone();
     focused.current_work_item_id = Some("work:dispatch-memory".into());
-    f.db.agent_states().upsert_for_fixture(&focused)?;
+    let focus = PreparedInputTransition::posture(
+        f.scope.clone(),
+        "large-current-work-focus".into(),
+        f.at,
+        AgentPostureTransitionCommand {
+            agent_id: f.scope.agent_id.clone(),
+            expected_incarnation: Some(f.scope.identity_incarnation),
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(original)),
+                record: Box::new(focused),
+            },
+            audit_events: Vec::new(),
+            fault: None,
+        },
+        None,
+    )?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&focus)?;
     let before = state(&f)?;
     let checkpoint = f.read()?;
     let count = receipt_count(&f)?;
@@ -1185,10 +1396,20 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
         Some(&f.scope.agent_id),
         &f.start.key.actual_dispatch_turn_id,
     )?;
-    let ledger = memory_ledger()?;
+    // This case targets Work/M2's explicit phase allowance. Its companion
+    // CurrentRead phase uses the real default 64MiB policy; the separate
+    // history-pressure helper intentionally leaves only 32MiB + 1 there.
+    let ledger = std::sync::Arc::new(
+        crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            crate::config::StateMemoryLimits::default(),
+        )?,
+    );
     let prepared = terminal(&f, "large-work-finish")?;
     let mut request = memory_request();
-    request.byte_limit = 16 * 1024 * 1024;
+    // The actual D7 Work preproof/preflight/final read phase must fit first;
+    // this smaller-than-runtime allowance targets M2's additional derived memory.
+    request.byte_limit = 48 * 1024 * 1024;
+    assert_work_phase_fits_before_two_source_memory_amplification(&f, &request, &ledger)?;
     let error =
         f.db.transitions_in_scope(&f.scope)
             .commit_prepared_transition_with_work_request_and_memory_budget(
@@ -1201,12 +1422,23 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
                     record_limit: 65_536,
                     byte_limit: 64 * 1024 * 1024,
                 },
-            )
-            .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<DispatchMemoryError>(),
-        Some(DispatchMemoryError::ResourceExhausted)
-    ));
+            );
+    let error = match error {
+        Err(error) => error,
+        Ok(value) => {
+            drop(value);
+            anyhow::bail!(
+                "expected typed M2 ResourceExhausted from two Work sources; actual ACK unexpectedly succeeded"
+            );
+        }
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<DispatchMemoryError>(),
+            Some(DispatchMemoryError::ResourceExhausted)
+        ),
+        "{error:#}"
+    );
     assert_eq!(state(&f)?, before);
     assert_eq!(f.read()?, checkpoint);
     assert_eq!(
@@ -1247,3 +1479,6 @@ fn new_work_memory_amplification_is_preflighted_before_planner_and_whole_ack() -
     assert_eq!(ledger.report()?.owned, Default::default());
     Ok(())
 }
+
+#[path = "dispatch_memory_current_read_tests.rs"]
+mod current_read_tests;

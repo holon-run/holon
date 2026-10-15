@@ -55,6 +55,7 @@ pub(crate) use scope_inventory::pending_task_stop_host_scope_inventory_tx;
 #[cfg(test)]
 pub(crate) use scope_inventory::pending_task_stop_scope_inventory_tx;
 mod phase;
+pub(in crate::runtime_db) use phase::OriginalTaskStopAuditView;
 mod readonly_recovery;
 mod sparse_recovery;
 pub(crate) use phase::{

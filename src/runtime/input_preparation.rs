@@ -37,6 +37,7 @@ pub(crate) struct PreparedInputDomains {
     pub episodes: Arc<ResidentEpisodes>,
     pub inputs: Arc<ResidentInputEvidence>,
     pub scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
+    pub current_reads: Arc<super::current_read_facts::ResidentCurrentReadFacts>,
     pub queue: RuntimeQueue,
     /// Retain the observation with the prepared queue until core installs a
     /// Current view. This guard owns no body and never grants queue authority.
@@ -89,6 +90,11 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         identity_incarnation: reservation.identity_incarnation(),
     };
     validate_ready_root(reservation, published, &scope)?;
+    let event_roles = reservation.current_event_roles(
+        &scope,
+        budget,
+        (request.byte_limit, request.record_limit),
+    )?;
     let scheduling_ready = published
         .scheduling
         .as_ref()
@@ -112,7 +118,49 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         }
         Err(error) => return Err(error),
     };
-    if scheduling_ready {
+    let current_ready = if let Some(current) = &published.current_reads {
+        ensure!(
+            current.scope() == &scope,
+            "published CurrentRead scope differs"
+        );
+        current.validate_state(&published.state)?;
+        current.validate_identity(
+            published
+                .identity
+                .as_deref()
+                .context("published actual identity requires preparation")?,
+        )?;
+        let coverage = current.coverage();
+        let event_ready = event_roles
+            .as_ref()
+            .and_then(|roles| roles.birth_after())
+            .is_none_or(|after| {
+                coverage.event_query.birth_cursor.is_some_and(|cursor| {
+                    after <= cursor
+                        && (after == cursor
+                            || coverage
+                                .event_query
+                                .birth_after
+                                .is_some_and(|cut| cut <= after))
+                })
+            });
+        event_ready
+            && event_roles
+                .as_ref()
+                .and_then(|roles| roles.window_limits())
+                .is_none_or(|(body, headers)| {
+                    coverage.event_body_limit >= body
+                        && coverage.event_header_limit >= headers
+                        && (coverage.events_exhaustive || coverage.events.len() >= headers)
+                })
+            && coverage.queue_complete
+            && coverage.event_body_limit >= super::current_read_facts::SCHEDULER_EVENT_BODY_WINDOW
+            && (coverage.events_exhaustive
+                || coverage.events.len() >= super::current_read_facts::SUMMARY_EVENT_COUNT_WINDOW)
+    } else {
+        false
+    };
+    if scheduling_ready && current_ready {
         if let Some(inputs) = &published.input_evidence {
             ensure!(inputs.belongs_to(&scope), "published input scope differs");
             match inputs.capture_for_request(request) {
@@ -134,7 +182,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
     }
     let prepared = db.transaction(|tx| {
         if cause == InputPreparationCause::ExistingAdmissionCleanup {
-            crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx(
+            crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_and_event_roles_tx(
                 tx,
                 &scope,
                 &published.state,
@@ -142,9 +190,10 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
                 recent_episode_limit,
                 budget,
                 scheduling,
+                event_roles.as_ref(),
             )
         } else {
-            crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
+            crate::runtime_db::input_preparation::prepare_input_with_scheduling_and_event_roles_tx(
                 tx,
                 &scope,
                 &published.state,
@@ -152,6 +201,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
                 recent_episode_limit,
                 budget,
                 scheduling,
+                event_roles.as_ref(),
             )
         }
     })?;
@@ -191,6 +241,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         episodes: Arc::new(prepared.episodes),
         inputs,
         scheduling: prepared.scheduling,
+        current_reads: prepared.current_reads,
         queue,
         queue_budget_view,
     }))
@@ -218,3 +269,40 @@ fn validate_ready_root(
 #[cfg(test)]
 #[path = "input_preparation_tests.rs"]
 mod tests;
+
+/// Test-only callback keeps private Runtime ownership and observation lifetime
+/// inside Runtime; DB fixtures borrow only the original scope and ledger.
+#[cfg(test)]
+impl super::RuntimeHandle {
+    pub(crate) async fn with_original_input_current_fixture_for_test<T>(
+        agent: &str,
+        read: impl FnOnce(
+            &RuntimeDb,
+            &InputEvidenceScope,
+            &AgentState,
+            &InputEvidenceBudgetLedger,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        let home = tempfile::tempdir()?;
+        let runtime = Self::new_isolated_resource_fixture(
+            agent,
+            home.path().into(),
+            super::tests::support::context_config(),
+        )?;
+        let _pause = runtime.pause_resource_observer_for_test().await;
+        let reservation = runtime.inner.mutation_owner.reserve().await?;
+        let root = reservation
+            .capture_ready_snapshot()?
+            .context("actual joint fixture root missing")?;
+        let scope = InputEvidenceScope {
+            agent_id: root.state.id.clone(),
+            identity_incarnation: root.token.identity_incarnation,
+        };
+        read(
+            runtime.runtime_db(),
+            &scope,
+            &root.state,
+            &runtime.inner.input_evidence_budget,
+        )
+    }
+}

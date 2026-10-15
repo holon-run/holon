@@ -30,11 +30,25 @@ use crate::{
     },
 };
 
+mod owned_preparation;
+pub(crate) use owned_preparation::{read_owned_work_item_source_tx, WorkItemSourceRead};
 mod completion;
 mod completion_writes;
+mod input_recovery;
+mod work_inputs;
+pub(in crate::runtime_db) use work_inputs::prepare_committed_work_inputs_tx;
+pub(crate) use work_inputs::{
+    prepare_bootstrap_work_owning_input_snapshot_tx, prepare_work_owning_input_snapshot_tx,
+    prepare_work_with_owning_inputs_tx, refresh_work_delivery_sources_tx,
+};
 mod loader;
+pub(in crate::runtime_db) use input_recovery::prepare_original_work_for_input_recovery_tx;
 mod qualification;
+pub(in crate::runtime_db) mod read_preparation;
 mod relations;
+pub(crate) use read_preparation::{
+    reserve_work_selector_material, work_selector_material_estimate,
+};
 mod seed_wait_cleanup;
 #[cfg(test)]
 mod tests;
@@ -44,12 +58,12 @@ pub(crate) use completion::completion_source_observations_tx;
 pub(crate) use completion_writes::{
     finish_work_completion_write_tx, prepare_work_completion_write_tx,
 };
-pub(crate) use loader::{
-    current_recovery_owning_input_roots, prepare_original_work_recovery_snapshot_tx,
-    prepare_work_domain_snapshot_tx, validate_work_domain_observation_tx,
-};
 #[cfg(test)]
 pub(crate) use loader::{load_work_domain_snapshot_tx, preflight_work_domain_snapshot_tx};
+pub(crate) use loader::{
+    prepare_original_work_recovery_snapshot_tx, prepare_work_domain_snapshot_tx,
+    prepare_work_domain_snapshot_with_budget_tx, validate_work_domain_observation_tx,
+};
 pub(super) use qualification::{
     capture_work_domain_seed_if_ready_tx, capture_work_domain_upgrade_tx,
 };
@@ -58,15 +72,18 @@ pub(crate) use seed_wait_cleanup::{
     register_unbound_work_wait_cleanup_tx,
 };
 pub(crate) use writes::{
-    preflight_work_write_snapshot_tx, prepare_existing_work_wait_cleanup_tx,
-    prepare_original_work_write_tx, prepare_work_write_tx, register_existing_work_wait_cleanup_tx,
-    register_work_writes_tx, register_work_writes_with_view_tx, work_wait_write_keys_tx,
-    WorkWriteProof,
+    preflight_work_write_snapshot_tx, preflight_work_write_snapshot_with_memory_tx,
+    prepare_existing_work_wait_cleanup_tx, prepare_original_work_write_tx, prepare_work_write_tx,
+    register_existing_work_wait_cleanup_tx, register_work_writes_tx,
+    register_work_writes_with_view_tx, work_wait_write_keys_tx, WorkWriteProof,
+};
+pub(in crate::runtime_db) use writes::{
+    preflight_work_write_snapshot_with_shared_phase_tx, WorkWriteMaterial,
 };
 #[cfg(test)]
 pub(crate) use writes::{
-    prepare_work_wait_cleanup_tx, register_work_pruned_tx, register_work_result_writes_tx,
-    register_work_wait_cleanup_tx, CommittedWorkFacts,
+    prepare_work_wait_cleanup_tx, prepare_work_write_with_budget_tx, register_work_pruned_tx,
+    register_work_result_writes_tx, register_work_wait_cleanup_tx, CommittedWorkFacts,
 };
 pub(super) const WORK_DOMAIN_SCHEMA: &str = include_str!("work_snapshot/schema.sql");
 #[cfg(test)]
@@ -114,6 +131,10 @@ pub(crate) struct WorkCurrentSnapshot {
     pub resident: ResidentWorkDomain,
     /// D3 owning roots, prepared by the caller in this same original transaction.
     pub owning_input_roots: BTreeSet<InputEvidenceKey>,
+    /// Actual temporary/derived allocations retained through caller consumption.
+    pub material_views: Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    /// Same-phase Work cost already covered by the retained actual guards.
+    pub material_usage: (usize, usize),
 }
 #[derive(Debug)]
 pub(crate) enum WorkBootstrapSnapshot {
@@ -160,7 +181,7 @@ impl StoredRecord {
             key: self.record.key(),
             revision,
             content_digest: self.digest(),
-            resident_bytes: serde_json::to_vec(&self.record)?.len(),
+            resident_bytes: self.record.resident_material_estimate()?.0,
             record: self.record.clone(),
         });
         result.validate(scope)?;

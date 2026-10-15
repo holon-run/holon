@@ -57,10 +57,19 @@ impl TaskStopCoverage {
         selected: &BTreeSet<TaskKey>,
         pending: bool,
     ) -> Result<BTreeSet<u64>> {
+        self.selected_sequences_observed(selected, pending, &mut TaskCapturePhase::unobserved())
+    }
+    pub(super) fn selected_sequences_observed(
+        &self,
+        selected: &BTreeSet<TaskKey>,
+        pending: bool,
+        phase: &mut TaskCapturePhase<'_>,
+    ) -> Result<BTreeSet<u64>> {
         if pending && !self.pending_complete {
             return Err(TaskReadError::IncompleteStops.into());
         }
         let mut seqs = if pending {
+            phase.json(&self.pending_effect_seqs, 1)?;
             self.pending_effect_seqs.clone()
         } else {
             BTreeSet::new()
@@ -69,6 +78,7 @@ impl TaskStopCoverage {
             // Absent/Pruned Task roots have no generation and no head observation.
             if let Some(head) = self.heads.get(&key.id) {
                 if let Some(locator) = &head.head {
+                    phase.slots(1, 1)?;
                     seqs.insert(locator.effect_seq);
                 }
             }

@@ -3,6 +3,9 @@
 //! Prepared commands own their payload exactly once. A replay carries the
 //! original outcome only; current installation facts come from a fresh resolver.
 use super::*;
+#[path = "prepared_terminal_state_audit.rs"]
+mod terminal_state_audit;
+use std::sync::Arc;
 #[path = "prepared_child_monitor_binding.rs"]
 mod child_binding;
 #[path = "prepared_child_task_terminal.rs"]
@@ -27,15 +30,25 @@ pub(crate) use timer_writes::{PreparedTimerTransition, TimerMutationOutcome};
 pub(crate) use trigger_writes::{
     ExternalTriggerMutationOutcome, PreparedExternalTriggerTransition,
 };
+#[path = "prepared_current_reads.rs"]
+mod current_reads;
+#[path = "prepared_input_native_birth.rs"]
+mod native_birth;
 #[path = "prepared_task_stop.rs"]
 mod task_stop;
 #[path = "prepared_task_stop_phase.rs"]
 mod task_stop_phase;
 #[path = "prepared_input_task_writes.rs"]
 mod task_writes;
+#[path = "prepared_workspace_input.rs"]
+mod workspace_input;
 pub(crate) use task_stop_phase::worktree_receipt_exists_tx;
+#[path = "prepared_runtime_audit.rs"]
+mod runtime_audit;
 #[path = "prepared_task_status_metadata.rs"]
 mod task_status_metadata;
+#[path = "prepared_task_stop_current_reads.rs"]
+mod task_stop_current_reads;
 #[path = "prepared_task_stop_result.rs"]
 mod task_stop_result;
 
@@ -44,6 +57,8 @@ mod task_stop_result;
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct PreparedQueueTransition {
     pub command: QueueTransitionCommand,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_terminal_state_audit: Option<AuditEvent>,
     pub execution_protocol: ExecutionProtocolTransition,
     pub wait_transition: Option<QueueWaitTransition>,
     pub task_expectation: Option<TaskExpectation>,
@@ -60,6 +75,7 @@ impl PreparedQueueTransition {
     pub(crate) fn new(command: QueueTransitionCommand) -> Self {
         Self {
             command,
+            original_terminal_state_audit: None,
             execution_protocol: Default::default(),
             wait_transition: None,
             task_expectation: None,
@@ -171,6 +187,7 @@ impl PreparedTaskTransition {
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum InputTransitionCommand {
+    RuntimeAudit(runtime_audit::PreparedRuntimeAuditCommand),
     Posture {
         command: AgentPostureTransitionCommand,
         started_turn: Option<TurnRecord>,
@@ -209,7 +226,7 @@ enum InputTransitionCommand {
 impl InputTransitionCommand {
     fn family(&self) -> InputMutationFamily {
         match self {
-            Self::Posture { .. } => InputMutationFamily::AgentPosture,
+            Self::RuntimeAudit(_) | Self::Posture { .. } => InputMutationFamily::AgentPosture,
             Self::Queue(_) => InputMutationFamily::Queue,
             Self::QueueHeadNoProgress { .. } => InputMutationFamily::QueueHeadNoProgress,
             Self::Terminal(_) => InputMutationFamily::Terminal,
@@ -227,6 +244,7 @@ impl InputTransitionCommand {
     }
     fn agent_id(&self) -> &str {
         match self {
+            Self::RuntimeAudit(command) => command.agent_id(),
             Self::Posture { command, .. } => &command.agent_id,
             Self::Queue(command) => &command.command.agent_id,
             Self::QueueHeadNoProgress { command, .. } => &command.agent_id,
@@ -256,8 +274,292 @@ pub(crate) struct PreparedInputTransition {
     ended_memory: Option<crate::runtime::ended_dispatch::EndedDispatchAuthorization>,
     original_dispatch_claim: Option<crate::runtime::started_dispatch::OriginalDispatchClaim>,
     auto_base_descriptor: Option<PreparedInputMutation>,
+    current_read_source: Option<Arc<crate::runtime::current_read_facts::ResidentCurrentReadFacts>>,
+    current_event_roles: Option<crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
+    work_resource_material: Option<crate::runtime::WorkResourceMaterialLoan>,
+    original_workspace_material: Option<Arc<crate::runtime::OriginalWorkspaceRequestMaterial>>,
+    original_sleep_override_material: Option<Arc<crate::runtime::OriginalSleepOverrideMaterial>>,
+    original_task_input_child_material: Option<Arc<crate::runtime::OriginalTaskInputChildMaterial>>,
 }
 impl PreparedInputTransition {
+    pub(crate) fn original_task_input_child_material(
+        &self,
+    ) -> Option<&Arc<crate::runtime::OriginalTaskInputChildMaterial>> {
+        self.original_task_input_child_material.as_ref()
+    }
+    pub(crate) fn with_original_task_input_child_material(
+        mut self,
+        material: Arc<crate::runtime::OriginalTaskInputChildMaterial>,
+        epoch: u64,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        let original = match self.command.as_ref() {
+            InputTransitionCommand::Queue(queue) => {
+                let command = &queue.command;
+                matches!(command.operation, QueueOperation::Admit | QueueOperation::Discard)
+                    && command.agent_state.is_some()
+                    && command.scheduler_claim_work_item.is_none()
+                    && command.transcript_entries.is_empty() && command.turn_record.is_none()
+                    && command.brief_evidence.is_empty() && command.message_evidence.len() == 1
+                    && command.message_evidence.iter().all(|message| {
+                        material.validate_message(message).is_ok()
+                            && matches!(&command.mutation, QueueMutation::Upsert(entry)
+                                if entry.message_id == message.id && entry.agent_id == message.agent_id
+                                && matches!(entry.status, crate::types::QueueEntryStatus::Queued | crate::types::QueueEntryStatus::Aborted))
+                    })
+            }
+            _ => false,
+        };
+        anyhow::ensure!(
+            original
+                && self.descriptor.scopes().len() == 1
+                && self.original_task_input_child_material.is_none()
+                && self.original_workspace_material.is_none()
+                && self.original_sleep_override_material.is_none()
+                && self.work_resource_material.is_none(),
+            "TaskInput material requires its original closed child follow-up admission"
+        );
+        material.validate_binding(&self.primary_scope, epoch, ledger)?;
+        self.original_task_input_child_material = Some(material);
+        Ok(self)
+    }
+    pub(crate) fn original_sleep_override_material(
+        &self,
+    ) -> Option<&Arc<crate::runtime::OriginalSleepOverrideMaterial>> {
+        self.original_sleep_override_material.as_ref()
+    }
+    pub(crate) fn with_original_sleep_override_material(
+        mut self,
+        material: Arc<crate::runtime::OriginalSleepOverrideMaterial>,
+        epoch: u64,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        let original = match self.command.as_ref() {
+            InputTransitionCommand::Queue(queue) => {
+                let command = &queue.command;
+                command.operation == QueueOperation::Admit
+                    && command.agent_state.is_some()
+                    && command.scheduler_claim_work_item.is_none()
+                    && command.transcript_entries.is_empty()
+                    && command.turn_record.is_none()
+                    && command.brief_evidence.is_empty()
+                    && command.message_evidence.len() == 1
+                    && command.message_evidence.iter().all(|message| {
+                        message.kind == crate::types::MessageKind::SystemTick
+                            && message.delivery_surface == Some(crate::types::MessageDeliverySurface::RuntimeSystem)
+                            && message.admission_context == Some(crate::types::AdmissionContext::RuntimeOwned)
+                            && matches!(&message.origin, crate::types::MessageOrigin::System { subsystem } if subsystem == "work_queue")
+                            && matches!(&command.mutation, QueueMutation::Upsert(entry) if entry.message_id == message.id && entry.status == crate::types::QueueEntryStatus::Queued)
+                    })
+            }
+            _ => false,
+        };
+        anyhow::ensure!(
+            original
+                && self.original_sleep_override_material.is_none()
+                && self.original_workspace_material.is_none()
+                && self.memory.is_none()
+                && self.work_resource_material.is_none()
+                && self.descriptor.scopes().len() == 1,
+            "Sleep material requires its original single-scope WorkQueue Tick admission"
+        );
+        material.validate_binding(&self.primary_scope, epoch, ledger)?;
+        self.original_sleep_override_material = Some(material);
+        Ok(self)
+    }
+    /// Accounting only; it grants no business, State, body or filesystem right.
+    pub(crate) fn with_original_workspace_request_material(
+        mut self,
+        material: Arc<crate::runtime::OriginalWorkspaceRequestMaterial>,
+        owner_epoch: u64,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.original_workspace_material.is_none()
+                && matches!(
+                    self.command.as_ref(),
+                    InputTransitionCommand::Posture {
+                        started_turn: None,
+                        ..
+                    }
+                )
+                && self.memory.is_none(),
+            "Workspace request material requires its original standalone State command"
+        );
+        material.validate_binding(&self.primary_scope, owner_epoch, ledger)?;
+        self.original_workspace_material = Some(material);
+        Ok(self)
+    }
+    /// The original Worktree Task metadata caller supplies accounting only.
+    /// Original Task/OCC, Source and State rights remain checked by its kernel.
+    pub(crate) fn with_original_task_workspace_request_material(
+        mut self,
+        material: Arc<crate::runtime::OriginalWorkspaceRequestMaterial>,
+        owner_epoch: u64,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        let ordinary_metadata = match self.command.as_ref() {
+            InputTransitionCommand::Task(task) => {
+                task.child.is_none()
+                    && task.stop_intent.is_none()
+                    && task.original_command_terminal.is_none()
+                    && task.original_child_terminal.is_none()
+                    && task.original_child_binding.is_none()
+                    && task.command.agent_deletion.is_none()
+                    && task.command.task_result_settlement.is_none()
+                    && task.command.queue_entry.is_none()
+                    && task.command.message_evidence.is_empty()
+                    && task.command.work_items.is_empty()
+                    && task.command.expected_wait_conditions.is_empty()
+                    && task.command.wait_conditions.is_empty()
+                    && matches!(
+                        task.command.task.kind,
+                        crate::types::TaskKind::WorktreeSubagentTask
+                            | crate::types::TaskKind::ChildAgentTask
+                    )
+            }
+            _ => false,
+        };
+        anyhow::ensure!(
+            self.original_workspace_material.is_none()
+                && self.memory.is_none()
+                && ordinary_metadata,
+            "Workspace Task material requires its original closed metadata command"
+        );
+        material.validate_binding(&self.primary_scope, owner_epoch, ledger)?;
+        self.original_workspace_material = Some(material);
+        Ok(self)
+    }
+    pub(crate) fn original_workspace_request_material(
+        &self,
+    ) -> Option<&Arc<crate::runtime::OriginalWorkspaceRequestMaterial>> {
+        self.original_workspace_material.as_ref()
+    }
+    /// Read selection from the same original held owner; excluded from business digest.
+    pub(crate) fn with_current_event_roles(
+        mut self,
+        roles: crate::runtime::current_event_queries::CurrentEventRoleSnapshot,
+        owner_epoch: u64,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.current_event_roles.is_none(),
+            "Event roles already supplied"
+        );
+        roles.validate(&self.primary_scope, owner_epoch, ledger)?;
+        self.current_event_roles = Some(roles);
+        Ok(self)
+    }
+    pub(super) fn current_event_request(
+        &self,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<(
+        crate::runtime::current_read_facts::CurrentReadRequest,
+        (usize, usize),
+    )> {
+        let limits = ledger.limits();
+        let mut request = crate::runtime::current_read_facts::CurrentReadRequest::current(
+            usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("Event role Current allowance overflow")?,
+            )?,
+            usize::try_from(limits.record_limit)?,
+        );
+        let prior = match &self.current_event_roles {
+            Some(roles) => roles.prepare_request(&self.primary_scope, ledger, &mut request)?,
+            None => (0, 0),
+        };
+        Ok((request, prior))
+    }
+    pub(crate) fn original_work_material_prior(
+        &self,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        self.work_resource_material
+            .as_ref()
+            .map(|loan| loan.validate_accounting(&self.primary_scope, ledger))
+            .transpose()
+            .map(|prior| prior.unwrap_or((0, 0)))
+    }
+    pub(crate) fn original_work_result_material(
+        &self,
+    ) -> Option<&Arc<crate::runtime::WorkItemMutationMaterial>> {
+        self.work_resource_material
+            .as_ref()
+            .and_then(|loan| loan.original_result_material())
+    }
+    pub(crate) fn with_work_resource_material(
+        mut self,
+        loan: crate::runtime::WorkResourceMaterialLoan,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.work_resource_material.is_none()
+                && matches!(
+                    self.command.as_ref(),
+                    InputTransitionCommand::Work { .. }
+                        | InputTransitionCommand::Focus { .. }
+                        | InputTransitionCommand::Wait { .. }
+                        | InputTransitionCommand::Queue(_)
+                ),
+            "Resource material requires one original Work-bearing command"
+        );
+        self.work_resource_material = Some(loan);
+        Ok(self)
+    }
+    pub(crate) fn accepts_work_input_selection(&self) -> bool {
+        matches!(
+            self.command.as_ref(),
+            InputTransitionCommand::Task(_)
+                | InputTransitionCommand::Timer(_)
+                | InputTransitionCommand::Work { .. }
+                | InputTransitionCommand::Focus { .. }
+                | InputTransitionCommand::Wait { .. }
+                | InputTransitionCommand::Queue(_)
+        ) || (matches!(self.command.as_ref(), InputTransitionCommand::Terminal(_))
+            && matches!(
+                self.memory,
+                Some(crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Finish { .. })
+            ))
+    }
+    pub(crate) fn with_work_input_selection(
+        mut self,
+        inputs: &crate::runtime::resident_input_evidence::ResidentInputEvidence,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.accepts_work_input_selection(),
+            "original command has no Work owner boundary"
+        );
+        self.work_resource_material = Some(
+            crate::runtime::WorkResourceMaterialLoan::with_input_selection(
+                self.work_resource_material.take(),
+                inputs,
+                &self.primary_scope,
+                ledger,
+                limits,
+            )?,
+        );
+        Ok(self)
+    }
+    /// A read witness only: it narrows an original write, never changes its digest.
+    pub(crate) fn with_current_read_source(
+        mut self,
+        source: Arc<crate::runtime::current_read_facts::ResidentCurrentReadFacts>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            source.scope() == &self.primary_scope && self.current_read_source.is_none(),
+            "CurrentRead source differs from original command scope"
+        );
+        if !current_reads::accepts_state_source(&self)? {
+            // Do not retain an unused old source across a record-writing phase.
+            return Ok(self);
+        }
+        self.current_read_source = Some(source);
+        Ok(self)
+    }
     pub(crate) fn original_task_cleanup(&self) -> Result<OriginalTaskCleanupView<'_>> {
         let InputTransitionCommand::Task(task) = self.command.as_ref() else {
             anyhow::bail!("original Task cleanup requires a Task command");
@@ -537,6 +839,12 @@ impl PreparedInputTransition {
             ended_memory: None,
             original_dispatch_claim: None,
             auto_base_descriptor: None,
+            current_read_source: None,
+            current_event_roles: None,
+            work_resource_material: None,
+            original_workspace_material: None,
+            original_sleep_override_material: None,
+            original_task_input_child_material: None,
         })
     }
     pub(crate) fn with_original_dispatch_claim(
@@ -891,6 +1199,14 @@ impl PreparedInputTransition {
     /// whose original deletion result belongs to the same complete receipt.
     pub(crate) fn with_scope_group(mut self, scopes: Vec<InputEvidenceScope>) -> Result<Self> {
         anyhow::ensure!(
+            !matches!(
+                self.command.as_ref(),
+                InputTransitionCommand::RuntimeAudit(_)
+            ) || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
+            "Runtime Audit requires only its original scope"
+        );
+
+        anyhow::ensure!(
             self.task_status_metadata_scope().is_none()
                 || scopes.as_slice() == std::slice::from_ref(&self.primary_scope),
             "Control metadata group must contain only its original scope"
@@ -1004,6 +1320,9 @@ impl PreparedInputTransition {
         };
         agent(self.command.agent_id(), "command")?;
         match self.command.as_ref() {
+            InputTransitionCommand::RuntimeAudit(command) => {
+                command.validate(&self.primary_scope)?
+            }
             InputTransitionCommand::Timer(command) => command.validate(&self.primary_scope)?,
             InputTransitionCommand::ExternalTrigger(command) => {
                 command.validate(&self.primary_scope)?
@@ -1182,6 +1501,7 @@ impl PreparedInputTransition {
                 state(&command.agent_state)?;
             }
             InputTransitionCommand::Queue(queue) => {
+                terminal_state_audit::validate_queue(queue)?;
                 let command = &queue.command;
                 agent(
                     &queue_mutation_record(&command.mutation).agent_id,
@@ -1443,7 +1763,8 @@ impl PreparedInputTransition {
             }
             // Turn, Tool, Continuation and canonical evidence already reject
             // existing foreign owners in their original validators.
-            InputTransitionCommand::Posture { .. }
+            InputTransitionCommand::RuntimeAudit(_)
+            | InputTransitionCommand::Posture { .. }
             | InputTransitionCommand::Terminal(_)
             | InputTransitionCommand::TaskResult(_)
             | InputTransitionCommand::TaskStatusMetadata(_)
@@ -1709,6 +2030,23 @@ impl RuntimeTransitionRepository<'_> {
             &timer_writes::default_request(work_request),
         )
     }
+    pub(crate) fn commit_prepared_transition_with_input_query_source(
+        &self,
+        prepared: &PreparedInputTransition,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        input_source: &std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>,
+    ) -> Result<InputMutationExecution<TransitionCommit>> {
+        self.commit_prepared_transition_with_domain_requests_and_input_source(
+            prepared,
+            work_request,
+            memory_ledger,
+            task_request,
+            &timer_writes::default_request(work_request),
+            Some(input_source),
+        )
+    }
     pub(crate) fn commit_prepared_transition_with_domain_requests(
         &self,
         prepared: &PreparedInputTransition,
@@ -1716,6 +2054,26 @@ impl RuntimeTransitionRepository<'_> {
         memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
         scheduling_request: &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest,
+    ) -> Result<InputMutationExecution<TransitionCommit>> {
+        self.commit_prepared_transition_with_domain_requests_and_input_source(
+            prepared,
+            work_request,
+            memory_ledger,
+            task_request,
+            scheduling_request,
+            None,
+        )
+    }
+    fn commit_prepared_transition_with_domain_requests_and_input_source(
+        &self,
+        prepared: &PreparedInputTransition,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        scheduling_request: &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest,
+        input_source: Option<
+            &std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>,
+        >,
     ) -> Result<InputMutationExecution<TransitionCommit>> {
         let scope = self
             .input_scope
@@ -1728,6 +2086,9 @@ impl RuntimeTransitionRepository<'_> {
             "prepared input transition scope differs from its repository"
         );
         self.db.transaction(|tx| {
+            if let InputTransitionCommand::RuntimeAudit(command)=prepared.command.as_ref() {
+                return runtime_audit::commit_tx(tx,prepared,command,memory_ledger);
+            }
             if let InputTransitionCommand::ExternalTrigger(command)=prepared.command.as_ref() {
                 return trigger_writes::commit_tx(tx,prepared,command,scheduling_request,memory_ledger);
             }
@@ -1749,8 +2110,10 @@ impl RuntimeTransitionRepository<'_> {
                 return task_stop_phase::commit_progress_tx(tx, prepared, command, task_request, memory_ledger);
             }
             if let InputTransitionCommand::TaskStopContinuation(command) = prepared.command.as_ref() {
-                return task_stop_result::commit_result_tx(tx, prepared, command, work_request, task_request, memory_ledger);
+                return task_stop_result::commit_result_tx(tx, prepared, command, work_request, task_request, memory_ledger, input_source);
             }
+            let mut first_input=workspace_input::OriginalInputWriterMaterial::prepare(prepared,scope,memory_ledger,work_request,task_request,input_source)?;
+            let mut original_scope_facts=None;
             let child_entry=if prepared.original_child_terminal().is_some() {
                 Some(child_terminal::preflight_current_entry_tx(tx,prepared,task_request,memory_ledger)?)
             } else if prepared.original_child_monitor_binding().is_some() {
@@ -1762,10 +2125,16 @@ impl RuntimeTransitionRepository<'_> {
                 // An already accepted exact receipt may be replayed during
                 // retirement. A missing receipt still needs typed admission.
                 if reserved_scope == scope {
-                    crate::runtime_db::input_evidence_snapshot::require_original_input_recovery_scope(
-                        tx,
-                        reserved_scope,
-                    )?;
+                    if let Some(first)=first_input.as_mut() {
+                        let facts=first.input.scope_facts_tx(tx)?;
+                        anyhow::ensure!(facts.identity.as_ref().is_some_and(|identity|
+                            identity.agent_id==scope.agent_id && identity.incarnation==scope.identity_incarnation
+                            && matches!(identity.status,crate::types::AgentRegistryStatus::Active|crate::types::AgentRegistryStatus::Deleting)),
+                            "original input recovery requires its current non-deleted incarnation");
+                        original_scope_facts=Some(facts);
+                    } else {
+                        crate::runtime_db::input_evidence_snapshot::require_original_input_recovery_scope(tx,reserved_scope)?;
+                    }
                 } else if prepared.task_stop_child_scope() == Some(reserved_scope) {
                     let InputTransitionCommand::Task(task) = prepared.command.as_ref() else { unreachable!() };
                     task_stop::validate_child_readonly_tx(tx, task.stop_intent.as_ref().expect("Stop child scope"))?;
@@ -1783,12 +2152,23 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             prepared.validate_primary_namespace()?;
-            let result_receipt_guard=if matches!(prepared.command.as_ref(),InputTransitionCommand::Task(_) | InputTransitionCommand::TaskResult(_) | InputTransitionCommand::Timer(_)) {
+            let result_receipt_guard=if first_input.is_none() && matches!(prepared.command.as_ref(),InputTransitionCommand::Task(_) | InputTransitionCommand::TaskResult(_) | InputTransitionCommand::Timer(_)) {
                 Some(super::prepared_task_result::receipt_budget_tx(tx,&prepared.descriptor,scope,task_request,memory_ledger)?)
             } else {None};
+            if let Some(first)=first_input.as_mut() {first.input.original_receipt_material_tx(tx,&prepared.descriptor)?;}
             if let Some(receipt) = lookup_input_mutation_receipt_tx(tx, &prepared.descriptor)? {
-                return Ok(InputMutationExecution::Replayed { receipt,
-                    _material_budget_views:result_receipt_guard.into_iter().collect() });
+                let mut views:Vec<_>=result_receipt_guard.into_iter().collect();
+                if let Some(first)=first_input {views.extend(first.input.into_guards());}
+                return Ok(InputMutationExecution::Replayed { receipt,_material_budget_views:views });
+            }
+            if let Some(child)=prepared.original_task_input_child_material() {
+                let identity=original_scope_facts.as_ref()
+                    .and_then(|facts|facts.identity.as_ref())
+                    .context("TaskInput child lacks its actual scoped identity")?;
+                // The closed follow-up already owns its request. Recheck the
+                // actual same-TX parent/task association before Memory or SQL;
+                // an exact receipt above keeps its original replay authority.
+                child.validate_identity(identity)?;
             }
             // Exact replay above is legal after later dispatches. A new claim
             // or StartedTurn must first finish the prior actual phase.
@@ -1814,8 +2194,9 @@ impl RuntimeTransitionRepository<'_> {
             }
             prepared.validate_primary_targets_tx(tx)?;
             let mut memory_budget=prepared.memory.as_ref().map(|memory|
-                crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget::prepare_tx(
-                    tx,memory,work_request,memory_ledger)).transpose()?;
+                crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget::prepare_with_original_input_tx(
+                    tx,memory,work_request,memory_ledger,prepared.work_resource_material.as_ref(),
+                    first_input.as_ref().map(|first|&first.input))).transpose()?;
             if let Some(authorization) = &prepared.ended_memory {
                 let (bytes, records) = authorization.proof_material_tx(tx)?;
                 memory_budget.as_mut().context("ended memory omitted budget")?
@@ -1831,9 +2212,10 @@ impl RuntimeTransitionRepository<'_> {
                 claim.validate_posture_tx(tx, command, turn)?;
             }
             prepared.validate_memory_ending_tx(tx)?;
-            let facts =
-                crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
-                    .scope_facts()?;
+            let facts=match original_scope_facts.take() {
+                Some(facts)=>facts,
+                None=>crate::runtime_db::context_inputs::ContextDurableRead::new(tx,&scope.agent_id).scope_facts()?,
+            };
             let deleting = facts.identity.as_ref().is_some_and(|identity| {
                 identity.status == crate::types::AgentRegistryStatus::Deleting
             });
@@ -1842,13 +2224,46 @@ impl RuntimeTransitionRepository<'_> {
                     identity.status == crate::types::AgentRegistryStatus::Active),
                     "new TaskStop requires original Active identity");
             }
-            let scheduling_transaction = timer_writes::prepare_tx(tx,prepared,scope,scheduling_request,
+            // NoMemory family phases have no global Memory counter. Their
+            // first decoder borrows only the same Input phase's true remainder.
+            let shared_nomemory=first_input.is_some() && memory_budget.is_none();
+            let scheduling_policy=if shared_nomemory && matches!(prepared.command.as_ref(),
+                InputTransitionCommand::Timer(_)|InputTransitionCommand::Queue(_)) {
+                let first=first_input.as_mut().unwrap();
+                // Scheduling freezes its original target key before creating
+                // its family proof. Admit those exact borrowed IDs first.
+                let id=match prepared.command.as_ref() {
+                    InputTransitionCommand::Timer(timer)=>Some(timer.record().id.as_str()),
+                    InputTransitionCommand::Queue(queue)=>queue.timer_wake_claim.as_ref().map(|claim|claim.timer_id.as_str()),
+                    _=>None,
+                };
+                if let Some(id)=id {
+                    first.input.observe_projected(u64::try_from(id.len().checked_add(256)
+                        .and_then(|n|n.checked_mul(8)).context("Scheduling original key material overflow")?)?,8)?;
+                }
+                Some(workspace_input::scheduling_request(&mut first.input,scheduling_request,(0,0))?)
+            } else {None};
+            let scheduling_transaction = timer_writes::prepare_tx(tx,prepared,scope,scheduling_policy.as_ref().unwrap_or(scheduling_request),
                 memory_ledger,memory_budget.as_mut())?;
+            if shared_nomemory {
+                if let Some(scheduling)=&scheduling_transaction {
+                    first_input.as_mut().unwrap().input.observe_original_writer_prior(scheduling.input_writer_material(tx,scope,memory_ledger)?)?;
+                }
+            }
+            let task_policy=if shared_nomemory && !matches!(prepared.command.as_ref(),
+                InputTransitionCommand::Posture {..}|InputTransitionCommand::Terminal(_)|InputTransitionCommand::Timer(_)|InputTransitionCommand::QueueHeadNoProgress {..}) {
+                Some(workspace_input::task_request(&mut first_input.as_mut().unwrap().input,task_request)?)
+            } else {None};
             let mut task_transaction = if let Some(entry)=child_entry {
                 task_writes::prepare_child_task_transaction_tx(tx,prepared,scope,deleting,task_request,memory_ledger,memory_budget.as_mut(),entry)?
             } else {
-                task_writes::prepare_task_transaction_tx(tx,prepared,scope,deleting,task_request,memory_ledger,memory_budget.as_mut())?
+                task_writes::prepare_task_transaction_tx(tx,prepared,scope,deleting,task_policy.as_ref().unwrap_or(task_request),memory_ledger,memory_budget.as_mut())?
             };
+            if shared_nomemory {
+                if let Some(tasks)=&task_transaction {
+                    first_input.as_mut().unwrap().input.observe_original_writer_prior(tasks.input_writer_material(scope,memory_ledger)?)?;
+                }
+            }
             if prepared.original_command_terminal().is_some() {
                 let InputTransitionCommand::Task(command)=prepared.command.as_ref() else {unreachable!()};
                 task_transaction.as_mut().context("Command terminal omitted W1 proof")?
@@ -1876,8 +2291,23 @@ impl RuntimeTransitionRepository<'_> {
                 } else { None }
             } else { None };
             let mut inserted_stop = None;
-            let work_proof = prepared.prepare_work_proof_tx(tx, scope, deleting, work_request,
+            let resource_prior=prepared.work_resource_material.as_ref()
+                .map(|loan|loan.validate_accounting(scope,memory_ledger)).transpose()?.unwrap_or((0,0));
+            let work_policy=if shared_nomemory && matches!(prepared.command.as_ref(),
+                InputTransitionCommand::Task(_)|InputTransitionCommand::Timer(_)|InputTransitionCommand::Work {..}
+                |InputTransitionCommand::Focus {..}|InputTransitionCommand::Wait {..}|InputTransitionCommand::Queue(_)) {
+                Some(workspace_input::work_request(&mut first_input.as_mut().unwrap().input,scope,work_request,resource_prior)?)
+            } else {None};
+            let work_proof = prepared.prepare_work_proof_tx(tx, scope, deleting,work_policy.as_ref().unwrap_or(work_request),
                 memory_ledger, memory_budget.as_mut(),scheduling_transaction.as_ref())?;
+            if shared_nomemory {
+                if let Some(work)=&work_proof {
+                    first_input.as_mut().unwrap().input.observe_original_writer_prior(
+                        workspace_input::increment(work.input_writer_material(scope,memory_ledger)?,resource_prior)?)?;
+                }
+            }
+            anyhow::ensure!(!prepared.work_resource_material.as_ref().is_some_and(|loan|loan.has_original_resource()) || work_proof.is_some(),
+                "original Resource loan omitted its actual Work proof");
             let producer_input = match child_terminal::prepare_input_view_tx(tx,prepared,
                 task_transaction.as_ref().map(|task|task.task_write_proof()))? {
                 Some(view)=>Some(view),None=>command_terminal::prepare_input_view_tx(tx,prepared,
@@ -1904,22 +2334,59 @@ impl RuntimeTransitionRepository<'_> {
                     Some(crate::runtime_db::dispatch_memory::prepare_dispatch_memory_finish_tx(tx,binding,frozen)?),
                 _ => None,
             };
+            let mut current_read_transaction = if let Some(state) = facts.state.as_ref().filter(|_| facts.identity.is_some()) {
+                Some(match first_input.as_ref() {
+                    Some(first)=>current_reads::prepare_with_material_limits_tx(tx,prepared,scope,state,memory_ledger,
+                        finish_memory.as_ref(),Some(first.current_limits(memory_budget.as_ref())?))?,
+                    None=>current_reads::prepare_tx(tx,prepared,scope,state,memory_ledger,finish_memory.as_ref())?,
+                })
+            } else { None };
+            let task_tool_before = if input_source.is_some() {
+                task_transaction.as_ref().map(|tasks|tasks.input_writer_material(scope,memory_ledger))
+                    .transpose()?.unwrap_or((0,0))
+            } else {(0,0)};
+            let has_first_input=first_input.is_some();
+            let mut input_birth = native_birth::prepare_tx(tx, prepared, scope, memory_ledger, work_request, input_source,
+                work_proof.as_ref(), task_transaction.as_ref(), scheduling_transaction.as_ref(),
+                current_read_transaction.as_ref(), memory_budget.as_mut(),first_input.take())?;
             let child_source_phase=if prepared.original_child_terminal().is_some() {
                 Some(task_transaction.as_mut().context("child Source omitted enclosing Task proof")?
                     .apply_original_child_source_tx(tx,prepared,memory_ledger,memory_budget.as_mut())?)
             } else {None};
+            let (current_tool_usage, task_tool_increment) = if input_source.is_some() {
+                let current = current_read_transaction.as_ref()
+                    .map(|current|current.input_writer_material(tx)?.validate_accounting(scope,memory_ledger))
+                    .transpose()?.unwrap_or((0,0));
+                let task = task_transaction.as_ref().map(|tasks|tasks.input_writer_material(scope,memory_ledger))
+                    .transpose()?.unwrap_or((0,0));
+                (current, (task.0.checked_sub(task_tool_before.0).context("original Task writer bytes retired")?,
+                    task.1.checked_sub(task_tool_before.1).context("original Task writer nodes retired")?))
+            } else {((0,0),(0,0))};
+            if shared_nomemory {
+                if let Some(current)=current_read_transaction.as_mut() {
+                    input_birth.as_mut().context("original Current lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material|current.narrow_original_remaining(tx,material.remaining_material_limits()?))?;
+                }
+            }
+            let mut current_admitted_after_business=current_tool_usage;
+            let (mut value, mut result) = if let InputTransitionCommand::Timer(timer) = prepared.command.as_ref() {
+                timer.execute_with_current_read_tx(tx,self.db,scope,work_request,task_request,memory_ledger,
+                    memory_budget.as_mut(),current_read_transaction.as_mut())?
+            } else {
+                let mut execute = |input_tool_writer: Option<&dyn crate::runtime_db::input_evidence_snapshot::tool_writer::OriginalToolInputWriter>| -> Result<_> {
             let repository = RuntimeTransitionRepository {
                 db: self.db,
                 input_scope: Some(scope.clone()),
                 cleanup_input: cleanup.as_ref(),
+                input_tool_writer,
             };
-            let (mut value, mut result) = match prepared.command.as_ref() {
-                InputTransitionCommand::ExternalTrigger(_) | InputTransitionCommand::TaskStatusMetadata(_) | InputTransitionCommand::TaskStopProgress(_) | InputTransitionCommand::TaskStopContinuation(_) => unreachable!("focused metadata phase dispatched above"),
+            Ok(match prepared.command.as_ref() {
+                InputTransitionCommand::RuntimeAudit(_) | InputTransitionCommand::ExternalTrigger(_) | InputTransitionCommand::TaskStatusMetadata(_) | InputTransitionCommand::TaskStopProgress(_) | InputTransitionCommand::TaskStopContinuation(_) => unreachable!("focused metadata phase dispatched above"),
                 InputTransitionCommand::Posture {
                     command,
                     started_turn,
                 } => (
-                    repository.commit_agent_posture_tx(tx, command, started_turn.as_ref())?,
+                    repository.commit_agent_posture_with_current_read_tx(tx, command, started_turn.as_ref(), current_read_transaction.as_mut())?,
                     InputMutationResult::Transition,
                 ),
                 InputTransitionCommand::Terminal(command) => {
@@ -1930,10 +2397,10 @@ impl RuntimeTransitionRepository<'_> {
                             effects: Box::new(PostCommitEffects { fault: command.fault, ..Default::default() }),
                             ..Default::default()
                         }
-                    } else { repository.commit_turn_terminal_tx(tx, command)? };
+                    } else { repository.commit_turn_terminal_with_current_read_tx(tx, command, current_read_transaction.as_mut())? };
                     (commit, InputMutationResult::Transition)
                 },
-                InputTransitionCommand::Timer(timer) => timer.execute_tx(tx,self.db,scope,work_request,task_request,memory_ledger,memory_budget.as_mut())?,
+                InputTransitionCommand::Timer(_) => unreachable!("Timer executes before the short Tool writer borrow"),
                 InputTransitionCommand::TaskResult(_) => {
                     let ack=task_transaction.as_mut().context("TaskResult omitted its original proof")?
                         .execute_result()?;
@@ -1946,10 +2413,10 @@ impl RuntimeTransitionRepository<'_> {
                 InputTransitionCommand::Task(task) => {
                     let pending=task_transaction.as_mut().and_then(|tasks|tasks.take_result());
                     let existing_binding=prepared.original_child_monitor_binding().map(|_|child_binding::existing_write_proof_tx(tx,prepared,task_transaction.as_ref().context("child binding omitted Task proof")?.task_write_proof())).transpose()?;
-                    let (mut value, deletion) = repository.commit_task_at_with_task_results_tx(tx, &task.command,
+                    let (mut value, deletion) = repository.commit_task_at_with_task_results_with_current_read_tx(tx, &task.command,
                         &task.execution_protocol, task.synchronize_execution_protocol,
                         prepared.descriptor.prepared_at(), task.child.as_ref().map(|child| child.deletion_id.as_str()),
-                        pending,task_transaction.as_ref().and_then(|tasks|tasks.cleanup()),stop_proof.as_ref(),existing_binding.as_ref())?;
+                        pending,task_transaction.as_ref().and_then(|tasks|tasks.cleanup()),stop_proof.as_ref(),existing_binding.as_ref(), current_read_transaction.as_mut())?;
                     if let Some(deletion) = &deletion {
                         let child = task.child.as_ref().context("Task deletion omitted original scope")?;
                         let actual_identity = task_child_identity_tx(tx, &child.scope)?;
@@ -1976,20 +2443,20 @@ impl RuntimeTransitionRepository<'_> {
                     (value, result)
                 }
                 InputTransitionCommand::Work { command, execution_protocol, synchronize_execution_protocol } => (
-                    repository.commit_work_item_tx(tx, command, execution_protocol, *synchronize_execution_protocol)?,
+                    repository.commit_work_item_with_current_read_tx(tx, command, execution_protocol, *synchronize_execution_protocol, current_read_transaction.as_mut())?,
                     InputMutationResult::Transition,
                 ),
                 InputTransitionCommand::Focus { command, execution_protocol, synchronize_execution_protocol, completion_tool_execution } => (
-                    repository.commit_work_item_focus_tx(tx, command, execution_protocol,
-                        *synchronize_execution_protocol, completion_tool_execution.as_ref())?,
+                    repository.commit_work_item_focus_with_current_read_tx(tx, command, execution_protocol,
+                        *synchronize_execution_protocol, completion_tool_execution.as_ref(), current_read_transaction.as_mut())?,
                     InputMutationResult::Transition,
                 ),
                 InputTransitionCommand::Wait { command, execution_protocol, task_expectation } => (
-                    repository.commit_wait_tx(tx, command, execution_protocol, task_expectation.as_ref())?,
+                    repository.commit_wait_with_current_read_tx(tx, command, execution_protocol, task_expectation.as_ref(), current_read_transaction.as_mut())?,
                     InputMutationResult::Transition,
                 ),
                 InputTransitionCommand::Queue(queue) => (
-                    repository.commit_queue_transaction_full_with_task_results_tx(
+                    repository.commit_queue_transaction_full_with_task_results_with_current_read_tx(
                         tx,
                         &queue.command,
                         &queue.execution_protocol,
@@ -2003,8 +2470,7 @@ impl RuntimeTransitionRepository<'_> {
                         DeliverySynchronization::Required,
                         queue.timer_wake_claim.as_ref(),
                         queue.task_result_settlement.as_ref(),
-                        task_transaction.as_mut().and_then(|tasks| tasks.take_result()),
-                    )?,
+                        task_transaction.as_mut().and_then(|tasks| tasks.take_result()), current_read_transaction.as_mut())?,
                     InputMutationResult::Transition,
                 ),
                 InputTransitionCommand::QueueHeadNoProgress {
@@ -2012,12 +2478,11 @@ impl RuntimeTransitionRepository<'_> {
                     prepared_at,
                     audit_event_id,
                 } => {
-                    let original = repository.commit_queue_head_no_progress_tx(
+                    let original = repository.commit_queue_head_no_progress_with_current_read_tx(
                         tx,
                         command,
                         *prepared_at,
-                        audit_event_id,
-                    )?;
+                        audit_event_id, current_read_transaction.as_mut())?;
                     match original {
                         Some(original) => (
                             original.commit,
@@ -2031,31 +2496,88 @@ impl RuntimeTransitionRepository<'_> {
                         ),
                     }
                 }
+            })
+                };
+                if input_source.is_some() {
+                    if let Some(proof) = input_birth.as_mut() {
+                        let (outcome,noops,admitted_current) = proof.with_input_phase(tx,memory_ledger,memory_budget.as_mut(),|material| {
+                            material.observe_original_writer_prior(task_tool_increment)?;
+                            let writer = crate::runtime_db::input_evidence_snapshot::tool_writer::InputToolWriter::new(tx,material,current_tool_usage);
+                            native_birth::reserve_original_tools(prepared,&writer)?;
+                            let outcome = execute(Some(&writer))?;
+                            let current=writer.admitted_current_material();
+                            Ok((outcome,writer.take_original_noop_readbacks(),current))
+                        })?;
+                        proof.retain_original_tool_noops(tx,noops)?;
+                        current_admitted_after_business=admitted_current;
+                        outcome
+                    } else { execute(None)? }
+                } else { execute(None)? }
             };
+            if shared_nomemory {
+                if let Some(current)=current_read_transaction.as_ref() {
+                    let observed=current.input_writer_material(tx)?;
+                    input_birth.as_mut().context("original Current lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material|material.observe_current_prior(
+                            &observed.after_admitted(current_admitted_after_business)?))?;
+                    current_admitted_after_business=observed.validate_accounting(scope,memory_ledger)?;
+                }
+            }
             // Business SQL and its exact count/State epilogue are complete.
             // Qualify only the actual final Work/Wait/Frame footprint and actual
             // D3 Result writes, once, before the whole-transaction receipt.
-            let actual_work = prepared.actual_work_keys(&value.effects);
             if let Some(budget)=&mut memory_budget { budget.before_finalizer_tx(tx)?; }
-            let final_request=memory_budget.as_ref().map(|budget|budget.work_request(work_request))
-                .transpose()?.unwrap_or_else(||work_request.clone());
+            let final_request=if shared_nomemory {
+                if let Some(work)=&work_proof {
+                    input_birth.as_mut().context("original Work lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material|workspace_input::work_request(
+                            material,scope,work_request,work.input_writer_material(scope,memory_ledger)?))?
+                } else {work_request.clone()}
+            } else {memory_budget.as_ref().map(|budget|budget.work_request(work_request))
+                .transpose()?.unwrap_or_else(||work_request.clone())};
+            let mut final_material=if let Some(proof)=&work_proof {
+                crate::runtime_db::work_snapshot::WorkWriteMaterial::for_readback(
+                    proof,&final_request,memory_budget.as_mut(),
+                )?
+            } else {None};
+            if let Some(material)=final_material.as_mut() {
+                material.reserve_actual_ids(value.effects.work_items.iter().map(|work|work.id.as_str())
+                    .chain(value.effects.wait_condition_writes.wait_ids.iter().map(String::as_str))
+                    .chain(prepared.explicit_frames().iter().map(|frame|frame.id.as_str())))?;
+                material.reserve_result_briefs(&value.effects.briefs)?;
+            }
+            let actual_work = prepared.actual_work_keys(&value.effects);
             let mut final_work_view = None;
+            let mut final_work_input_usage=None;
             if let Some(proof) = &work_proof {
                 let actual = &actual_work;
                 let result_briefs = value.effects.briefs.iter()
                     .filter(|brief| brief.kind == crate::types::BriefKind::Result)
                     .map(|brief| brief.id.clone()).collect();
-                let final_state = crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
-                    .scope_facts()?.state.context("Work finalizer requires actual final State")?;
-                let work = if finish_memory.is_some() {
-                    let (facts, view) = crate::runtime_db::work_snapshot::register_work_writes_with_view_tx(
-                        tx, proof, actual, &result_briefs, &final_state, &final_request)?;
-                    final_work_view = Some(view);
-                    facts
+                let final_state=if let Some(material)=final_material.as_mut() {
+                    material.final_state_tx(tx,proof)?
                 } else {
-                    crate::runtime_db::work_snapshot::register_work_writes_tx(
-                        tx, proof, actual, &result_briefs, &final_state, &final_request)?
+                    crate::runtime_db::context_inputs::ContextDurableRead::new(tx,&scope.agent_id)
+                        .scope_facts()?.state.context("Work finalizer requires actual final State")?
                 };
+                let work=if let Some(material)=final_material.take() {
+                    let (facts,view)=material.register_tx(tx,proof,actual,&result_briefs,&final_state,&final_request,finish_memory.is_some())?;
+                    final_work_view=view;
+                    facts
+                } else if finish_memory.is_some() {
+                    let (facts,view)=crate::runtime_db::work_snapshot::register_work_writes_with_view_tx(tx,proof,actual,&result_briefs,&final_state,&final_request)?;
+                    final_work_view=Some(view);facts
+                } else {
+                    crate::runtime_db::work_snapshot::register_work_writes_tx(tx,proof,actual,&result_briefs,&final_state,&final_request)?
+                };
+                final_work_input_usage=work.material_usage;
+                if shared_nomemory {
+                    let before=proof.input_writer_material(scope,memory_ledger)?;
+                    let actual=work.material_usage.context("original Work omitted actual final material")?;
+                    input_birth.as_mut().context("original Work lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material|material.observe_original_writer_prior(
+                            workspace_input::increment(actual,before)?))?;
+                }
                 value.effects.work_input_preparation = Some(WorkInputPreparation {
                     scope: scope.clone(),
                     work_revision: work.delta.revision,
@@ -2064,8 +2586,20 @@ impl RuntimeTransitionRepository<'_> {
                         .filter_map(|(id, head)| head.clone().map(|head| (id.clone(), head)))
                         .collect(),
                 });
+                // Preserve the actual readback material through Known/cache
+                // installation while runtime facts strip authoritative deltas.
+                // Sharing this Arc neither clones bodies nor registers twice.
+                if let Some(guards) = &work.delta._material_views {
+                    anyhow::ensure!(
+                        value.effects.work_material_budget_views.as_ref()
+                            .is_none_or(|old| std::sync::Arc::ptr_eq(old, guards)),
+                        "one Work finalizer supplied different readback material"
+                    );
+                    value.effects.work_material_budget_views = Some(guards.clone());
+                }
                 value.effects.work_delta = Some(work.delta);
             }
+            drop(final_material);
             let mut memory_refs = BTreeSet::new();
             if let Some(crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Started { start }) = &prepared.memory {
                 crate::runtime_db::dispatch_memory::install_dispatch_memory_start_tx(tx, start, &prepared.descriptor)?;
@@ -2100,7 +2634,7 @@ impl RuntimeTransitionRepository<'_> {
                 let state = crate::runtime_db::context_inputs::ContextDurableRead::new(tx,&scope.agent_id)
                     .scope_facts()?.state.context("memory finish requires final business State")?;
                 let memory = crate::runtime_db::dispatch_memory::finish_dispatch_memory_tx(token,&state,
-                    final_work_view.as_ref().context("memory finish omitted exact final Work view")?,work_request)?;
+                    final_work_view.as_ref().context("memory finish omitted exact final Work view")?,work_request,current_read_transaction.as_mut())?;
                 if let Some(final_state) = memory.effects.agent_state {
                     if let Some(outer_state) = &mut value.effects.agent_state {
                         outer_state.record = final_state.record;
@@ -2112,9 +2646,44 @@ impl RuntimeTransitionRepository<'_> {
                 value.effects.notify_scheduler |= memory.effects.notify_scheduler;
                 value.applied |= memory.applied;
             }
+            if shared_nomemory {
+                if let Some(current)=current_read_transaction.as_mut() {
+                    input_birth.as_mut().context("original Current lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material|current.narrow_original_remaining(tx,material.remaining_material_limits()?))?;
+                }
+            }
+            terminal_state_audit::finish_tx(tx,prepared,&mut value,current_read_transaction.as_mut())?;
+            if shared_nomemory {
+                if let Some(current)=current_read_transaction.as_ref() {
+                    let observed=current.input_writer_material(tx)?;
+                    input_birth.as_mut().context("original Current lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material|material.observe_current_prior(
+                            &observed.after_admitted(current_admitted_after_business)?))?;
+                }
+            }
+            if value.effects.work_delta.is_none() {
+                if let Some(delta) = crate::runtime_db::work_snapshot::refresh_work_delivery_sources_tx(
+                    tx, scope, &value.effects.input_evidence_delta, work_request, memory_ledger,
+                    memory_budget.as_mut(),
+                )? {
+                    value.effects.work_delta = Some(delta);
+                    value.effects.work_delta_requires_prepared_domain = true;
+                }
+            }
             if task_transaction.is_none() && value.effects.task_delta.is_none()
                 && !matches!(prepared.command.as_ref(),InputTransitionCommand::Timer(_)) {
-                if let Some((delta, guards)) = crate::runtime_db::task_snapshot::register_task_source_metadata_tx(
+                if has_first_input {
+                    let delta=input_birth.as_mut().context("Task metadata lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,memory_budget.as_mut(),|material|
+                            material.with_task_material_limits(scope,memory_ledger,
+                                Some((task_request.byte_limit,task_request.record_limit)),|task|
+                                    crate::runtime_db::task_snapshot::register_task_source_metadata_using_material_tx(
+                                        tx,scope,&value.effects.input_evidence_delta,memory_ledger,task)))?;
+                    if let Some(delta)=delta {
+                        value.effects.task_delta=Some(delta);
+                        value.effects.task_delta_requires_prepared_domain=true;
+                    }
+                } else if let Some((delta, guards)) = crate::runtime_db::task_snapshot::register_task_source_metadata_tx(
                     tx, scope, &value.effects.input_evidence_delta, task_request, memory_ledger, memory_budget.as_mut(),
                 )? {
                     value.effects.task_delta = Some(delta);
@@ -2126,6 +2695,20 @@ impl RuntimeTransitionRepository<'_> {
             if let Some(tasks) = task_transaction {
                 if prepared.original_child_terminal().is_some() {
                     child_usage=Some(tasks.finish_original_child(tx,&mut value,memory_ledger,memory_budget.as_mut())?);
+                } else if shared_nomemory {
+                    let before=tasks.input_writer_material(scope,memory_ledger)?;
+                    input_birth.as_mut().context("original Task lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material| {
+                            let remaining=material.remaining_material_limits()?;
+                            let actual=tasks.finish_using_original_material(tx,&mut value,memory_ledger,None,
+                                inserted_stop.as_ref(),Some(remaining))?;
+                            #[cfg(test)]
+                            if actual.records>16384 {
+                                eprintln!("original Task final actual phase: before={before:?} after=({}, {}) input_before={:?} remaining={remaining:?}",
+                                    actual.bytes,actual.records,material.usage());
+                            }
+                            material.observe_original_writer_prior(workspace_input::increment((actual.bytes,actual.records),before)?)
+                        })?;
                 } else { match inserted_stop.as_ref() {
                     Some(observation) => tasks.finish_with_stop_observation(tx, &mut value, memory_ledger,
                         memory_budget.as_mut(), observation)?,
@@ -2142,9 +2725,68 @@ impl RuntimeTransitionRepository<'_> {
                 value.effects.fault=task.command.fault;
             }
             if let Some(scheduling)=scheduling_transaction {
-                scheduling.finish(tx,&mut value,scheduling_request,memory_budget.as_mut())?;
+                if shared_nomemory {
+                    let before=scheduling.input_writer_material(tx,scope,memory_ledger)?;
+                    input_birth.as_mut().context("original Scheduling lost shared Input phase")?
+                        .with_input_phase(tx,memory_ledger,None,|material| {
+                            let request=workspace_input::scheduling_request(material,scheduling_request,before)?;
+                            let original_state=facts.state.as_ref().context("original Scheduling original State missing")?;
+                            let actual=scheduling.finish_using_original_material(tx,&mut value,&request,original_state,None)?;
+                            material.observe_original_writer_prior(workspace_input::increment(actual,before)?)
+                        })?;
+                } else {
+                    let original_state=facts.state.as_ref().context("original Scheduling State missing")?;
+                    scheduling.finish_using_original_material(tx,&mut value,scheduling_request,original_state,memory_budget.as_mut())?;
+                }
             }
             value.effects.task_material_budget_views.extend(result_receipt_guard);
+            if let Some(mut current) = current_read_transaction {
+                if has_first_input {
+                    let proof=input_birth.as_mut().context("first Input phase lost its actual Native proof")?;
+                    proof.with_input_phase(tx,memory_ledger,memory_budget.as_mut(),|material| {
+                        let before=current.input_writer_material(tx)?.validate_accounting(scope,memory_ledger)?;
+                        #[cfg(test)]
+                        if value.effects.task_delta.as_ref().is_some_and(|delta|delta.records.len()>64) {
+                            eprintln!("original Current final actual phase: current_before={before:?} input={:?} remaining={:?} task_selected={}",
+                                material.usage(),material.remaining_material_limits(),
+                                value.effects.task_delta.as_ref().map_or(0,|delta|delta.records.len()));
+                        }
+                        current.narrow_original_remaining(tx,material.remaining_material_limits()?)?;
+                        current_reads::finish(current,&mut value,facts.state.as_ref().context("CurrentRead original State missing")?)?;
+                        let actual=value.effects.current_read_facts.as_ref().context("Workspace Current finalizer omitted actual facts")?;
+                        let observed=actual.input_writer_material(scope,memory_ledger)?;
+                        material.observe_current_prior(&observed.after_admitted(before)?)
+                    })?;
+                } else {current_reads::finish(current,&mut value,facts.state.as_ref().context("CurrentRead original State missing")?)?;}
+            }
+            value.effects._original_workspace_material=prepared.original_workspace_request_material().cloned();
+            value.effects._original_sleep_override_material=prepared.original_sleep_override_material().cloned();
+            value.effects._original_task_input_child_material=prepared.original_task_input_child_material().cloned();
+
+
+            if let Some(proof) = input_birth {
+                proof.finish_delta_tx(tx, &mut value.effects.input_evidence_delta)?;
+            }
+
+            if let (Some(preparation),Some(work),Some(selection))=(
+                value.effects.work_input_preparation.as_ref(),value.effects.work_delta.as_ref(),
+                prepared.work_resource_material.as_ref()
+                    .map(|loan|loan.original_input_request(scope,memory_ledger)).transpose()?.flatten(),
+            ) {
+                let (inputs,report,guards)=crate::runtime_db::work_snapshot::prepare_committed_work_inputs_tx(
+                    tx,scope,selection,work,&preparation.owning_roots,final_work_input_usage.context("original Work ACK omitted actual material usage")?,
+                    work_request,memory_ledger,memory_budget.as_mut(),prepared.work_resource_material.as_ref()
+                        .and_then(|loan|loan.original_result_material()).map(|result|(result,prepared.descriptor())))?;
+                value.effects.original_work_report=report.map(Arc::new);
+                value.effects.prepared_work_inputs=Some(Arc::new(inputs));
+                value.effects.task_material_budget_views.extend(guards);
+            }
+
+            if prepared.work_resource_material.as_ref().and_then(|loan|loan.original_result_material())
+                .is_some_and(|result|result.expects_completed_report()) {
+                anyhow::ensure!(value.effects.original_work_report.is_some(),
+                    "original Completed Work result requires its same-TX qualified Input report");
+            }
 
             // The original body has already materialized SQL sequences, linked
             // Brief events, persisted index intent, exact count and aliases.
@@ -2245,8 +2887,11 @@ impl PreparedInputTransition {
             &crate::runtime_db::command_task_terminal::OriginalCommandTaskInputView<'_, '_, '_>,
         >,
     ) -> Result<crate::runtime_db::input_evidence_snapshot::ExistingAdmissionInputProof> {
-        if matches!(self.command.as_ref(), InputTransitionCommand::Timer(_)) {
-            anyhow::bail!("ordinary Timer command requires Active identity");
+        if matches!(
+            self.command.as_ref(),
+            InputTransitionCommand::Timer(_) | InputTransitionCommand::RuntimeAudit(_)
+        ) {
+            anyhow::bail!("ordinary Timer/Audit command requires Active identity");
         }
         if let Some(proof) =
             self.work_cleanup_proof_tx(tx, scope, work_proof, task_cleanup, producer_input)?
@@ -2276,7 +2921,8 @@ impl PreparedInputTransition {
             validate_agent_state_mutation_tx(tx, Some(mutation))
         };
         let (transcript, briefs, tools) = match self.command.as_ref() {
-            InputTransitionCommand::Work { .. }
+            InputTransitionCommand::RuntimeAudit(_)
+            | InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
             | InputTransitionCommand::Task(_)
@@ -2506,7 +3152,8 @@ impl PreparedInputTransition {
             InputTransitionCommand::QueueHeadNoProgress { .. } => {
                 anyhow::bail!("new queue progress cannot use an existing admission cleanup proof")
             }
-            InputTransitionCommand::Posture { .. }
+            InputTransitionCommand::RuntimeAudit(_)
+            | InputTransitionCommand::Posture { .. }
             | InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
@@ -2586,7 +3233,8 @@ impl PreparedInputTransition {
             InputTransitionCommand::QueueHeadNoProgress { .. } => {
                 anyhow::bail!("new queue progress cannot use an existing admission cleanup proof")
             }
-            InputTransitionCommand::Posture { .. }
+            InputTransitionCommand::RuntimeAudit(_)
+            | InputTransitionCommand::Posture { .. }
             | InputTransitionCommand::Work { .. }
             | InputTransitionCommand::Focus { .. }
             | InputTransitionCommand::Wait { .. }
@@ -2690,10 +3338,34 @@ impl PreparedInputTransition {
         >,
         scheduling: Option<&timer_writes::SchedulingTransaction<'_, '_>>,
     ) -> Result<Option<crate::runtime_db::work_snapshot::WorkWriteProof>> {
-        use crate::runtime::resident_work::{WorkFamily, WorkKey};
+        use crate::runtime::resident_work::WorkFamily;
+        if !matches!(
+            self.command.as_ref(),
+            InputTransitionCommand::Task(_)
+                | InputTransitionCommand::Timer(_)
+                | InputTransitionCommand::Work { .. }
+                | InputTransitionCommand::Focus { .. }
+                | InputTransitionCommand::Wait { .. }
+                | InputTransitionCommand::Queue(_)
+        ) && !(matches!(self.command.as_ref(), InputTransitionCommand::Terminal(_))
+            && matches!(
+                self.memory,
+                Some(crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Finish { .. })
+            ))
+        {
+            return Ok(None);
+        }
+        let mut material =
+            crate::runtime_db::work_snapshot::WorkWriteMaterial::with_resource_material(
+                scope,
+                request,
+                ledger,
+                memory_budget.as_deref_mut(),
+                self.work_resource_material.as_ref(),
+            )?;
         let mut keys = BTreeSet::new();
         let mut waits = Vec::new();
-        let mut projection_guards = Vec::new();
+        let mut predicted_wait = None;
         match self.command.as_ref() {
             InputTransitionCommand::ExternalTrigger(_) => return Ok(None),
             InputTransitionCommand::Timer(timer) => {
@@ -2701,117 +3373,170 @@ impl PreparedInputTransition {
                     let (message, queue) = timer
                         .new_wake()
                         .context("Timer plan has another pending branch")?;
-                    let (wait, guard) = predicted_trigger_wait_tx(
+                    predicted_wait = predicted_trigger_wait_with_material_tx(
                         tx,
                         scope,
                         message,
                         queue,
-                        request,
-                        ledger,
-                        memory_budget.as_deref_mut(),
+                        &mut material,
                     )?;
-                    projection_guards.extend(guard);
-                    waits.extend(wait);
                 } else if self.memory.is_none() {
                     return Ok(None);
                 }
             }
             InputTransitionCommand::Task(task) => {
+                material.wait_slots(task.command.work_items.len())?;
                 keys.extend(
                     task.command
                         .work_items
                         .iter()
-                        .map(|work| WorkKey::new(WorkFamily::Work, &work.record().id)),
+                        .map(|work| {
+                            material.admit_work(work.record())?;
+                            material.key(WorkFamily::Work, &work.record().id)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
                 );
-                waits.extend(task.command.wait_conditions.iter().cloned());
+                material.wait_slots(task.command.wait_conditions.len())?;
+                for wait in &task.command.wait_conditions {
+                    material.admit_wait(wait)?;
+                }
+                waits.extend(task.command.wait_conditions.iter());
                 if let Some(queue) = &task.command.queue_entry {
                     let [message] = task.command.message_evidence.as_slice() else {
                         anyhow::bail!("Task trigger requires exactly one frozen Message");
                     };
-                    let (wait, guard) = predicted_trigger_wait_tx(
+                    let wait = predicted_trigger_wait_with_material_tx(
                         tx,
                         scope,
                         message,
                         queue,
-                        request,
-                        ledger,
-                        memory_budget.as_deref_mut(),
+                        &mut material,
                     )?;
-                    projection_guards.extend(guard);
-                    waits.extend(wait);
+                    predicted_wait = wait;
                 }
             }
             InputTransitionCommand::Work { command, .. } => {
-                keys.insert(WorkKey::new(
-                    WorkFamily::Work,
-                    &command.mutation.record().id,
-                ));
+                material.admit_work(command.mutation.record())?;
+                keys.insert(material.key(WorkFamily::Work, &command.mutation.record().id)?);
             }
             InputTransitionCommand::Focus { command, .. } => {
+                material.wait_slots(command.work_items.len())?;
                 keys.extend(
                     command
                         .work_items
                         .iter()
-                        .map(|work| WorkKey::new(WorkFamily::Work, &work.record().id)),
+                        .map(|work| {
+                            material.admit_work(work.record())?;
+                            material.key(WorkFamily::Work, &work.record().id)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
                 );
+                material.wait_slots(command.continuations.len())?;
                 keys.extend(
                     command
                         .continuations
                         .iter()
-                        .map(|frame| WorkKey::new(WorkFamily::Frame, &frame.id)),
+                        .map(|frame| {
+                            material.admit_frame(frame)?;
+                            material.key(WorkFamily::Frame, &frame.id)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
                 );
                 // Focus validates the whole active topology. Observe its old
                 // qualified members before the reducer replaces any frame.
                 if command.active_continuation_expectations.is_some() {
-                    let mut query = tx.prepare("SELECT continuation_id FROM work_item_continuations WHERE agent_id=?1 AND state='active' ORDER BY continuation_id LIMIT 65537")?;
-                    for id in query.query_map([&scope.agent_id], |row| row.get::<_, String>(0))? {
-                        keys.insert(WorkKey::new(WorkFamily::Frame, id?));
-                    }
+                    material.active_frame_keys_tx(tx, &mut keys)?;
                 }
-                waits.extend(command.wait_conditions.iter().cloned());
+                material.wait_slots(command.wait_conditions.len())?;
+                for wait in &command.wait_conditions {
+                    material.admit_wait(wait)?;
+                }
+                waits.extend(command.wait_conditions.iter());
             }
             InputTransitionCommand::Wait { command, .. } => {
+                material.wait_slots(command.work_items.len())?;
                 keys.extend(
                     command
                         .work_items
                         .iter()
-                        .map(|work| WorkKey::new(WorkFamily::Work, &work.record().id)),
+                        .map(|work| {
+                            material.admit_work(work.record())?;
+                            material.key(WorkFamily::Work, &work.record().id)
+                        })
+                        .collect::<Result<Vec<_>>>()?,
                 );
-                waits.extend(command.wait_conditions.iter().cloned());
+                material.wait_slots(command.wait_conditions.len())?;
+                for wait in &command.wait_conditions {
+                    material.admit_wait(wait)?;
+                }
+                waits.extend(command.wait_conditions.iter());
             }
             InputTransitionCommand::Queue(queue) => {
                 if let Some(wait) = &queue.wait_transition {
-                    waits.push(wait.record.clone());
+                    material.wait_slots(1)?;
+                    material.admit_wait(&wait.record)?;
+                    waits.push(&wait.record);
                     keys.extend(
                         wait.work_item
                             .iter()
-                            .map(|work| WorkKey::new(WorkFamily::Work, &work.record().id)),
+                            .map(|work| {
+                                material.admit_work(work.record())?;
+                                material.key(WorkFamily::Work, &work.record().id)
+                            })
+                            .collect::<Result<Vec<_>>>()?,
                     );
                 }
                 if let Some(wait) = &queue.wait_registration {
+                    material.wait_slots(wait.work_items.len())?;
                     keys.extend(
                         wait.work_items
                             .iter()
-                            .map(|work| WorkKey::new(WorkFamily::Work, &work.record().id)),
+                            .map(|work| {
+                                material.admit_work(work.record())?;
+                                material.key(WorkFamily::Work, &work.record().id)
+                            })
+                            .collect::<Result<Vec<_>>>()?,
                     );
-                    waits.extend(wait.wait_conditions.iter().cloned());
+                    material.wait_slots(wait.wait_conditions.len())?;
+                    for wait in &wait.wait_conditions {
+                        material.admit_wait(wait)?;
+                    }
+                    waits.extend(wait.wait_conditions.iter());
                 }
                 if let Some(completion) = &queue.completion {
+                    material.wait_slots(completion.work_items.len())?;
                     keys.extend(
                         completion
                             .work_items
                             .iter()
-                            .map(|work| WorkKey::new(WorkFamily::Work, &work.record().id)),
+                            .map(|work| {
+                                material.admit_work(work.record())?;
+                                material.key(WorkFamily::Work, &work.record().id)
+                            })
+                            .collect::<Result<Vec<_>>>()?,
                     );
+                    material.wait_slots(completion.continuations.len())?;
                     keys.extend(
                         completion
                             .continuations
                             .iter()
-                            .map(|frame| WorkKey::new(WorkFamily::Frame, &frame.id)),
+                            .map(|frame| {
+                                material.admit_frame(frame)?;
+                                material.key(WorkFamily::Frame, &frame.id)
+                            })
+                            .collect::<Result<Vec<_>>>()?,
                     );
-                    waits.extend(completion.wait_conditions.iter().cloned());
+                    material.wait_slots(completion.wait_conditions.len())?;
+                    for wait in &completion.wait_conditions {
+                        material.admit_wait(wait)?;
+                    }
+                    waits.extend(completion.wait_conditions.iter());
                 }
-                waits.extend(queue.extra_wait_conditions.iter().cloned());
+                material.wait_slots(queue.extra_wait_conditions.len())?;
+                for wait in &queue.extra_wait_conditions {
+                    material.admit_wait(wait)?;
+                }
+                waits.extend(queue.extra_wait_conditions.iter());
                 if queue.command.operation == QueueOperation::Admit
                     && !queue.command.message_evidence.is_empty()
                 {
@@ -2820,17 +3545,14 @@ impl PreparedInputTransition {
                             "TriggerWaitAndEnqueue requires exactly one admitted message"
                         );
                     };
-                    let (wait, guard) = predicted_trigger_wait_tx(
+                    let wait = predicted_trigger_wait_with_material_tx(
                         tx,
                         scope,
                         message,
                         queue_mutation_record(&queue.command.mutation),
-                        request,
-                        ledger,
-                        memory_budget.as_deref_mut(),
+                        &mut material,
                     )?;
-                    projection_guards.extend(guard);
-                    waits.extend(wait);
+                    predicted_wait = wait;
                 }
             }
             InputTransitionCommand::Terminal(_)
@@ -2840,51 +3562,46 @@ impl PreparedInputTransition {
                 ) => {}
             _ => return Ok(None),
         }
-        keys.extend(crate::runtime_db::work_snapshot::work_wait_write_keys_tx(
-            tx, &waits,
-        )?);
-        // Budget preparation observes this fresh view without changing alias or
-        // coverage revision. Original proof base remains the published base.
-        let mut proof = if cleanup {
-            crate::runtime_db::work_snapshot::prepare_original_work_write_tx(tx, scope, &keys)?
-        } else {
-            crate::runtime_db::work_snapshot::prepare_work_write_tx(tx, scope, &keys)?
-        };
-        proof.retain_preparation_budget(projection_guards);
+        if let Some(wait) = &predicted_wait {
+            material.admit_wait(wait)?;
+        }
+        material.wait_keys_tx(
+            tx,
+            waits.iter().copied().chain(predicted_wait.as_ref()),
+            &mut keys,
+        )?;
+        let proof = material.prepare_tx(tx, scope, &keys, cleanup)?;
         // Wait material and Memory share one allowance before Work preflight.
         let proof_request = memory_budget
             .as_ref()
             .map(|budget| budget.work_request(request))
             .transpose()?
             .unwrap_or_else(|| request.clone());
-        crate::runtime_db::work_snapshot::preflight_work_write_snapshot_tx(
+        crate::runtime_db::work_snapshot::preflight_work_write_snapshot_with_shared_phase_tx(
             tx,
             &proof,
             &proof_request,
-        )?
-        .require_current()?;
+            memory_budget.as_deref_mut(),
+        )?;
         Ok(Some(proof))
     }
 
-    fn explicit_frame_ids(&self) -> BTreeSet<String> {
+    fn explicit_frames(&self) -> &[crate::types::WorkItemContinuationFrame] {
         match self.command.as_ref() {
-            InputTransitionCommand::Focus { command, .. } => command
-                .continuations
-                .iter()
-                .map(|frame| frame.id.clone())
-                .collect(),
+            InputTransitionCommand::Focus { command, .. } => &command.continuations,
             InputTransitionCommand::Queue(queue) => queue
                 .completion
-                .iter()
-                .flat_map(|completion| {
-                    completion
-                        .continuations
-                        .iter()
-                        .map(|frame| frame.id.clone())
-                })
-                .collect(),
-            _ => BTreeSet::new(),
+                .as_ref()
+                .map(|completion| completion.continuations.as_slice())
+                .unwrap_or_default(),
+            _ => &[],
         }
+    }
+    fn explicit_frame_ids(&self) -> BTreeSet<String> {
+        self.explicit_frames()
+            .iter()
+            .map(|frame| frame.id.clone())
+            .collect()
     }
 
     fn actual_work_keys(
@@ -3312,10 +4029,25 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<(
     Option<WaitConditionRecord>,
-    Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
 )> {
-    use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
-    use crate::runtime_db::work_snapshot::WorkSnapshotError;
+    let mut material = crate::runtime_db::work_snapshot::WorkWriteMaterial::new(
+        scope,
+        request,
+        ledger,
+        memory_budget,
+    )?;
+    let wait = predicted_trigger_wait_with_material_tx(tx, scope, message, queue, &mut material)?;
+    Ok((wait, material.into_guards()))
+}
+
+fn predicted_trigger_wait_with_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    message: &MessageEnvelope,
+    queue: &QueueEntryRecord,
+    material: &mut crate::runtime_db::work_snapshot::WorkWriteMaterial<'_>,
+) -> Result<Option<WaitConditionRecord>> {
     anyhow::ensure!(
         message.id == queue.message_id
             && message.agent_id == queue.agent_id
@@ -3324,42 +4056,14 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
         "TriggerWaitAndEnqueue admission identity differs"
     );
     let existing: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE message_id=?1) OR EXISTS(SELECT 1 FROM queue_entries WHERE message_id=?1)", [&message.id], |row| row.get(0))?;
-    // Lengths precede every String/typed Wait. The original reducer decodes the
-    // same pool again; retain this view through that SQL and the Work proof.
-    let (count, bytes): (usize, usize) = tx.query_row(
-        "SELECT COUNT(*),COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) FROM wait_conditions WHERE agent_id=?1 AND status IN ('active','triggered')",
-        [&message.agent_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    let exhausted = || WorkSnapshotError::ResourceExhausted("TriggerWaitAndEnqueue projection");
-    let copies = 4usize;
-    let records = count.checked_mul(copies).context(exhausted())?;
-    let payload_bytes = bytes.checked_mul(copies).context(exhausted())?;
-    let metadata_bytes = records.checked_mul(256).context(exhausted())?;
-    let total_bytes = payload_bytes
-        .checked_add(metadata_bytes)
-        .context(exhausted())?;
-    anyhow::ensure!(
-        records <= request.record_limit && total_bytes <= request.byte_limit,
-        exhausted()
-    );
-    let guard = if let Some(budget) = memory_budget {
-        budget.additional_material(bytes, count, copies)?;
-        None
-    } else if count > 0 {
-        Some(ledger.register_owned_bytes(
-            scope,
-            InputMemoryCategory::Candidate,
-            OwnedBytesEstimate {
-                payload_bytes: payload_bytes as u64,
-                metadata_estimate_bytes: metadata_bytes as u64,
-            },
-        )?)
-    } else {
-        None
-    };
+    material.trigger_wait_pool_tx(tx, scope)?;
     // The original reducer still materializes its pool on an existing admission.
     if existing {
-        return Ok((None, guard));
+        return Ok(None);
     }
+    let count:usize=tx.query_row(
+        "SELECT COUNT(*) FROM wait_conditions WHERE agent_id=?1 AND status IN ('active','triggered')",
+        [&scope.agent_id],|row|row.get(0))?;
     let conditions = {
         let mut query = tx.prepare("SELECT payload_json FROM wait_conditions WHERE agent_id=?1 AND status IN ('active','triggered') ORDER BY updated_at DESC,created_at DESC,wait_condition_id DESC LIMIT ?2")?;
         let rows = query
@@ -3373,22 +4077,22 @@ pub(in crate::runtime_db) fn predicted_trigger_wait_tx(
     let crate::wake_contract::WaitTriggerSelection::Match { condition, .. } =
         crate::wake_contract::select_wait_to_trigger(message, &conditions)
     else {
-        return Ok((None, guard));
+        return Ok(None);
     };
     if condition.status != WaitConditionStatus::Active
         || !wait_generation_matches_tx(tx, message, condition)?
     {
-        return Ok((None, guard));
+        return Ok(None);
     }
     let trigger_id =
         agent_message_reply_trigger_tx(tx, message)?.unwrap_or_else(|| message.id.clone());
     let claimed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id=?1 AND trigger_message_id=?2 AND wait_condition_id!=?3)", params![message.agent_id,trigger_id,condition.id], |row| row.get(0))?;
     if claimed {
-        return Ok((None, guard));
+        return Ok(None);
     }
     let mut triggered = condition.clone();
     triggered.mark_triggered(&trigger_id, queue.updated_at);
-    Ok((Some(triggered), guard))
+    Ok(Some(triggered))
 }
 
 /// Read one exact child identity in this original view. This does not activate

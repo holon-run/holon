@@ -1242,6 +1242,7 @@ impl RuntimeTransitionRepository<'_> {
                 crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
                     work_delta: None,
                     task_delta: None,
+                    work_material_budget_views: None,
                     task_material_budget_views: Vec::new(),
                     agent_state: None,
                     record: ExecutionProtocolRecoveryCommitOutcome::Applied(false),
@@ -1273,6 +1274,7 @@ impl RuntimeTransitionRepository<'_> {
                             crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
                     work_delta: None,
                     task_delta: None,
+                    work_material_budget_views: None,
                     task_material_budget_views: Vec::new(),
                                 agent_state: None,
                                 record: ExecutionProtocolRecoveryCommitOutcome::Rejected {
@@ -1304,6 +1306,7 @@ impl RuntimeTransitionRepository<'_> {
                 crate::runtime_db::input_evidence_writes::InputEvidenceCommit {
                     work_delta: None,
                     task_delta: None,
+                    work_material_budget_views: None,
                     task_material_budget_views: Vec::new(),
                     agent_state: None,
                     record: ExecutionProtocolRecoveryCommitOutcome::Applied(changed),

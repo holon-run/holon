@@ -2195,3 +2195,6 @@ mod status_metadata_actor_tests;
 
 #[path = "scheduling_write_tests.rs"]
 mod scheduling_write_tests;
+
+#[path = "current_read_tests.rs"]
+mod current_read_tests;

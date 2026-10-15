@@ -76,6 +76,17 @@ fn freeze_input_fingerprint(
         Family::ToolExecution | Family::Brief => {
             &["evidence_id", "agent_id", "created_at", "content_hash"]
         }
+        Family::LegacyDelivery => &[
+            "evidence_id",
+            "agent_id",
+            "created_at",
+            "content_hash",
+            "turn_id",
+            "work_item_id",
+            "kind",
+            "message_id",
+            "task_id",
+        ],
         Family::Transcript => &[
             "evidence_id",
             "agent_id",
@@ -354,6 +365,7 @@ pub(in crate::runtime_db) fn prepare_authorized_task_output_inputs_tx(
         scope,
         records.into_values().collect(),
         InputEvidenceCoverage {
+            query: Default::default(),
             selected_completion_brief_ids: BTreeSet::new(),
             completion_source_observations: Vec::new(),
             recovery_source_absences: BTreeMap::new(),
@@ -470,7 +482,7 @@ fn read_authorized_task_input_with_fingerprint_tx(
             InputEvidenceSnapshotError::ProjectionChanged(key.id.clone())
         );
     }
-    if count_nodes {
+    if count_nodes && key.family != Family::ToolExecution {
         let (table, id) = table(key.family);
         let nodes:usize=tx.query_row(&format!("SELECT (SELECT COUNT(*) FROM json_tree(payload_json)) FROM {table} WHERE agent_id=?1 AND {id}=?2"),params![scope.agent_id,key.id],|row|row.get(0))?;
         authorization.charge(0, nodes)?;
@@ -501,7 +513,17 @@ fn read_authorized_task_input_with_fingerprint_tx(
         }
         _ => None,
     };
-    let record = prepare_record_on(tx, &scope.agent_id, key, canonical)?;
+    let record = if key.family == Family::ToolExecution {
+        authorization.with_input_material(|material| {
+            Ok(PreparedInputEvidence::ToolExecution(
+                tool_run_report::prepare_authorized_tool_prompt_on(
+                    tx, &scope, key, &fingerprint, &digest, material,
+                )?,
+            ))
+        })?
+    } else {
+        prepare_record_on(tx, &scope.agent_id, key, canonical)?
+    };
     let record = Arc::new(qualified(
         &scope,
         key.clone(),
@@ -529,12 +551,20 @@ fn charge_input_key(
         Family::Turn => "length(CAST(created_at AS BLOB))+COALESCE(length(CAST(owner_kind AS BLOB)),0)+COALESCE(length(CAST(owner_id AS BLOB)),0)",
         Family::ToolExecution => "length(CAST(created_at AS BLOB))+COALESCE(length(CAST(content_hash AS BLOB)),0)+COALESCE(length(CAST(work_item_id AS BLOB)),0)+COALESCE(length(CAST(turn_id AS BLOB)),0)",
         Family::Brief => "length(CAST(created_at AS BLOB))+COALESCE(length(CAST(content_hash AS BLOB)),0)",
+        Family::LegacyDelivery => "length(CAST(created_at AS BLOB))+COALESCE(length(CAST(content_hash AS BLOB)),0)+COALESCE(length(CAST(work_item_id AS BLOB)),0)+COALESCE(length(CAST(turn_id AS BLOB)),0)+COALESCE(length(CAST(kind AS BLOB)),0)+COALESCE(length(CAST(message_id AS BLOB)),0)+COALESCE(length(CAST(task_id AS BLOB)),0)",
         Family::Transcript => "length(CAST(created_at AS BLOB))+COALESCE(length(CAST(content_hash AS BLOB)),0)+COALESCE(length(CAST(turn_id AS BLOB)),0)",
         Family::Attempt => "length(CAST(lifecycle_state AS BLOB))+COALESCE(length(CAST(terminal_outcome_id AS BLOB)),0)+COALESCE(length(CAST(recovery_of_attempt_id AS BLOB)),0)",
         Family::Outcome => "length(CAST(attempt_id AS BLOB))",
         Family::WorkExecution => "length(CAST(lifecycle_state AS BLOB))",
     };
-    let current: usize = tx.query_row(&format!("SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB))+length(CAST(agent_id AS BLOB))+length(CAST({id} AS BLOB))+{projection} FROM {table} WHERE agent_id=?1 AND {id}=?2),0)"),params![scope.agent_id,key.id],|row|row.get(0))?;
+    // Tool body scratch is admitted by the single-pass Blob/Serde reader below.
+    // Only the original finite normalized/fingerprint Strings precede it.
+    let body = if key.family == Family::ToolExecution {
+        "0"
+    } else {
+        "length(CAST(payload_json AS BLOB))"
+    };
+    let current: usize = tx.query_row(&format!("SELECT COALESCE((SELECT {body}+length(CAST(agent_id AS BLOB))+length(CAST({id} AS BLOB))+{projection} FROM {table} WHERE agent_id=?1 AND {id}=?2),0)"),params![scope.agent_id,key.id],|row|row.get(0))?;
     let alias: usize = tx.query_row("SELECT COALESCE((SELECT length(CAST(fingerprint_json AS BLOB))+COALESCE(length(CAST(content_digest AS BLOB)),0)+length(CAST(availability AS BLOB))+COALESCE(length(CAST(attempt_turn_proof_json AS BLOB)),0) FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4),0)",params![scope.agent_id,scope.identity_incarnation,key.family.as_str(),key.id],|row|row.get(0))?;
     authorization.charge_body(
         current

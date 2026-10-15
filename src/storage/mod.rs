@@ -45,11 +45,11 @@ pub use activity::{FileActivityMarker, PollActivityMarker};
 pub use events::RuntimeEventLog;
 pub(crate) use events::{EventBus, EventLogPage, EventLogPageOrder, PublishedAuditEvent};
 pub use index_outbox::RuntimeIndexOutbox;
-pub(crate) use legacy::LegacyImporter;
+pub(crate) use legacy::{LegacyImporter, OriginalEpisodeImport};
 pub use read_models::RuntimeReadModels;
 pub(crate) use read_models::{
-    derive_agent_posture, derive_context_work_queue, filter_context_active_waits,
-    WORK_QUEUE_NON_OPEN_WINDOW,
+    derive_agent_posture, derive_agent_posture_observed, derive_context_work_queue,
+    derive_context_work_queue_observed, filter_context_active_waits, WORK_QUEUE_NON_OPEN_WINDOW,
 };
 pub use recovery::RecoverySnapshot;
 pub use store::RuntimeStore;
@@ -5598,5 +5598,28 @@ impl AppStorage {
             task_request,
             ledger,
         )
+    }
+    pub(crate) fn commit_prepared_input_evidence_with_input_query_source(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        input_source: &std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.store
+            .commit_prepared_input_evidence_with_input_query_source(
+                prepared,
+                work_request,
+                task_request,
+                ledger,
+                input_source,
+            )
     }
 }

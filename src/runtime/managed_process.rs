@@ -24,6 +24,7 @@ pub(in crate::runtime) struct OriginalManagedProcess {
     attached: AtomicBool,
     successful_exit: AtomicBool,
     group: Mutex<Option<Arc<dyn RegisteredProcessGroupProbe>>>,
+    resource_changes: Mutex<Option<super::super::resource_observation::ResourceProcessChanges>>,
     material_bytes: u64,
     _material: Arc<BudgetViewGuard>,
 }
@@ -50,9 +51,25 @@ impl OriginalManagedProcess {
             attached: AtomicBool::new(false),
             successful_exit: AtomicBool::new(false),
             group: Mutex::new(None),
+            resource_changes: Mutex::new(None),
             material_bytes: bytes,
             _material: material,
         }))
+    }
+    pub(super) fn attach_resource_changes(
+        &self,
+        changes: super::super::resource_observation::ResourceProcessChanges,
+    ) -> Result<()> {
+        let mut slot = self
+            .resource_changes
+            .lock()
+            .map_err(|_| anyhow!("original Command resource hook poisoned"))?;
+        ensure!(
+            slot.is_none() && !self.attached.load(Ordering::Acquire),
+            "original Command resource hook attached after spawn"
+        );
+        *slot = Some(changes);
+        Ok(())
     }
     pub(super) fn attach_original_handle(&self, process: &dyn RunningProcess) -> Result<()> {
         let mut group = self
@@ -69,6 +86,14 @@ impl OriginalManagedProcess {
     pub(super) fn record_successful_exit(&self) {
         if self.attached.load(Ordering::Acquire) {
             self.successful_exit.store(true, Ordering::Release);
+            let changes = self
+                .resource_changes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(changes) = changes {
+                changes.physical_exit();
+            }
         }
     }
     pub(in crate::runtime) fn scope(&self) -> &InputEvidenceScope {

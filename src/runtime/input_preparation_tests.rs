@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     config::StateMemoryLimits,
     runtime::{
-        mutation_owner::{MutationOwner, MutationOwnerError},
+        mutation_owner::{IdentityMutationFacts, KnownCommit, MutationOwner, MutationOwnerError},
         resident_input_evidence::{InputEvidenceFamily as Family, InputEvidenceKey as Key},
     },
     runtime_db::{
@@ -50,19 +50,26 @@ impl Fixture {
             )?;
             upsert_agent_state_tx(tx, &state)
         })?;
+        let budget = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let identity = db.agent_identities().latest(&scope.agent_id)?.unwrap();
         let owner = MutationOwner::standalone(&scope.agent_id, scope.identity_incarnation);
         {
             let mut reservation = owner.reserve().await?;
             reservation.begin("initial-state".into())?;
-            reservation.committed(state.clone(), None)?;
-            reservation.publish(state)?;
+            MutationReservation::committed_all(
+                std::slice::from_mut(&mut reservation),
+                vec![KnownCommit::Metadata(Arc::new(
+                    IdentityMutationFacts::budgeted_owned(Some(identity), Some(state), &budget)?,
+                ))],
+            )?;
+            MutationReservation::publish_all_known(std::slice::from_mut(&mut reservation))?;
         }
         Ok(Self {
             _dir: dir,
             db,
             owner,
             scope,
-            budget: InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?,
+            budget,
         })
     }
 
@@ -72,7 +79,9 @@ impl Fixture {
             interrupted_sources: Default::default(),
             windows: Vec::new(),
             mandatory_roots: Default::default(),
-            record_limit: 512,
+            record_limit: usize::try_from(self.budget.limits().record_limit)
+                .unwrap()
+                .min(65_536),
             byte_limit: 1024 * 1024,
         }
     }
@@ -128,11 +137,14 @@ impl Fixture {
         prepared: PreparedInputDomains,
     ) -> Result<Arc<AgentSnapshot>> {
         reservation.begin("prepared-domain-install".into())?;
-        reservation.committed_prepared_with_inputs(
+        reservation.committed_prepared_with_current_read_domains(
             prepared.state.clone(),
             Some(prepared.episodes),
             Some(prepared.inputs),
             None,
+            None,
+            Some(prepared.scheduling),
+            Some(prepared.current_reads),
         )?;
         Ok(reservation.publish(prepared.state)?)
     }
@@ -174,6 +186,8 @@ async fn already_prepared_request_does_not_query_durable_inputs() -> Result<()> 
         panic!("expected preparation")
     };
     let published = fixture.publish(&mut reservation, prepared)?;
+    assert!(published.identity.is_some());
+    assert!(published.scheduling.is_some() && published.current_reads.is_some());
     // Test-only corruption behind the owner proves this fast path performs no
     // SQL acquisition; legitimate canonical writers must hold this reservation.
     fixture.db.transaction(|tx| {
@@ -241,6 +255,22 @@ async fn exact_dependency_prepares_only_qualified_current_scope_and_failure_pres
     request
         .mandatory_roots
         .insert(Key::new(Family::Message, &qualified.id));
+    // The 512-node cap cannot cover the jointly held Episode/Pending/Input
+    // decoders before Current. Keep this negative and the configured success cap.
+    let mut small = request.clone();
+    small.record_limit = 512;
+    let error = fixture
+        .prepare(&reservation, &published, &small)
+        .err()
+        .context("actual combined Input phase should exceed512 nodes")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+            Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted("Input read material"))
+        ),
+        "{error:#}"
+    );
+    assert!(Arc::ptr_eq(&published, &fixture.owner.capture()?.unwrap()));
     let InputPreparation::Prepared(prepared) =
         fixture.prepare(&reservation, &published, &request)?
     else {

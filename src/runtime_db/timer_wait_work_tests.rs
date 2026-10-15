@@ -310,7 +310,8 @@ fn scoped_timer_projection_rejects_oversize_before_decode_and_business_writes() 
         f.db.agent_states().latest(&f.scope.agent_id)?,
         Some(command.agent_state.0.clone())
     );
-    // A larger allowance reaches serde, whose error must also release the guard.
+    // A larger allowance reaches native JSON traversal before Serde; its
+    // explicit malformed-input failure must also release every actual guard.
     let decode_error =
         f.db.transaction(|tx| {
             crate::runtime_db::transitions::predicted_trigger_wait_tx(
@@ -325,7 +326,8 @@ fn scoped_timer_projection_rejects_oversize_before_decode_and_business_writes() 
         })
         .unwrap_err();
     assert!(
-        decode_error.downcast_ref::<serde_json::Error>().is_some(),
+        decode_error.downcast_ref::<rusqlite::Error>().is_some()
+            && format!("{decode_error:#}").contains("malformed JSON"),
         "{decode_error:#}"
     );
     assert_eq!(ledger.report()?.observed_bytes, 0);

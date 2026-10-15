@@ -10,6 +10,7 @@ use super::*;
 use crate::runtime_error::RuntimeError;
 
 pub(crate) struct SchedulingReadMaterial {
+    material: (u64, usize),
     _selected: Option<CapturedScheduling>,
     _owned: Arc<BudgetViewGuard>,
     _selector: Option<Arc<BudgetViewGuard>>,
@@ -246,6 +247,17 @@ fn project_scheduling_records(
         timers,
         external_triggers,
         SchedulingReadMaterial {
+            material: (
+                u64::try_from(prior.0)?
+                    .checked_add(retained)
+                    .and_then(|n| n.checked_add(bytes))
+                    .context("Scheduling read combined bytes overflow")?,
+                prior
+                    .1
+                    .checked_add(retained_records)
+                    .and_then(|n| n.checked_add(records))
+                    .context("Scheduling read combined records overflow")?,
+            ),
             _selected: Some(selected),
             _owned: owned,
             _selector: None,
@@ -254,6 +266,34 @@ fn project_scheduling_records(
     ))
 }
 impl SchedulingReadMaterial {
+    /// Original raw/read usage, selected capture and owned DTO coexist.
+    /// Reuse this debit with the same request; guards are already registered.
+    pub(crate) fn material_estimate(&self) -> Result<(u64, usize)> {
+        Ok(self.material)
+    }
+    pub(crate) fn validate_material_binding(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        self._owned
+            .validate_owned_material_binding(scope, ledger, 0)?;
+        if let Some(selected) = self._selected.as_ref() {
+            selected.validate_material_binding(scope, ledger)?;
+        }
+        if let Some(selector) = self._selector.as_ref() {
+            selector.validate_owned_material_binding(scope, ledger, 0)?;
+        }
+        // Original cold inspection may hold Host-owned locator guards. They
+        // keep their allocation identity and are never converted to agent views.
+        for guard in &self._read {
+            anyhow::ensure!(
+                guard.matches_resource_ledger(ledger),
+                "Scheduling read material ledger differs"
+            );
+        }
+        Ok(())
+    }
     pub(crate) fn active_timer_count(&self) -> Result<usize> {
         let Some(selected) = self._selected.as_ref() else {
             return Ok(0);
@@ -296,6 +336,15 @@ impl SchedulingReadMaterial {
             },
         )?;
         Ok(Self {
+            material: (
+                u64::try_from(usage.0)?
+                    .checked_add(2048)
+                    .context("empty Scheduling bytes overflow")?,
+                usage
+                    .1
+                    .checked_add(4)
+                    .context("empty Scheduling records overflow")?,
+            ),
             _selected: None,
             _owned: owned,
             _selector: None,
@@ -310,7 +359,16 @@ impl RuntimeHandle {
     ) -> Result<SchedulingReadMaterial> {
         // This view is used only for scalar closure/posture observations.
         let owned = self.scheduling_output_budget(&selected, 512, 1, 0, 0)?;
+        let (selected_bytes, selected_records) = selected.selected_material_estimate()?;
         Ok(SchedulingReadMaterial {
+            material: (
+                selected_bytes
+                    .checked_add(512)
+                    .context("Scheduling observation bytes overflow")?,
+                selected_records
+                    .checked_add(1)
+                    .context("Scheduling observation records overflow")?,
+            ),
             _selected: Some(selected),
             _owned: owned,
             _selector: None,

@@ -111,6 +111,31 @@ impl ResidentInputEvidence {
         request: &InputEvidenceLoadRequest,
     ) -> Result<CapturedInputEvidence> {
         let captured = self.capture_for_request(request)?;
+        self.validate_task_output_recall_selection(task, request, &captured)?;
+        Ok(captured)
+    }
+
+    pub(in crate::runtime) fn capture_task_output_for_request_with_body_loan(
+        &self,
+        task: &crate::runtime::resident_task::TaskFactLocator,
+        request: &InputEvidenceLoadRequest,
+        limits: (usize, usize),
+        prior: (u64, usize),
+        ledger: &InputEvidenceBudgetLedger,
+        loan: &CapturedInputEvidence,
+    ) -> Result<(CapturedInputEvidence, InputCaptureMaterial)> {
+        let captured =
+            self.capture_for_request_with_body_loan(request, limits, prior, ledger, loan)?;
+        self.validate_task_output_recall_selection(task, request, &captured.0)?;
+        Ok(captured)
+    }
+
+    fn validate_task_output_recall_selection(
+        &self,
+        task: &crate::runtime::resident_task::TaskFactLocator,
+        request: &InputEvidenceLoadRequest,
+        captured: &CapturedInputEvidence,
+    ) -> Result<()> {
         if captured
             .records
             .iter()
@@ -127,6 +152,6 @@ impl ResidentInputEvidence {
                 )
             );
         }
-        Ok(captured)
+        Ok(())
     }
 }

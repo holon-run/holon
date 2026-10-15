@@ -31,10 +31,9 @@ pub(super) fn prepare_known_tx(
     witness: &super::super::mutation_witness::MutationWitness,
 ) -> Result<KnownCommit> {
     if view.mode() != CommandTaskTerminalInstallMode::Current {
-        return Ok(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-            identity: view.identity().cloned().map(Arc::new),
-            state: None,
-        })));
+        return Ok(KnownCommit::Metadata(Arc::new(
+            IdentityMutationFacts::budgeted(view.identity(), None, view.ledger())?,
+        )));
     }
     let scope = view.scope().clone();
     let original = witness
@@ -42,6 +41,7 @@ pub(super) fn prepare_known_tx(
         .map(|facts| facts.task_status_metadata_known())
         .or_else(|| witness.input_child_binding_observation().cloned());
     let Some(KnownCommit::State {
+        current_reads,
         state,
         episodes,
         input_evidence,
@@ -53,12 +53,17 @@ pub(super) fn prepare_known_tx(
     else {
         // Actual Current identity/State presence is an observation, not a Ready
         // claim for a cold owner that had no published runtime domains.
-        return Ok(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-            identity: view.identity().cloned().map(Arc::new),
-            state: None,
-        })));
+        return Ok(KnownCommit::Metadata(Arc::new(
+            IdentityMutationFacts::budgeted(view.identity(), None, view.ledger())?,
+        )));
     };
     view.validate_current_state(tx, &state)?;
+    if let Some(current) = &current_reads {
+        current.validate_identity(
+            view.identity()
+                .context("binding CurrentRead fresh identity missing")?,
+        )?;
+    }
     let tasks = if tasks.is_some() {
         Some(view.read_current_tasks(tx, &state)?)
     } else {
@@ -69,6 +74,7 @@ pub(super) fn prepare_known_tx(
             .task_status_metadata_known());
     }
     Ok(KnownCommit::State {
+        current_reads,
         state,
         episodes,
         input_evidence,

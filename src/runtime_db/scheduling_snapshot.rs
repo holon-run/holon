@@ -24,17 +24,22 @@ use std::{
 };
 mod deletion_maintenance;
 pub(crate) use deletion_maintenance::{DeletionSchedulingAck, DeletionSchedulingSelection};
+mod resource_locator;
+pub(crate) use resource_locator::read_cold_resource_locator_tx;
 mod cold_query;
 mod token_discovery;
 pub(crate) use cold_query::{
-    prepare_cold_scheduling_query_tx, read_cold_scheduling_scope_tx, ColdSchedulingQuery,
+    prepare_cold_scheduling_query_tx, read_cold_resource_identity_tx, read_cold_resource_scope_tx,
+    read_cold_scheduling_scope_tx, ColdSchedulingQuery,
 };
 pub(crate) use token_discovery::{
     discover_external_trigger_token_tx, read_external_trigger_token_compatibility_tx,
     ExternalTriggerTokenLocator, ExternalTriggerTokenRecordRead,
 };
 mod history_selection;
+mod input_joint;
 mod loader;
+pub(in crate::runtime_db) use input_joint::prepare_scheduling_for_input_tx;
 mod pending_wake;
 mod qualification;
 mod seed_maintenance;
@@ -149,6 +154,29 @@ fn bound(records: usize, bytes: usize, request: &SchedulingDomainLoadRequest) ->
     );
     Ok(())
 }
+/// Only an actual registered Scheduling allocation can be lent to Memory.
+/// This observation conveys no Scheduling membership or business authority.
+pub(in crate::runtime_db) struct ObservedSchedulingAllocation<'a> {
+    scope: &'a InputEvidenceScope,
+    ledger: &'a InputEvidenceBudgetLedger,
+    guard: &'a Arc<BudgetViewGuard>,
+    usage: (usize, usize),
+}
+impl ObservedSchedulingAllocation<'_> {
+    pub(in crate::runtime_db) fn validate_accounting(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        ensure!(
+            self.scope == scope
+                && self.ledger.same_ledger(ledger)
+                && self.guard.matches_resource_ledger(ledger),
+            "Scheduling allocation belongs to another original Memory scope/ledger"
+        );
+        Ok(self.usage)
+    }
+}
 struct Material<'a, 'memory> {
     scope: &'a InputEvidenceScope,
     request: &'a SchedulingDomainLoadRequest,
@@ -157,6 +185,7 @@ struct Material<'a, 'memory> {
     records: usize,
     guards: Vec<Arc<BudgetViewGuard>>,
     memory_budget: Option<&'memory mut super::dispatch_memory::DispatchMemoryTransactionBudget>,
+    input_memory: bool,
 }
 impl<'a, 'memory> Material<'a, 'memory> {
     fn new(
@@ -172,6 +201,7 @@ impl<'a, 'memory> Material<'a, 'memory> {
             records: 0,
             guards: Vec::new(),
             memory_budget: None,
+            input_memory: false,
         }
     }
     fn charge(&mut self, bytes: usize, records: usize) -> Result<()> {
@@ -184,6 +214,19 @@ impl<'a, 'memory> Material<'a, 'memory> {
         let records = records
             .checked_mul(8)
             .context("Scheduling read records overflow")?;
+        // Input's guard includes the native floor that the legacy Memory
+        // path charged separately. Borrowing it must preserve that total.
+        let bytes = if self.input_memory {
+            bytes
+                .checked_add(
+                    records
+                        .checked_mul(256)
+                        .context("Scheduling Input native floor overflow")?,
+                )
+                .context("Scheduling Input combined native bytes overflow")?
+        } else {
+            bytes
+        };
         self.bytes = self
             .bytes
             .checked_add(bytes)
@@ -194,6 +237,25 @@ impl<'a, 'memory> Material<'a, 'memory> {
             .context("Scheduling combined records overflow")?;
         bound(self.records, self.bytes, self.request)?;
         if let Some(memory) = &mut self.memory_budget {
+            if self.input_memory {
+                let guard = self.ledger.register_owned_bytes(
+                    self.scope,
+                    InputMemoryCategory::Candidate,
+                    OwnedBytesEstimate {
+                        payload_bytes: u64::try_from(bytes)?,
+                        metadata_estimate_bytes: 0,
+                    },
+                )?;
+                let observed = ObservedSchedulingAllocation {
+                    scope: self.scope,
+                    ledger: self.ledger,
+                    guard: &guard,
+                    usage: (bytes, records),
+                };
+                memory.additional_observed_scheduling_material(&observed)?;
+                self.guards.push(guard);
+                return Ok(());
+            }
             memory.additional_material(bytes, records, 1)?;
         }
         self.guards.push(self.ledger.register_owned_bytes(

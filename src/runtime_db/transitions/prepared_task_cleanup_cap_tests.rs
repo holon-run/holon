@@ -56,7 +56,7 @@ fn deleting_result_cap_joins_original_task_inner_and_once_finalizer_without_inpu
         let pending=task.take_result();
         // Original offline/cfgtest adapter intentionally has no Input scope.
         // Production keeps its D3 proof gate; M2 alone cannot grant Message/Queue.
-        let repository=RuntimeTransitionRepository {db:&f.db,input_scope:None,cleanup_input:None};
+        let repository=RuntimeTransitionRepository {db:&f.db,input_scope:None,cleanup_input:None,input_tool_writer:None};
         let (mut value,_)=repository.commit_task_at_with_task_results_tx(tx,&command,
             &Default::default(),true,p.descriptor().prepared_at(),None,pending,task.cleanup(),None,None)?;
         task.finish(tx,&mut value,&ledger,None)?;

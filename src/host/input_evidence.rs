@@ -26,6 +26,9 @@ pub(crate) struct ExternalInputEvidenceEffects {
     pub(crate) input_delta: crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta,
     pub(crate) work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
     pub(crate) task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub(crate) work_material_budget_views: Option<
+        std::sync::Arc<Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>>,
+    >,
     pub(crate) task_material_budget_views:
         Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub(crate) briefs: Vec<BriefRecord>,
@@ -42,6 +45,7 @@ impl From<ExternalInputEvidenceEffects> for PostCommitEffects {
             work_delta_requires_prepared_domain: true,
             task_delta: effects.task_delta,
             task_delta_requires_prepared_domain: true,
+            work_material_budget_views: effects.work_material_budget_views,
             task_material_budget_views: effects.task_material_budget_views,
             briefs: effects.briefs,
             audit_events: effects.audit_events,
@@ -192,19 +196,35 @@ impl RuntimeHost {
             record_limit: work_request.record_limit,
             byte_limit: work_request.byte_limit,
         };
+        let input_source = match &command {
+            PreparedExternalInputEvidence::BriefCreated(command) => {
+                let scope = command.primary_scope();
+                let original = reservations.iter().find(|reservation|
+                    reservation.agent_id() == scope.agent_id
+                        && reservation.identity_incarnation() == scope.identity_incarnation)
+                    .context("external Input original owner absent")?;
+                Some(original.input_query_source(scope, &self.inner.input_evidence_budget,
+                    (work_request.byte_limit, work_request.record_limit))?)
+            }
+            PreparedExternalInputEvidence::Retention(_) => None,
+        };
         MutationReservation::begin_all_with_witness(
             reservations,
             witness.operation_id().to_owned(),
             witness.clone(),
         )?;
-        let committed = self
-            .runtime_db()
-            .commit_prepared_external_input_evidence_with_task_budget(
-                &command,
-                &work_request,
-                &task_request,
-                &self.inner.input_evidence_budget,
-            );
+        let committed = match input_source.as_ref() {
+            Some(source) => self.runtime_db()
+                .commit_prepared_external_input_evidence_with_input_query_source(
+                    &command, &work_request, &task_request,
+                    &self.inner.input_evidence_budget, source,
+                ),
+            None => self.runtime_db()
+                .commit_prepared_external_input_evidence_with_task_budget(
+                    &command, &work_request, &task_request,
+                    &self.inner.input_evidence_budget,
+                ),
+        };
         if matches!(&committed, Ok(InputMutationExecution::Replayed { .. })) {
             witness.mark_input_storage_replayed()?;
         }
@@ -240,6 +260,7 @@ impl RuntimeHost {
                                 input_delta: ack.input_delta,
                                 work_delta: ack.work_delta,
                                 task_delta: ack.task_delta,
+                                work_material_budget_views: ack.work_material_budget_views,
                                 task_material_budget_views: ack.task_material_budget_views,
                                 briefs: vec![actual.brief],
                                 audit_events: if actual.event_inserted {
@@ -289,6 +310,23 @@ impl RuntimeHost {
                             anyhow::ensure!(
                                 effect.work_delta.replace(work_delta).is_none(),
                                 "retention ACK repeated its Work scope"
+                            );
+                        }
+                        for (scope, guards) in ack.work_material_budget_views {
+                            let key = (scope.agent_id.clone(), scope.identity_incarnation);
+                            let (_, effect) = effects.entry(key).or_insert_with(|| {
+                                (
+                                    scope,
+                                    ExternalInputEvidenceEffects {
+                                        notify_memory_index: true,
+                                        notify_scheduler: true,
+                                        ..Default::default()
+                                    },
+                                )
+                            });
+                            anyhow::ensure!(
+                                effect.work_material_budget_views.replace(guards).is_none(),
+                                "retention ACK repeated its Work material scope"
                             );
                         }
                         for (scope, task_delta, guards) in ack.task_deltas {
@@ -410,6 +448,7 @@ impl RuntimeHost {
                 tasks.clone(),
                 scheduling.clone(),
                 effects.clone(),
+                &self.inner.input_evidence_budget,
             ) {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -422,11 +461,13 @@ impl RuntimeHost {
                         tasks.clone(),
                         scheduling.clone(),
                         effects,
+                        &self.inner.input_evidence_budget,
                     )?
                 }
             };
             let runtime = Arc::new(runtime);
             known.push(KnownCommit::State {
+                current_reads: runtime.current_read_domain(),
                 work,
 
                 tasks,

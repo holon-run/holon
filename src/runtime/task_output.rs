@@ -2,7 +2,8 @@
 use super::*;
 use crate::runtime::{
     input_evidence_budget::{
-        serialized_bytes, BudgetViewGuard, InputMemoryCategory, OwnedBytesEstimate,
+        borrowed_json_material, serialized_bytes, BudgetViewGuard, InputMemoryCategory,
+        OwnedBytesEstimate,
     },
     resident_input_evidence::{
         CapturedInputEvidence, InputEvidenceFamily, InputEvidenceKey, InputEvidenceReadError,
@@ -17,21 +18,81 @@ use crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest;
 
 /// Only selected Arcs/Pins and owned accounting; no root/domain/Runtime backref.
 struct TaskOutputRead {
-    tasks: CapturedTasks,
+    tasks: TaskOutputTasks,
     fact_index: usize,
     inputs: Option<CapturedInputEvidence>,
     _selectors: Arc<BudgetViewGuard>,
     material: OutputMaterialAllowance,
 }
 
+enum TaskOutputTasks {
+    Query(CapturedTasks),
+    Run(Arc<super::run_birth_sessions::RunBirthReportProjection>),
+}
+impl std::ops::Deref for TaskOutputTasks {
+    type Target = CapturedTasks;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Query(tasks) => tasks,
+            Self::Run(report) => &report.source.tasks,
+        }
+    }
+}
+#[cfg(test)]
+impl TaskOutputTasks {
+    fn query_mut_for_test(&mut self) -> &mut CapturedTasks {
+        match self {
+            Self::Query(tasks) => tasks,
+            Self::Run(_) => panic!("held Run source is immutable"),
+        }
+    }
+}
+
 /// An internal read carrier owns every selected/derived allocation until the
 /// caller's final synchronous wire serialization. It carries no runtime/root.
 pub(crate) struct TaskOutputResultRead {
     pub result: TaskOutputResult,
-    _role: TaskQueryLease,
+    _role: Option<TaskQueryLease>,
     _selected: TaskOutputRead,
     _render_budget: Arc<BudgetViewGuard>,
     _file_budget: Option<Arc<BudgetViewGuard>>,
+    material: (u64, usize),
+}
+
+/// The original render/file/source allocations follow the moved output DTO.
+/// RunOnce retains this opaque carrier beside its final owned response.
+pub(crate) struct RunTaskOutputLifetime {
+    _role: Option<TaskQueryLease>,
+    _selected: TaskOutputRead,
+    _render_budget: Arc<BudgetViewGuard>,
+    _file_budget: Option<Arc<BudgetViewGuard>>,
+}
+impl TaskOutputResultRead {
+    pub(in crate::runtime) fn into_run_response_parts(
+        self,
+    ) -> Result<(TaskOutputSnapshot, RunTaskOutputLifetime)> {
+        anyhow::ensure!(
+            matches!(&self._selected.tasks, TaskOutputTasks::Run(_)),
+            "Run response requires its original selected report"
+        );
+        let Self {
+            result,
+            _role,
+            _selected,
+            _render_budget,
+            _file_budget,
+            ..
+        } = self;
+        Ok((
+            result.task,
+            RunTaskOutputLifetime {
+                _role,
+                _selected,
+                _render_budget,
+                _file_budget,
+            },
+        ))
+    }
 }
 
 struct TaskOutputSnapshotRead {
@@ -39,6 +100,7 @@ struct TaskOutputSnapshotRead {
     selected: TaskOutputRead,
     render_budget: Arc<BudgetViewGuard>,
     file_budget: Option<Arc<BudgetViewGuard>>,
+    material: (u64, usize),
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +217,16 @@ impl TaskOutputRead {
         Ok(Some(message))
     }
 }
+#[path = "run_task_output_source.rs"]
+mod run_source;
+pub(in crate::runtime) use run_source::RunTaskOutputSelection;
+
+impl TaskOutputResultRead {
+    pub(in crate::runtime) fn material_estimate(&self) -> (u64, usize) {
+        self.material
+    }
+}
+
 impl RuntimeHandle {
     fn capture_task_output_query(
         &self,
@@ -259,7 +331,7 @@ impl RuntimeHandle {
             material = material.additional(bytes, records)?;
         }
         Ok(TaskOutputRead {
-            tasks,
+            tasks: TaskOutputTasks::Query(tasks),
             fact_index,
             inputs,
             _selectors: selectors,
@@ -385,10 +457,11 @@ impl RuntimeHandle {
                     retrieval_status,
                     task: rendered.snapshot,
                 },
-                _role: role,
+                _role: Some(role),
                 _selected: rendered.selected,
                 _render_budget: rendered.render_budget,
                 _file_budget: rendered.file_budget,
+                material: rendered.material,
             });
         }
     }
@@ -397,27 +470,29 @@ impl RuntimeHandle {
         read: TaskOutputRead,
     ) -> Result<TaskOutputSnapshotRead> {
         let projection = read.tasks.task_status_projection(&read.task().id)?;
-        let mut bytes = serialized_bytes(&(read.task(), projection))?
-            .checked_add(1024)
-            .context("Task output render bytes overflow")?;
-        if let Some(inputs) = &read.inputs {
-            for row in &inputs.records {
-                if let PreparedInputEvidence::Message(message) = &row.record {
-                    bytes = bytes
-                        .checked_add(serialized_bytes(message)?)
-                        .context("Task output Message bytes overflow")?;
-                }
+        // Borrow every native Task/Message value and object key before overlay,
+        // rendering or decoding owns a second tree. Record count is not row count.
+        let (mut bytes, mut nodes) = borrowed_json_material(&(read.task(), projection))?;
+        for row in read.inputs.iter().flat_map(|inputs| &inputs.records) {
+            if let PreparedInputEvidence::Message(message) = &row.record {
+                let (body_bytes, body_nodes) = borrowed_json_material(message)?;
+                bytes = bytes
+                    .checked_add(body_bytes)
+                    .context("Task output render bytes overflow")?;
+                nodes = nodes
+                    .checked_add(body_nodes)
+                    .context("Task output native count overflow")?;
             }
         }
+        let render_records = nodes
+            .checked_add(32)
+            .and_then(|n| n.checked_mul(8))
+            .context("Task output native copies overflow")?;
         let render_bytes = bytes
-            .checked_mul(8)
-            .context("Task output copies overflow")?;
-        let render_records = read
-            .inputs
-            .as_ref()
-            .map_or(1, |inputs| inputs.records.len() + 1)
-            .checked_mul(8)
-            .context("Task output count overflow")?;
+            .checked_add(1024)
+            .and_then(|n| n.checked_mul(8))
+            .and_then(|n| n.checked_add(u64::try_from(render_records).ok()?.checked_mul(256)?))
+            .context("Task output native render bytes overflow")?;
         let material = read.material.additional(render_bytes, render_records)?;
         let render_budget =
             self.task_output_owned_budget(&read.tasks.scope, render_bytes, render_records)?;
@@ -436,10 +511,11 @@ impl RuntimeHandle {
         let summary = task.summary.clone();
 
         let mut file_budget = None;
+        let mut file_material = (0, 0);
         let (full_output, output_path, result_summary, exit_status) =
             if task.kind == TaskKind::CommandTask {
                 let output_path = detail_string(&task.detail, "output_path");
-                let (output, budget) = self
+                let (output, budget, actual_file_material) = self
                     .read_command_task_output(
                         &read.tasks.scope,
                         &task,
@@ -448,6 +524,7 @@ impl RuntimeHandle {
                     )
                     .await?;
                 file_budget = budget;
+                file_material = actual_file_material;
                 let result_summary = detail_string(&task.detail, "output_summary")
                     .or_else(|| latest_message.as_ref().map(|message| message.text.clone()));
                 let exit_status = task
@@ -531,6 +608,10 @@ impl RuntimeHandle {
             selected: read,
             render_budget,
             file_budget,
+            material: {
+                let total = material.additional(file_material.0, file_material.1)?;
+                (total.bytes, total.records)
+            },
         })
     }
 
@@ -540,7 +621,7 @@ impl RuntimeHandle {
         task: &TaskRecord,
         output_path: Option<&str>,
         material: OutputMaterialAllowance,
-    ) -> Result<(String, Option<Arc<BudgetViewGuard>>)> {
+    ) -> Result<(String, Option<Arc<BudgetViewGuard>>, (u64, usize))> {
         use tokio::io::AsyncReadExt;
         let tokens = task
             .detail
@@ -554,15 +635,15 @@ impl RuntimeHandle {
         let fallback_output =
             || crate::tool::helpers::truncate_output_for_tokens(&fallback, tokens);
         let Some(path) = output_path else {
-            return Ok((fallback_output(), None));
+            return Ok((fallback_output(), None, (0, 0)));
         };
         let file = match tokio::fs::File::open(path).await {
             Ok(file) => file,
-            Err(_) => return Ok((fallback_output(), None)),
+            Err(_) => return Ok((fallback_output(), None, (0, 0))),
         };
         let len = match file.metadata().await {
             Ok(meta) => meta.len(),
-            Err(_) => return Ok((fallback_output(), None)),
+            Err(_) => return Ok((fallback_output(), None, (0, 0))),
         };
         let limit = len
             .checked_add(1)
@@ -585,8 +666,9 @@ impl RuntimeHandle {
                     tokens,
                 ),
                 Some(guard),
+                (bytes, 8),
             )),
-            _ => Ok((fallback_output(), Some(guard))),
+            _ => Ok((fallback_output(), Some(guard), (bytes, 8))),
         }
     }
 }
@@ -674,6 +756,7 @@ mod tests {
         let mut drift = runtime.capture_task_output_query(&role, &task.id, true)?;
         drift
             .tasks
+            .query_mut_for_test()
             .coverage
             .output
             .heads
@@ -764,6 +847,9 @@ mod tests {
     async fn explicit_file_output_checks_actual_length_before_buffer_allocation() -> Result<()> {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
+        runtime
+            .quiesce_context_resource_observer_task_for_test()
+            .await?;
         let task = task("file-budget-output");
         runtime
             .persist_task_transition(&task, "task_queued")
@@ -803,6 +889,9 @@ mod tests {
     async fn held_render_material_and_full_file_use_one_remaining_output_budget() -> Result<()> {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
+        runtime
+            .quiesce_context_resource_observer_task_for_test()
+            .await?;
         let task = task("combined-file-output");
         runtime
             .persist_task_transition(&task, "task_queued")
@@ -858,7 +947,7 @@ mod tests {
         );
         file.set_len(1024)?;
         drop(file);
-        let (output, file_guard) = runtime
+        let (output, file_guard, file_material) = runtime
             .read_command_task_output(
                 &read.tasks.scope,
                 read.task(),
@@ -867,6 +956,7 @@ mod tests {
             )
             .await?;
         assert_eq!(output.len(), 1024);
+        assert_eq!(file_material.1, 8);
         assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
         drop((output, file_guard));
         assert_eq!(
@@ -898,6 +988,9 @@ mod tests {
         use axum::response::IntoResponse;
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
+        runtime
+            .quiesce_context_resource_observer_task_for_test()
+            .await?;
         let home = tempfile::tempdir()?;
         let path = home.path().join("actual-wire-output.txt");
         let file_text = "accepted file output\n".repeat(256);

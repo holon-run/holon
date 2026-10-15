@@ -687,6 +687,7 @@ mod tests {
 
     fn fixture_prompt() -> EffectivePrompt {
         EffectivePrompt {
+            resource_pins: None,
             identity: AgentIdentityView {
                 agent_id: "default".into(),
                 name: None,
@@ -751,6 +752,7 @@ mod tests {
     #[test]
     fn build_provider_turn_request_marks_last_stable_and_agent_scoped_breakpoints() {
         let effective_prompt = EffectivePrompt {
+            resource_pins: None,
             identity: AgentIdentityView {
                 agent_id: "default".into(),
                 name: None,

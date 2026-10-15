@@ -18,10 +18,8 @@ use crate::{
 };
 
 use super::{
-    serialize_success,
-    work_item_action::WorkItemMutationResult,
-    work_item_query::{query_context, view_for_record},
-    BuiltinToolDefinition,
+    serialize_success, work_item_action::WorkItemMutationResult,
+    work_item_query::view_for_owned_work_item, BuiltinToolDefinition,
 };
 
 pub(crate) const NAME: &str = crate::tool::names::COMPLETE_WORK_ITEM;
@@ -179,8 +177,10 @@ async fn complete_with_report_candidate_inner(
         continuation_resumed,
         settlement,
         prepared,
+        result_read,
     ) = match dispatch {
-        crate::runtime::WorkItemCompletionDispatch::Prepared(prepared) => {
+        crate::runtime::WorkItemCompletionDispatch::Prepared(mut prepared) => {
+            let result_read = runtime.prepare_completion_result_read(&mut prepared)?;
             let settlement = prepared.settlement;
             (
                 prepared.record.clone(),
@@ -189,19 +189,26 @@ async fn complete_with_report_candidate_inner(
                 prepared.continuation_resumed.clone(),
                 settlement,
                 Some(prepared),
+                result_read,
             )
         }
-        crate::runtime::WorkItemCompletionDispatch::Unchanged(completed) => (
-            completed,
-            false,
-            false,
-            None,
-            crate::runtime::WorkItemCompletionSettlement::Detached,
-            None,
-        ),
+        crate::runtime::WorkItemCompletionDispatch::Unchanged(completed) => {
+            let result_read = runtime
+                .capture_unchanged_work_item_result_read(&completed)
+                .await?;
+            (
+                completed,
+                false,
+                false,
+                None,
+                crate::runtime::WorkItemCompletionSettlement::Detached,
+                None,
+                result_read,
+            )
+        }
     };
-    let context = query_context(runtime).await?;
-    let work_item = view_for_record(runtime, &context, completed, true, None, None).await?;
+    let (work_item, _result_material) = view_for_owned_work_item(runtime, result_read).await?;
+    drop(completed);
     let mut result = serde_json::to_value(
         WorkItemMutationResult::with_completion_transition(
             work_item,

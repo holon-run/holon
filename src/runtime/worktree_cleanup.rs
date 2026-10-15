@@ -1,5 +1,6 @@
 //! One cleanup policy, with explicit runtime and frozen Host execution adapters.
 use super::*;
+use crate::runtime::OriginalLifecycleNoopKind;
 use crate::runtime::{
     input_evidence_budget::{
         serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
@@ -161,19 +162,46 @@ pub(crate) async fn cleanup_frozen_worktree(
         guards: frozen.guards,
     })
 }
+#[cfg(test)]
 pub(super) async fn cleanup_runtime_metadata(
     runtime: &RuntimeHandle,
     task_id: &str,
     metadata: &mut serde_json::Value,
     reason: &str,
 ) -> Result<TaskOwnedWorktreeCleanup> {
-    cleanup_metadata(
-        &mut CleanupAdapter::Runtime(runtime),
-        task_id,
-        metadata,
-        reason,
-    )
-    .await
+    // Registration precedes moving the original metadata into the owned
+    // worker. No second Value tree crosses this physical continuation.
+    let request =
+        runtime.prepare_original_workspace_request_material(&(task_id, &*metadata, reason))?;
+    let task_id = task_id.to_owned();
+    let reason = reason.to_owned();
+    let runtime = runtime.clone();
+    let worker = runtime.clone();
+    let (input, receive_input) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    let (send, receive) = tokio::sync::oneshot::channel();
+    runtime.spawn_owned_mutation(async move {
+        let Ok(mut owned) = receive_input.await else { return; };
+        let result = cleanup_metadata(
+            &mut CleanupAdapter::Runtime { runtime: &worker, request: request.clone() },
+            &task_id, &mut owned, &reason,
+        ).await;
+        // Preserve the original already-mutated metadata even if an Audit ACK
+        // fails at its original branch position. FS is never retried here.
+        if let Err(error) = &result {
+            tracing::warn!(task_id=%task_id,error=%error,"original task worktree cleanup observation failed");
+        }
+        let _ = send.send((owned, result, request));
+    })?;
+    if let Err(original) = input.send(std::mem::take(metadata)) {
+        *metadata = original;
+        anyhow::bail!("original task worktree cleanup worker ended before input");
+    }
+    let (observed, result, request) = receive
+        .await
+        .context("original task worktree cleanup worker ended before reply")?;
+    *metadata = observed;
+    drop(request);
+    result
 }
 /// The original Control owns this pre-registered output reservation. Reuse the
 /// same cleanup policy/Git adapter; keep its historical audit behavior intact.
@@ -232,18 +260,39 @@ pub(crate) async fn cleanup_completion_worktree_for_test(
 }
 
 enum CleanupAdapter<'a> {
-    Runtime(&'a RuntimeHandle),
+    #[cfg(test)]
+    Runtime {
+        runtime: &'a RuntimeHandle,
+        request: Arc<crate::runtime::OriginalWorkspaceRequestMaterial>,
+    },
     Completion(&'a mut FrozenWorktreeCleanup),
     Frozen(&'a mut FrozenWorktreeCleanup),
 }
 impl CleanupAdapter<'_> {
-    fn audit(&mut self, event: &AuditEvent) -> Result<()> {
+    async fn audit(
+        &mut self,
+        _kind: OriginalLifecycleNoopKind,
+        _borrowed: &impl serde::Serialize,
+        build: impl FnOnce() -> AuditEvent,
+    ) -> Result<()> {
         match self {
-            Self::Runtime(runtime) => runtime.inner.storage.append_event(event),
+            #[cfg(test)]
+            Self::Runtime { runtime, request } => {
+                let audit = runtime.prepare_original_task_worktree_cleanup_observation(
+                    request.clone(),
+                    _kind,
+                    _borrowed,
+                    build,
+                )?;
+                runtime
+                    .finish_owned_original_workspace_observation(audit)
+                    .await
+            }
             Self::Completion(frozen) => {
+                let event = build();
                 // This reservation predates FS. Audit persistence belongs to the
                 // saved completion capsule, so a later SQL failure cannot redo Git.
-                let bytes = serialized_bytes(event).unwrap_or(u64::MAX);
+                let bytes = serialized_bytes(&event).unwrap_or(u64::MAX);
                 frozen
                     .completion
                     .as_ref()
@@ -253,7 +302,8 @@ impl CleanupAdapter<'_> {
                 Ok(())
             }
             Self::Frozen(frozen) => {
-                frozen.retain_material(usize::try_from(serialized_bytes(event)?)?, 1)?;
+                let event = build();
+                frozen.retain_material(usize::try_from(serialized_bytes(&event)?)?, 1)?;
                 frozen.audits.push(event.clone());
                 Ok(())
             }
@@ -261,7 +311,8 @@ impl CleanupAdapter<'_> {
     }
     async fn current_branch(&mut self, path: &Path) -> Result<String> {
         match self {
-            Self::Runtime(runtime) => runtime.current_worktree_branch(path).await,
+            #[cfg(test)]
+            Self::Runtime { runtime, .. } => runtime.current_worktree_branch(path).await,
             Self::Frozen(frozen) | Self::Completion(frozen) => {
                 frozen
                     .git(
@@ -276,7 +327,8 @@ impl CleanupAdapter<'_> {
     }
     async fn changed_files(&mut self, path: &Path) -> Result<Vec<String>> {
         match self {
-            Self::Runtime(runtime) => runtime.changed_files_for_worktree(path).await,
+            #[cfg(test)]
+            Self::Runtime { runtime, .. } => runtime.changed_files_for_worktree(path).await,
             Self::Frozen(frozen) | Self::Completion(frozen) => {
                 let status = frozen
                     .git(
@@ -323,7 +375,8 @@ impl CleanupAdapter<'_> {
         artifact: &TaskOwnedWorktreeArtifact,
     ) -> Result<TaskOwnedWorktreeRemoveOutcome> {
         match self {
-            Self::Runtime(runtime) => runtime.remove_task_owned_worktree(artifact).await,
+            #[cfg(test)]
+            Self::Runtime { runtime, .. } => runtime.remove_task_owned_worktree(artifact).await,
             Self::Frozen(frozen) | Self::Completion(frozen) => {
                 let repo = frozen.repo_root.clone();
                 let path = artifact
@@ -413,14 +466,22 @@ async fn cleanup_metadata(
             worktree["cleanup_status"] =
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::Failed.label());
             worktree["cleanup_error"] = serde_json::json!(error);
-            adapter.audit(&AuditEvent::legacy(
-                "task_worktree_cleanup_failed",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "reason": reason,
-                    "error": worktree["cleanup_error"],
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::TaskWorktreeCleanupFailed,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "task_worktree_cleanup_failed",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "reason": reason,
+                                "error": worktree["cleanup_error"],
+                            }),
+                        )
+                    },
+                )
+                .await?;
             return Ok(TaskOwnedWorktreeCleanup {
                 changed_files: Vec::new(),
                 status: TaskOwnedWorktreeCleanupStatus::Failed,
@@ -433,15 +494,23 @@ async fn cleanup_metadata(
             serde_json::json!(TaskOwnedWorktreeCleanupStatus::AlreadyRemoved.label());
         worktree["cleanup_reason"] = serde_json::json!("worktree_path_missing");
         worktree["auto_cleaned_up"] = serde_json::json!(true);
-        adapter.audit(&AuditEvent::legacy(
-            "task_worktree_cleanup_already_removed",
-            serde_json::json!({
-                "task_id": task_id,
-                "worktree_path": artifact.worktree_path,
-                "worktree_branch": artifact.worktree_branch,
-                "reason": reason,
-            }),
-        ))?;
+        adapter
+            .audit(
+                OriginalLifecycleNoopKind::TaskWorktreeCleanupAlreadyRemoved,
+                &(task_id, reason, &*worktree),
+                || {
+                    AuditEvent::legacy(
+                        "task_worktree_cleanup_already_removed",
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "worktree_path": artifact.worktree_path,
+                            "worktree_branch": artifact.worktree_branch,
+                            "reason": reason,
+                        }),
+                    )
+                },
+            )
+            .await?;
         return Ok(TaskOwnedWorktreeCleanup {
             changed_files: Vec::new(),
             status: TaskOwnedWorktreeCleanupStatus::AlreadyRemoved,
@@ -455,17 +524,25 @@ async fn cleanup_metadata(
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
             worktree["cleanup_reason"] = serde_json::json!("branch_mismatch");
             worktree["actual_branch"] = serde_json::json!(actual_branch);
-            adapter.audit(&AuditEvent::legacy(
-                "task_worktree_cleanup_retained",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "actual_branch": actual_branch,
-                    "reason": "branch_mismatch",
-                    "cleanup_trigger": reason,
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::TaskWorktreeCleanupRetained,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "task_worktree_cleanup_retained",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "worktree_path": artifact.worktree_path,
+                                "worktree_branch": artifact.worktree_branch,
+                                "actual_branch": actual_branch,
+                                "reason": "branch_mismatch",
+                                "cleanup_trigger": reason,
+                            }),
+                        )
+                    },
+                )
+                .await?;
             return Ok(TaskOwnedWorktreeCleanup {
                 changed_files: changed_files_from_metadata(worktree),
                 status: TaskOwnedWorktreeCleanupStatus::Retained,
@@ -477,17 +554,25 @@ async fn cleanup_metadata(
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
             worktree["cleanup_reason"] = serde_json::json!("branch_inspection_failed");
             worktree["cleanup_error"] = serde_json::json!(error);
-            adapter.audit(&AuditEvent::legacy(
-                "task_worktree_cleanup_retained",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "reason": "branch_inspection_failed",
-                    "cleanup_trigger": reason,
-                    "error": worktree["cleanup_error"],
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::TaskWorktreeCleanupRetained,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "task_worktree_cleanup_retained",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "worktree_path": artifact.worktree_path,
+                                "worktree_branch": artifact.worktree_branch,
+                                "reason": "branch_inspection_failed",
+                                "cleanup_trigger": reason,
+                                "error": worktree["cleanup_error"],
+                            }),
+                        )
+                    },
+                )
+                .await?;
             return Ok(TaskOwnedWorktreeCleanup {
                 changed_files: changed_files_from_metadata(worktree),
                 status: TaskOwnedWorktreeCleanupStatus::Retained,
@@ -504,17 +589,25 @@ async fn cleanup_metadata(
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
             worktree["cleanup_reason"] = serde_json::json!("change_detection_failed");
             worktree["cleanup_error"] = serde_json::json!(error);
-            adapter.audit(&AuditEvent::legacy(
-                "task_worktree_cleanup_retained",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "reason": "change_detection_failed",
-                    "cleanup_trigger": reason,
-                    "error": worktree["cleanup_error"],
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::TaskWorktreeCleanupRetained,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "task_worktree_cleanup_retained",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "worktree_path": artifact.worktree_path,
+                                "worktree_branch": artifact.worktree_branch,
+                                "reason": "change_detection_failed",
+                                "cleanup_trigger": reason,
+                                "error": worktree["cleanup_error"],
+                            }),
+                        )
+                    },
+                )
+                .await?;
             return Ok(TaskOwnedWorktreeCleanup {
                 changed_files: changed_files_from_metadata(worktree),
                 status: TaskOwnedWorktreeCleanupStatus::Retained,
@@ -528,17 +621,25 @@ async fn cleanup_metadata(
             serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
         worktree["cleanup_reason"] = serde_json::json!("changed_files");
         worktree["retained_for_review"] = serde_json::json!(true);
-        adapter.audit(&AuditEvent::legacy(
-            "worktree_retained_for_review",
-            serde_json::json!({
-                "task_id": task_id,
-                "worktree_path": artifact.worktree_path,
-                "worktree_branch": artifact.worktree_branch,
-                "changed_files": changed_files,
-                "reason": "changes detected in worktree",
-                "cleanup_trigger": reason,
-            }),
-        ))?;
+        adapter
+            .audit(
+                OriginalLifecycleNoopKind::WorktreeRetainedForReview,
+                &(task_id, reason, &*worktree),
+                || {
+                    AuditEvent::legacy(
+                        "worktree_retained_for_review",
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "worktree_path": artifact.worktree_path,
+                            "worktree_branch": artifact.worktree_branch,
+                            "changed_files": changed_files,
+                            "reason": "changes detected in worktree",
+                            "cleanup_trigger": reason,
+                        }),
+                    )
+                },
+            )
+            .await?;
         return Ok(TaskOwnedWorktreeCleanup {
             changed_files,
             status: TaskOwnedWorktreeCleanupStatus::Retained,
@@ -561,27 +662,43 @@ async fn cleanup_metadata(
                 });
             if let Some(error) = remove_outcome.branch_delete_error.as_ref() {
                 worktree["branch_cleanup_error"] = serde_json::json!(error);
-                adapter.audit(&AuditEvent::legacy(
-                    "task_worktree_branch_cleanup_retained",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "worktree_path": artifact.worktree_path,
-                        "worktree_branch": artifact.worktree_branch,
-                        "reason": reason,
-                        "error": error,
-                    }),
-                ))?;
+                adapter
+                    .audit(
+                        OriginalLifecycleNoopKind::TaskWorktreeBranchCleanupRetained,
+                        &(task_id, reason, &*worktree),
+                        || {
+                            AuditEvent::legacy(
+                                "task_worktree_branch_cleanup_retained",
+                                serde_json::json!({
+                                    "task_id": task_id,
+                                    "worktree_path": artifact.worktree_path,
+                                    "worktree_branch": artifact.worktree_branch,
+                                    "reason": reason,
+                                    "error": error,
+                                }),
+                            )
+                        },
+                    )
+                    .await?;
             }
-            adapter.audit(&AuditEvent::legacy(
-                "worktree_auto_cleaned_up",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "reason": reason,
-                    "branch_cleanup_status": worktree["branch_cleanup_status"],
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::WorktreeAutoCleanedUp,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "worktree_auto_cleaned_up",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "worktree_path": artifact.worktree_path,
+                                "worktree_branch": artifact.worktree_branch,
+                                "reason": reason,
+                                "branch_cleanup_status": worktree["branch_cleanup_status"],
+                            }),
+                        )
+                    },
+                )
+                .await?;
             Ok(TaskOwnedWorktreeCleanup {
                 changed_files,
                 status: TaskOwnedWorktreeCleanupStatus::Cleaned,
@@ -592,16 +709,24 @@ async fn cleanup_metadata(
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::AlreadyRemoved.label());
             worktree["cleanup_reason"] = serde_json::json!("worktree_path_missing_after_remove");
             worktree["auto_cleaned_up"] = serde_json::json!(true);
-            adapter.audit(&AuditEvent::legacy(
-                "task_worktree_cleanup_already_removed",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "reason": reason,
-                    "remove_error": err.to_string(),
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::TaskWorktreeCleanupAlreadyRemoved,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "task_worktree_cleanup_already_removed",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "worktree_path": artifact.worktree_path,
+                                "worktree_branch": artifact.worktree_branch,
+                                "reason": reason,
+                                "remove_error": err.to_string(),
+                            }),
+                        )
+                    },
+                )
+                .await?;
             Ok(TaskOwnedWorktreeCleanup {
                 changed_files,
                 status: TaskOwnedWorktreeCleanupStatus::AlreadyRemoved,
@@ -612,16 +737,24 @@ async fn cleanup_metadata(
             worktree["cleanup_status"] =
                 serde_json::json!(TaskOwnedWorktreeCleanupStatus::Failed.label());
             worktree["cleanup_error"] = serde_json::json!(error);
-            adapter.audit(&AuditEvent::legacy(
-                "worktree_auto_cleanup_failed",
-                serde_json::json!({
-                    "task_id": task_id,
-                    "worktree_path": artifact.worktree_path,
-                    "worktree_branch": artifact.worktree_branch,
-                    "reason": reason,
-                    "error": worktree["cleanup_error"],
-                }),
-            ))?;
+            adapter
+                .audit(
+                    OriginalLifecycleNoopKind::WorktreeAutoCleanupFailed,
+                    &(task_id, reason, &*worktree),
+                    || {
+                        AuditEvent::legacy(
+                            "worktree_auto_cleanup_failed",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "worktree_path": artifact.worktree_path,
+                                "worktree_branch": artifact.worktree_branch,
+                                "reason": reason,
+                                "error": worktree["cleanup_error"],
+                            }),
+                        )
+                    },
+                )
+                .await?;
             Ok(TaskOwnedWorktreeCleanup {
                 changed_files,
                 status: TaskOwnedWorktreeCleanupStatus::Failed,
@@ -633,3 +766,7 @@ async fn cleanup_metadata(
 #[cfg(test)]
 #[path = "worktree_cleanup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "worktree_cleanup_runtime_audit_tests.rs"]
+mod runtime_audits;

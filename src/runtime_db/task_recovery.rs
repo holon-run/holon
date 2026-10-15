@@ -273,9 +273,15 @@ fn prepare(
     budget: &InputEvidenceBudgetLedger,
     original: bool,
     query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
-    material: Option<&mut task_snapshot::read_preparation::TaskReadMaterial<'_>>,
+    mut material: Option<&mut task_snapshot::read_preparation::TaskReadMaterial<'_>>,
 ) -> Result<PreparedTaskDomains> {
-    let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
+    let facts = if let Some(phase) = material.as_deref_mut() {
+        phase
+            .scope_facts_tx(tx, scope, original)?
+            .ok_or(task_snapshot::TaskSnapshotError::RetiredScope)?
+    } else {
+        ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?
+    };
     ensure!(
         facts.state.as_ref() == Some(state) && facts.control_revision.is_some(),
         "joint Task preparation State differs from its original view"
@@ -514,18 +520,20 @@ fn current_dependencies(
     );
     // The grouped original recovery must debit the same remaining allowance
     // before these distinct selectors coexist with its primary Task bodies.
-    if let Some(material) = material {
-        material.charge_ids(bytes, records)?;
-    }
-    // Reserve actual encoded ID copies before allocating the destination sets.
-    let guard = budget.register_owned_bytes(
-        tasks.scope(),
-        InputMemoryCategory::Candidate,
-        OwnedBytesEstimate {
-            payload_bytes: 0,
-            metadata_estimate_bytes: u64::try_from(bytes)?,
-        },
-    )?;
+    // The phase's original allocation guard also follows the returned selectors.
+    // It is the same allocation, not a second ledger registration.
+    let guard = if let Some(material) = material {
+        material.charge_ids_for_handoff(bytes, records)?
+    } else {
+        budget.register_owned_bytes(
+            tasks.scope(),
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: u64::try_from(bytes)?,
+            },
+        )?
+    };
     let mut inputs = BTreeSet::new();
     let mut works = BTreeSet::new();
     visit_current_dependencies(&current, &binding_tasks, |family, id| {

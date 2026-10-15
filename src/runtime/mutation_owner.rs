@@ -39,13 +39,17 @@ pub(crate) enum RecoveryPhase {
     NeedsReconcile,
 }
 
+#[path = "mutation_owner/identity_publication.rs"]
+mod identity_publication;
+
 /// Exact acknowledged identity facts, including an explicitly absent state row.
 /// A different identity incarnation describes retirement of this slot; it must
 /// never carry an AgentState belonging to that successor incarnation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct IdentityMutationFacts {
     pub identity: Option<Arc<AgentIdentityRecord>>,
     pub state: Option<Arc<AgentState>>,
+    pub(crate) _identity_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +62,7 @@ pub(crate) enum KnownCommit {
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
+        current_reads: Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>>,
         runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
     },
     Metadata(Arc<IdentityMutationFacts>),
@@ -81,6 +86,7 @@ impl KnownCommit {
                     work: aw,
                     tasks: at,
                     scheduling: asg,
+                    current_reads: ac,
                     runtime: ar,
                 },
                 Self::State {
@@ -90,6 +96,7 @@ impl KnownCommit {
                     work: bw,
                     tasks: bt,
                     scheduling: bsg,
+                    current_reads: bc,
                     runtime: br,
                 },
             ) => {
@@ -112,6 +119,11 @@ impl KnownCommit {
                     && match (at, bt) {
                         (None, None) => true,
                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        _ => false,
+                    }
+                    && match (ac, bc) {
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        (None, None) => true,
                         _ => false,
                     }
                     && match (asg, bsg) {
@@ -204,6 +216,9 @@ pub(crate) enum MutationOwnerError {
 
 #[derive(Debug, Default)]
 struct Publication {
+    // Only this actual metadata ACK owns identity; State ACKs inherit it.
+    identity: Option<Arc<AgentIdentityRecord>>,
+    identity_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     epoch: u64,
     generation: u64,
     recovery: Option<RecoveryRecord>,
@@ -216,6 +231,8 @@ struct MutationOwnerSlot {
     publication: Mutex<Publication>,
     // Load/store only after validating epoch and fence under publication.
     root: ArcSwapOption<PostureObservation>,
+    event_queries: super::current_event_queries::CurrentEventQueryRegistry,
+    input_queries: super::input_queries::InputQueryRegistry,
 }
 
 #[derive(Debug)]
@@ -230,12 +247,20 @@ impl Drop for OwnerLifetime {
             return;
         };
         let observation = {
-            let publication = slot.publication.lock().expect("publication poisoned");
+            let mut publication = slot.publication.lock().expect("publication poisoned");
             if publication.epoch == self.epoch {
                 // Keep unresolved committed facts for the next owner to recover.
-                slot.root.swap(None)
+                let identity = if publication.recovery.is_none() {
+                    (
+                        publication.identity.take(),
+                        publication.identity_budget.take(),
+                    )
+                } else {
+                    (None, None)
+                };
+                (slot.root.swap(None), identity)
             } else {
-                None
+                (None, (None, None))
             }
         };
         drop(observation);
@@ -272,7 +297,7 @@ impl MutationOwnerRegistry {
             .clone()
             .try_lock_owned()
             .map_err(|_| MutationOwnerError::Busy)?;
-        let (epoch, lifetime, old_root) = {
+        let (epoch, lifetime, old_root, old_identity) = {
             let mut publication = slot.publication.lock().expect("publication poisoned");
             publication.epoch = publication
                 .epoch
@@ -280,6 +305,14 @@ impl MutationOwnerRegistry {
                 .expect("owner epoch exhausted");
             publication.generation = 0;
             let old_root = slot.root.swap(None);
+            let old_identity = if publication.recovery.is_none() {
+                (
+                    publication.identity.take(),
+                    publication.identity_budget.take(),
+                )
+            } else {
+                (None, None)
+            };
             if let Some(recovery) = publication.recovery.as_mut() {
                 recovery.phase = RecoveryPhase::NeedsReconcile;
             }
@@ -290,9 +323,9 @@ impl MutationOwnerRegistry {
                 slot: Arc::downgrade(&slot),
             });
             publication.lifetime = Arc::downgrade(&lifetime);
-            (publication.epoch, lifetime, old_root)
+            (publication.epoch, lifetime, old_root, old_identity)
         };
-        drop(old_root);
+        drop((old_root, old_identity));
         let owner = MutationOwner {
             agent_id: agent_id.to_owned(),
             incarnation,
@@ -304,6 +337,7 @@ impl MutationOwnerRegistry {
             owner: owner.clone(),
             _guard: guard,
             ticket: None,
+            acquisition_material: None,
         };
         Ok((owner, reservation))
     }
@@ -355,6 +389,18 @@ pub(crate) struct MutationOwner {
 }
 
 impl MutationOwner {
+    pub(in crate::runtime) fn input_queries(
+        &self,
+    ) -> Result<&super::input_queries::InputQueryRegistry, MutationOwnerError> {
+        self.validate_epoch()?;
+        Ok(&self.slot.input_queries)
+    }
+    pub(crate) fn current_event_queries(
+        &self,
+    ) -> Result<&super::current_event_queries::CurrentEventQueryRegistry, MutationOwnerError> {
+        self.validate_epoch()?;
+        Ok(&self.slot.event_queries)
+    }
     pub(crate) fn owner_epoch(&self) -> u64 {
         self.epoch
     }
@@ -394,6 +440,7 @@ impl MutationOwner {
             owner: self.clone(),
             _guard: guard,
             ticket: None,
+            acquisition_material: None,
         })
     }
 
@@ -481,6 +528,7 @@ impl MutationOwner {
             owner: self.clone(),
             _guard: guard,
             ticket: None,
+            acquisition_material: None,
         })
     }
 
@@ -519,9 +567,154 @@ pub(crate) struct MutationReservation {
     owner: MutationOwner,
     _guard: OwnedMutexGuard<()>,
     ticket: Option<RecoveryKey>,
+    acquisition_material: Option<Arc<super::OriginalMutationAcquisitionMaterial>>,
+}
+
+/// Read selectors frozen by an actual original reservation. This carrier grants
+/// neither an Input body nor a new write and has no owner/root back reference.
+#[derive(Debug)]
+pub(crate) struct OriginalInputQuerySource {
+    snapshot: super::input_queries::InputQuerySnapshot,
+    owner_epoch: u64,
+}
+impl OriginalInputQuerySource {
+    pub(crate) fn roles(&self) -> &super::input_queries::InputQuerySnapshot {
+        &self.snapshot
+    }
+    pub(crate) fn owner_epoch(&self) -> u64 {
+        self.owner_epoch
+    }
+    pub(crate) fn remaining_limits(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+    ) -> anyhow::Result<(usize, usize)> {
+        self.roles().validate_binding(scope, self.owner_epoch(), ledger)?;
+        let (bytes, nodes) = self.roles().material_estimate();
+        let bytes = usize::try_from(bytes)?;
+        let remaining = (
+            limits.0.min(64 * 1024 * 1024).checked_sub(bytes),
+            limits.1.min(65_536).checked_sub(nodes),
+        );
+        let (Some(bytes), Some(nodes)) = remaining else {
+            anyhow::bail!(super::input_queries::InputQueryError::ResourceExhausted(
+                "original writer selectors"
+            ));
+        };
+        Ok((bytes, nodes))
+    }
 }
 
 impl MutationReservation {
+    pub(crate) fn original_acquisition_material(
+        &self,
+    ) -> Option<&Arc<super::OriginalMutationAcquisitionMaterial>> {
+        self.acquisition_material.as_ref()
+    }
+    pub(in crate::runtime) fn attach_original_acquisition_material(
+        &mut self,
+        material: Arc<super::OriginalMutationAcquisitionMaterial>,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.acquisition_material.is_none(),
+            "mutation acquisition material already attached"
+        );
+        let scope = super::resident_input_evidence::InputEvidenceScope {
+            agent_id: self.agent_id().into(),
+            identity_incarnation: self.identity_incarnation(),
+        };
+        material.validate(&scope, self.owner_epoch(), ledger)?;
+        self.acquisition_material = Some(material);
+        Ok(())
+    }
+    /// Empty is an actual role observation; None is a missing source seam.
+    pub(crate) fn input_query_source(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+    ) -> anyhow::Result<Arc<OriginalInputQuerySource>> {
+        anyhow::ensure!(
+            scope.agent_id == self.agent_id()
+                && scope.identity_incarnation == self.identity_incarnation(),
+            "Input source differs from original reservation"
+        );
+        let limits = super::input_queries::actual_query_material_limits(ledger, limits)?;
+        // The candidate/base allocation already exists. Debit its actual guard
+        // before the registry makes any selector, map, ID or scope copy.
+        let acquisition = self.original_acquisition_material();
+        let registry_limits = match acquisition {
+            Some(material) => {
+                material.validate(scope,self.owner_epoch(),ledger)?;
+                let cost=material.material_estimate();
+                let remaining=(limits.0.checked_sub(usize::try_from(cost.0)?),
+                    limits.1.checked_sub(cost.1));
+                let (Some(bytes),Some(nodes))=remaining else {
+                    anyhow::bail!(super::input_queries::InputQueryError::ResourceExhausted(
+                        "mutation acquisition prior"));
+                };
+                (bytes,nodes)
+            }
+            None => limits,
+        };
+        let mut snapshot = self.owner.input_queries()?.snapshot(
+            scope, self.owner_epoch(), ledger, registry_limits,
+        )?;
+        if let Some(material)=acquisition {
+            snapshot=snapshot.with_original_acquisition(material.clone(),ledger,limits)?;
+        }
+        // An original pending recovery still carries its real live selectors,
+        // but cannot acquire a Ready query baseline from the old publication.
+        let root = match self.capture_ready_snapshot() {
+            Ok(root) => root,
+            Err(MutationOwnerError::NeedsReconcile(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(inputs) = root.as_ref().and_then(|root| root.input_evidence.as_ref()) {
+            anyhow::ensure!(inputs.scope() == scope && inputs.shares_query_ledger(ledger),
+                "original Input query baseline differs from reservation scope/ledger");
+            let publication = inputs.original_publication_material(ledger, limits, snapshot.material_estimate())?;
+            snapshot = snapshot.with_original_publication(publication, ledger, limits)?;
+            anyhow::ensure!(snapshot.original_publication_matches(inputs, ledger)?,
+                "Input publication metadata changed while freezing its original source");
+            snapshot = snapshot.with_original_base(inputs.query_coverage(), ledger, limits)?;
+        }
+        // The snapshot's pre-copy reservation also covers this finite Arc slot.
+        Ok(Arc::new(OriginalInputQuerySource {
+            snapshot, owner_epoch: self.owner_epoch(),
+        }))
+    }
+    /// Weak Input roles share this original owner with loaded and cold writers.
+    pub(crate) fn input_query_roles(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+    ) -> anyhow::Result<Option<super::input_queries::InputQuerySnapshot>> {
+        anyhow::ensure!(
+            scope.agent_id == self.agent_id()
+                && scope.identity_incarnation == self.identity_incarnation(),
+            "Input role request differs from original reservation"
+        );
+        self.owner.input_queries()?.snapshot_if_live(scope, self.owner_epoch(), ledger, limits)
+    }
+    pub(crate) fn current_event_roles(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+    ) -> anyhow::Result<Option<super::current_event_queries::CurrentEventRoleSnapshot>> {
+        anyhow::ensure!(
+            scope.agent_id == self.agent_id()
+                && scope.identity_incarnation == self.identity_incarnation(),
+            "Event role request differs from original reservation"
+        );
+        self.owner
+            .current_event_queries()?
+            .snapshot(scope, self.owner_epoch(), ledger, limits)
+    }
     pub(crate) fn owner_epoch(&self) -> u64 {
         self.owner.epoch
     }
@@ -579,6 +772,16 @@ impl MutationReservation {
             .and_then(|root| root.scheduling.clone()))
     }
 
+    pub(crate) fn prepared_current_reads_for_state_only_commit(
+        &self,
+    ) -> Result<Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>>, MutationOwnerError>
+    {
+        Ok(self
+            .owner
+            .capture()?
+            .and_then(|root| root.current_reads.clone()))
+    }
+
     pub(crate) fn validate_owner(&self, owner: &MutationOwner) -> Result<(), MutationOwnerError> {
         if self.owner.epoch != owner.epoch || !Arc::ptr_eq(&self.owner.slot, &owner.slot) {
             return Err(MutationOwnerError::Replaced);
@@ -625,7 +828,11 @@ impl MutationReservation {
         Ok(())
     }
 
-    fn validate_known(&self, known: &KnownCommit) -> Result<(), MutationOwnerError> {
+    fn validate_known(
+        &self,
+        known: &KnownCommit,
+        publication: &Publication,
+    ) -> Result<(), MutationOwnerError> {
         if known
             .state()
             .is_some_and(|state| state.id != self.owner.agent_id)
@@ -693,7 +900,41 @@ impl MutationReservation {
                 return Err(MutationOwnerError::TicketMismatch);
             }
         }
-        if let KnownCommit::Metadata(facts) = known {
+        if let KnownCommit::State {
+            state,
+            current_reads: Some(domain),
+            ..
+        } = known
+        {
+            if domain.scope().agent_id != self.owner.agent_id
+                || domain.scope().identity_incarnation != self.owner.incarnation
+                || domain.validate_state(state).is_err()
+            {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+        }
+        let identity_facts = match known {
+            KnownCommit::Metadata(facts) => Some(facts.as_ref()),
+            KnownCommit::State {
+                runtime: Some(runtime),
+                ..
+            } => runtime.acknowledged_identity(),
+            _ => None,
+        };
+        if let KnownCommit::State {
+            current_reads: Some(domain),
+            ..
+        } = known
+        {
+            let identity = identity_facts
+                .and_then(|facts| facts.identity.as_deref())
+                .or(publication.identity.as_deref())
+                .ok_or(MutationOwnerError::TicketMismatch)?;
+            if domain.validate_identity(identity).is_err() {
+                return Err(MutationOwnerError::TicketMismatch);
+            }
+        }
+        if let Some(facts) = identity_facts {
             if let Some(identity) = &facts.identity {
                 if identity.agent_id != self.owner.agent_id
                     || (identity.incarnation != self.owner.incarnation && facts.state.is_some())
@@ -823,7 +1064,7 @@ impl MutationReservation {
             reservations.iter().zip(&publications).zip(&known)
         {
             reservation.check_ticket(publication)?;
-            reservation.validate_known(facts)?;
+            reservation.validate_known(facts, publication)?;
             if publication
                 .recovery
                 .as_ref()
@@ -1189,7 +1430,7 @@ impl MutationReservation {
                     }
                 });
                 if stop_specific {
-                    reservation.validate_known(facts)?;
+                    reservation.validate_known(facts, publication)?;
                     continue;
                 }
                 // A sealed sparse proof cannot fall through to a broader route.
@@ -1245,7 +1486,7 @@ impl MutationReservation {
                     }
                     _ => return Err(MutationOwnerError::TicketMismatch),
                 }
-                reservation.validate_known(facts)?;
+                reservation.validate_known(facts, publication)?;
             }
             for (&index, facts) in selected.iter().zip(known) {
                 let recovery = publications[index]
@@ -1317,7 +1558,7 @@ impl MutationReservation {
                     episodes: Some(_), ..
                 },
             ) => {
-                reservations[0].validate_known(&known)?;
+                reservations[0].validate_known(&known, &publications[0])?;
                 let recovery = publications[0].recovery.as_mut().expect("checked recovery");
                 recovery.set_known(known);
                 recovery.phase = RecoveryPhase::NeedsReconcile;
@@ -1328,7 +1569,7 @@ impl MutationReservation {
             // state through this retired owner slot.
             Some(known @ KnownCommit::Metadata(_)) => {
                 self::validate_retired_episode_facts(&known, reservations[0].owner.incarnation)?;
-                reservations[0].validate_known(&known)?;
+                reservations[0].validate_known(&known, &publications[0])?;
                 let recovery = publications[0].recovery.as_mut().expect("checked recovery");
                 recovery.set_known(known);
                 recovery.phase = RecoveryPhase::NeedsReconcile;
@@ -1439,7 +1680,7 @@ impl MutationReservation {
                     if !saved.same_facts(facts) {
                         return Err(MutationOwnerError::TicketMismatch);
                     }
-                    reservation.validate_known(facts)?;
+                    reservation.validate_known(facts, publication)?;
                 }
                 _ => return Err(MutationOwnerError::TicketMismatch),
             }
@@ -1583,6 +1824,26 @@ impl MutationReservation {
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
     ) -> Result<(), MutationOwnerError> {
+        self.committed_prepared_with_current_read_domains(
+            state,
+            episodes,
+            input_evidence,
+            work,
+            tasks,
+            scheduling,
+            None,
+        )
+    }
+    pub(crate) fn committed_prepared_with_current_read_domains(
+        &self,
+        state: Arc<AgentState>,
+        episodes: Option<Arc<ResidentEpisodes>>,
+        input_evidence: Option<Arc<ResidentInputEvidence>>,
+        work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+        tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
+        scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
+        current_reads: Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>>,
+    ) -> Result<(), MutationOwnerError> {
         let mut publication = self
             .owner
             .slot
@@ -1595,6 +1856,7 @@ impl MutationReservation {
             return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
         }
         let known = KnownCommit::State {
+            current_reads,
             state,
             episodes,
             input_evidence,
@@ -1603,7 +1865,7 @@ impl MutationReservation {
             scheduling,
             runtime: recovery.committed_runtime.clone(),
         };
-        self.validate_known(&known)?;
+        self.validate_known(&known, &publication)?;
         if recovery
             .known
             .as_ref()
@@ -1763,8 +2025,26 @@ impl MutationReservation {
             KnownCommit::State { scheduling, .. } => scheduling.clone(),
             KnownCommit::Metadata(_) => None,
         };
+        let current_reads = match &known {
+            KnownCommit::State { current_reads, .. } => current_reads.clone(),
+            KnownCommit::Metadata(_) => None,
+        };
+        let identity_facts = match &known {
+            KnownCommit::Metadata(facts) => Some(facts.as_ref()),
+            KnownCommit::State {
+                runtime: Some(runtime),
+                ..
+            } => runtime.acknowledged_identity(),
+            _ => None,
+        };
+        if let Some(facts) = identity_facts {
+            publication.identity = facts.identity.clone();
+            publication.identity_budget = facts._identity_budget.clone();
+        }
         let observation = known.state().map(|state| {
             Arc::new(PostureObservation {
+                identity: publication.identity.clone(),
+                _identity_budget: publication.identity_budget.clone(),
                 token: PublicationToken {
                     identity_incarnation: self.owner.incarnation,
                     owner_epoch: self.owner.epoch,
@@ -1776,6 +2056,7 @@ impl MutationReservation {
                 work,
                 tasks,
                 scheduling,
+                current_reads,
             })
         });
         self.owner.slot.root.store(observation.clone());

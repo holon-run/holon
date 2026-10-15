@@ -16,7 +16,7 @@ fn request() -> tasks::TaskDomainLoadRequest {
     tasks::TaskDomainLoadRequest {
         query: Default::default(),
         capture: TaskCaptureRequest::current(),
-        record_limit: 4096,
+        record_limit: 65536,
         byte_limit: 4 * 1024 * 1024,
     }
 }

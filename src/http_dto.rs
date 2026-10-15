@@ -658,3 +658,7 @@ mod work_status_tests {
         assert!(value.get("waiting_for").is_none());
     }
 }
+
+#[path = "http_dto/borrowed_compact.rs"]
+mod borrowed_compact;
+pub(crate) use borrowed_compact::SlimAgentDtoRef;

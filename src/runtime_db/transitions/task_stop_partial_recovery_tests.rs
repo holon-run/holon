@@ -73,6 +73,7 @@ async fn incomplete_delivered_lost_ack_installs_actual_queue_work_input_but_no_t
     assert!(recover(&f, &mut reservations, &l)?);
     let known = MutationReservation::validate_group_known(&reservations)?;
     let KnownCommit::State {
+        current_reads: Some(current_reads),
         state,
         episodes: Some(_),
         input_evidence: Some(inputs),
@@ -85,6 +86,8 @@ async fn incomplete_delivered_lost_ack_installs_actual_queue_work_input_but_no_t
         panic!("partial ACK lost ordinary domains")
     };
     assert_eq!(state.pending, 1);
+    current_reads.validate_state(state)?;
+    assert_eq!(current_reads.scope(), &f.scope);
     assert_eq!(scheduling.scope(), &f.scope);
     let coverage = scheduling.coverage();
     assert!(
@@ -141,6 +144,10 @@ async fn incomplete_delivered_lost_ack_installs_actual_queue_work_input_but_no_t
     MutationReservation::publish_all_known(&mut reservations)?;
     let published = owner.capture()?.unwrap();
     assert!(published.tasks.is_none());
+    assert!(Arc::ptr_eq(
+        published.current_reads.as_ref().unwrap(),
+        current_reads
+    ));
     assert!(Arc::ptr_eq(
         published
             .scheduling
@@ -222,6 +229,7 @@ async fn observed_sparse_result_replay_installs_current_domains_without_old_noti
     let known = MutationReservation::validate_group_known(&reservations)?;
     let KnownCommit::State {
         tasks: None,
+        current_reads: Some(current_reads),
         runtime: Some(facts),
         ..
     } = known[0].as_ref().unwrap()
@@ -235,6 +243,15 @@ async fn observed_sparse_result_replay_installs_current_domains_without_old_noti
             && !effects.notify_memory_index
     );
     assert_eq!(facts.state.pending, 1);
+    current_reads.validate_state(&facts.state)?;
+    assert!(current_reads
+        .capture(
+            &crate::runtime::current_read_facts::CurrentReadRequest::current(
+                64 * 1024 * 1024,
+                65536
+            )
+        )?
+        .has_queued());
     Ok(())
 }
 
@@ -325,5 +342,129 @@ async fn metadata_only_incomplete_phase_keeps_pre_sql_observation_without_readin
         current.work.as_ref().unwrap()
     ));
     assert!(current.tasks.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_delivered_result_with_unknown_terminal_queue_recovers_real_domains_but_current_none(
+) -> Result<()> {
+    let f = Fixture::new()?;
+    let l = ledger()?;
+    let source = source(&f, &l, false, false)?;
+    f.db.transaction(|tx| {
+        upsert_queue_entry_tx(
+            tx,
+            &QueueEntryRecord {
+                message_id: "old-unqualified-terminal-queue".into(),
+                agent_id: f.scope.agent_id.clone(),
+                priority: Priority::Next,
+                status: QueueEntryStatus::Processed,
+                created_at: f.at,
+                updated_at: f.at,
+            },
+        )?;
+        Ok(())
+    })?;
+    incomplete(&f)?;
+    let p = PreparedInputTransition::task_stop_result(&source.record, &request(), &l)?;
+    let (owner, mut reservations, witness) = original_attempt(&f, &p).await?;
+    let InputMutationExecution::Committed { value, receipt } = commit(&f, &p, &l)? else {
+        unreachable!()
+    };
+    assert!(value
+        .effects
+        .current_read_maintenance
+        .as_ref()
+        .unwrap()
+        .resident()
+        .is_none());
+    assert_eq!(value.effects.messages.len(), 1);
+    drop(value);
+    witness.finish_original_attempt();
+    assert!(recover(&f, &mut reservations, &l)?);
+    let known = MutationReservation::validate_group_known(&reservations)?;
+    let KnownCommit::State {
+        current_reads: None,
+        tasks: None,
+        state,
+        input_evidence: Some(inputs),
+        work: Some(_),
+        scheduling: Some(_),
+        runtime: Some(_),
+        ..
+    } = known[0].as_ref().unwrap()
+    else {
+        panic!("actual sparse original receipt fabricated a complete Current/Task root")
+    };
+    assert_eq!(state.pending, 1);
+    let input = inputs.capture_for_request(
+        &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+            mandatory_roots: BTreeSet::from([
+                crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                    crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                    "frozen-stop-feedback",
+                ),
+            ]),
+            windows: vec![],
+            interrupted_sources: Default::default(),
+            selected_completion_brief_ids: Default::default(),
+            record_limit: 65536,
+            byte_limit: 64 * 1024 * 1024,
+        },
+    )?;
+    assert!(input
+        .records
+        .iter()
+        .any(|r| r.locator.key.id == "frozen-stop-feedback"));
+    let counts:(u64,u64)=f.db.connection()?.query_row(
+        "SELECT (SELECT COUNT(*) FROM current_read_members WHERE family='queue' AND record_id='frozen-stop-feedback'),(SELECT COUNT(*) FROM current_read_members WHERE family='queue' AND record_id='old-unqualified-terminal-queue')",
+        [],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    assert_eq!(
+        counts,
+        (1, 0),
+        "original new Source cannot adopt an unrelated raw row"
+    );
+    let error =
+        f.db.transaction(|tx| {
+            crate::runtime_db::current_read_snapshot::prepare_current_read_snapshot_tx(
+                tx,
+                &f.scope,
+                state,
+                &crate::runtime::current_read_facts::CurrentReadRequest::current(
+                    64 * 1024 * 1024,
+                    65536,
+                ),
+                &l,
+            )
+        })
+        .err()
+        .context("ordinary Current must remain strict")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime::current_read_facts::CurrentReadError>(),
+            Some(
+                crate::runtime::current_read_facts::CurrentReadError::UnknownNamespace(
+                    crate::runtime::current_read_facts::CurrentReadFamily::Queue
+                )
+            )
+        ),
+        "{error:#}"
+    );
+    MutationReservation::publish_all_known(&mut reservations)?;
+    let published = owner.capture()?.unwrap();
+    assert!(published.current_reads.is_none() && published.tasks.is_none());
+    assert_eq!(published.state.pending, 1);
+    drop((
+        input,
+        known,
+        published,
+        reservations,
+        witness,
+        owner,
+        p,
+        source,
+        receipt,
+    ));
+    assert_eq!(l.report()?.observed_bytes, 0);
     Ok(())
 }

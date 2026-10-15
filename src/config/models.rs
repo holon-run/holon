@@ -1,7 +1,8 @@
 use super::*;
 use crate::model_catalog::{
     ModelMetadataConstraint, ModelMetadataConstraintKind, ModelMetadataConstraintSource,
-    ModelMetadataField, ReasoningEffortValidationError,
+    ModelMetadataField, ReasoningEffortValidationError, SelectedModelObserver,
+    UnobservedSelectedModel,
 };
 use std::collections::HashSet;
 
@@ -190,7 +191,20 @@ impl Serialize for ModelRouteRef {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.as_string())
+        struct BorrowedRoute<'a>(&'a ModelRouteRef);
+        impl std::fmt::Display for BorrowedRoute<'_> {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    formatter,
+                    "{}@{}/{}",
+                    self.0.provider.as_str(),
+                    self.0.endpoint.as_str(),
+                    self.0.model
+                )
+            }
+        }
+        // JSON counters and canonical hashes stream these borrowed pieces.
+        serializer.collect_str(&BorrowedRoute(self))
     }
 }
 
@@ -426,20 +440,44 @@ pub struct RuntimeModelCatalog {
 
 impl RuntimeModelCatalog {
     pub fn route_service_tier(&self, route: &ModelRouteRef) -> Option<ServiceTier> {
-        self.route_options
-            .get(&self.canonicalize_model_route_ref(route).as_string())
-            .and_then(|o| o.service_tier)
+        self.route_service_tier_observed(route, &mut UnobservedSelectedModel)
+            .expect("unobserved service tier cannot fail")
+    }
+    pub(crate) fn route_service_tier_observed(
+        &self,
+        route: &ModelRouteRef,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<Option<ServiceTier>> {
+        let canonical = self.canonicalize_model_route_ref_observed(route, observer)?;
+        observer.observe(&canonical, 1)?;
+        Ok(self
+            .route_options
+            .get(&canonical.as_string())
+            .and_then(|o| o.service_tier))
     }
 
     pub(crate) fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
+        self.canonicalize_model_route_ref_observed(route_ref, &mut UnobservedSelectedModel)
+            .expect("unobserved route canonicalization cannot fail")
+    }
+    fn canonicalize_model_route_ref_observed(
+        &self,
+        route_ref: &ModelRouteRef,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ModelRouteRef> {
+        observer.observe(&(route_ref.provider.as_str(), route_ref.model.as_str()), 1)?;
         let canonical_model_ref = self
             .built_in_catalog
-            .canonicalize_model_ref(&route_ref.model_ref());
-        ModelRouteRef::new(
+            .canonicalize_model_ref_observed(&route_ref.model_ref(), observer)?;
+        observer.observe(
+            &(route_ref.provider.as_str(), route_ref.endpoint.as_str()),
+            1,
+        )?;
+        Ok(ModelRouteRef::new(
             route_ref.provider.clone(),
             route_ref.endpoint.clone(),
             canonical_model_ref.model,
-        )
+        ))
     }
 
     pub fn from_config(config: &AppConfig) -> Self {
@@ -538,20 +576,90 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
     ) -> Option<ResolvedModelRouteMetadata> {
+        self.resolve_explicit_model_metadata_observed(
+            base_context_config,
+            route_ref,
+            &mut UnobservedSelectedModel,
+        )
+        .expect("unobserved explicit model metadata cannot fail")
+    }
+    pub(crate) fn resolve_explicit_model_metadata_observed(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<Option<ResolvedModelRouteMetadata>> {
+        observer.observe(&(route_ref.provider.as_str(), route_ref.model.as_str()), 1)?;
         let canonical_model_ref = self
             .built_in_catalog
-            .canonicalize_model_ref(&route_ref.model_ref());
+            .canonicalize_model_ref_observed(&route_ref.model_ref(), observer)?;
+        observer.observe(
+            &(
+                route_ref.provider.as_str(),
+                route_ref.endpoint.as_str(),
+                canonical_model_ref.model.as_str(),
+            ),
+            1,
+        )?;
         let canonical_route_ref = ModelRouteRef::new(
             route_ref.provider.clone(),
             route_ref.endpoint.clone(),
             canonical_model_ref.model.clone(),
         );
-        let endpoint = self.provider_endpoints.iter().find(|endpoint| {
+        let Some(endpoint) = self.provider_endpoints.iter().find(|endpoint| {
             endpoint.provider == canonical_route_ref.provider
                 && endpoint.endpoint == canonical_route_ref.endpoint
-        })?;
-        let mut policy =
-            self.resolved_model_policy_for_route(base_context_config, &canonical_route_ref);
+        }) else {
+            return Ok(None);
+        };
+        let config = &endpoint.runtime_config;
+        observer.observe(
+            &(
+                (endpoint.provider.as_str(), endpoint.endpoint.as_str()),
+                (
+                    &config.id,
+                    &config.route_provider,
+                    &config.route_endpoint,
+                    &config.transport,
+                    &config.base_url,
+                    &config.auth,
+                    &config.credential,
+                    &config.originator,
+                    &config.reasoning_effort,
+                    (
+                        config.context_management.enabled,
+                        config.context_management.trigger_input_tokens,
+                        config.context_management.keep_recent_tool_uses,
+                        config.context_management.clear_at_least_input_tokens,
+                        config.context_management.cache_strategy.as_str(),
+                        &config.context_management.betas,
+                        &config.context_management.cache_capabilities,
+                    ),
+                    &config.builtin_web_search,
+                ),
+            ),
+            1,
+        )?;
+        // Hidden local paths are opaque OsString allocations. They need not be
+        // UTF-8 or participate in the JSON representation of the model view.
+        for path in [
+            config.credential_store_path.as_deref(),
+            config.codex_home.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            observer
+                .observe_raw_bytes(u64::try_from(path.as_os_str().as_encoded_bytes().len())?, 1)?;
+        }
+        observer.observe(&config.base_url, 4)?;
+        let mut policy = self.resolved_model_policy_for_route_observed(
+            base_context_config,
+            &canonical_route_ref,
+            observer,
+        )?;
+        observer.observe(&policy.reasoning_effort_options, 1)?;
+        observer.observe(&[(); 32], 1)?;
         let mut capabilities =
             ResolvedModelCapabilities::resolve(&mut policy, endpoint.runtime_config.transport);
         if service_tier_supported(&canonical_route_ref, &endpoint.runtime_config) {
@@ -562,13 +670,13 @@ impl RuntimeModelCatalog {
                 },
             );
         }
-        Some(ResolvedModelRouteMetadata {
+        Ok(Some(ResolvedModelRouteMetadata {
             route_ref: canonical_route_ref,
             model_ref: canonical_model_ref,
             endpoint: endpoint.clone(),
             policy,
             capabilities,
-        })
+        }))
     }
 
     /// Resolve the provider endpoint config for a (possibly canonical) model ref.
@@ -598,18 +706,32 @@ impl RuntimeModelCatalog {
     }
 
     pub fn provider_chain(&self, model_override: Option<&ModelRouteRef>) -> Vec<ModelRouteRef> {
+        self.provider_chain_observed(model_override, &mut UnobservedSelectedModel)
+            .expect("unobserved provider chain cannot fail")
+    }
+    pub(crate) fn provider_chain_observed(
+        &self,
+        model_override: Option<&ModelRouteRef>,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<Vec<ModelRouteRef>> {
         if self.disable_provider_fallback {
-            return vec![self.effective_model(model_override)];
+            observer.observe(&[(); 4], 1)?;
+            return Ok(vec![
+                self.effective_model_observed(model_override, observer)?
+            ]);
         }
         // The default model is only the primary when no override is set; it
         // never joins the chain as an implicit fallback entry.
-        let mut chain = vec![self.effective_model(model_override)];
+        observer.observe(&[(); 4], 1)?;
+        let mut chain = vec![self.effective_model_observed(model_override, observer)?];
         for model in &self.fallback_models {
             if !chain.iter().any(|existing| existing == model) {
+                observer.observe(model, 1)?;
+                observer.observe(&[(); 4], 1)?;
                 chain.push(model.clone());
             }
         }
-        chain
+        Ok(chain)
     }
 
     pub fn provider_chain_for_turn(
@@ -629,9 +751,17 @@ impl RuntimeModelCatalog {
     }
 
     pub fn effective_model(&self, model_override: Option<&ModelRouteRef>) -> ModelRouteRef {
-        model_override
-            .cloned()
-            .unwrap_or_else(|| self.default_model.clone())
+        self.effective_model_observed(model_override, &mut UnobservedSelectedModel)
+            .expect("unobserved effective model cannot fail")
+    }
+    pub(crate) fn effective_model_observed(
+        &self,
+        model_override: Option<&ModelRouteRef>,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ModelRouteRef> {
+        let selected = model_override.unwrap_or(&self.default_model);
+        observer.observe(selected, 1)?;
+        Ok(selected.clone())
     }
 
     pub fn resolved_model_policy(
@@ -639,34 +769,72 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
     ) -> ResolvedRuntimeModelPolicy {
-        let route_ref = self.effective_model(model_override);
-        self.resolve_explicit_model_metadata(base_context_config, &route_ref)
-            .map(|route| route.policy)
-            .unwrap_or_else(|| {
-                self.resolved_model_policy_for_route(base_context_config, &route_ref)
-            })
+        self.resolved_model_policy_observed(
+            base_context_config,
+            model_override,
+            &mut UnobservedSelectedModel,
+        )
+        .expect("unobserved resolved model policy cannot fail")
     }
-
+    pub(crate) fn resolved_model_policy_observed(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRouteRef>,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ResolvedRuntimeModelPolicy> {
+        let route_ref = self.effective_model_observed(model_override, observer)?;
+        match self.resolve_explicit_model_metadata_observed(
+            base_context_config,
+            &route_ref,
+            observer,
+        )? {
+            Some(route) => Ok(route.policy),
+            None => self.resolved_model_policy_for_route_observed(
+                base_context_config,
+                &route_ref,
+                observer,
+            ),
+        }
+    }
     fn resolved_model_policy_for_route(
         &self,
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
     ) -> ResolvedRuntimeModelPolicy {
+        self.resolved_model_policy_for_route_observed(
+            base_context_config,
+            route_ref,
+            &mut UnobservedSelectedModel,
+        )
+        .expect("unobserved route model policy cannot fail")
+    }
+    fn resolved_model_policy_for_route_observed(
+        &self,
+        base_context_config: &ContextConfig,
+        route_ref: &ModelRouteRef,
+        observer: &mut impl SelectedModelObserver,
+    ) -> anyhow::Result<ResolvedRuntimeModelPolicy> {
+        observer.observe(&(route_ref.provider.as_str(), route_ref.model.as_str()), 1)?;
         let canonical_model_ref = self
             .built_in_catalog
-            .canonicalize_model_ref(&route_ref.model_ref());
+            .canonicalize_model_ref_observed(&route_ref.model_ref(), observer)?;
+        observer.observe(
+            &(route_ref.provider.as_str(), route_ref.endpoint.as_str()),
+            1,
+        )?;
         let canonical_route_ref = ModelRouteRef::new(
             route_ref.provider.clone(),
             route_ref.endpoint.clone(),
             canonical_model_ref.model,
         );
-        self.built_in_catalog.resolve_route_policy(
+        self.built_in_catalog.resolve_route_policy_observed(
             &canonical_route_ref,
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
             base_context_config,
             self.configured_runtime_max_output_tokens,
+            observer,
         )
     }
 
@@ -1472,6 +1640,47 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn model_route_streaming_serde_preserves_exact_canonical_bytes_and_digest() {
+        use sha2::{Digest, Sha256};
+        struct HashWriter(Sha256);
+        impl std::io::Write for HashWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.update(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for model in [
+            "plain".to_owned(),
+            "organization/model \"quoted\"\n\t\\\0中文🦀".to_owned(),
+            "large/".repeat(256 * 1024),
+        ] {
+            let route = ModelRouteRef::new(
+                ProviderId::parse("custom-provider").unwrap(),
+                ProviderEndpointId::parse("endpoint-1").unwrap(),
+                model,
+            );
+            let previous = serde_json::to_vec(&route.as_string()).unwrap();
+            assert_eq!(serde_json::to_vec(&route).unwrap(), previous);
+            assert_eq!(
+                serde_json::to_value(&route).unwrap(),
+                serde_json::Value::String(route.as_string())
+            );
+            let mut writer = HashWriter(Sha256::new());
+            serde_json::to_writer(&mut writer, &route).unwrap();
+            let actual: [u8; 32] = writer.0.finalize().into();
+            let expected: [u8; 32] = Sha256::digest(&previous).into();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                crate::runtime::input_evidence_budget::serialized_bytes(&route).unwrap(),
+                previous.len() as u64
+            );
+        }
     }
 
     #[test]

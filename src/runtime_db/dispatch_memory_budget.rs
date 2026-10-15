@@ -22,13 +22,45 @@ pub(crate) struct DispatchMemoryTransactionBudget {
     state_material: usize,
     adapter_material: (usize, usize),
     finish: bool,
+    original_input_prefix: Option<(std::sync::Weak<BudgetViewGuard>, (usize,usize))>,
 }
 impl DispatchMemoryTransactionBudget {
+    pub(in crate::runtime_db) fn validate_input_accounting(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(&self.scope == scope && self.ledger.same_ledger(ledger),
+            "original Input writer changed Memory scope/ledger");
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn material_usage_for_test(&self) -> (usize, usize) {
+        (self.bytes, self.records)
+    }
     pub(crate) fn prepare_tx(
         tx: &Transaction<'_>,
         memory: &DispatchMemoryIntent,
         request: &super::super::work_snapshot::WorkDomainLoadRequest,
         ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        Self::prepare_with_work_resource_tx(tx, memory, request, ledger, None)
+    }
+    pub(in crate::runtime_db) fn prepare_with_work_resource_tx(
+        tx: &Transaction<'_>,
+        memory: &DispatchMemoryIntent,
+        request: &super::super::work_snapshot::WorkDomainLoadRequest,
+        ledger: &InputEvidenceBudgetLedger,
+        loan: Option<&crate::runtime::WorkResourceMaterialLoan>,
+    ) -> Result<Self> {
+        Self::prepare_with_original_input_tx(tx,memory,request,ledger,loan,None)
+    }
+    pub(in crate::runtime_db) fn prepare_with_original_input_tx(
+        tx:&Transaction<'_>, memory:&DispatchMemoryIntent,
+        request:&super::super::work_snapshot::WorkDomainLoadRequest,
+        ledger:&InputEvidenceBudgetLedger,
+        loan:Option<&crate::runtime::WorkResourceMaterialLoan>,
+        input:Option<&crate::runtime_db::input_evidence_snapshot::read_material::InputReadMaterial<'_>>,
     ) -> Result<Self> {
         ensure!(
             request.byte_limit > 0 && request.record_limit > 0,
@@ -46,13 +78,35 @@ impl DispatchMemoryTransactionBudget {
             state_material: 0,
             adapter_material: (0, 0),
             finish: matches!(memory, DispatchMemoryIntent::Finish { .. }),
+            original_input_prefix: None,
         };
+        if let Some(loan) = loan {
+            let (bytes, records) = loan.validate_accounting(&result.scope, ledger)?;
+            ensure!(
+                bytes <= result.byte_limit && records <= result.record_limit,
+                DispatchMemoryError::ResourceExhausted
+            );
+            result.bytes = bytes;
+            result.records = records;
+        }
+        if let Some(input)=input {
+            input.validate_accounting(&result.scope,ledger)?;
+            let usage=input.usage();
+            ensure!(usage.0>=result.bytes && usage.1>=result.records
+                && usage.0<=result.byte_limit && usage.1<=result.record_limit,
+                DispatchMemoryError::ResourceExhausted);
+            // The original generic factory already included this exact Work
+            // loan in the prefix. Keep that shared allocation only once.
+            result.original_input_prefix=Some((Arc::downgrade(input.original_writer_phase_anchor()?),usage));
+            result.bytes=usage.0;result.records=usage.1;
+        }
         // SQL lengths precede the full seed String, typed record and its clones.
         // Factors bound simultaneous decoding, clone, canonical JSON and write
         // readback buffers; this is an encoded footprint estimate, not RSS.
         match memory {
             DispatchMemoryIntent::Started { start } => {
-                result.charge(serialized_bytes(start.as_ref())? as usize, 1, 8)?;
+                let (bytes,nodes)=crate::runtime::input_evidence_budget::borrowed_json_material(start.as_ref())?;
+                result.charge(usize::try_from(bytes)?,nodes,8)?;
             }
             DispatchMemoryIntent::Deferred { binding, .. }
             | DispatchMemoryIntent::Finish { binding, .. } => {
@@ -64,15 +118,15 @@ impl DispatchMemoryTransactionBudget {
                     bytes <= MAX_METADATA_BYTES,
                     DispatchMemoryError::ResourceExhausted
                 );
-                let members:usize=tx.query_row(
-                    "SELECT COUNT(*) FROM dispatch_memory_checkpoints c,json_each(json_extract(c.payload_json,'$.obligation.members')) WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3",
+                // Even SQLite's first full JSON traversal follows the actual
+                // raw allowance. Count all values, object keys and containers
+                // before any checkpoint DTO/native copy can be constructed.
+                result.charge(bytes,1,12)?;
+                let nodes:usize=tx.query_row(
+                    "SELECT COUNT(*)+COUNT(CASE WHEN typeof(j.key)='text' THEN 1 END) FROM dispatch_memory_checkpoints c,json_tree(c.payload_json) j WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3",
                     params![binding.key().agent_id,binding.key().identity_incarnation,binding.key().actual_dispatch_turn_id],|r|r.get(0))?;
-                result.charge(bytes, members.saturating_add(1), 12)?;
-                let receipt_bytes:usize=tx.query_row(
-                    "SELECT COALESCE(MAX(length(CAST(r.prepared_json AS BLOB))+length(CAST(r.outcome_json AS BLOB))),0) FROM input_mutation_receipts r WHERE r.command_nonce IN (SELECT json_extract(c.payload_json,'$.original_start.command_nonce') FROM dispatch_memory_checkpoints c WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3 UNION ALL SELECT json_extract(j.value,'$.original.command_nonce') FROM dispatch_memory_checkpoints c,json_each(json_extract(c.payload_json,'$.obligation.members')) j WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3)",
-                    params![binding.key().agent_id,binding.key().identity_incarnation,binding.key().actual_dispatch_turn_id],|r|r.get(0))?;
-                // Member receipts are validated sequentially, only one is live.
-                result.charge(receipt_bytes, usize::from(receipt_bytes > 0), 6)?;
+                result.charge(0,nodes,12)?;
+                result.admit_member_receipts_tx(tx, binding)?;
             }
         }
         let (source, turn) = match memory {
@@ -109,6 +163,33 @@ impl DispatchMemoryTransactionBudget {
         }
         Ok(result)
     }
+    /// Original whole receipts are checked one at a time. Admission includes
+    /// every normalized cell before any JSON traversal or receipt String/DTO.
+    fn admit_member_receipts_tx(&mut self, tx:&Transaction<'_>, binding:&DispatchMemoryBinding) -> Result<()> {
+        let receipt_bytes:usize=tx.query_row(
+            "SELECT COALESCE(MAX(length(CAST(r.family AS BLOB))+length(CAST(r.phase_version AS BLOB))+length(CAST(r.command_digest AS BLOB))+length(CAST(r.scope_digest AS BLOB))+length(CAST(r.scopes_json AS BLOB))+length(CAST(r.prepared_at AS BLOB))+length(CAST(r.prepared_json AS BLOB))+length(CAST(r.outcome_json AS BLOB))+length(CAST(r.committed_at AS BLOB))+length(CAST(r.result_digest AS BLOB))+256),0) FROM input_mutation_receipts r WHERE r.command_nonce IN (SELECT json_extract(c.payload_json,'$.original_start.command_nonce') FROM dispatch_memory_checkpoints c WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3 UNION ALL SELECT json_extract(j.value,'$.original.command_nonce') FROM dispatch_memory_checkpoints c,json_each(json_extract(c.payload_json,'$.obligation.members')) j WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3)",
+            params![binding.key().agent_id,binding.key().identity_incarnation,binding.key().actual_dispatch_turn_id],|r|r.get(0))?;
+        self.charge(receipt_bytes,usize::from(receipt_bytes>0),6)?;
+        // Malformed JSON retains the original receipt reader's error. Its raw
+        // buffer is bounded above; valid trees include object keys/containers.
+        let native:usize=tx.query_row(
+            "SELECT COALESCE(MAX(20+CASE WHEN json_valid(r.scopes_json) THEN (SELECT COUNT(*)+COUNT(CASE WHEN typeof(key)='text' THEN 1 END) FROM json_tree(r.scopes_json)) ELSE 0 END+CASE WHEN json_valid(r.prepared_json) THEN (SELECT COUNT(*)+COUNT(CASE WHEN typeof(key)='text' THEN 1 END) FROM json_tree(r.prepared_json)) ELSE 0 END+CASE WHEN json_valid(r.outcome_json) THEN (SELECT COUNT(*)+COUNT(CASE WHEN typeof(key)='text' THEN 1 END) FROM json_tree(r.outcome_json)) ELSE 0 END),0) FROM input_mutation_receipts r WHERE r.command_nonce IN (SELECT json_extract(c.payload_json,'$.original_start.command_nonce') FROM dispatch_memory_checkpoints c WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3 UNION ALL SELECT json_extract(j.value,'$.original.command_nonce') FROM dispatch_memory_checkpoints c,json_each(json_extract(c.payload_json,'$.obligation.members')) j WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND c.turn_id=?3)",
+            params![binding.key().agent_id,binding.key().identity_incarnation,binding.key().actual_dispatch_turn_id],|r|r.get(0))?;
+        self.charge(0,native,6)
+    }
+    pub(in crate::runtime_db) fn original_input_phase_usage(
+        &self, input:&crate::runtime_db::input_evidence_snapshot::read_material::InputReadMaterial<'_>,
+    ) -> Result<(usize,usize)> {
+        input.validate_accounting(&self.scope,&self.ledger)?;
+        let (anchor,prefix)=self.original_input_prefix.as_ref().context("Memory omitted its original Input prefix")?;
+        let anchor=anchor.upgrade().context("original Input prefix anchor was released")?;
+        ensure!(Arc::ptr_eq(&anchor,input.original_writer_phase_anchor()?) && *prefix==input.usage(),
+            "Memory cannot resume another Input decoder phase");
+        ensure!(self.bytes>=prefix.0 && self.records>=prefix.1 && !self.guards.is_empty(),
+            "Memory lost actual original cumulative material");
+        for guard in &self.guards {guard.validate_owned_material_binding(&self.scope,&self.ledger,0)?;}
+        Ok((self.bytes,self.records))
+    }
     /// Original ended authorization shares the same transaction allowance.
     pub(crate) fn additional_material(
         &mut self,
@@ -118,6 +199,204 @@ impl DispatchMemoryTransactionBudget {
     ) -> Result<()> {
         self.charge(bytes, records, copies)
     }
+
+    /// Same original Input allocation, already registered before its decoder.
+    /// Do not add another owned guard or reobserve the caller's prior material.
+    pub(in crate::runtime_db) fn additional_observed_input_material(
+        &mut self,
+        observed:&crate::runtime_db::input_evidence_snapshot::read_material::ObservedInputReadMaterial<'_>,
+    ) -> Result<()> {
+        let (bytes, records) = observed.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_add(bytes)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        let next_records = self
+            .records
+            .checked_add(records)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        ensure!(
+            next_bytes <= self.byte_limit && next_records <= self.record_limit,
+            DispatchMemoryError::ResourceExhausted
+        );
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    /// Input Scheduling already registered this exact allocation before decode.
+    pub(in crate::runtime_db) fn additional_observed_scheduling_material(
+        &mut self,
+        observed: &crate::runtime_db::scheduling_snapshot::ObservedSchedulingAllocation<'_>,
+    ) -> Result<()> {
+        let (bytes, records) = observed.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_add(bytes)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        let next_records = self
+            .records
+            .checked_add(records)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        ensure!(
+            next_bytes <= self.byte_limit && next_records <= self.record_limit,
+            DispatchMemoryError::ResourceExhausted
+        );
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    /// Task already owns the raw/native allocation guard. Memory only borrows
+    /// this same cost; adding another node floor or guard would count it twice.
+    pub(in crate::runtime_db) fn additional_observed_task_material(
+        &mut self,
+        observed: &crate::runtime_db::task_snapshot::read_preparation::ObservedTaskReadMaterial<'_>,
+    ) -> Result<()> {
+        let (bytes, records) = observed.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_add(bytes)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        let next_records = self
+            .records
+            .checked_add(records)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        ensure!(
+            next_bytes <= self.byte_limit && next_records <= self.record_limit,
+            DispatchMemoryError::ResourceExhausted
+        );
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    pub(in crate::runtime_db) fn remaining_material_limits(&self) -> Result<(usize, usize)> {
+        Ok((
+            self.byte_limit
+                .checked_sub(self.bytes)
+                .context(DispatchMemoryError::ResourceExhausted)?,
+            self.record_limit
+                .checked_sub(self.records)
+                .context(DispatchMemoryError::ResourceExhausted)?,
+        ))
+    }
+
+    /// Same actual Current allocation, already guarded by its original decoder.
+    pub(in crate::runtime_db) fn additional_observed_current_material(
+        &mut self,
+        observed: &crate::runtime_db::current_read_snapshot::ObservedCurrentReadMaterial<'_>,
+    ) -> Result<()> {
+        let (bytes, records) = observed.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_add(bytes)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        let next_records = self
+            .records
+            .checked_add(records)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        ensure!(
+            next_bytes <= self.byte_limit && next_records <= self.record_limit,
+            DispatchMemoryError::ResourceExhausted
+        );
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    /// The original Work material owns this actual guard. Debit the same
+    /// transaction allowance without registering that allocation a second time.
+    pub(in crate::runtime_db) fn additional_observed_work_material(
+        &mut self,
+        observed: &super::super::work_snapshot::read_preparation::ObservedWorkMaterial<'_>,
+    ) -> Result<()> {
+        let (bytes, records) = observed.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_add(bytes)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        let next_records = self
+            .records
+            .checked_add(records)
+            .context(DispatchMemoryError::ResourceExhausted)?;
+        ensure!(
+            next_bytes <= self.byte_limit && next_records <= self.record_limit,
+            DispatchMemoryError::ResourceExhausted
+        );
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    pub(in crate::runtime_db) fn release_task_readback_material(
+        &mut self,
+        released:crate::runtime_db::task_snapshot::read_preparation::ReleasedTaskReadbackMaterial<'_>,
+    )->Result<()> {
+        let (bytes,records)=released.validate_accounting(&self.scope,&self.ledger)?;
+        self.bytes=self.bytes.checked_sub(bytes).context("Task readback Memory bytes underflow")?;
+        self.records=self.records.checked_sub(records).context("Task readback Memory nodes underflow")?;
+        Ok(())
+    }
+
+    pub(in crate::runtime_db) fn release_task_preflight_material(
+        &mut self,
+        released: crate::runtime_db::task_snapshot::read_preparation::ReleasedTaskPreflightMaterial<
+            '_,
+        >,
+    ) -> Result<()> {
+        let (bytes, records) = released.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_sub(bytes)
+            .context("Task preflight Memory bytes underflow")?;
+        let next_records = self
+            .records
+            .checked_sub(records)
+            .context("Task preflight Memory nodes underflow")?;
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    pub(in crate::runtime_db) fn release_input_transient_material(
+        &mut self,
+        released: crate::runtime_db::input_evidence_snapshot::read_material::ReleasedInputMaterial<
+            '_,
+        >,
+    ) -> Result<()> {
+        let (bytes, records) = released.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_sub(bytes)
+            .context("Input transient Memory byte debit underflow")?;
+        let next_records = self
+            .records
+            .checked_sub(records)
+            .context("Input transient Memory node debit underflow")?;
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
+    pub(in crate::runtime_db) fn release_work_transient_material(
+        &mut self,
+        released: super::super::work_snapshot::read_preparation::ReleasedWorkMaterial<'_>,
+    ) -> Result<()> {
+        let (bytes, records) = released.validate_accounting(&self.scope, &self.ledger)?;
+        let next_bytes = self
+            .bytes
+            .checked_sub(bytes)
+            .context("Work transient Memory byte debit underflow")?;
+        let next_records = self
+            .records
+            .checked_sub(records)
+            .context("Work transient Memory record debit underflow")?;
+        self.bytes = next_bytes;
+        self.records = next_records;
+        Ok(())
+    }
+
     fn charge(&mut self, bytes: usize, records: usize, copies: usize) -> Result<()> {
         let payload = bytes
             .checked_mul(copies)
@@ -255,30 +534,28 @@ impl DispatchMemoryTransactionBudget {
         Ok(())
     }
     pub(crate) fn capture_final_work(&mut self, work: &CapturedWork) -> Result<()> {
-        let bytes = work.records.iter().try_fold(0usize, |total, record| {
-            total
-                .checked_add(serialized_bytes(&record.record)? as usize)
-                .context(DispatchMemoryError::ResourceExhausted)
-        })?;
-        let metadata = serialized_bytes(&(
-            &work.scope,
-            work.revision,
-            work.live_complete,
-            &work.live_work_ids,
-            &work.unresolved_wait_ids,
-            &work.active_frame_ids,
-            &work.turn_wait_keys,
-            &work.task_wait_keys,
-            &work.trigger_wait_keys,
-            &work.nonopen,
-            &work.latest_results,
-            work.observations.iter().collect::<Vec<_>>(),
-        ))? as usize;
+        let (bytes, records) =
+            work.records
+                .iter()
+                .try_fold((0usize, 0usize), |(bytes, records), record| {
+                    let (native_bytes, native_records) =
+                        record.record.resident_material_estimate()?;
+                    Ok::<_, anyhow::Error>((
+                        bytes
+                            .checked_add(native_bytes.max(record.resident_bytes))
+                            .context(DispatchMemoryError::ResourceExhausted)?,
+                        records
+                            .checked_add(native_records)
+                            .context(DispatchMemoryError::ResourceExhausted)?,
+                    ))
+                })?;
+        let metadata = usize::try_from(work.encoded_selected_metadata_bytes()?)
+            .context(DispatchMemoryError::ResourceExhausted)?;
         self.charge(
             bytes
                 .checked_add(metadata)
                 .context(DispatchMemoryError::ResourceExhausted)?,
-            work.records.len(),
+            records,
             // Projection/current/grouped Work clones: <= 8 encoded copies.
             // A snapshot duplicates each source field at most twice. Its
             // refresh/planner/builder/episode plus canonical digest buffers

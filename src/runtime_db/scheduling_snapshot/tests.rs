@@ -617,8 +617,13 @@ fn fixed_history128_preserves_order_and_explicit_old_id_without_a_late_tail() ->
     let budget = ledger()?;
     db.timers()
         .upsert(&timer("aaa-late", TimerStatus::Completed))?;
+    // The 128 original Timer projections alone retain 25 native nodes each,
+    // charged at the actual eight-copy gate: 25_600 exceeds the old 4096 cap.
+    let mut history_request = request();
+    history_request.record_limit = MAX_RECORDS;
     let loaded = db.transaction(|tx| {
-        prepare_scheduling_domain_snapshot_tx(tx, &scope(), &request(), &budget)?.require_current()
+        prepare_scheduling_domain_snapshot_tx(tx, &scope(), &history_request, &budget)?
+            .require_current()
     })?;
     let history = &loaded.resident.coverage().history[&SchedulingFamily::Timer];
     assert_eq!(history.keys.len(), 128);
@@ -985,3 +990,6 @@ fn pruned_same_millisecond_head_keeps_observed_nanosecond_order_and_never_rolls_
     assert_eq!(budget.report()?.observed_bytes, 0);
     Ok(())
 }
+
+#[path = "stored_raw_first_tests.rs"]
+mod stored_raw_first_tests;

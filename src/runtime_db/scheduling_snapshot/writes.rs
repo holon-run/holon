@@ -25,6 +25,20 @@ pub(crate) struct SchedulingWriteProof<'tx, 'conn> {
     ledger: InputEvidenceBudgetLedger,
 }
 impl SchedulingWriteProof<'_, '_> {
+    pub(in crate::runtime_db) fn input_writer_material(
+        &self,
+        tx: &Transaction<'_>,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        ensure!(std::ptr::eq(self.tx, tx) && self.scope == *scope
+            && self.ledger.same_ledger(ledger) && !self.guards.is_empty(),
+            "Native Input Scheduling prior differs from original TX");
+        for guard in &self.guards {
+            guard.validate_owned_material_binding(scope, ledger, 0)?;
+        }
+        Ok((self.material_bytes, self.material_records))
+    }
     pub(crate) fn fact_before(&self, key: &SchedulingKey) -> Option<&CanonicalSchedulingFact> {
         self.before
             .get(key)
@@ -86,6 +100,7 @@ pub(crate) struct CommittedSchedulingFacts {
     pub _input_roots: BTreeSet<InputEvidenceKey>,
     pub requires_prepared_domain: bool,
     guards: Vec<Arc<BudgetViewGuard>>,
+    pub(in crate::runtime_db) material_usage: (usize,usize),
 }
 impl CommittedSchedulingFacts {
     pub(crate) fn take_budget_views(&mut self) -> Vec<Arc<BudgetViewGuard>> {
@@ -373,6 +388,7 @@ fn register_scheduling_writes_inner(
         memory,
     )?
     .require_current()?;
+    let material_usage=snapshot.material_usage;
     let records = snapshot.resident.selected_install_records();
     let mut guards = proof.guards.clone();
     guards.extend(material_guards);
@@ -396,5 +412,6 @@ fn register_scheduling_writes_inner(
         _input_roots: snapshot.input_roots,
         requires_prepared_domain: true,
         guards,
+        material_usage,
     })
 }

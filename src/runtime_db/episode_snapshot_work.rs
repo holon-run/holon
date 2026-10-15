@@ -231,7 +231,11 @@ pub(in crate::runtime_db::episode_snapshot) fn capture_with_import(
             "Work checkpoint ID belongs to another agent"
         );
         if let Some(authority) = authority {
-            authority.validate_fixed_version(&key, &bytes_digest(payload.as_bytes()))?;
+            authority.validate_fixed_version(
+                connection,
+                &key,
+                &bytes_digest(payload.as_bytes()),
+            )?;
         }
         inputs.digest(&kind, &id, &payload)?;
         checkpoint
@@ -310,7 +314,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture_with_import(
     // digests are merged; its Episode owner/ref sets are deliberately discarded.
     expand_episode_root_refs(connection, agent_id, &mut inputs, tables)?;
     if let Some(authority) = authority {
-        authority.validate_inputs(episode_roots, &inputs.roots.record_digests)?;
+        authority.validate_inputs(connection, episode_roots, &inputs.roots.record_digests)?;
     }
     let aggregate_keys = inputs
         .roots
@@ -382,23 +386,15 @@ fn latest_result(
         // ordinary loader remains strict after migration and may not adopt later.
         return Ok(None);
     }
-    let candidates = authority.map(|authority| authority.heads(work_item_id));
-    let row: Option<(String, String)> = if let Some(candidates) = candidates {
-        connection.query_row(
-            "SELECT evidence_id,payload_json FROM briefs WHERE agent_id=?1 AND work_item_id=?2 AND kind='result'
-             AND length(json_extract(payload_json,'$.text'))>0
-             AND evidence_id IN (SELECT value FROM json_each(?3))
-             ORDER BY created_at DESC,evidence_id DESC LIMIT 1",
-            params![agent_id, work_item_id, serde_json::to_string(&candidates)?],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?
+    let (row, _import_material) = if let Some(authority) = authority {
+        authority.select_head(connection, agent_id, work_item_id)?
     } else {
-        connection.query_row(
+        (connection.query_row(
             "SELECT evidence_id,payload_json FROM briefs WHERE agent_id=?1 AND work_item_id=?2 AND kind='result'
              AND length(json_extract(payload_json,'$.text'))>0
              ORDER BY created_at DESC,evidence_id DESC LIMIT 1",
             params![agent_id, work_item_id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?
+        ).optional()?,Vec::new())
     };
     let Some((brief_id, payload)) = row else {
         if let Some(authority) = authority {
@@ -407,7 +403,7 @@ fn latest_result(
         return Ok(None);
     };
     if let Some(authority) = authority {
-        authority.validate_head(&brief_id, &payload)?;
+        authority.validate_head(connection, &brief_id, &payload)?;
     }
     let brief: BriefRecord = serde_json::from_str(&payload)?;
     ensure!(

@@ -98,7 +98,31 @@ impl TaskQueryCoverage {
         }
         Ok(())
     }
+    fn validate_selection(&self, query: &TaskQuerySelection) -> Result<()> {
+        if let Some(after) = query.birth_after {
+            ensure!(
+                self.birth_cursor.is_some_and(|cursor| after <= cursor)
+                    && (self.birth_cursor == Some(after)
+                        || self.birth_after.is_some_and(|observed| observed <= after)),
+                TaskReadError::IncompleteQuery
+            );
+        }
+        for message in &query.reply_message_ids {
+            ensure!(
+                self.reply_task_ids.contains_key(message),
+                TaskReadError::IncompleteQuery
+            );
+        }
+        for turn in &query.parent_turn_ids {
+            ensure!(
+                self.parent_turn_tasks.contains_key(turn),
+                TaskReadError::IncompleteQuery
+            );
+        }
+        Ok(())
+    }
     fn selected_keys(&self, query: &TaskQuerySelection) -> Result<BTreeSet<TaskKey>> {
+        self.validate_selection(query)?;
         let mut keys = query.required_keys.clone();
         if let Some(after) = query.birth_after {
             ensure!(
@@ -132,7 +156,224 @@ impl TaskQueryCoverage {
 }
 
 impl ResidentTaskDomain {
+    // Only the original Task <-> result relation is traversed. These borrowed
+    // predicates allocate no key, selected set, coverage or body Arc.
+    fn query_root_contains(&self, query: &TaskQuerySelection, key: &TaskKey) -> bool {
+        query.required_keys.contains(key)
+            || (key.family == TaskFamily::Task
+                && (query.birth_after.is_some_and(|after| {
+                    self.coverage
+                        .query
+                        .born_task_seqs
+                        .get(&key.id)
+                        .is_some_and(|seq| *seq > after)
+                }) || query.reply_message_ids.iter().any(|message| {
+                    self.coverage
+                        .query
+                        .reply_task_ids
+                        .get(message)
+                        .is_some_and(|ids| ids.contains(&key.id))
+                })))
+    }
+    fn query_selects_task(&self, query: &TaskQuerySelection, key: &TaskKey) -> bool {
+        self.query_root_contains(query, key)
+            || query.required_keys.iter().any(|result| {
+                result.family == TaskFamily::ResultSettlement
+                    && self.coverage.observations.get(result) == Some(&TaskAvailability::Present)
+                    && self.coverage.result_dependencies.get(&result.id).is_some_and(|dependency| {
+                        matches!(&dependency.relation, TaskResultDependencyRelation::QualifiedCurrent { task }
+                            if task.key == *key)
+                    })
+            })
+    }
+    fn query_selects_key(&self, query: &TaskQuerySelection, key: &TaskKey) -> bool {
+        if key.family == TaskFamily::Task {
+            return self.query_selects_task(query, key);
+        }
+        if self.query_root_contains(query, key) {
+            return true;
+        }
+        if self.coverage.observations.get(key) == Some(&TaskAvailability::Present) {
+            if let Some(TaskResultDependencyObservation {
+                relation: TaskResultDependencyRelation::QualifiedCurrent { task },
+                ..
+            }) = self.coverage.result_dependencies.get(&key.id)
+            {
+                return self.coverage.observations.get(&task.key)
+                    == Some(&TaskAvailability::Present)
+                    && self.query_selects_task(query, &task.key)
+                    && self
+                        .coverage
+                        .task_result_ids
+                        .get(&task.key.id)
+                        .is_some_and(|ids| ids.contains(&key.id));
+            }
+        }
+        // Pruned related keys still occupy closure scratch, even when they no
+        // longer have a dependency/body. Invalid results grant no Task edge.
+        self.coverage.task_result_ids.iter().any(|(task_id, ids)| {
+            ids.contains(&key.id)
+                && self.records.keys().any(|task| {
+                    task.family == TaskFamily::Task
+                        && &task.id == task_id
+                        && self.query_selects_task(query, task)
+                })
+        })
+    }
+    fn validate_query_reverse_relations(&self) -> Result<()> {
+        for (task, ids) in &self.coverage.task_result_ids {
+            for id in ids {
+                let Some(meta) = self.coverage.result_metadata.get(id) else {
+                    continue;
+                };
+                // Actual Task/Result writers derive this inverse from task_id.
+                // A damaged extra edge must not defeat the borrowed two-hop
+                // prediction before the original closure executor runs.
+                ensure!(meta.task_id == *task, "Task query reverse relation changed");
+            }
+        }
+        Ok(())
+    }
+    /// Includes the actual full coverage copy, but only selected physical
+    /// bodies. Caller material is a loan, never another ledger registration.
+    pub(crate) fn capture_query_with_prior(
+        &self,
+        query: &TaskQuerySelection,
+        limits: (usize, usize),
+        prior: (u64, usize),
+    ) -> Result<(CapturedTasks, (u64, usize))> {
+        self.coverage.query.validate_selection(query)?;
+        self.validate_query_reverse_relations()?;
+        let selector_count = self
+            .coverage
+            .query
+            .owned_metadata_record_count()?
+            .checked_add(query.required_keys.len())
+            .context("Task query capture count overflow")?;
+        let selector_bytes = serialized_bytes(&self.coverage.query)?
+            .checked_add(serialized_bytes(query)?)
+            .and_then(|n| n.checked_add(u64::try_from(selector_count).ok()?.checked_mul(256)?))
+            .and_then(|n| n.checked_mul(4))
+            .context("Task query capture bytes overflow")?;
+        let (_, coverage_nodes) =
+            super::super::input_evidence_budget::borrowed_json_material(&self.coverage)?;
+        let mut key_bytes = 0u64;
+        let mut key_count = 0usize;
+        for key in self
+            .coverage
+            .observations
+            .keys()
+            .filter(|key| self.query_selects_key(query, key))
+        {
+            key_bytes = key_bytes
+                .checked_add(serialized_bytes(key)?)
+                .context("Task query closure bytes overflow")?;
+            key_count = key_count
+                .checked_add(1)
+                .context("Task query closure count overflow")?;
+        }
+        let extra_records = coverage_nodes
+            .checked_add(
+                key_count
+                    .checked_mul(4)
+                    .context("Task query closure nodes overflow")?,
+            )
+            .and_then(|n| n.checked_add(4))
+            .context("Task query copy nodes overflow")?;
+        let extra_bytes = key_bytes
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(u64::try_from(extra_records).ok()?.checked_mul(256)?))
+            .and_then(|n| n.checked_add(512))
+            .context("Task query copy bytes overflow")?;
+        let mut material = (
+            metadata_bytes(&self.coverage, self.records.len())?
+                .checked_add(selector_bytes)
+                .and_then(|n| n.checked_add(extra_bytes))
+                .context("Task query copied material overflow")?,
+            selector_count
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(extra_records))
+                .context("Task query copied nodes overflow")?,
+        );
+        for (_, record) in self
+            .records
+            .iter()
+            .filter(|(key, _)| self.query_selects_key(query, key))
+        {
+            let (_, nodes) =
+                super::super::input_evidence_budget::borrowed_json_material(&record.fact)?;
+            material.0 = material
+                .0
+                .checked_add(u64::try_from(record.resident_bytes)?)
+                .and_then(|n| n.checked_add(u64::try_from(nodes).ok()?.checked_mul(256)?))
+                .context("Task query selected body bytes overflow")?;
+            material.1 = material
+                .1
+                .checked_add(nodes)
+                .context("Task query selected body nodes overflow")?;
+        }
+        for (seq, record) in &self.stop_records {
+            if !self.coverage.stop.heads.values().any(|head| {
+                self.query_selects_task(query, &head.task.key)
+                    && head
+                        .head
+                        .as_ref()
+                        .is_some_and(|locator| locator.effect_seq == *seq)
+            }) {
+                continue;
+            }
+            let (_, nodes) =
+                super::super::input_evidence_budget::borrowed_json_material(record.as_ref())?;
+            material.0 = material
+                .0
+                .checked_add(record.resident_bytes()?)
+                .and_then(|n| n.checked_add(u64::try_from(nodes).ok()?.checked_mul(256)?))
+                .context("Task query selected Stop bytes overflow")?;
+            material.1 = material
+                .1
+                .checked_add(nodes)
+                .context("Task query selected Stop nodes overflow")?;
+        }
+        let total = (
+            prior
+                .0
+                .checked_add(material.0)
+                .context("Task query prior bytes overflow")?,
+            prior
+                .1
+                .checked_add(material.1)
+                .context("Task query prior nodes overflow")?,
+        );
+        ensure!(
+            total.0 <= u64::try_from(limits.0.min(self.byte_limit).min(64 * 1024 * 1024))?
+                && total.1 <= limits.1.min(self.record_limit).min(65536),
+            TaskReadError::ResourceExhausted("Task query joint capture")
+        );
+        // Only new closure/copy metadata is registered here. The original
+        // capture still owns its selector, coverage and selected body guards.
+        let extra = self
+            .budget
+            .as_ref()
+            .map(|ledger| {
+                ledger.register_owned_bytes(
+                    &self.scope,
+                    InputMemoryCategory::Pins,
+                    OwnedBytesEstimate {
+                        payload_bytes: 0,
+                        metadata_estimate_bytes: extra_bytes,
+                    },
+                )
+            })
+            .transpose()?;
+        let mut captured = self.capture_query_inner(query)?;
+        captured._budget_views.extend(extra);
+        Ok((captured, material))
+    }
     pub(crate) fn capture_query(&self, query: &TaskQuerySelection) -> Result<CapturedTasks> {
+        self.capture_query_with_prior(query, (self.byte_limit, self.record_limit), (0, 0))
+            .map(|(selected, _)| selected)
+    }
+    fn capture_query_inner(&self, query: &TaskQuerySelection) -> Result<CapturedTasks> {
         let count = self
             .coverage
             .query
@@ -269,5 +510,141 @@ impl CapturedTasks {
             anyhow::bail!("Task query family differs")
         };
         Ok(task)
+    }
+}
+
+#[cfg(test)]
+mod borrowed_relation_tests {
+    use super::*;
+    use crate::{runtime::tests::support::LifecycleHarness, types::TaskKind};
+    #[tokio::test]
+    async fn borrowed_prediction_keeps_pruned_related_keys_and_rejects_a_changed_reverse_edge(
+    ) -> Result<()> {
+        let h = LifecycleHarness::new();
+        let runtime = h.runtime();
+        let at = chrono::Utc::now();
+        let task = TaskRecord {
+            id: "borrowed-original-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Queued,
+            created_at: at,
+            updated_at: at,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        };
+        runtime
+            .persist_task_transition(&task, "task_queued")
+            .await?;
+        // Foreground Task publication also needs the refresh lock.
+        let _pause = runtime.pause_resource_observer_for_test().await;
+        let root = runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("original root missing")?;
+        let original = root
+            .tasks
+            .as_ref()
+            .context("original Task domain missing")?;
+        // A private read-only metadata boundary fixture, never a published
+        // source or a new Ready grant. The body Arc comes from the actual W1.
+        let mut domain = ResidentTaskDomain {
+            scope: original.scope.clone(),
+            coverage: original.coverage.clone(),
+            records: original.records.clone(),
+            stop_records: original.stop_records.clone(),
+            record_limit: original.record_limit,
+            byte_limit: original.byte_limit,
+            budget: original.budget.clone(),
+            budget_views: Vec::new(),
+        };
+        let key = TaskKey::new(TaskFamily::Task, &task.id);
+        let pruned = TaskKey::new(TaskFamily::ResultSettlement, "original-pruned-result");
+        domain
+            .coverage
+            .task_result_ids
+            .get_mut(&task.id)
+            .unwrap()
+            .insert(pruned.id.clone());
+        domain
+            .coverage
+            .observations
+            .insert(pruned.clone(), TaskAvailability::Pruned);
+        let query = TaskQuerySelection {
+            required_keys: BTreeSet::from([key]),
+            ..Default::default()
+        };
+        let original_closure = domain.closure(domain.coverage.query.selected_keys(&query)?)?;
+        assert!(original_closure.contains(&pruned));
+        for key in domain.coverage.observations.keys() {
+            assert_eq!(
+                domain.query_selects_key(&query, key),
+                original_closure.contains(key)
+            );
+        }
+        let (selected, material) =
+            domain.capture_query_with_prior(&query, (64 * 1024 * 1024, 65536), (0, 0))?;
+        assert_eq!(selected.records.len(), 1);
+        assert!(Arc::ptr_eq(
+            &selected.records[0],
+            original
+                .records
+                .get(&TaskKey::new(TaskFamily::Task, &task.id))
+                .unwrap()
+        ));
+        assert_eq!(
+            selected.coverage.observations.get(&pruned),
+            Some(&TaskAvailability::Pruned)
+        );
+        assert!(selected.lookup(&pruned)?.is_none());
+        drop(selected);
+        let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+        let error = domain
+            .capture_query_with_prior(
+                &query,
+                (usize::try_from(material.0)? - 1, material.1),
+                (0, 0),
+            )
+            .err()
+            .context("Pruned closure scratch escaped the first gate")?;
+        assert!(matches!(
+            error.downcast_ref::<TaskReadError>(),
+            Some(TaskReadError::ResourceExhausted(_))
+        ));
+        assert_eq!(
+            runtime.inner.input_evidence_budget.report()?.observed_bytes,
+            baseline
+        );
+        domain.coverage.result_metadata.insert(
+            pruned.id.clone(),
+            TaskResultMetadata {
+                result_identity: pruned.id.clone(),
+                task_id: "changed-target".into(),
+                message_id: "original-result-message".into(),
+                work_item_id: None,
+                rejoin_generation: 1,
+                parent_turn_id: "original-parent-turn".into(),
+                state: TaskResultSettlementState::Settled,
+                activation_id: None,
+                activation_open: false,
+                reply_message_id: None,
+                created_at: at,
+                next_recheck_at: None,
+            },
+        );
+        let error = domain
+            .capture_query_with_prior(&query, (64 * 1024 * 1024, 65536), (0, 0))
+            .err()
+            .context("changed reverse relation entered borrowed closure")?;
+        assert!(error.to_string().contains("reverse relation changed"));
+        assert_eq!(
+            runtime.inner.input_evidence_budget.report()?.observed_bytes,
+            baseline
+        );
+        Ok(())
     }
 }

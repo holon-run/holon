@@ -47,7 +47,7 @@ impl RuntimeMutation {
                     metadata_estimate_bytes: 0,
                 },
             )?;
-        let mut saved = vec![Arc::new(self.facts(Default::default()))];
+        let mut saved = vec![Arc::new(self.facts(Default::default())?)];
         for (index, reservation) in self.reservations.iter().enumerate() {
             if index == self.primary_index {
                 continue;
@@ -81,16 +81,21 @@ impl RuntimeMutation {
         let work_request = self.owner_work_load_request()?;
         let (task_request, _task_selectors) = self.owner_task_load_request()?;
         let ledger = self.runtime.inner.input_evidence_budget.clone();
+        let input_source = self.reservations[self.primary_index].input_query_source(
+            prepared.primary_scope(), &ledger,
+            (work_request.byte_limit, work_request.record_limit),
+        )?;
         let storage = self.runtime.inner.storage.clone();
         let mut original_result = None;
         let replay_observation = witness.clone();
         let committed = self
             .commit_transition_inner(operation, Some(witness), || {
-                match storage.commit_prepared_input_evidence_with_task_budget(
+                match storage.commit_prepared_input_evidence_with_input_query_source(
                     &prepared,
                     &work_request,
                     &task_request,
                     &ledger,
+                    &input_source,
                 )? {
                     InputMutationExecution::Replayed {
                         receipt,
@@ -111,6 +116,7 @@ impl RuntimeMutation {
                             work_delta_requires_prepared_domain: true,
                             task_delta: ack.task_delta,
                             task_delta_requires_prepared_domain: true,
+                            work_material_budget_views: ack.work_material_budget_views,
                             task_material_budget_views: ack.task_material_budget_views,
                             notify_memory_index: true,
                             notify_scheduler: true,
@@ -155,6 +161,7 @@ impl RuntimeMutation {
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
                 self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.base_work = self.work.clone();
                 self.tasks = root.and_then(|root| root.tasks.clone());
                 self.deferred_abort = None;
                 Ok(receipt.outcome.result)

@@ -79,6 +79,8 @@ pub struct PromptCacheScopeDiagnostics {
 
 #[derive(Debug, Clone)]
 pub struct EffectivePrompt {
+    pub(crate) resource_pins:
+        Option<std::sync::Arc<crate::runtime::resource_observation::CapturedResourceObservations>>,
     pub agent_home: PathBuf,
     pub identity: AgentIdentityView,
     pub execution: ExecutionSnapshot,
@@ -583,6 +585,7 @@ pub fn build_effective_prompt_with_default_external_ingress(
         ToolPromptContext::default(),
         continuation,
         default_external_ingress,
+        None,
     )
 }
 
@@ -656,6 +659,43 @@ pub fn build_effective_prompt_with_apply_patch_surface_and_default_external_ingr
         },
         continuation,
         default_external_ingress,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_effective_prompt_with_observed_resources(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    skills: &SkillsRuntimeView,
+    resources: std::sync::Arc<crate::runtime::resource_observation::CapturedResourceObservations>,
+    continuation: Option<&ContinuationResolution>,
+) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        resources.guidance(),
+        resources.memory(),
+        skills,
+        &[],
+        ToolPromptContext {
+            apply_patch_surface: Some(ApplyPatchSurface::UnifiedDiffJson),
+        },
+        continuation,
+        None,
+        Some(resources),
     )
 }
 
@@ -675,24 +715,47 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
     tool_prompt_context: ToolPromptContext,
     continuation: Option<&ContinuationResolution>,
     default_external_ingress: Option<&ExternalTriggerRecord>,
+    resources: Option<
+        std::sync::Arc<crate::runtime::resource_observation::CapturedResourceObservations>,
+    >,
 ) -> Result<EffectivePrompt> {
     let mut time_reserved_config = config.clone();
     time_reserved_config.prompt_budget_estimated_tokens = config
         .prompt_budget_estimated_tokens
         .checked_sub(time::RUNTIME_TIME_RESERVED_TOKENS)
         .ok_or_else(|| anyhow::anyhow!("context budget cannot reserve runtime time"))?;
-    let built_context = build_context_with_default_external_ingress(
-        storage,
-        session,
-        execution,
-        skills,
-        current_message,
-        continuation,
-        &time_reserved_config,
-        agent_home,
-        default_external_ingress,
-    )?;
-    assemble_effective_prompt(
+    let built_context = if let Some(resources) = resources.as_ref() {
+        let snapshot = crate::context::capture_context_from_storage_with_resources(
+            storage,
+            session,
+            execution,
+            skills,
+            current_message,
+            continuation,
+            &time_reserved_config,
+            default_external_ingress,
+            resources.as_ref(),
+            resources.observation.epoch,
+        )?;
+        crate::context::build_context_from_snapshot(
+            &snapshot,
+            time_reserved_config.prompt_budget_estimated_tokens,
+        )?
+    } else {
+        let built_context = build_context_with_default_external_ingress(
+            storage,
+            session,
+            execution,
+            skills,
+            current_message,
+            continuation,
+            &time_reserved_config,
+            agent_home,
+            default_external_ingress,
+        )?;
+        built_context
+    };
+    let mut prompt = assemble_effective_prompt(
         built_context,
         session,
         execution,
@@ -705,7 +768,9 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         skills,
         available_tools,
         tool_prompt_context,
-    )
+    )?;
+    prompt.resource_pins = resources;
+    Ok(prompt)
 }
 
 /// Pure prompt construction over a fully prepared context. The acquisition
@@ -722,7 +787,7 @@ pub(crate) fn build_effective_prompt_from_context_snapshot(
     tool_prompt_context: ToolPromptContext,
 ) -> Result<EffectivePrompt> {
     let built_context = build_context_from_snapshot(snapshot, snapshot.prepared_budget())?;
-    assemble_effective_prompt(
+    let mut prompt = assemble_effective_prompt(
         built_context,
         snapshot.agent(),
         snapshot.execution(),
@@ -735,7 +800,9 @@ pub(crate) fn build_effective_prompt_from_context_snapshot(
         snapshot.skills(),
         available_tools,
         tool_prompt_context,
-    )
+    )?;
+    prompt.resource_pins = snapshot.resource_pins();
+    Ok(prompt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -782,6 +849,7 @@ fn assemble_effective_prompt(
     );
 
     Ok(EffectivePrompt {
+        resource_pins: None,
         agent_home: agent_home.to_path_buf(),
         identity: identity.clone(),
         execution: execution.clone(),
@@ -2776,6 +2844,7 @@ mod tests {
     #[test]
     fn prompt_dump_includes_topology_and_ids() {
         let prompt = EffectivePrompt {
+            resource_pins: None,
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: ExecutionSnapshot {
@@ -2882,6 +2951,7 @@ mod tests {
     #[test]
     fn history_reprojection_budget_uses_only_remaining_context_budget() {
         let mut prompt = EffectivePrompt {
+            resource_pins: None,
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: sample_execution_snapshot(),
@@ -2936,6 +3006,7 @@ mod tests {
     #[test]
     fn prompt_dump_marks_turn_scoped_sections_as_turn_only() {
         let prompt = EffectivePrompt {
+            resource_pins: None,
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: sample_execution_snapshot(),
@@ -2984,6 +3055,7 @@ mod tests {
     #[test]
     fn prompt_dump_includes_agents_md_content_for_debugging() {
         let prompt = EffectivePrompt {
+            resource_pins: None,
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: ExecutionSnapshot {

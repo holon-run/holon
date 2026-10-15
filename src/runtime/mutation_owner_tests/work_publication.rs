@@ -11,6 +11,7 @@ fn work_domain(agent_id: &str, incarnation: u64) -> Arc<ResidentWorkDomain> {
                 identity_incarnation: incarnation,
             },
             WorkCoverage {
+                legacy_delivery_heads: std::collections::BTreeMap::new(),
                 task_wait_keys: Default::default(),
                 trigger_wait_keys: Default::default(),
                 revision: 1,
@@ -30,7 +31,7 @@ fn work_domain(agent_id: &str, incarnation: u64) -> Arc<ResidentWorkDomain> {
             },
             Vec::new(),
             32,
-            4096,
+            64 * 1024,
         )
         .unwrap(),
     )
@@ -107,6 +108,7 @@ async fn work_publication_preserves_same_incarnation_active_metadata_only() {
     MutationReservation::committed_all(
         std::slice::from_mut(&mut reservation),
         vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(7, AgentRegistryStatus::Active)),
             state: Some(state(2)),
         }))],
@@ -123,6 +125,7 @@ async fn work_publication_preserves_same_incarnation_active_metadata_only() {
     MutationReservation::committed_all(
         std::slice::from_mut(&mut reservation),
         vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(7, AgentRegistryStatus::Deleted)),
             state: None,
         }))],

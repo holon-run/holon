@@ -9,9 +9,18 @@ use crate::runtime_db::{persistence_certainty, PersistenceCertainty};
 #[path = "state_mutation/prepared_evidence.rs"]
 mod prepared_evidence;
 
+#[path = "state_mutation/lifecycle_state_audits.rs"]
+mod lifecycle_state_audits;
+pub(in crate::runtime) use lifecycle_state_audits::OriginalRuntimeShutdownAudits;
+pub(crate) use lifecycle_state_audits::{
+    OriginalLifecycleNoopAuditSource, OriginalLifecycleNoopKind,
+};
+#[path = "state_mutation/state_audit.rs"]
+mod state_audit;
+
 #[path = "state_mutation/work_planning.rs"]
 mod work_planning;
-pub(in crate::runtime) use work_planning::PreparedSchedulerRead;
+pub(in crate::runtime) use work_planning::{PreparedSchedulerRead, SchedulerReadBodyLoans};
 
 #[path = "state_mutation/work_preparation.rs"]
 mod work_preparation;
@@ -102,6 +111,7 @@ pub(crate) struct RuntimeMutationFacts {
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
+    current_reads: Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>>,
     queue: RuntimeQueue,
     _queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     _readonly_queue_metadata: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
@@ -109,11 +119,39 @@ pub(crate) struct RuntimeMutationFacts {
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
     effects: crate::runtime_db::transitions::PostCommitEffects,
+    identity_publication: Option<Arc<IdentityMutationFacts>>,
     recovered_install:
         Option<Arc<crate::runtime_db::input_recovery_install::InputRecoveryInstallFacts>>,
 }
 
 impl RuntimeMutationFacts {
+    pub(in crate::runtime) fn acknowledged_identity(&self) -> Option<&IdentityMutationFacts> {
+        self.identity_publication.as_deref().filter(|facts| {
+            facts.identity.as_ref().is_some_and(|identity| {
+                identity.agent_id == self.state.id
+                    && self
+                        .effects
+                        .agent_identities
+                        .iter()
+                        .any(|actual| actual == identity.as_ref())
+            })
+        })
+    }
+    fn identity_from_actual_effects(
+        state: &Arc<AgentState>,
+        effects: &crate::runtime_db::transitions::PostCommitEffects,
+        budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Option<Arc<IdentityMutationFacts>>> {
+        effects
+            .agent_identities
+            .iter()
+            .find(|identity| identity.agent_id == state.id)
+            .map(|identity| {
+                IdentityMutationFacts::budgeted(Some(identity), Some(state.clone()), budget)
+                    .map(Arc::new)
+            })
+            .transpose()
+    }
     /// Only the extra container clone owned by binding facts, not shared bodies.
     pub(crate) fn original_child_binding_queue_material(
         &self,
@@ -144,6 +182,7 @@ impl RuntimeMutationFacts {
     }
     pub(in crate::runtime) fn task_status_metadata_known(self: &Arc<Self>) -> KnownCommit {
         KnownCommit::State {
+            current_reads: self.current_reads.clone(),
             state: self.state.clone(),
             episodes: self.episodes.clone(),
             input_evidence: self.input_evidence.clone(),
@@ -168,6 +207,7 @@ impl RuntimeMutationFacts {
             work: None,
             tasks: None,
             scheduling: None,
+            current_reads: None,
             queue: RuntimeQueue::default(),
             _queue_budget_view: None,
             _readonly_queue_metadata: None,
@@ -175,6 +215,7 @@ impl RuntimeMutationFacts {
             deferred_abort: None,
             control_cancellation: None,
             effects: Default::default(),
+            identity_publication: None,
             recovered_install: None,
         }
     }
@@ -186,6 +227,7 @@ impl RuntimeMutationFacts {
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
         effects: crate::runtime_db::transitions::PostCommitEffects,
+        budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
     ) -> Result<Self> {
         if let Some(inputs) = &input_evidence {
             anyhow::ensure!(
@@ -226,15 +268,76 @@ impl RuntimeMutationFacts {
             "external Scheduling commit scope differs"
         );
         self.scheduling = scheduling;
+        anyhow::ensure!(
+            effects.current_read_facts.is_none() || effects.current_read_maintenance.is_none(),
+            "one ACK cannot supply two CurrentRead finalizers"
+        );
+        self.current_reads = effects
+            .current_read_facts
+            .as_ref()
+            .map(|facts| facts.snapshot.resident.clone())
+            .or_else(|| {
+                effects
+                    .current_read_maintenance
+                    .as_ref()
+                    .and_then(|facts| facts.resident())
+            });
+        if let Some(current) = &self.current_reads {
+            current.validate_state(&self.state)?;
+        }
         self.input_evidence = input_evidence;
         self.work = work;
         self.tasks = tasks;
         self.recovered_install = None;
+        self.identity_publication =
+            Self::identity_from_actual_effects(&self.state, &effects, budget)?;
         self.effects = effects;
         strip_input_evidence_payloads(&mut self.effects);
         Ok(self)
     }
 
+    pub(in crate::runtime) fn with_current_read_facts(
+        mut self,
+        current: Arc<super::current_read_facts::ResidentCurrentReadFacts>,
+    ) -> Result<Self> {
+        current.validate_state(&self.state)?;
+        let scope = current.scope();
+        anyhow::ensure!(
+            self.episodes
+                .as_ref()
+                .is_none_or(|domain| domain.belongs_to(&scope.agent_id, scope.identity_incarnation))
+                && self
+                    .input_evidence
+                    .as_ref()
+                    .is_none_or(|domain| domain.belongs_to(scope))
+                && self
+                    .work
+                    .as_ref()
+                    .is_none_or(|domain| domain.scope() == scope)
+                && self
+                    .tasks
+                    .as_ref()
+                    .is_none_or(|domain| domain.scope() == scope)
+                && self
+                    .scheduling
+                    .as_ref()
+                    .is_none_or(|domain| domain.scope() == scope),
+            "CurrentRead recovery scope differs"
+        );
+        if let Some(identity) = self
+            .acknowledged_identity()
+            .and_then(|facts| facts.identity.as_deref())
+        {
+            current.validate_identity(identity)?;
+        }
+        self.current_reads = Some(current);
+        Ok(self)
+    }
+    pub(crate) fn current_read_domain(
+        &self,
+    ) -> Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>> {
+        self.current_reads.clone()
+    }
     pub(crate) fn external_effects(&self) -> crate::runtime_db::transitions::PostCommitEffects {
         self.effects.clone()
     }
@@ -280,6 +383,13 @@ impl RuntimeMutationFacts {
             .filter(|original| original.owner_epoch == owner_epoch)
             .and_then(|original| original.current_run_abort.clone())
             .filter(|handle| state.current_run_id.as_ref() == Some(&handle.run_id));
+        let identity_publication = identity
+            .as_ref()
+            .map(|actual| {
+                IdentityMutationFacts::budgeted(Some(actual), Some(state.clone()), budget)
+                    .map(Arc::new)
+            })
+            .transpose()?;
         Ok(Self {
             owner_epoch,
             state,
@@ -288,6 +398,7 @@ impl RuntimeMutationFacts {
             work: Some(work),
             tasks,
             scheduling: Some(scheduling),
+            current_reads: None,
             queue,
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
@@ -297,6 +408,7 @@ impl RuntimeMutationFacts {
                 .flatten(),
             control_cancellation: original
                 .and_then(|original| original.control_cancellation.clone()),
+            identity_publication,
             recovered_install: Some(Arc::new(cache)),
             effects: crate::runtime_db::transitions::PostCommitEffects {
                 audit_events: outcome.audit_events.clone(),
@@ -335,6 +447,7 @@ impl RuntimeMutationFacts {
     }
     pub(in crate::runtime) fn partial_task_stop_known(self: &Arc<Self>) -> KnownCommit {
         KnownCommit::State {
+            current_reads: self.current_reads.clone(),
             state: self.state.clone(),
             episodes: self.episodes.clone(),
             input_evidence: self.input_evidence.clone(),
@@ -412,6 +525,24 @@ impl RuntimeMutationFacts {
             original_run.filter(|handle| state.current_run_id.as_ref() == Some(&handle.run_id));
         let mut effects = *facts.transition.effects;
         strip_input_evidence_payloads(&mut effects);
+        let actual_identity = domains
+            .identity_publication
+            .identity
+            .as_deref()
+            .context("Control fresh recovery omitted actual identity")?;
+        if let Some(current) = &domains.current_reads {
+            current.validate_identity(actual_identity)?;
+            current.validate_state(&state)?;
+        }
+        anyhow::ensure!(
+            actual_identity.agent_id == state.id
+                && actual_identity.incarnation == domains.work.scope().identity_incarnation,
+            "Control recovery actual identity scope differs"
+        );
+        // The original fresh SQL view supplied this exact metadata allocation;
+        // it is an observation, not a new identity business mutation.
+        effects.agent_identities = vec![actual_identity.clone()];
+        let identity_publication = Some(domains.identity_publication.clone());
         Ok(Self {
             owner_epoch,
             state,
@@ -420,6 +551,7 @@ impl RuntimeMutationFacts {
             work: Some(domains.work),
             tasks: Some(domains.tasks),
             scheduling: Some(domains.scheduling),
+            current_reads: domains.current_reads,
             queue,
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
@@ -427,6 +559,7 @@ impl RuntimeMutationFacts {
             deferred_abort: None,
             control_cancellation: cancellation,
             effects,
+            identity_publication,
             recovered_install: None,
         })
     }
@@ -443,12 +576,18 @@ pub(super) struct RuntimeMutation {
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
+    current_reads: Option<Arc<super::current_read_facts::ResidentCurrentReadFacts>>,
     candidate: Box<RuntimeAgent>,
     base: Box<RuntimeAgent>,
+    // Original owner baseline only; never recapture latest Work after a delta.
+    base_work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
+    work_resource_material: Option<super::WorkResourceMaterialLoan>,
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
     measurement_started: Option<std::time::Instant>,
     _candidate_budget_views: Vec<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+    // Drop after the candidate/base fields; Sources share this exact guard.
+    _acquisition_material: Arc<super::OriginalMutationAcquisitionMaterial>,
 }
 
 impl std::ops::Deref for RuntimeMutation {
@@ -466,6 +605,34 @@ impl std::ops::DerefMut for RuntimeMutation {
 }
 
 impl RuntimeMutation {
+    #[cfg(test)]
+    pub(in crate::runtime) fn original_acquisition_input_source_for_test(
+        &self,
+        limits: (usize, usize),
+    ) -> Result<Arc<super::mutation_owner::OriginalInputQuerySource>> {
+        let scope = self.input_evidence_scope();
+        self.reservations[self.primary_index].input_query_source(
+            &scope,
+            &self.runtime.inner.input_evidence_budget,
+            limits,
+        )
+    }
+    pub(in crate::runtime) fn retain_work_resource_material(
+        &mut self,
+        loan: super::WorkResourceMaterialLoan,
+    ) -> Result<()> {
+        loan.validate_accounting(
+            &self.input_evidence_scope(),
+            &self.runtime.inner.input_evidence_budget,
+        )?;
+        anyhow::ensure!(
+            self.work_resource_material.is_none(),
+            "original Work phase already has its Resource material loan"
+        );
+        self.work_resource_material = Some(loan);
+        Ok(())
+    }
+
     pub(super) fn input_evidence_scope(
         &self,
     ) -> super::resident_input_evidence::InputEvidenceScope {
@@ -646,14 +813,16 @@ impl RuntimeMutation {
         self.episodes = Some(prepared.episodes);
         self.input_evidence = Some(prepared.inputs);
         self.scheduling = Some(prepared.scheduling);
+        self.current_reads = Some(prepared.current_reads);
         self.candidate.queue = prepared.queue;
         self.candidate._queue_budget_view = Some(prepared.queue_budget_view);
-        let facts = Arc::new(self.facts(Default::default()));
+        let facts = Arc::new(self.facts(Default::default())?);
         let reservation = &mut self.reservations[self.primary_index];
         reservation.begin(crate::ids::audit_event_id())?;
         MutationReservation::committed_all(
             std::slice::from_mut(reservation),
             vec![KnownCommit::State {
+                current_reads: facts.current_reads.clone(),
                 state: facts.state.clone(),
                 episodes: facts.episodes.clone(),
                 input_evidence: facts.input_evidence.clone(),
@@ -672,7 +841,50 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.base = self.candidate.clone();
+        self.base_work = self.work.clone();
         Ok(())
+    }
+
+    /// Original by-ID Work mutation preparation. Fixed/current qualification
+    /// decides present/absent/pruned; the planner never consults canonical SQL.
+    pub(in crate::runtime) async fn prepare_execution_work_command(
+        &mut self,
+        id: &str,
+    ) -> Result<()> {
+        let source = self.execution_command_source()?;
+        if !source.requires_work_preparation(id) {
+            return Ok(());
+        }
+        let (key, selector) = source.work_preparation_selector(id)?;
+        self.prepare_owner_inputs(std::collections::BTreeSet::from([key]), Default::default())
+            .await?;
+        drop(selector);
+        Ok(())
+    }
+
+    pub(in crate::runtime) fn execution_command_source(
+        &self,
+    ) -> Result<super::resident_input_evidence::ExecutionCommandReadSource<'_>> {
+        let root = self.capture_published_root()?;
+        let inputs = self.input_evidence.as_ref().ok_or_else(|| {
+            crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(
+                "execution command input domain has not been prepared".into(),
+            )
+        })?;
+        anyhow::ensure!(
+            root.input_evidence
+                .as_ref()
+                .is_some_and(|published| Arc::ptr_eq(inputs, published))
+                && inputs.scope() == &self.input_evidence_scope(),
+            "execution command input differs from its held publication"
+        );
+        let (_, record_limit, byte_limit) = self.context_input_evidence_policy()?;
+        Ok(inputs.execution_command_source(
+            root.token,
+            &self.runtime.inner.input_evidence_budget,
+            record_limit,
+            byte_limit,
+        ))
     }
 
     pub(super) fn capture_input_evidence(
@@ -734,11 +946,23 @@ impl RuntimeMutation {
         &'a mut self,
         _storage: &AppStorage,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.persist_state_inner(None, None, None))
+        Box::pin(self.persist_state_inner(None, None, None, None, None, None, None))
     }
 
-    pub(super) async fn persist_state_with_started_turn(&mut self, turn: TurnRecord) -> Result<()> {
-        self.persist_state_inner(Some(turn), None, None).await
+    pub(in crate::runtime) async fn persist_state_with_original_workspace_request(
+        &mut self,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+    ) -> Result<()> {
+        Box::pin(self.persist_state_inner(None, None, None, None, None, None, Some(material))).await
+    }
+
+    pub(super) async fn persist_state_with_started_turn(
+        &mut self,
+        turn: TurnRecord,
+        audits: state_audit::OriginalDispatchAudits,
+    ) -> Result<()> {
+        self.persist_state_inner(Some(turn), None, None, None, Some(audits), None, None)
+            .await
     }
 
     pub(super) async fn persist_started_dispatch(
@@ -746,8 +970,99 @@ impl RuntimeMutation {
         turn: TurnRecord,
         start: crate::runtime_db::dispatch_memory::DispatchMemoryStart,
         original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
+        audits: state_audit::OriginalDispatchAudits,
     ) -> Result<()> {
-        Box::pin(self.persist_state_inner(Some(turn), Some(start), original_claim)).await
+        Box::pin(self.persist_state_inner(
+            Some(turn),
+            Some(start),
+            original_claim,
+            None,
+            Some(audits),
+            None,
+            None,
+        ))
+        .await
+    }
+
+    /// Only the original held Posture decision; no owner reacquisition or noop State.
+    pub(in crate::runtime) async fn persist_state_with_original_posture_audit(
+        &mut self,
+        audit: AuditEvent,
+    ) -> Result<()> {
+        self.persist_state_with_posture_audits(audit, None).await
+    }
+
+    /// Original Sleep notification, frozen under this same held owner.
+    pub(in crate::runtime) async fn persist_state_with_original_sleep_audits(
+        &mut self,
+        audit: AuditEvent,
+    ) -> Result<()> {
+        let changed = self.runtime.prepare_original_state_changed_audit(
+            &self.candidate.state,
+            std::slice::from_ref(&audit),
+        )?;
+        self.persist_state_with_posture_audits(audit, Some(changed))
+            .await
+    }
+
+    async fn persist_state_with_posture_audits(
+        &mut self,
+        audit: AuditEvent,
+        changed: Option<state_audit::OriginalStateChangedAudit>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.candidate.state != self.base.state,
+            "original Posture Audit requires its actual State change"
+        );
+        // The original Event moves into the command. This guard precedes the
+        // first new command/digest Value copies; SQL uses its original bound.
+        let (encoded, nodes) = super::input_evidence_budget::borrowed_json_material(&audit)?;
+        let bytes = encoded
+            .checked_add(
+                u64::try_from(nodes)?
+                    .checked_mul(256)
+                    .context("Posture Audit native bytes overflow")?,
+            )
+            .and_then(|n| n.checked_add(1024))
+            .and_then(|n| n.checked_mul(4))
+            .context("Posture Audit original envelope overflow")?;
+        let limits = self.runtime.inner.input_evidence_budget.limits();
+        let records = nodes
+            .checked_add(8)
+            .and_then(|n| n.checked_mul(4))
+            .context("Posture Audit original nodes overflow")?;
+        anyhow::ensure!(
+            bytes
+                <= limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("Posture Audit actual allowance overflow")?
+                    .min(64 * 1024 * 1024)
+                && records <= usize::try_from(limits.record_limit)?.min(65536),
+            super::current_read_facts::CurrentReadError::ResourceExhausted
+        );
+        let _material = self
+            .runtime
+            .inner
+            .input_evidence_budget
+            .register_owned_bytes(
+                &self.input_evidence_scope(),
+                super::input_evidence_budget::InputMemoryCategory::Candidate,
+                super::input_evidence_budget::OwnedBytesEstimate {
+                    payload_bytes: bytes,
+                    metadata_estimate_bytes: 0,
+                },
+            )?;
+        Box::pin(self.persist_state_inner(
+            None,
+            None,
+            None,
+            Some((audit, changed)),
+            None,
+            None,
+            None,
+        ))
+        .await
     }
 
     async fn persist_state_inner(
@@ -755,7 +1070,33 @@ impl RuntimeMutation {
         started_turn: Option<TurnRecord>,
         dispatch_start: Option<crate::runtime_db::dispatch_memory::DispatchMemoryStart>,
         original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
+        original_posture_audit: Option<(
+            AuditEvent,
+            Option<state_audit::OriginalStateChangedAudit>,
+        )>,
+        dispatch_audits: Option<state_audit::OriginalDispatchAudits>,
+        lifecycle_audits: Option<lifecycle_state_audits::OriginalLifecycleStateAudits>,
+        workspace_material: Option<Arc<super::OriginalWorkspaceRequestMaterial>>,
     ) -> Result<()> {
+        anyhow::ensure!(
+            lifecycle_audits.is_none()
+                || (started_turn.is_none()
+                    && original_posture_audit.is_none()
+                    && dispatch_audits.is_none()),
+            "Lifecycle State tails require their original standalone Posture command"
+        );
+        anyhow::ensure!(
+            dispatch_audits.is_none()
+                || (started_turn.is_some() && original_posture_audit.is_none()),
+            "original dispatch notifications require their actual StartedTurn"
+        );
+        if let Some(material) = workspace_material.as_ref() {
+            material.validate_binding(
+                &self.input_evidence_scope(),
+                self.reservations[self.primary_index].owner_epoch(),
+                &self.runtime.inner.input_evidence_budget,
+            )?;
+        }
         self.validate_candidate_identity()?;
         if self.candidate.state == self.base.state && started_turn.is_none() {
             return self.install_transient().await;
@@ -767,6 +1108,23 @@ impl RuntimeMutation {
                 "agent_id": self.candidate.state.id,
             }),
         );
+        let (original_posture_audit, changed) = match original_posture_audit {
+            Some((audit, changed)) => (Some(audit), changed),
+            None => (None, None),
+        };
+        let mut audit_events = match original_posture_audit {
+            Some(original) => vec![original, event.clone()],
+            None => vec![event.clone()],
+        };
+        if let Some(changed) = changed.as_ref() {
+            audit_events.push(changed.event().clone());
+        }
+        if let Some(dispatch) = dispatch_audits.as_ref() {
+            audit_events.extend(dispatch.events().iter().cloned());
+        }
+        if let Some(tail) = lifecycle_audits.as_ref() {
+            audit_events.extend(tail.events().iter().cloned());
+        }
         let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
             agent_id: self.candidate.state.id.clone(),
             expected_incarnation: Some(self.runtime.inner.identity_incarnation),
@@ -774,7 +1132,7 @@ impl RuntimeMutation {
                 expected: Some(Box::new(self.base.last_persisted_state.clone())),
                 record: Box::new(self.candidate.state.clone()),
             },
-            audit_events: vec![event.clone()],
+            audit_events,
             fault: self.runtime.take_transition_fault(),
         };
         let intended_state = command.agent_state.record.clone();
@@ -785,6 +1143,14 @@ impl RuntimeMutation {
             command,
             started_turn,
         )?;
+        let prepared = match workspace_material {
+            Some(material) => prepared.with_original_workspace_request_material(
+                material,
+                self.reservations[self.primary_index].owner_epoch(),
+                &self.runtime.inner.input_evidence_budget,
+            )?,
+            None => prepared,
+        };
         let prepared = match dispatch_start {
             Some(start) => prepared.with_dispatch_memory(
                 crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Started {
@@ -798,6 +1164,7 @@ impl RuntimeMutation {
             None => prepared,
         };
         let result = self.commit_prepared_input_transition(prepared).await;
+        drop((changed, dispatch_audits, lifecycle_audits));
         crate::diagnostics::record_storage_persist_state(started.elapsed());
         let commit = result?;
         if !commit.applied && intended_state.as_ref() != &self.base.last_persisted_state {
@@ -832,7 +1199,45 @@ impl RuntimeMutation {
     pub(super) async fn commit_prepared_queue(
         &mut self,
         operation_id: String,
+        queue: crate::runtime_db::transitions::PreparedQueueTransition,
+    ) -> Result<TransitionCommit> {
+        self.commit_prepared_queue_with_original_sleep_material(operation_id, queue, None)
+            .await
+    }
+    pub(super) async fn commit_prepared_queue_with_original_sleep_material(
+        &mut self,
+        operation_id: String,
+        queue: crate::runtime_db::transitions::PreparedQueueTransition,
+        sleep_material: Option<Arc<super::OriginalSleepOverrideMaterial>>,
+    ) -> Result<TransitionCommit> {
+        self.commit_prepared_queue_with_original_request_material(
+            operation_id,
+            queue,
+            sleep_material,
+            None,
+        )
+        .await
+    }
+    pub(super) async fn commit_prepared_queue_with_original_task_input_child_material(
+        &mut self,
+        operation_id: String,
+        queue: crate::runtime_db::transitions::PreparedQueueTransition,
+        material: Arc<super::OriginalTaskInputChildMaterial>,
+    ) -> Result<TransitionCommit> {
+        self.commit_prepared_queue_with_original_request_material(
+            operation_id,
+            queue,
+            None,
+            Some(material),
+        )
+        .await
+    }
+    async fn commit_prepared_queue_with_original_request_material(
+        &mut self,
+        operation_id: String,
         mut queue: crate::runtime_db::transitions::PreparedQueueTransition,
+        sleep_material: Option<Arc<super::OriginalSleepOverrideMaterial>>,
+        child_input: Option<Arc<super::OriginalTaskInputChildMaterial>>,
     ) -> Result<TransitionCommit> {
         use crate::runtime_db::transitions::QueueMutation;
         let entry = match &queue.command.mutation {
@@ -874,12 +1279,26 @@ impl RuntimeMutation {
             };
             queue.command.message_evidence.push(message);
         }
-        let prepared = crate::runtime_db::transitions::PreparedInputTransition::queue(
+        let mut prepared = crate::runtime_db::transitions::PreparedInputTransition::queue(
             self.input_evidence_scope(),
             operation_id,
             Utc::now(),
             queue,
         )?;
+        if let Some(material) = sleep_material {
+            prepared = prepared.with_original_sleep_override_material(
+                material,
+                self.reservations[self.primary_index].owner_epoch(),
+                &self.runtime.inner.input_evidence_budget,
+            )?;
+        }
+        if let Some(material) = child_input {
+            prepared = prepared.with_original_task_input_child_material(
+                material,
+                self.reservations[self.primary_index].owner_epoch(),
+                &self.runtime.inner.input_evidence_budget,
+            )?;
+        }
         self.commit_prepared_input_transition(prepared).await
     }
 
@@ -1099,7 +1518,58 @@ impl RuntimeMutation {
             .collect::<Vec<_>>();
         let prepared = prepared.with_scope_group(scopes)?;
         self.validate_initial_readonly_stop(&prepared)?;
+        let limits = self.runtime.inner.input_evidence_budget.limits();
+        let event_roles = self.reservations[self.primary_index].current_event_roles(
+            &self.input_evidence_scope(),
+            &self.runtime.inner.input_evidence_budget,
+            (
+                usize::try_from(
+                    limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("Event role owner allowance overflow")?,
+                )?,
+                usize::try_from(limits.record_limit)?,
+            ),
+        )?;
+        let prepared = match event_roles {
+            Some(roles) => prepared.with_current_event_roles(
+                roles,
+                self.reservations[self.primary_index].owner_epoch(),
+                &self.runtime.inner.input_evidence_budget,
+            )?,
+            None => prepared,
+        };
         let prepared = self.attach_actual_dispatch_memory(prepared)?;
+        let prepared = match self.work_resource_material.take() {
+            Some(loan) => prepared.with_work_resource_material(loan)?,
+            None => prepared,
+        };
+        let prepared = if prepared.accepts_work_input_selection() {
+            match self.input_evidence.as_ref() {
+                Some(inputs) => prepared.with_work_input_selection(
+                    inputs,
+                    &self.runtime.inner.input_evidence_budget,
+                    (
+                        usize::try_from(
+                            limits
+                                .history_per_agent_bytes
+                                .checked_add(limits.pending_per_agent_bytes)
+                                .context("Work Input owner allowance overflow")?,
+                        )?,
+                        usize::try_from(limits.record_limit)?,
+                    ),
+                )?,
+                None => prepared,
+            }
+        } else {
+            prepared
+        };
+        let prepared = if let Some(source) = self.current_reads.as_ref() {
+            prepared.with_current_read_source(source.clone())?
+        } else {
+            prepared
+        };
         let _owned = self
             .runtime
             .inner
@@ -1112,7 +1582,7 @@ impl RuntimeMutation {
                     metadata_estimate_bytes: 0,
                 },
             )?;
-        let mut saved_runtime = vec![Arc::new(self.facts(Default::default()))];
+        let mut saved_runtime = vec![Arc::new(self.facts(Default::default())?)];
         for (index, reservation) in self.reservations.iter().enumerate() {
             if index == self.primary_index {
                 continue;
@@ -1149,6 +1619,11 @@ impl RuntimeMutation {
         let work_request = self.owner_work_load_request()?;
         let (task_request, _task_request_budget) = self.owner_task_load_request()?;
         let ledger = self.runtime.inner.input_evidence_budget.clone();
+        let input_source = self.reservations[self.primary_index].input_query_source(
+            &self.input_evidence_scope(),
+            &ledger,
+            (work_request.byte_limit, work_request.record_limit),
+        )?;
         let mut pending = Vec::new();
         for message in prepared.pending_messages()? {
             match ledger.reserve_pending(
@@ -1166,6 +1641,7 @@ impl RuntimeMutation {
                 }
             }
         }
+        let work_report_prior = prepared.original_work_material_prior(&ledger)?;
         let operation_id = prepared.descriptor().command_nonce().to_owned();
         let pending_cleanup = pending.clone();
         let witness = match super::mutation_witness::MutationWitness::input_mutation(
@@ -1175,7 +1651,21 @@ impl RuntimeMutation {
         )
         .and_then(|witness| witness.with_input_runtime(saved_runtime))
         .and_then(|witness| {
+            witness.with_original_task_input_child_material(
+                &prepared,
+                &self.reservations[self.primary_index],
+                &ledger,
+            )
+        })
+        .and_then(|witness| {
             witness.with_initial_task_stop_readonly(self.task_stop_readonly.clone())
+        })
+        .and_then(|witness| {
+            witness.with_original_work_report(
+                prepared.original_work_result_material(),
+                (work_request.record_limit, work_request.byte_limit),
+                work_report_prior,
+            )
         }) {
             Ok(witness) => witness,
             Err(error) => {
@@ -1194,13 +1684,29 @@ impl RuntimeMutation {
             .commit_transition_inner(operation_id, Some(witness), || {
                 match db
                     .transitions_in_scope(&scope)
-                    .commit_prepared_transition_with_work_request_and_memory_budget(
+                    .commit_prepared_transition_with_input_query_source(
                         &prepared,
                         &work_request,
                         &ledger,
                         &task_request,
+                        &input_source,
                     )? {
                     InputMutationExecution::Committed { value, receipt } => {
+                        #[cfg(test)]
+                        if prepared
+                            .original_work_result_material()
+                            .is_some_and(|result| result.take_lost_report_ack_for_test())
+                        {
+                            // Actual SQL and receipt have committed; deliberately
+                            // discard the returned effect to exercise Unknown.
+                            return Err(anyhow!(
+                                "test lost original Work report COMMIT acknowledgement"
+                            ));
+                        }
+                        if let Some(report) = value.effects.original_work_report.as_ref() {
+                            report.publish();
+                        }
+                        replay_observation.confirm_original_work_report(&receipt)?;
                         replay_observation.mark_original_input_receipt_pending(&receipt, false)?;
                         original_material_views
                             .extend(value.effects.task_material_budget_views.iter().cloned());
@@ -1218,12 +1724,16 @@ impl RuntimeMutation {
                         receipt,
                         _material_budget_views,
                     } => {
+                        replay_observation.confirm_original_work_report(&receipt)?;
                         replay_observation.mark_input_storage_replayed()?;
                         Err(PreparedInputReplay(receipt, _material_budget_views).into())
                     }
                 }
             })
             .await;
+        // SQL/publication no longer borrows the Prepared command. Release its
+        // accounting-only loan before the caller consumes its original result.
+        drop(prepared);
         match result {
             Err(error) if error.downcast_ref::<PreparedInputReplay>().is_some() => {
                 let replay = error
@@ -1239,6 +1749,7 @@ impl RuntimeMutation {
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
                 self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.base_work = self.work.clone();
                 self.tasks = root.and_then(|root| root.tasks.clone());
                 self.deferred_abort = None;
                 Ok((
@@ -1290,6 +1801,7 @@ impl RuntimeMutation {
                         work_delta_requires_prepared_domain: true,
                         task_delta: acknowledged.task_delta,
                         task_delta_requires_prepared_domain: true,
+                        work_material_budget_views: acknowledged.work_material_budget_views,
                         task_material_budget_views: acknowledged.task_material_budget_views,
                         notify_memory_index: true,
                         notify_scheduler: true,
@@ -1433,9 +1945,19 @@ impl RuntimeMutation {
                 &committed.effects.input_evidence_delta,
                 &self.candidate.state,
                 &self.candidate.queue,
+                committed
+                    .effects
+                    .work_delta
+                    .as_ref()
+                    .map(|delta| &delta.coverage)
+                    .or_else(|| self.work.as_ref().map(|work| work.coverage())),
             )
             .and_then(|mandatory| {
-                inputs.with_committed(&committed.effects.input_evidence_delta, mandatory)
+                inputs.with_committed_work_sources(
+                    &committed.effects.input_evidence_delta,
+                    mandatory,
+                    committed.effects.prepared_work_inputs.as_deref(),
+                )
             });
             match next {
                 Ok(next) => self.input_evidence = next.map(Arc::new),
@@ -1463,6 +1985,32 @@ impl RuntimeMutation {
                 projection_error.get_or_insert(error);
             }
         }
+        self.current_reads = None;
+        if committed.effects.current_read_facts.is_some()
+            && committed.effects.current_read_maintenance.is_some()
+        {
+            projection_error.get_or_insert_with(|| {
+                anyhow::anyhow!("one ACK supplied two CurrentRead finalizers")
+            });
+        } else if let Some(domain) = committed
+            .effects
+            .current_read_facts
+            .as_ref()
+            .map(|facts| facts.snapshot.resident.clone())
+            .or_else(|| {
+                committed
+                    .effects
+                    .current_read_maintenance
+                    .as_ref()
+                    .and_then(|facts| facts.resident())
+            })
+        {
+            if let Err(error) = domain.validate_state(&self.candidate.state) {
+                projection_error.get_or_insert(error);
+            } else {
+                self.current_reads = Some(domain);
+            }
+        }
         if let Some(delta) = &committed.effects.scheduling_delta {
             if let Err(error) = self.install_committed_scheduling_delta(delta) {
                 self.scheduling = None;
@@ -1483,7 +2031,7 @@ impl RuntimeMutation {
                 projection_error.get_or_insert(error.into());
             }
         }
-        let facts = Arc::new(self.facts(committed.effects.as_ref().clone()));
+        let facts = Arc::new(self.facts(committed.effects.as_ref().clone())?);
         // Retain all authoritative installation facts before the first await
         // after SQL. Cancellation leaves a known commit for the next owner call.
         self.record_committed_facts(facts.clone(), &committed.effects)?;
@@ -1506,6 +2054,7 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.base = self.candidate.clone();
+        self.base_work = self.work.clone();
         self.deferred_abort = None;
         if let Some(cancellation) = self.control_cancellation.take() {
             self.runtime
@@ -1617,6 +2166,20 @@ impl RuntimeMutation {
     ) -> Result<crate::runtime_db::control_transition::ControlReceipt> {
         use crate::runtime_db::control_transition::ControlCommit;
         let command = &prepared.command;
+        let limits = self.runtime.inner.input_evidence_budget.limits();
+        let event_roles = self.reservations[self.primary_index].current_event_roles(
+            &self.input_evidence_scope(),
+            &self.runtime.inner.input_evidence_budget,
+            (
+                usize::try_from(
+                    limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("Control Event role allowance overflow")?,
+                )?,
+                usize::try_from(limits.record_limit)?,
+            ),
+        )?;
         let saved = SavedControlCancellation {
             key: command.key().clone(),
             digest: command.command_digest().to_owned(),
@@ -1643,15 +2206,22 @@ impl RuntimeMutation {
         let work_request = self.owner_work_load_request()?;
         let (task_request, _task_request_budget) = self.owner_task_load_request()?;
         let task_ledger = self.runtime.inner.input_evidence_budget.clone();
+        let input_source = self.reservations[self.primary_index].input_query_source(
+            &self.input_evidence_scope(),
+            &task_ledger,
+            (work_request.byte_limit, work_request.record_limit),
+        )?;
         let db = self.runtime.inner.runtime_db.clone();
         let mut receipt = None;
         let result = self
             .commit_transition_inner(operation_id, Some(witness), || {
-                match db.commit_control_with_domain_requests(
+                match db.commit_control_with_domain_requests_and_input_source(
                     command,
                     &work_request,
                     &task_request,
                     &task_ledger,
+                    event_roles.as_ref(),
+                    Some(&input_source),
                 )? {
                     ControlCommit::Applied {
                         receipt: original,
@@ -1711,7 +2281,7 @@ impl RuntimeMutation {
             "durable readback must install one exact persisted state"
         );
         MutationReservation::begin_all(&mut self.reservations, crate::ids::audit_event_id())?;
-        let facts = Arc::new(self.facts(Default::default()));
+        let facts = Arc::new(self.facts(Default::default())?);
         self.record_committed_facts(facts.clone(), &Default::default())?;
         self.runtime.install_known_group(&self.reservations).await?;
         let observations = MutationReservation::publish_all_known(&mut self.reservations)?;
@@ -1719,6 +2289,7 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.base = self.candidate.clone();
+        self.base_work = self.work.clone();
         self.deferred_abort = None;
         Ok(())
     }
@@ -1749,6 +2320,7 @@ impl RuntimeMutation {
         self.work = root.as_ref().and_then(|root| root.work.clone());
         self.tasks = root.as_ref().and_then(|root| root.tasks.clone());
         self.base = self.candidate.clone();
+        self.base_work = self.work.clone();
         self.deferred_abort = None;
         self.control_cancellation = None;
         Ok(true)
@@ -1776,6 +2348,7 @@ impl RuntimeMutation {
             .map(|(index, reservation)| {
                 if index == self.primary_index {
                     return Ok(KnownCommit::State {
+                        current_reads: facts.current_reads.clone(),
                         state: facts.state.clone(),
                         episodes: facts.episodes.clone(),
                         input_evidence: facts.input_evidence.clone(),
@@ -1821,7 +2394,11 @@ impl RuntimeMutation {
                         identity.incarnation == reservation.identity_incarnation(),
                         "committed related identity incarnation mismatch"
                     );
-                    metadata.identity = Some(Arc::new(identity.clone()));
+                    metadata = IdentityMutationFacts::budgeted(
+                        Some(identity),
+                        metadata.state.clone(),
+                        &self.runtime.inner.input_evidence_budget,
+                    )?;
                 }
                 Ok(KnownCommit::Metadata(Arc::new(metadata)))
             })
@@ -1834,6 +2411,12 @@ impl RuntimeMutation {
             })
             .collect();
         MutationReservation::committed_all(&mut self.reservations, known)?;
+        self.runtime.resources_changed_after_commit(
+            &self.base.state,
+            self.base_work.as_deref(),
+            &facts.state,
+            facts.work.as_deref(),
+        );
         self.metadata = metadata;
         Ok(())
     }
@@ -1863,18 +2446,25 @@ impl RuntimeMutation {
     fn facts(
         &self,
         mut effects: crate::runtime_db::transitions::PostCommitEffects,
-    ) -> RuntimeMutationFacts {
+    ) -> Result<RuntimeMutationFacts> {
         // The authoritative domain/queue already own the exact allocations.
         // Recovery notifications retain only their original event responsibility.
         strip_input_evidence_payloads(&mut effects);
-        RuntimeMutationFacts {
+        let state = Arc::new(self.candidate.state.clone());
+        let identity_publication = RuntimeMutationFacts::identity_from_actual_effects(
+            &state,
+            &effects,
+            &self.runtime.inner.input_evidence_budget,
+        )?;
+        Ok(RuntimeMutationFacts {
             owner_epoch: self.reservations[self.primary_index].owner_epoch(),
-            state: Arc::new(self.candidate.state.clone()),
+            state,
             episodes: self.episodes.clone(),
             input_evidence: self.input_evidence.clone(),
             work: self.work.clone(),
             tasks: self.tasks.clone(),
             scheduling: self.scheduling.clone(),
+            current_reads: self.current_reads.clone(),
             queue: self.candidate.queue.clone(),
             _queue_budget_view: self.candidate._queue_budget_view.clone(),
             _readonly_queue_metadata: None,
@@ -1882,8 +2472,9 @@ impl RuntimeMutation {
             deferred_abort: self.deferred_abort.clone(),
             control_cancellation: self.control_cancellation.clone(),
             effects,
+            identity_publication,
             recovered_install: None,
-        }
+        })
     }
 }
 
@@ -1892,6 +2483,7 @@ fn runtime_input_mandatory_roots(
     delta: &super::resident_input_evidence::CommittedInputEvidenceDelta,
     state: &AgentState,
     queue: &RuntimeQueue,
+    work: Option<&super::resident_work::WorkCoverage>,
 ) -> Result<std::collections::BTreeSet<super::resident_input_evidence::InputEvidenceKey>> {
     use super::resident_input_evidence::{
         InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence,
@@ -1913,6 +2505,16 @@ fn runtime_input_mandatory_roots(
         .shared_messages()
         .map(|message| Key::new(Family::Message, &message.id))
         .collect::<std::collections::BTreeSet<_>>();
+    if let Some(work) = work {
+        for heads in work.legacy_delivery_heads.values() {
+            roots.extend(
+                [heads.latest_any.body_id(), heads.latest_nonempty.body_id()]
+                    .into_iter()
+                    .flatten()
+                    .map(|id| Key::new(Family::LegacyDelivery, id)),
+            );
+        }
+    }
     if let Some(turn_id) = &state.current_turn_id {
         roots.insert(Key::new(Family::Turn, turn_id));
     }
@@ -1957,6 +2559,8 @@ fn strip_input_evidence_payloads(effects: &mut crate::runtime_db::transitions::P
     effects.work_delta = None;
     effects.work_delta_requires_prepared_domain = false;
     effects.work_input_preparation = None;
+    effects.prepared_work_inputs = None;
+    effects.original_work_report = None;
     effects.task_delta = None;
     effects.task_delta_requires_prepared_domain = false;
     effects.task_write_keys.clear();
@@ -1966,6 +2570,8 @@ fn strip_input_evidence_payloads(effects: &mut crate::runtime_db::transitions::P
     effects.scheduling_delta_requires_prepared_domain = false;
     effects.scheduling_write_keys.clear();
     effects.scheduling_material_budget_views.clear();
+    effects.current_read_facts = None;
+    effects.current_read_maintenance = None;
 }
 
 fn strip_authoritative_effects(effects: &mut crate::runtime_db::transitions::PostCommitEffects) {
@@ -2123,6 +2729,7 @@ impl RuntimeHandle {
             work: reservation.prepared_work_for_state_only_commit()?,
             tasks: reservation.prepared_tasks_for_state_only_commit()?,
             scheduling: reservation.prepared_scheduling_for_state_only_commit()?,
+            current_reads: reservation.prepared_current_reads_for_state_only_commit()?,
             queue: agent.queue.clone(),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: Some(queue_metadata),
@@ -2130,6 +2737,7 @@ impl RuntimeHandle {
             deferred_abort: None,
             control_cancellation: None,
             effects: Default::default(),
+            identity_publication: None,
             recovered_install: None,
         })
     }
@@ -2641,12 +3249,56 @@ impl RuntimeHandle {
                 .runtime_db
                 .agent_states()
                 .latest(reservation.agent_id())?;
-            metadata.push(Some(Arc::new(IdentityMutationFacts {
-                identity: identity.map(Arc::new),
-                state: state.map(Arc::new),
-            })));
+            metadata.push(Some(Arc::new(IdentityMutationFacts::budgeted_owned(
+                identity,
+                state.map(Arc::new),
+                &self.inner.input_evidence_budget,
+            )?)));
         }
-        let candidate = Box::new(self.inner.agent.lock().await.clone());
+        // Count only new State/string/container allocations. Qualified bodies
+        // stay shared by Arc and keep their original body observations.
+        let mut registrations = 0usize;
+        if let Some(root) = observation.as_ref() {
+            for count in [
+                root.input_evidence
+                    .as_ref()
+                    .map(|domain| domain.acquisition_registration_count())
+                    .transpose()?,
+                root.work
+                    .as_ref()
+                    .map(|domain| domain.acquisition_registration_count())
+                    .transpose()?,
+                root.tasks
+                    .as_ref()
+                    .map(|domain| domain.acquisition_registration_count())
+                    .transpose()?,
+                root.scheduling
+                    .as_ref()
+                    .map(|domain| domain.acquisition_registration_count())
+                    .transpose()?,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                registrations = registrations
+                    .checked_add(count)
+                    .context("mutation registration count overflow")?;
+            }
+        }
+        let current = self.inner.agent.lock().await;
+        let acquisition = super::OriginalMutationAcquisitionMaterial::for_agent(
+            self,
+            &current,
+            registrations,
+            reservations.len(),
+            (0, 0),
+            (64 * 1024 * 1024, 65536),
+        )?;
+        // This material exists before either original RuntimeAgent clone.
+        let candidate = Box::new(current.clone());
+        drop(current);
+        reservations[primary_index]
+            .attach_original_acquisition_material(acquisition.clone(), &self.inner.input_evidence_budget)?;
         let scope = super::resident_input_evidence::InputEvidenceScope {
             agent_id: self.inner.mutation_owner.agent_id().to_owned(),
             identity_incarnation: self.inner.identity_incarnation,
@@ -2668,9 +3320,7 @@ impl RuntimeHandle {
             )?);
         }
         if let Some(work) = observation.as_ref().and_then(|root| root.work.as_ref()) {
-            if let Some(view) = work.candidate_budget_view()? {
-                candidate_budget_views.push(view);
-            }
+            candidate_budget_views.extend(work.candidate_budget_views()?);
         }
         if let Some(tasks) = observation.as_ref().and_then(|root| root.tasks.as_ref()) {
             if let Some(view) = tasks.candidate_budget_view()? {
@@ -2699,14 +3349,20 @@ impl RuntimeHandle {
                 .as_ref()
                 .and_then(|root| root.input_evidence.clone()),
             work: observation.as_ref().and_then(|root| root.work.clone()),
+            base_work: observation.as_ref().and_then(|root| root.work.clone()),
+            work_resource_material: None,
             tasks: observation.as_ref().and_then(|root| root.tasks.clone()),
-            scheduling: observation.and_then(|root| root.scheduling.clone()),
+            scheduling: observation
+                .as_ref()
+                .and_then(|root| root.scheduling.clone()),
+            current_reads: observation.and_then(|root| root.current_reads.clone()),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,
             control_cancellation: None,
             measurement_started,
             _candidate_budget_views: candidate_budget_views,
+            _acquisition_material: acquisition,
         };
         Ok(mutation)
     }
@@ -2759,10 +3415,9 @@ impl RuntimeHandle {
                     .install_mutation_metadata(
                         &identity.agent_id,
                         self.inner.identity_incarnation,
-                        &IdentityMutationFacts {
-                            identity: Some(Arc::new(identity.clone())),
-                            state: Some(facts.state.clone()),
-                        },
+                        facts
+                            .acknowledged_identity()
+                            .context("original ACK identity publication facet missing")?,
                     )
                     .await?;
             }
@@ -2839,12 +3494,13 @@ impl RuntimeHandle {
             &self.inner.input_evidence_budget,
         )
         .await?;
-        super::episode_recovery::resolve_episode_recovery(
+        super::episode_recovery::resolve_episode_recovery_with_budget(
             &self.inner.runtime_db,
             reservations,
             self.current_context_config()
                 .await
                 .recent_episode_candidates,
+            &self.inner.input_evidence_budget,
         )?;
         let known = MutationReservation::validate_group_known(reservations).map_err(|error| {
             match error {
@@ -3176,3 +3832,18 @@ mod context_preparation_tests;
 #[cfg(test)]
 #[path = "state_mutation/dispatch_memory_auto_tests.rs"]
 mod dispatch_memory_auto_tests;
+
+#[cfg(test)]
+#[path = "state_mutation/execution_command_tests.rs"]
+mod execution_command_tests;
+
+#[cfg(test)]
+#[path = "state_mutation/current_read_publication_tests.rs"]
+mod current_read_publication_tests;
+
+#[path = "state_mutation/runtime_audit.rs"]
+mod runtime_audit;
+
+#[cfg(test)]
+#[path = "state_mutation/sleep_override_fixture.rs"]
+mod sleep_override_fixture;

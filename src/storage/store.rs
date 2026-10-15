@@ -465,4 +465,36 @@ impl RuntimeStore {
                 ledger,
             )
     }
+    pub(crate) fn commit_prepared_input_evidence_with_input_query_source(
+        &self,
+        prepared: &crate::runtime_db::prepared_input_evidence::PreparedInputEvidence,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        input_source: &std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>,
+    ) -> Result<
+        crate::runtime_db::transitions::InputMutationExecution<
+            crate::runtime_db::input_evidence_writes::InputEvidenceCommit<
+                crate::runtime_db::prepared_input_evidence::PreparedEvidenceValue,
+            >,
+        >,
+    > {
+        self.ensure_writable()?;
+        let scope = prepared.primary_scope();
+        anyhow::ensure!(
+            self.agent_id
+                .as_deref()
+                .is_none_or(|id| id == scope.agent_id),
+            "prepared evidence differs from its storage scope"
+        );
+        self.runtime_db
+            .evidence()
+            .commit_prepared_input_evidence_with_input_query_source(
+                prepared,
+                work_request,
+                task_request,
+                ledger,
+                input_source,
+            )
+    }
 }

@@ -693,3 +693,6 @@ async fn automatic_memory_runtime_missing_started_seed_cannot_bypass_as_claim_on
         Ok(())
     }).await
 }
+
+#[path = "work_memory_resource_loan_tests.rs"]
+mod resource_loan_tests;

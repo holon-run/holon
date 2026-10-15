@@ -947,6 +947,7 @@ mod tests {
             &mut reservations,
             vec![super::super::mutation_owner::KnownCommit::Metadata(
                 Arc::new(super::super::mutation_owner::IdentityMutationFacts {
+                    _identity_budget: None,
                     identity: Some(Arc::new(identity.clone())),
                     state: None,
                 }),

@@ -667,3 +667,6 @@ fn sparse_stop_identity_material_is_admitted_before_malformed_decode_and_release
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
+
+#[path = "task_stop_current_source_tests.rs"]
+mod current_source;

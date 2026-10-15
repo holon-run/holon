@@ -38,8 +38,102 @@ pub(in crate::runtime) fn scheduler_task_request(
             metadata_estimate_bytes: bytes,
         },
     )?;
-    // At most one borrowed entry per requested Task. The selector guard is
-    // already live, and the complete Result inventory is traversed only once.
+    Ok((build_scheduler_task_request(work, coverage)?, guard))
+}
+
+pub(in crate::runtime) struct SchedulerTaskSelectorMaterial {
+    pub(in crate::runtime) guard: Arc<BudgetViewGuard>,
+    material: (u64, usize),
+}
+impl SchedulerTaskSelectorMaterial {
+    pub(in crate::runtime) fn material_estimate(&self) -> (u64, usize) {
+        self.material
+    }
+}
+
+/// Complete actual key/collection material precedes the first selector clone.
+/// The original invalid-Result predicate remains in one shared constructor.
+pub(in crate::runtime) fn scheduler_task_request_with_material(
+    scope: &super::super::resident_input_evidence::InputEvidenceScope,
+    work: &WorkCaptureRequest,
+    coverage: Option<&super::super::resident_task::TaskCoverage>,
+    ledger: &super::super::input_evidence_budget::InputEvidenceBudgetLedger,
+    limits: (usize, usize),
+    prior: (u64, usize),
+) -> Result<(TaskCaptureRequest, SchedulerTaskSelectorMaterial)> {
+    use crate::runtime::input_evidence_budget::borrowed_json_material;
+    #[derive(serde::Serialize)]
+    struct BorrowedKey<'a> {
+        family: TaskFamily,
+        id: &'a str,
+    }
+    let exhausted = || TaskReadError::ResourceExhausted("dispatch Task selectors");
+    let (scope_bytes, scope_nodes) = borrowed_json_material(scope)?;
+    let mut material = (
+        scope_bytes
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(4096))
+            .context(exhausted())?,
+        scope_nodes
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(32))
+            .context(exhausted())?,
+    );
+    for id in &work.required_task_ids {
+        let (bytes, nodes) = borrowed_json_material(&BorrowedKey {
+            family: TaskFamily::Task,
+            id,
+        })?;
+        let bytes = bytes
+            .checked_add(
+                u64::try_from(nodes)?
+                    .checked_mul(256)
+                    .context(exhausted())?,
+            )
+            .and_then(|n| n.checked_add(128))
+            .and_then(|n| n.checked_mul(8))
+            .context(exhausted())?;
+        let nodes = nodes
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(8))
+            .context(exhausted())?;
+        material.0 = material.0.checked_add(bytes).context(exhausted())?;
+        material.1 = material.1.checked_add(nodes).context(exhausted())?;
+    }
+    let configured = ledger.limits();
+    let bytes = u64::try_from(limits.0.min(64 * 1024 * 1024))?.min(
+        configured
+            .history_per_agent_bytes
+            .checked_add(configured.pending_per_agent_bytes)
+            .context(exhausted())?,
+    );
+    let nodes = limits
+        .1
+        .min(65536)
+        .min(usize::try_from(configured.record_limit)?);
+    anyhow::ensure!(
+        prior.0.checked_add(material.0).is_some_and(|n| n <= bytes)
+            && prior.1.checked_add(material.1).is_some_and(|n| n <= nodes),
+        exhausted()
+    );
+    let guard = ledger.register_owned_bytes(
+        scope,
+        InputMemoryCategory::Candidate,
+        OwnedBytesEstimate {
+            payload_bytes: 0,
+            metadata_estimate_bytes: material.0,
+        },
+    )?;
+    let request = build_scheduler_task_request(work, coverage)?;
+    Ok((request, SchedulerTaskSelectorMaterial { guard, material }))
+}
+
+fn build_scheduler_task_request(
+    work: &WorkCaptureRequest,
+    coverage: Option<&super::super::resident_task::TaskCoverage>,
+) -> Result<TaskCaptureRequest> {
+    // At most one borrowed entry per requested Task; the caller has already
+    // admitted the selector. Traverse the complete Result inventory once.
     let invalid: BTreeSet<&str> = coverage
         .into_iter()
         .flat_map(|coverage| {
@@ -63,20 +157,17 @@ pub(in crate::runtime) fn scheduler_task_request(
                 .map(|row| row.task_id.as_str())
         })
         .collect();
-    Ok((
-        TaskCaptureRequest {
-            include_active: true,
-            include_unsettled: true,
-            terminal_limit: 0,
-            required_keys: work
-                .required_task_ids
-                .iter()
-                .filter(|id| !invalid.contains(id.as_str()))
-                .map(|id| TaskKey::new(TaskFamily::Task, id))
-                .collect(),
-        },
-        guard,
-    ))
+    Ok(TaskCaptureRequest {
+        include_active: true,
+        include_unsettled: true,
+        terminal_limit: 0,
+        required_keys: work
+            .required_task_ids
+            .iter()
+            .filter(|id| !invalid.contains(id.as_str()))
+            .map(|id| TaskKey::new(TaskFamily::Task, id))
+            .collect(),
+    })
 }
 
 pub(in crate::runtime) fn dispatch_task_record<'a>(

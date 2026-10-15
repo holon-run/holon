@@ -1,7 +1,7 @@
 //! Completeness metadata for the existing input/evidence domain. These indexes
 //! never grant record bytes or replace execution protocol reducer authority.
 use super::{
-    CapturedInputEvidence, InputEvidenceFamily as Family, InputEvidenceKey as Key,
+    CapturePhase, CapturedInputEvidence, InputEvidenceFamily as Family, InputEvidenceKey as Key,
     InputEvidenceReadError, PreparedInputEvidence,
 };
 use crate::domain::execution_protocol::{
@@ -262,7 +262,30 @@ impl ExecutionInputCoverage {
         sources: &BTreeSet<String>,
         work_items: &BTreeSet<String>,
     ) -> Self {
-        Self {
+        self.for_sources_observed(sources, work_items, &mut CapturePhase::unobserved())
+            .expect("unobserved execution selection cannot fail")
+    }
+    pub(super) fn for_sources_observed(
+        &self,
+        sources: &BTreeSet<String>,
+        work_items: &BTreeSet<String>,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<Self> {
+        phase.json(
+            &(&self.open_attempt_ids, &self.nonterminal_work_item_ids),
+            1,
+        )?;
+        for (id, value) in &self.work_items {
+            if work_items.contains(id) {
+                phase.json(&(id, value), 1)?;
+            }
+        }
+        for (id, record) in &self.sources {
+            if sources.contains(id) {
+                phase.json(&(id, record), 1)?;
+            }
+        }
+        Ok(Self {
             initialized: self.initialized,
             open_attempt_ids: self.open_attempt_ids.clone(),
             nonterminal_work_item_ids: self.nonterminal_work_item_ids.clone(),
@@ -278,7 +301,7 @@ impl ExecutionInputCoverage {
                 .filter(|(id, _)| sources.contains(*id))
                 .map(|(id, record)| (id.clone(), record.clone()))
                 .collect(),
-        }
+        })
     }
     pub(crate) fn metadata_count(&self) -> usize {
         self.open_attempt_ids
@@ -299,6 +322,20 @@ impl ExecutionInputCoverage {
         Ok(encoded_size(self)?.saturating_add(self.metadata_count().saturating_mul(128)))
     }
     pub(crate) fn required_body_keys(&self, roots: &BTreeSet<Key>) -> BTreeSet<Key> {
+        self.required_body_keys_observed(roots, &mut CapturePhase::unobserved())
+            .expect("unobserved execution roots cannot fail")
+    }
+    pub(super) fn required_body_keys_observed(
+        &self,
+        roots: &BTreeSet<Key>,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<Key>> {
+        phase.charge(
+            u64::try_from(roots.len())?
+                .checked_mul(256)
+                .ok_or_else(|| anyhow::anyhow!("execution Turn selector overflow"))?,
+            roots.len(),
+        )?;
         let mut result = BTreeSet::new();
         let turns = roots
             .iter()
@@ -306,8 +343,12 @@ impl ExecutionInputCoverage {
             .map(|key| key.id.as_str())
             .collect::<BTreeSet<_>>();
         for (source, coverage) in &self.sources {
-            if roots.contains(&Key::new(Family::Message, source)) {
+            if roots
+                .iter()
+                .any(|key| key.family == Family::Message && key.id == *source)
+            {
                 if let Some(attempt) = coverage.latest() {
+                    phase.key(Family::Attempt, &attempt.attempt_id, 1)?;
                     result.insert(Key::new(Family::Attempt, &attempt.attempt_id));
                 }
             }
@@ -323,10 +364,11 @@ impl ExecutionInputCoverage {
                     )
                     && attempt.terminal_outcome_id.is_some()
             }) {
+                phase.key(Family::Attempt, &attempt.attempt_id, 1)?;
                 result.insert(Key::new(Family::Attempt, &attempt.attempt_id));
             }
         }
-        result
+        Ok(result)
     }
     /// Explicit planner preparation chooses all interrupted candidates for the
     /// named sources. This finite index never grants their historical bodies.
@@ -334,8 +376,21 @@ impl ExecutionInputCoverage {
         &self,
         sources: &BTreeSet<String>,
     ) -> Result<BTreeSet<Key>> {
+        self.required_interrupted_body_keys_observed(sources, &mut CapturePhase::unobserved())
+    }
+    pub(super) fn required_interrupted_body_keys_observed(
+        &self,
+        sources: &BTreeSet<String>,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<Key>> {
         let mut keys = BTreeSet::new();
         for source in sources {
+            phase.key(Family::Message, source, 2)?;
+            for attempt in self.source(source)?.attempts.values().filter(|attempt| {
+                !attempt.pruned && attempt.state == ExecutionAttemptState::Interrupted
+            }) {
+                phase.key(Family::Attempt, &attempt.attempt_id, 1)?;
+            }
             keys.extend(
                 self.source(source)?
                     .attempts
@@ -491,6 +546,13 @@ impl CapturedInputEvidence {
     /// The existing protocol_state() remains the selected-record projection used
     /// by context, and must not prove planner absence/latest/count.
     pub(crate) fn execution_state_if_initialized(&self) -> Result<Option<ExecutionProtocolState>> {
+        self.execution_state_if_initialized_observed(&mut None)
+    }
+    pub(in crate::runtime) fn execution_state_if_initialized_observed(
+        &self,
+        observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+    ) -> Result<Option<ExecutionProtocolState>> {
+        use crate::work_item_scheduling::observe_scheduling_clone as observe;
         if !self.execution.initialized {
             ensure!(
                 !self.records.iter().any(|x| matches!(
@@ -504,6 +566,7 @@ impl CapturedInputEvidence {
             return Ok(None);
         }
         for id in &self.execution.open_attempt_ids {
+            observe(id, observer)?;
             let key = Key::new(Family::Attempt, id);
             ensure!(
                 matches!(self.lookup(&key)?.map(|x| &x.record),Some(PreparedInputEvidence::Attempt(x)) if x.state==ExecutionAttemptState::Open),
@@ -511,13 +574,29 @@ impl CapturedInputEvidence {
             );
         }
         for id in &self.execution.nonterminal_work_item_ids {
+            observe(id, observer)?;
             let key = Key::new(Family::WorkExecution, id);
             ensure!(
                 matches!(self.lookup(&key)?.map(|x| &x.record),Some(PreparedInputEvidence::WorkExecution{record,..}) if !matches!(record.state,crate::domain::execution_protocol::WorkItemExecutionState::Terminal{..})),
                 "nonterminal execution Work frontier lacks its exact qualified allocation"
             );
         }
-        let state = self.protocol_state()?;
+        let state = self.protocol_state_observed(observer)?;
+        for record in state
+            .attempts
+            .values()
+            .filter(|x| x.state == ExecutionAttemptState::Open)
+        {
+            observe(&record.attempt_id, observer)?;
+        }
+        for (id, _) in state.work_items.iter().filter(|(_, x)| {
+            !matches!(
+                x.state,
+                crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+            )
+        }) {
+            observe(id, observer)?;
+        }
         let actual_open = state
             .attempts
             .values()

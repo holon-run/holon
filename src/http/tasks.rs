@@ -234,14 +234,6 @@ pub async fn task_input(
         .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    if !runtime
-        .task_record(&task_id)
-        .await
-        .map_err(error_response)?
-        .is_some_and(|task| task.agent_id == agent_id)
-    {
-        return Err(task_not_found_response(&task_id));
-    }
     let authority_class = request
         .authority_class
         .unwrap_or(AuthorityClass::OperatorInstruction);
@@ -250,8 +242,13 @@ pub async fn task_input(
         .managed_tasks()
         .task_input_with_trust(&task_id, &request.text, &authority_class)
         .await
-        .map_err(task_lifecycle_error)?;
-    Ok(Json(result))
+        .map_err(|error| task_query_error(error, &task_id))?;
+    let wire = result.into_json_wire().map_err(task_lifecycle_error)?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        axum::body::Bytes::from_owner(wire),
+    )
+        .into_response())
 }
 
 pub async fn task_stop(

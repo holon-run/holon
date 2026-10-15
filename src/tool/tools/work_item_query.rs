@@ -122,14 +122,6 @@ pub(crate) fn query_context_from_work_items(
     }
 }
 
-pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
-    let snapshot = runtime.capture_work_query_snapshot().await?;
-    Ok(query_context_from_work_items(
-        &snapshot.state,
-        &snapshot.items,
-    ))
-}
-
 /// Preserve the existing Get/by-ID fallback for records outside the ordinary window.
 pub(crate) fn projection_outside_query_window(
     context: &WorkItemQueryContext,
@@ -146,63 +138,312 @@ pub(crate) fn projection_outside_query_window(
     )
 }
 
-pub(crate) async fn view_for_record(
+/// Result outcome and the one selected projection publication both survive
+/// until the caller's synchronous serialization boundary.
+pub(crate) struct WorkItemMutationViewMaterial {
+    _result: std::sync::Arc<crate::runtime::WorkItemMutationMaterial>,
+    _snapshot: crate::runtime::WorkQuerySnapshot,
+}
+
+/// A real create kernel observation bound by its successful original Work ACK.
+/// A later resource refresh failure cannot turn this committed result into I/O.
+pub(crate) async fn view_for_created_work_item(
     runtime: &RuntimeHandle,
-    context: &WorkItemQueryContext,
+    read: crate::runtime::OwnedCreatedWorkItemRead,
+) -> Result<(WorkItemView, WorkItemMutationViewMaterial)> {
+    view_for_owned_work_item(runtime, read).await
+}
+pub(crate) async fn view_for_owned_work_item(
+    runtime: &RuntimeHandle,
+    read: crate::runtime::OwnedWorkItemMutationRead,
+) -> Result<(WorkItemView, WorkItemMutationViewMaterial)> {
+    let snapshot = runtime
+        .capture_work_query_snapshot_for_mutation_result(read.material())
+        .await?;
+    view_for_owned_work_item_in_snapshot(runtime, snapshot, read)
+}
+pub(crate) fn view_for_owned_work_item_in_snapshot(
+    runtime: &RuntimeHandle,
+    snapshot: crate::runtime::WorkQuerySnapshot,
+    read: crate::runtime::OwnedWorkItemMutationRead,
+) -> Result<(WorkItemView, WorkItemMutationViewMaterial)> {
+    let (record, material) = read.into_parts();
+    let context = query_context_from_work_items(&snapshot.state, &snapshot.items);
+    // A later ACK may have changed this same ID. Keep the original successful
+    // writer record and never apply a successor body's waits/readiness to it.
+    let projection = snapshot
+        .items
+        .iter()
+        .find(|item| item.work_item == record)
+        .cloned()
+        .unwrap_or_else(|| projection_outside_query_window(&context, &record));
+    let query = material.plan_query();
+    let prepared_report = if let Some(report) = material.acknowledged_report(&record)? {
+        Some(report.map(|report| WorkItemCompletionReportView {
+            text: report.text.clone(),
+            source: match report.kind {
+                crate::runtime::OriginalWorkReportKind::ResultBrief => {
+                    WorkItemCompletionReportSource::ResultBrief
+                }
+                crate::runtime::OriginalWorkReportKind::WorkItemResultSummary => {
+                    WorkItemCompletionReportSource::WorkItemResultSummary
+                }
+                crate::runtime::OriginalWorkReportKind::DeliverySummary => {
+                    WorkItemCompletionReportSource::DeliverySummary
+                }
+            },
+            brief_id: report.brief_id.clone(),
+            delivery_summary_id: report.delivery_summary_id.clone(),
+            source_turn_index: report.source_turn_index,
+            created_at: report.created_at,
+        }))
+    } else {
+        material.prepared_report(&record)?.map(|report| {
+            prepared_completion_report(report.result_summary(), report.legacy_summary())
+        })
+    };
+    let view = view_from_plan_query(
+        runtime,
+        record,
+        true,
+        None,
+        projection,
+        query,
+        prepared_report,
+    )?;
+    Ok((
+        view,
+        WorkItemMutationViewMaterial {
+            _result: material,
+            _snapshot: snapshot,
+        },
+    ))
+}
+
+fn prepared_completion_report(
+    summary: Option<&str>,
+    legacy: Option<(&str, &str, Option<u64>, chrono::DateTime<chrono::Utc>)>,
+) -> Option<WorkItemCompletionReportView> {
+    let (text, source) = if let Some(text) = summary {
+        (text, WorkItemCompletionReportSource::WorkItemResultSummary)
+    } else {
+        let (_, text, _, _) = legacy.filter(|(_, text, _, _)| !text.is_empty())?;
+        (text, WorkItemCompletionReportSource::DeliverySummary)
+    };
+    let metadata = legacy.filter(|(_, original, _, _)| *original == text);
+    Some(WorkItemCompletionReportView {
+        text: text.to_owned(),
+        source,
+        brief_id: None,
+        delivery_summary_id: metadata.map(|(id, _, _, _)| id.to_owned()),
+        source_turn_index: metadata.and_then(|(_, _, turn, _)| turn),
+        created_at: metadata.map(|(_, _, _, at)| at),
+    })
+}
+
+pub(crate) fn view_for_planned_work_item(
+    runtime: &RuntimeHandle,
+    snapshot: crate::runtime::WorkQuerySnapshot,
+    read: crate::runtime::OwnedWorkItemMutationRead,
+    projection: WorkItemSchedulingProjection,
+) -> Result<(WorkItemView, WorkItemMutationViewMaterial)> {
+    let (record, material) = read.into_parts();
+    anyhow::ensure!(
+        projection.work_item == record,
+        "planned Work projection body differs"
+    );
+    let query = material.plan_query();
+    let prepared_report = material
+        .prepared_report(&record)?
+        .map(|report| prepared_completion_report(report.result_summary(), report.legacy_summary()));
+    let view = view_from_plan_query(
+        runtime,
+        record,
+        true,
+        None,
+        projection,
+        query,
+        prepared_report,
+    )?;
+    Ok((
+        view,
+        WorkItemMutationViewMaterial {
+            _result: material,
+            _snapshot: snapshot,
+        },
+    ))
+}
+
+/// The selected plan was captured under the request's original Work source.
+/// Its material remains alive through the caller's actual synchronous wire.
+/// Ordinary reports use only the same publication as the selected Work/plan.
+pub(crate) fn view_for_record_in_snapshot(
+    runtime: &RuntimeHandle,
+    snapshot: &crate::runtime::WorkQuerySnapshot,
+    record: WorkItemRecord,
+    include_todo_list: bool,
+    latest_nonempty: bool,
+    projection: WorkItemSchedulingProjection,
+    read: crate::runtime::WorkItemPlanQueryRead,
+) -> Result<(WorkItemView, crate::runtime::WorkItemPlanQueryRead)> {
+    let report = completion_report_in_snapshot(snapshot, &record, latest_nonempty)?;
+    let (query, material) = read.into_parts();
+    let view = view_from_plan_query(
+        runtime,
+        record,
+        include_todo_list,
+        None,
+        projection,
+        query,
+        Some(report),
+    )?;
+    Ok((view, material))
+}
+fn completion_report_in_snapshot(
+    snapshot: &crate::runtime::WorkQuerySnapshot,
+    record: &WorkItemRecord,
+    latest_nonempty: bool,
+) -> Result<Option<WorkItemCompletionReportView>> {
+    if record.state != WorkItemState::Completed {
+        return Ok(None);
+    }
+    if let Some((brief, text)) = snapshot.work_report_brief_text(record)? {
+        return Ok(Some(WorkItemCompletionReportView {
+            text,
+            source: WorkItemCompletionReportSource::ResultBrief,
+            brief_id: Some(brief.id.clone()),
+            delivery_summary_id: None,
+            source_turn_index: brief.turn_index,
+            created_at: Some(brief.created_at),
+        }));
+    }
+    let delivery = snapshot.work_report_delivery_summary(record, latest_nonempty)?;
+    if let Some(text) = record
+        .result_summary
+        .as_ref()
+        .filter(|text| !text.is_empty())
+    {
+        return Ok(Some(completion_report_view(
+            text.clone(),
+            WorkItemCompletionReportSource::WorkItemResultSummary,
+            delivery.filter(|summary| summary.text == *text),
+        )));
+    }
+    Ok(delivery
+        .filter(|summary| !summary.text.is_empty())
+        .map(|summary| {
+            completion_report_view(
+                summary.text.clone(),
+                WorkItemCompletionReportSource::DeliverySummary,
+                Some(summary),
+            )
+        }))
+}
+/// Original explicit by-ID cause; its finite SQL report and guards were
+/// admitted together with the recalled row before any payload decoding.
+pub(crate) fn view_for_recalled_record_observed(
+    runtime: &RuntimeHandle,
+    record: WorkItemRecord,
+    include_todo_list: bool,
+    inspection: &crate::runtime_db::work_item_recall::ExplicitWorkItemRecallMaterial,
+    projection: WorkItemSchedulingProjection,
+    read: crate::runtime::WorkItemPlanQueryRead,
+) -> Result<(WorkItemView, crate::runtime::WorkItemPlanQueryRead)> {
+    use crate::runtime_db::work_item_recall::ExplicitWorkReportSource;
+    let report = inspection
+        .completion_report()
+        .map(|value| WorkItemCompletionReportView {
+            text: value.text.clone(),
+            source: match value.source {
+                ExplicitWorkReportSource::ResultBrief => {
+                    WorkItemCompletionReportSource::ResultBrief
+                }
+                ExplicitWorkReportSource::WorkItemResultSummary => {
+                    WorkItemCompletionReportSource::WorkItemResultSummary
+                }
+                ExplicitWorkReportSource::DeliverySummary => {
+                    WorkItemCompletionReportSource::DeliverySummary
+                }
+            },
+            brief_id: value.brief_id.clone(),
+            delivery_summary_id: value.delivery_summary_id.clone(),
+            source_turn_index: value.source_turn_index,
+            created_at: value.created_at,
+        });
+    let (query, material) = read.into_parts();
+    let view = view_from_plan_query(
+        runtime,
+        record,
+        include_todo_list,
+        None,
+        projection,
+        query,
+        Some(report),
+    )?;
+    Ok((view, material))
+}
+pub(crate) fn view_for_record_observed(
+    runtime: &RuntimeHandle,
     record: WorkItemRecord,
     include_todo_list: bool,
     delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
-    projection: Option<WorkItemSchedulingProjection>,
+    projection: WorkItemSchedulingProjection,
+    read: crate::runtime::WorkItemPlanQueryRead,
+) -> Result<(WorkItemView, crate::runtime::WorkItemPlanQueryRead)> {
+    let (query, material) = read.into_parts();
+    let view = view_from_plan_query(
+        runtime,
+        record,
+        include_todo_list,
+        delivery_summaries,
+        projection,
+        query,
+        None,
+    )?;
+    Ok((view, material))
+}
+fn view_from_plan_query(
+    runtime: &RuntimeHandle,
+    record: WorkItemRecord,
+    include_todo_list: bool,
+    delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
+    projection: WorkItemSchedulingProjection,
+    query: crate::work_item_plan::PlanArtifactQuery,
+    observed_report: Option<Option<WorkItemCompletionReportView>>,
 ) -> Result<WorkItemView> {
-    // Mutation result views use the same ordinary resident policy. Get supplies
-    // its captured projection, including the explicit by-ID historical fallback.
-    let snapshot = if projection.is_none() {
-        Some(runtime.capture_work_query_snapshot().await?)
-    } else {
-        None
+    let (plan_artifact, plan_artifact_status, plan_diagnostic) = match query {
+        crate::work_item_plan::PlanArtifactQuery::NotRecorded => {
+            (None, WorkItemPlanArtifactStatus::NotRecorded, None)
+        }
+        crate::work_item_plan::PlanArtifactQuery::Missing => (
+            None,
+            WorkItemPlanArtifactStatus::Missing,
+            Some(format!(
+                "plan artifact missing at {} for work item {}",
+                crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &record.id)
+                    .display(),
+                record.id
+            )),
+        ),
+        crate::work_item_plan::PlanArtifactQuery::Available(artifact) => {
+            (Some(artifact), WorkItemPlanArtifactStatus::Available, None)
+        }
+        crate::work_item_plan::PlanArtifactQuery::Unreadable(diagnostic) => (
+            None,
+            WorkItemPlanArtifactStatus::Unreadable,
+            Some(diagnostic),
+        ),
     };
-    let projection = projection.unwrap_or_else(|| {
-        snapshot
-            .as_ref()
-            .expect("captured query")
-            .items
-            .iter()
-            .find(|item| item.work_item.id == record.id)
-            .cloned()
-            .unwrap_or_else(|| projection_outside_query_window(context, &record))
-    });
-    let record = record;
-    let (plan_artifact, plan_artifact_status, plan_diagnostic) =
-        match crate::work_item_plan::query_plan_artifact(runtime.agent_home().as_path(), &record) {
-            crate::work_item_plan::PlanArtifactQuery::NotRecorded => {
-                (None, WorkItemPlanArtifactStatus::NotRecorded, None)
-            }
-            crate::work_item_plan::PlanArtifactQuery::Missing => (
-                None,
-                WorkItemPlanArtifactStatus::Missing,
-                Some(format!(
-                    "plan artifact missing at {} for work item {}",
-                    crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &record.id)
-                        .display(),
-                    record.id
-                )),
-            ),
-            crate::work_item_plan::PlanArtifactQuery::Available(artifact) => {
-                (Some(artifact), WorkItemPlanArtifactStatus::Available, None)
-            }
-            crate::work_item_plan::PlanArtifactQuery::Unreadable(diagnostic) => (
-                None,
-                WorkItemPlanArtifactStatus::Unreadable,
-                Some(diagnostic),
-            ),
-        };
     let todo_list = if include_todo_list {
         record.todo_list.clone()
     } else {
         Vec::new()
     };
     let state = lifecycle_view(&record.state);
-    let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
+    let completion_report = match observed_report {
+        Some(report) => report,
+        None => completion_report_for_record(runtime, &record, delivery_summaries)?,
+    };
     let mut diagnostics = projection.diagnostics;
     if let Some(diagnostic) = plan_diagnostic {
         diagnostics.push(diagnostic);
@@ -234,24 +475,6 @@ pub(crate) async fn view_for_record(
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
-}
-
-pub(crate) fn latest_delivery_summaries_by_work_item(
-    runtime: &RuntimeHandle,
-) -> Result<WorkItemDeliverySummaryMap> {
-    let mut summaries = BTreeMap::new();
-    for summary in runtime
-        .storage()
-        .read_recent_delivery_summaries(usize::MAX)?
-        .into_iter()
-        .rev()
-        .filter(|summary| !summary.text.is_empty())
-    {
-        summaries
-            .entry(summary.work_item_id.clone())
-            .or_insert(summary);
-    }
-    Ok(summaries)
 }
 
 fn completion_report_for_record(

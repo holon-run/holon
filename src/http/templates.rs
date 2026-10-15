@@ -215,9 +215,15 @@ pub async fn remove_template(
         return Err(error_response(anyhow!("template_id must not be empty")));
     }
 
+    let resource_write = state
+        .host
+        .begin_loaded_context_resource_write()
+        .await
+        .map_err(error_response)?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let id = template_id.clone();
     tokio::task::spawn_blocking(move || {
+        let _resource_write = resource_write;
         crate::agent_template::remove_user_template(&user_home, &id)
     })
     .await

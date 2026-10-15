@@ -19,6 +19,9 @@ pub(crate) struct InputEvidenceCommit<T> {
     pub agent_state: Option<super::transitions::AgentStateMutation>,
     pub work_delta: Option<crate::runtime::resident_work::CommittedWorkDelta>,
     pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
+    pub work_material_budget_views: Option<
+        std::sync::Arc<Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>>,
+    >,
     pub task_material_budget_views:
         Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
 }
@@ -87,6 +90,7 @@ pub(crate) fn acknowledge_input_evidence_tx<T>(
     Ok(InputEvidenceCommit {
         work_delta: None,
         task_delta: None,
+        work_material_budget_views: None,
         task_material_budget_views: Vec::new(),
         record,
         input_delta,
@@ -136,6 +140,13 @@ pub(crate) fn merge_input_evidence_delta(
     into: &mut CommittedInputEvidenceDelta,
     delta: CommittedInputEvidenceDelta,
 ) -> Result<()> {
+    if let Some(advance) = delta.query_advance {
+        if let Some(existing) = &into.query_advance {
+            ensure!(std::sync::Arc::ptr_eq(existing, &advance), "one Input delta has different original birth advances");
+        } else {
+            into.query_advance = Some(advance);
+        }
+    }
     if let Some(invalidation) = delta.output_recall_invalidation {
         if let Some(existing) = &into.output_recall_invalidation {
             existing.merge(&invalidation)?;

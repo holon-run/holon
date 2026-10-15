@@ -16,6 +16,7 @@ pub(super) enum WorkCommandReadMode {
 
 pub(super) struct WorkCommandRead {
     pub state: Arc<AgentState>,
+    pub(super) resource_stamp: crate::runtime::resource_refresh::WorkResourceReadStamp,
     pub work: CapturedWork,
     pub queue: Option<crate::work_item_scheduling::WorkQueueReadModel>,
     // Explicit execution-protocol command preparation adapter, separate from
@@ -25,6 +26,90 @@ pub(super) struct WorkCommandRead {
     _scheduling_material: Option<Arc<BudgetViewGuard>>,
 }
 impl WorkCommandRead {
+    /// The already-held command allocations consume the same next-acquisition
+    /// allowance. Reuse actual guards; this never registers another allocation.
+    pub(super) fn material_estimate(&self) -> Result<(u64, usize)> {
+        fn owned(value: &impl serde::Serialize, copies: usize) -> Result<(u64, usize)> {
+            let records = super::super::resource_refresh::borrowed_resource_record_count(value)?;
+            let bytes = serialized_bytes(value)?
+                .checked_add(
+                    u64::try_from(records)?
+                        .checked_mul(256)
+                        .context("Work command nodes overflow")?,
+                )
+                .and_then(|n| n.checked_mul(copies as u64))
+                .context("Work command owned bytes overflow")?;
+            Ok((
+                bytes,
+                records
+                    .checked_mul(copies)
+                    .context("Work command owned count overflow")?,
+            ))
+        }
+        fn add(total: &mut (u64, usize), next: (u64, usize)) -> Result<()> {
+            total.0 = total
+                .0
+                .checked_add(next.0)
+                .context("Work command combined bytes overflow")?;
+            total.1 = total
+                .1
+                .checked_add(next.1)
+                .context("Work command combined count overflow")?;
+            Ok(())
+        }
+        let mut total = self.work.selected_material_estimate()?;
+        // The immutable State Arc itself and the command's bounded copies are
+        // distinct allocations. Work Arc bodies already occur once in `total`.
+        add(&mut total, owned(self.state.as_ref(), 1)?)?;
+        let mut command = owned(self.state.as_ref(), 4)?;
+        add(&mut command, owned(&self.protocol, 3)?)?;
+        for record in &self.work.records {
+            let (bytes, records) = record.record.resident_material_estimate()?;
+            add(
+                &mut command,
+                (
+                    u64::try_from(bytes)?
+                        .checked_mul(8)
+                        .context("Work command bodies overflow")?,
+                    records
+                        .checked_mul(8)
+                        .context("Work command body count overflow")?,
+                ),
+            )?;
+        }
+        if let Some(queue) = &self.queue {
+            add(
+                &mut command,
+                owned(
+                    &(
+                        &queue.current,
+                        &queue.queued_blocked,
+                        &queue.items,
+                        &queue.current_runnable,
+                        &queue.triggered_blocked,
+                        &queue.queued_runnable,
+                        &queue.yielded,
+                        &queue.waiting_for_operator,
+                        &queue.blocked,
+                        &queue.completing,
+                        &queue.completed_recent,
+                    ),
+                    1,
+                )?,
+            )?;
+        }
+        // A later native guard can be larger than the original copy contract;
+        // debit this same allocation once, rather than add its guard again.
+        command.0 = command.0.max(self.owned.owned_material_bytes()?);
+        add(&mut total, command)?;
+        if let Some(guard) = &self._scheduling_material {
+            total.0 = total
+                .0
+                .checked_add(guard.owned_material_bytes()?)
+                .context("Work command Scheduling material overflow")?;
+        }
+        Ok(total)
+    }
     pub fn active_frames(&self) -> Result<Vec<&WorkItemContinuationFrame>> {
         anyhow::ensure!(
             self.work.live_complete,
@@ -259,6 +344,13 @@ impl RuntimeHandle {
             owner.prepare_owner_work_request(&request).await?;
             let work_token = owner.capture_published_root()?.token;
             let read = owner.capture_work_read(&request)?;
+            let resource_root = owner.capture_published_root()?;
+            let resource_stamp = self.capture_work_resource_read_stamp(
+                resource_root.as_ref(),
+                read.state.as_ref(),
+                &read.work,
+            )?;
+            drop(resource_root);
             let (_, record_limit, byte_limit) = owner.context_input_evidence_policy()?;
             let triggers = scheduling_request
                 .as_ref()
@@ -380,6 +472,7 @@ impl RuntimeHandle {
             };
             drop(owner);
             Ok(WorkCommandRead {
+                resource_stamp,
                 state: read.state,
                 work: read.work,
                 queue,
@@ -603,6 +696,91 @@ mod tests {
             tx.execute_batch("ALTER TABLE focus_wakes_forbidden RENAME TO timer_wakes; ALTER TABLE focus_timers_forbidden RENAME TO timers; ALTER TABLE focus_trigger_forbidden RENAME TO external_triggers")?;
             Ok(())
         })?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod original_resource_source_tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_work_command_read_rejects_another_work_ack_before_resource_acquisition(
+    ) -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let runtime = RuntimeHandle::new_isolated_resource_fixture(
+            "resource-command",
+            home.path().to_path_buf(),
+            crate::runtime::tests::support::context_config(),
+        )?;
+        let target = runtime
+            .create_work_item(
+                "original target".into(),
+                None,
+                Some("target plan".into()),
+                Vec::new(),
+            )
+            .await?;
+        let other = runtime
+            .create_work_item(
+                "other target".into(),
+                None,
+                Some("other plan".into()),
+                Vec::new(),
+            )
+            .await?;
+        runtime.refresh_context_resources().await?;
+        let original = runtime
+            .prepare_work_command_read(&target, WorkCommandReadMode::CompletionIntent)
+            .await?;
+        let pause = runtime.pause_resource_observer_for_test().await;
+        runtime
+            .update_work_item_fields(
+                other.id,
+                Some("actual successor Work".into()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+        let error = runtime
+            .capture_observed_work_plan_with_prior(
+                &target.id,
+                target.revision,
+                Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(
+                    &original.state,
+                    &original.work,
+                    &original.resource_stamp,
+                    original.material_estimate()?,
+                )),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::runtime::resource_refresh::WorkPlanReplanRequired>()
+                .is_some(),
+            "{error:#}"
+        );
+        assert_eq!(
+            runtime.inner.input_evidence_budget.report()?.observed_bytes,
+            before
+        );
+        let fresh = runtime
+            .prepare_work_command_read(&target, WorkCommandReadMode::CompletionIntent)
+            .await?;
+        runtime.capture_observed_work_plan_with_prior(
+            &target.id,
+            target.revision,
+            Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(
+                &fresh.state,
+                &fresh.work,
+                &fresh.resource_stamp,
+                fresh.material_estimate()?,
+            )),
+        )?;
+        drop(pause);
+        runtime.stop_context_resource_observer().await?;
         Ok(())
     }
 }

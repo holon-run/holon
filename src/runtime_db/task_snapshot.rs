@@ -56,6 +56,7 @@ mod status_observation;
 mod status_upgrade;
 pub(in crate::runtime_db) use query_sources::register_message_source_tx;
 pub(crate) use source_writes::register_task_source_metadata_tx;
+pub(in crate::runtime_db) use source_writes::register_task_source_metadata_using_material_tx;
 pub(in crate::runtime_db) use status_control_source::register_control_worktree_completion_tx;
 pub(in crate::runtime_db) use status_delegation_source::register_delegation_write_tx;
 pub(in crate::runtime_db) use status_metadata::refresh_task_status_metadata_tx;
@@ -117,6 +118,10 @@ pub(crate) use seed_maintenance::{
 pub(crate) use startup_metadata::prepare_exclusive_startup_task_metadata_tx;
 pub(crate) use task_stop_readback::prepare_task_sql_readback_tx;
 pub(in crate::runtime_db) use writes::register_original_task_writes_using_material_tx;
+pub(in crate::runtime_db) use writes::{
+    preflight_original_task_using_material_tx, prepare_original_task_write_using_material_tx,
+    register_original_task_writes_with_stop_using_material_tx,
+};
 #[cfg(test)]
 pub(crate) use writes::{
     preflight_task_write_snapshot_tx, register_task_writes_tx, CommittedTaskFacts,

@@ -78,7 +78,7 @@ pub(crate) fn prepare_task_write_tx(
     scope: &InputEvidenceScope,
     keys: &BTreeSet<TaskKey>,
 ) -> Result<TaskWriteProof> {
-    prepare(tx, scope, keys, false)
+    prepare(tx, scope, keys, false, None)
 }
 /// Same-incarnation cleanup only; every target already exists and is qualified.
 pub(crate) fn prepare_original_task_cleanup_tx(
@@ -86,20 +86,27 @@ pub(crate) fn prepare_original_task_cleanup_tx(
     scope: &InputEvidenceScope,
     keys: &BTreeSet<TaskKey>,
 ) -> Result<TaskWriteProof> {
-    prepare(tx, scope, keys, true)
+    prepare(tx, scope, keys, true, None)
 }
 fn prepare(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     keys: &BTreeSet<TaskKey>,
     original_recovery: bool,
+    mut material: Option<&mut read_preparation::TaskReadMaterial<'_>>,
 ) -> Result<TaskWriteProof> {
-    ensure!(
-        scope_facts(tx, scope, original_recovery)?.is_some(),
-        "Task write scope retired"
-    );
+    let facts = if let Some(material) = material.as_deref_mut() {
+        material.scope_facts_tx(tx, scope, original_recovery)?
+    } else {
+        scope_facts(tx, scope, original_recovery)?
+    };
+    ensure!(facts.is_some(), "Task write scope retired");
+    if let Some(material) = material.as_deref_mut() {
+        material.admit_original_metadata_tx(tx, scope, keys)?;
+    } else {
+        lengths(tx, keys, None)?;
+    }
     let seed = binding(tx, scope)?;
-    lengths(tx, keys, None)?;
     let mut before = BTreeMap::new();
     for key in keys {
         ensure!(!key.id.is_empty(), "empty Task write target");
@@ -128,11 +135,59 @@ fn prepare(
     }
     Ok(TaskWriteProof {
         scope: scope.clone(),
-        base_revision: current_coverage(tx, scope)?.map_or(1, |c| c.revision),
+        base_revision: if let Some(material) = material {
+            material.original_revision_tx(tx, scope)?
+        } else {
+            current_coverage(tx, scope)?.map_or(1, |c| c.revision)
+        },
         before,
         original_recovery,
     })
 }
+/// Only the original W1 proof uses this existing phase; material is not authority.
+pub(in crate::runtime_db) fn prepare_original_task_write_using_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    keys: &BTreeSet<TaskKey>,
+    original_recovery: bool,
+    request: &TaskDomainLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    material: &mut read_preparation::TaskReadMaterial<'_>,
+) -> Result<TaskWriteProof> {
+    material.validate_original_allowance(scope, request, ledger)?;
+    prepare(tx, scope, keys, original_recovery, Some(material))
+}
+
+pub(in crate::runtime_db) fn preflight_original_task_using_material_tx(
+    tx: &Transaction<'_>,
+    proof: &TaskWriteProof,
+    request: &TaskDomainLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    material: &mut read_preparation::TaskReadMaterial<'_>,
+) -> Result<()> {
+    material.validate_original_allowance(proof.scope(), request, ledger)?;
+    let mark = material.mark_preflight()?;
+    ensure!(
+        material.original_revision_tx(tx, proof.scope())? == proof.base_revision,
+        "Task proof base changed"
+    );
+    let snapshot = loader::load_selected_using_material(
+        tx,
+        proof.scope(),
+        request,
+        false,
+        proof.original_recovery,
+        true,
+        Some(ledger),
+        None,
+        None,
+        material,
+    )?
+    .require_current()?;
+    drop(snapshot);
+    material.retire_preflight(mark)
+}
+
 #[cfg(test)]
 pub(crate) fn preflight_task_write_snapshot_tx(
     tx: &Transaction<'_>,
@@ -336,7 +391,7 @@ pub(in crate::runtime_db) fn register_original_task_writes_using_material_tx(
     material: &mut read_preparation::TaskReadMaterial<'_>,
 ) -> Result<CommittedTaskFacts> {
     material.validate_original_allowance(proof.scope(), request, ledger)?;
-    register_task_writes_inner(
+    material.with_original_final_readback(|material| register_task_writes_inner(
         tx,
         proof,
         actual,
@@ -347,7 +402,33 @@ pub(in crate::runtime_db) fn register_original_task_writes_using_material_tx(
         None,
         None,
         Some(material),
-    )
+    ))
+}
+
+pub(in crate::runtime_db) fn register_original_task_writes_with_stop_using_material_tx(
+    tx: &Transaction<'_>,
+    proof: &TaskWriteProof,
+    actual: &BTreeSet<TaskKey>,
+    state: &AgentState,
+    request: &TaskDomainLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    material: &mut read_preparation::TaskReadMaterial<'_>,
+    inserted: &crate::runtime_db::task_stop::TaskStopInsertedObservation<'_, '_>,
+) -> Result<CommittedTaskFacts> {
+    inserted.validate_scope_tx(tx, proof.scope())?;
+    material.validate_original_allowance(proof.scope(), request, ledger)?;
+    material.with_original_final_readback(|material| register_task_writes_inner(
+        tx,
+        proof,
+        actual,
+        state,
+        request,
+        Some(ledger),
+        None,
+        Some(inserted),
+        None,
+        Some(material),
+    ))
 }
 
 fn register_task_writes_inner(
@@ -360,16 +441,28 @@ fn register_task_writes_inner(
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     inserted: Option<&crate::runtime_db::task_stop::TaskStopInsertedObservation<'_, '_>>,
     result: Option<&crate::runtime_db::task_stop::TaskStopResultObservation<'_, '_>>,
-    material: Option<&mut read_preparation::TaskReadMaterial<'_>>,
+    mut material: Option<&mut read_preparation::TaskReadMaterial<'_>>,
 ) -> Result<CommittedTaskFacts> {
-    let facts = scope_facts(tx, &proof.scope, proof.original_recovery)?
-        .context("Task finalizer scope retired")?;
+    let facts = if let Some(material) = material.as_deref_mut() {
+        material.scope_facts_tx(tx, &proof.scope, proof.original_recovery)?
+    } else {
+        scope_facts(tx, &proof.scope, proof.original_recovery)?
+    }
+    .context("Task finalizer scope retired")?;
     ensure!(
         facts.state.as_ref() == Some(final_state) && final_state.id == proof.scope.agent_id,
         "Task finalizer requires actual final canonical State"
     );
+    let mut guarded_previous = if let Some(material) = material.as_deref_mut() {
+        Some(material.original_current_metadata_tx(tx)?)
+    } else {
+        None
+    };
+    let mut previous = if material.is_none() { current_coverage(tx, &proof.scope)? } else { None };
+    let previous_ref = guarded_previous.as_ref().and_then(|read| read.as_ref()).or(previous.as_ref());
+    let had_previous = previous_ref.is_some();
     ensure!(
-        current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision) == proof.base_revision,
+        previous_ref.map_or(1, |c| c.revision) == proof.base_revision,
         "Task finalizer base changed"
     );
     ensure!(
@@ -378,8 +471,12 @@ fn register_task_writes_inner(
             .all(|k| proof.before.contains_key(k)),
         "Task actual writes exceed pre-SQL proof"
     );
-    lengths(tx, actual_final_keys, Some(request))?;
-    let previous = current_coverage(tx, &proof.scope)?;
+    if let Some(material) = material.as_deref_mut() {
+        material.admit_original_metadata_header_tx(tx, &proof.scope, actual_final_keys)?;
+        material.admit_original_written_keys(tx, &proof.scope.agent_id, actual_final_keys)?;
+    } else {
+        lengths(tx, actual_final_keys, Some(request))?;
+    }
     let mut changed = false;
     let mut removals = BTreeMap::new();
     let revision = proof
@@ -389,70 +486,71 @@ fn register_task_writes_inner(
     let seed = binding(tx, &proof.scope)?;
     for key in actual_final_keys {
         let before = proof.before.get(key).expect("proof keys checked");
-        let after = stored_on(tx, &proof.scope.agent_id, key)?;
-        match after {
-            Some(after) => {
-                let different = before.as_ref() != Some(&after);
-                changed |= different;
-                let record_revision = if different {
-                    revision
-                } else {
-                    qualification::validate_member(tx, &proof.scope, seed.as_deref(), key, &after)?
-                };
-                upsert_alias(
-                    tx,
-                    &proof.scope,
-                    key,
-                    &Alias {
-                        revision: record_revision,
-                        availability: TaskAvailability::Present,
-                        digest: Some(after.digest()),
-                        projection_digest: Some(after.projection_digest.clone()),
-                    },
-                )?;
-                if let CanonicalTaskFact::Task(task) = &after.fact {
-                    query_relations::register_actual_task_tx(
-                        tx,
-                        &proof.scope,
-                        task,
-                        &after.digest(),
-                        &after.projection_digest,
-                        before.is_none(),
+        let write = |after: Option<StoredTask>| -> Result<(bool, bool)> {
+            match after {
+                Some(after) => {
+                    let different = before.as_ref() != Some(&after);
+                    let record_revision = if different {
+                        revision
+                    } else {
+                        qualification::validate_member(tx, &proof.scope, seed.as_deref(), key, &after)?
+                    };
+                    upsert_alias(
+                        tx, &proof.scope, key,
+                        &Alias { revision: record_revision, availability: TaskAvailability::Present,
+                            digest: Some(after.digest()), projection_digest: Some(after.projection_digest.clone()) },
                     )?;
+                    if let CanonicalTaskFact::Task(task) = &after.fact {
+                        query_relations::register_actual_task_tx(tx, &proof.scope, task,
+                            &after.digest(), &after.projection_digest, before.is_none())?;
+                    }
+                    Ok((different, false))
+                }
+                None => {
+                    ensure!(before.is_some(), "Task removal has no original canonical body");
+                    upsert_alias(tx, &proof.scope, key,
+                        &Alias { revision, availability: TaskAvailability::Pruned,
+                            digest: None, projection_digest: None })?;
+                    Ok((true, true))
                 }
             }
-            None => {
-                ensure!(
-                    before.is_some(),
-                    "Task removal has no original canonical body"
-                );
-                changed = true;
-                upsert_alias(
-                    tx,
-                    &proof.scope,
-                    key,
-                    &Alias {
-                        revision,
-                        availability: TaskAvailability::Pruned,
-                        digest: None,
-                        projection_digest: None,
-                    },
-                )?;
-                removals.insert(key.clone(), TaskAvailability::Pruned);
-            }
+        };
+        let (different, removed) = if let Some(material) = material.as_deref_mut() {
+            material.with_original_written_row(tx, &proof.scope.agent_id, key, write)?
+        } else {
+            write(stored_on(tx, &proof.scope.agent_id, key)?)?
+        };
+        changed |= different;
+        if removed {
+            removals.insert(key.clone(), TaskAvailability::Pruned);
         }
     }
     // Build final complete coverage once, after all original business/State writes.
     // Installing an empty base before load also handles coverage=None + fixed updates.
-    if previous.is_none() {
+    if !had_previous {
         persist_coverage(tx, &proof.scope, &empty_coverage(proof.base_revision))?;
     }
     if changed {
-        let mut base = current_coverage(tx, &proof.scope)?.expect("base initialized");
-        base.revision = revision;
-        persist_coverage(tx, &proof.scope, &base)?;
+        if let Some(read) = guarded_previous.as_mut() {
+            if let Some(base) = read.as_mut() {
+                base.revision = revision;
+                persist_coverage(tx, &proof.scope, base)?;
+            } else {
+                let mut base = empty_coverage(proof.base_revision);
+                base.revision = revision;
+                persist_coverage(tx, &proof.scope, &base)?;
+            }
+        } else {
+            let mut base = current_coverage(tx, &proof.scope)?.expect("base initialized");
+            base.revision = revision;
+            persist_coverage(tx, &proof.scope, &base)?;
+        }
+        if let (Some(read), Some(material)) = (guarded_previous.take(), material.as_deref_mut()) {
+            read.retire(material)?;
+        }
+        previous = None;
     }
-    let snapshot = if let Some(material) = material {
+    let snapshot = if let Some(material) = material.as_deref_mut() {
         loader::load_selected_using_material(
             tx,
             &proof.scope,
@@ -483,11 +581,13 @@ fn register_task_writes_inner(
         }
     }
     .require_current()?;
-    let mut coverage = snapshot.resident.coverage().clone();
+    // Complete coverage/maps move out of the validated domain without a copy.
+    let (mut coverage, resident_records, stop_records) = snapshot.resident.into_original_install_parts();
     // A row leaving the bounded selection is removed by pure trim. Keep only
     // removal observations in this exact prepared view; tombstones remain durable.
     removals.retain(|key, availability| coverage.observations.get(key) == Some(availability));
-    if !changed && previous.as_ref().is_some_and(|p| p != &coverage) {
+    let previous_ref = guarded_previous.as_ref().and_then(|read| read.as_ref()).or(previous.as_ref());
+    if !changed && previous_ref.is_some_and(|p| p != &coverage) {
         changed = true;
         coverage.revision = revision;
         persist_coverage(tx, &proof.scope, &coverage)?;
@@ -502,21 +602,24 @@ fn register_task_writes_inner(
         "Task final coverage revision mismatch"
     );
     // No-op still carries current exact metadata; initial preparation is a real advance.
-    if previous.is_none() && !changed {
+    if !had_previous && !changed {
         coverage.revision = revision;
         persist_coverage(tx, &proof.scope, &coverage)?;
     }
     persist_coverage(tx, &proof.scope, &coverage)?;
     let final_revision = coverage.revision;
-    let stop_records = if final_revision == proof.base_revision {
-        Vec::new()
+    if let (Some(read), Some(material)) = (guarded_previous.take(), material.as_deref_mut()) {
+        read.retire(material)?;
+    }
+    let (resident_records, stop_records) = if final_revision == proof.base_revision {
+        (Vec::new(), Vec::new())
     } else {
-        snapshot.resident.selected_install_stop_records()
-    };
-    let resident_records = if final_revision == proof.base_revision {
-        Vec::new()
-    } else {
-        snapshot.resident.selected_install_records()
+        if let Some(material) = material.as_deref_mut() {
+            let slots = resident_records.len().checked_add(stop_records.len())
+                .and_then(|count| count.checked_add(2)).context("Task install Vec slots overflow")?;
+            material.charge_writer_material(0, slots, 1)?;
+        }
+        (resident_records.into_values().collect(), stop_records.into_values().collect())
     };
     Ok(CommittedTaskFacts {
         delta: CommittedTaskDelta {
@@ -590,3 +693,7 @@ pub(super) fn original_result_cleanup_proof(
         original_recovery: true,
     }
 }
+
+#[cfg(test)]
+#[path = "readback_lifetime_tests.rs"]
+mod final_readback_lifetime_tests;

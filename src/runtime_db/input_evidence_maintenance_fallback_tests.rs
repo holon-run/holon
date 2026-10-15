@@ -481,3 +481,311 @@ fn unchanged_legacy_attempt_bytes(typed_interrupt: bool) -> Result<()> {
     db.transaction(|tx| validate_existing_input_evidence_tx(tx, &scope(), &key))?;
     Ok(())
 }
+
+fn origin_material_request(keys: Vec<Key>) -> InputEvidenceLoadRequest {
+    InputEvidenceLoadRequest {
+        windows: Vec::new(),
+        mandatory_roots: keys.into_iter().collect(),
+        interrupted_sources: Default::default(),
+        selected_completion_brief_ids: Default::default(),
+        record_limit: MAX_RECORDS,
+        byte_limit: MAX_METADATA_BYTES,
+    }
+}
+fn bind_origin_identity(db: &RuntimeDb) -> Result<()> {
+    db.transaction(|tx| {
+        let record = identity();
+        ensure!(
+            crate::runtime_db::episode_snapshot::bind_unbound_episode_continuity_tx(
+                tx,
+                &record,
+                Utc::now()
+            )?,
+            "original unbound seed must actually bind"
+        );
+        upsert_agent_identity_tx(tx, &record)
+    })
+}
+fn observe_origin_material(
+    db: &RuntimeDb,
+    request: &InputEvidenceLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<()> {
+    db.transaction(|tx| {
+        let actual_scope = scope();
+        let mut material =
+            read_material::InputReadMaterial::new(&actual_scope, request, ledger, (0, 0))?;
+        let read = prepare_input_evidence_snapshot_with_material_tx(
+            tx,
+            &actual_scope,
+            request,
+            false,
+            &mut material,
+        )?;
+        ensure!(
+            matches!(read, InputEvidenceBootstrapSnapshot::Current(_)),
+            "original bound origin must stay Current"
+        );
+        drop((read, material));
+        Ok(())
+    })
+}
+fn verify_origin_material_without_installing_aliases(
+    db: &RuntimeDb,
+    request: &InputEvidenceLoadRequest,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<()> {
+    let mut connection = db.connection()?;
+    let tx = connection.transaction()?;
+    let actual_scope = scope();
+    let mut material =
+        read_material::InputReadMaterial::new(&actual_scope, request, ledger, (0, 0))?;
+    let read = prepare_input_evidence_snapshot_with_material_tx(
+        &tx,
+        &actual_scope,
+        request,
+        false,
+        &mut material,
+    )?;
+    ensure!(
+        matches!(read, InputEvidenceBootstrapSnapshot::Current(_)),
+        "original positive preparation is not Current"
+    );
+    assert!(ledger.report()?.observed_bytes > 0);
+    drop((read, material));
+    tx.rollback()?;
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+#[test]
+fn original_fallback_seed_context_and_outcome_native_material_precede_qualification_decode(
+) -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    for native_outcome in [false, true] {
+        let (directory, db) = unbound_fixture()?;
+        let recovery = apply(&db, directory.path())?
+            .recovery_message_id
+            .context("actual fallback Message missing")?;
+        bind_origin_identity(&db)?;
+        let policy = origin_material_request(vec![
+            Key::new(Family::Message, &recovery),
+            Key::new(Family::Outcome, "retired-scheduler-cleanup:attempt-a"),
+        ]);
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        verify_origin_material_without_installing_aliases(&db, &policy, &ledger)?;
+        let original:String=db.connection()?.query_row(if native_outcome {
+            "SELECT payload_json FROM execution_protocol_outcomes WHERE outcome_id='retired-scheduler-cleanup:attempt-a'"
+        } else {
+            "SELECT boundary_id FROM episode_continuity_seeds WHERE agent_id='agent-a'"
+        },[],|r|r.get(0))?;
+        let altered = if native_outcome {
+            let mut value: serde_json::Value = serde_json::from_str(&original)?;
+            value["outcome"]["native_origin_probe"] = serde_json::json!((0..40000)
+                .map(|index| (format!("k{index}"), serde_json::Value::Null))
+                .collect::<serde_json::Map<_, _>>());
+            let value = serde_json::to_string(&value)?;
+            assert!(value.len() * 8 < policy.byte_limit);
+            value
+        } else {
+            "x".repeat(9 * 1024 * 1024)
+        };
+        let sql = if native_outcome {
+            "UPDATE execution_protocol_outcomes SET payload_json=?1 WHERE outcome_id='retired-scheduler-cleanup:attempt-a'"
+        } else {
+            "UPDATE episode_continuity_seeds SET boundary_id=?1 WHERE agent_id='agent-a'"
+        };
+        db.connection()?.execute(sql, [&altered])?;
+        let before: usize =
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| {
+                    r.get(0)
+                })?;
+        let error = observe_origin_material(&db, &policy, &ledger)
+            .err()
+            .context("actual fallback origin must budget before its deep decoder")?;
+        assert!(
+            matches!(
+                error.downcast_ref::<InputEvidenceSnapshotError>(),
+                Some(InputEvidenceSnapshotError::ResourceExhausted(_))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        assert_eq!(
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| r
+                    .get::<_, usize>(
+                    0
+                ))?,
+            before
+        );
+        db.connection()?.execute(sql, [original])?;
+        observe_origin_material(&db, &policy, &ledger)?;
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+#[test]
+fn original_recovery_command_hash_is_bounded_before_actual_witness_string_read() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    let (_directory, db) = unbound_fixture()?;
+    db.transaction(|tx| {
+        use crate::runtime_db::transitions::execution_protocol_repository as protocol;
+        let fixed = legacy_recovery::legacy_seed_recovery_scope_tx(tx, "agent-a")?;
+        let original = legacy_recovery::prepare_unbound_seed_recovery_tx(
+            tx,
+            &fixed,
+            &[Key::new(Family::Attempt, "attempt-a")],
+        )?;
+        let command = ExecutionProtocolCommand::Interrupt(InterruptExecution {
+            attempt_id: "attempt-a".into(),
+            outcome_id: "original-material-interrupt".into(),
+            reason: "actual original recovery".into(),
+            interrupted_at: Utc::now().to_rfc3339(),
+        });
+        let prepared = protocol::validate_execution_commands_tx(
+            tx,
+            "agent-a",
+            None,
+            std::slice::from_ref(&command),
+            &[],
+            &[],
+            &[],
+        )?;
+        let (_, actual) = protocol::persist_execution_commands_with_touched_facts_tx(tx, prepared)?;
+        legacy_recovery::register_unbound_seed_recovery_tx(tx, &original, &actual, &[command])?;
+        Ok(())
+    })?;
+    bind_origin_identity(&db)?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let policy = origin_material_request(vec![Key::new(
+        Family::Outcome,
+        "original-material-interrupt",
+    )]);
+    verify_origin_material_without_installing_aliases(&db, &policy, &ledger)?;
+    let original:String=db.connection()?.query_row("SELECT payload_hash FROM execution_protocol_command_results WHERE agent_id='agent-a' AND command_identity='original-material-interrupt'",[],|r|r.get(0))?;
+    let altered = "x".repeat(9 * 1024 * 1024);
+    assert_eq!(db.connection()?.execute("UPDATE execution_protocol_command_results SET payload_hash=?1 WHERE agent_id='agent-a' AND command_identity='original-material-interrupt'",[&altered])?,1);
+    let error = observe_origin_material(&db, &policy, &ledger)
+        .err()
+        .context("actual recovery witness hash must be guarded")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::ResourceExhausted(_))
+        ),
+        "{error:#}"
+    );
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    assert_eq!(
+        db.connection()?
+            .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| r
+                .get::<_, usize>(
+                0
+            ))?,
+        0
+    );
+    db.connection()?.execute("UPDATE execution_protocol_command_results SET payload_hash=?1 WHERE agent_id='agent-a' AND command_identity='original-material-interrupt'",[original])?;
+    observe_origin_material(&db, &policy, &ledger)?;
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+#[test]
+fn accepted_current_origin_path_does_not_read_unused_fixed_seed_context() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    let (directory, db) = unbound_fixture()?;
+    let recovery = apply(&db, directory.path())?
+        .recovery_message_id
+        .context("actual fallback Message missing")?;
+    bind_origin_identity(&db)?;
+    let policy = origin_material_request(vec![Key::new(Family::Message, &recovery)]);
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    observe_origin_material(&db, &policy, &ledger)?;
+    // A Message alias alone does not advance its fixed empty execution source.
+    // The original protocol admission and actual D3 ACK establish Current.
+    db.transaction(|tx| {
+        use crate::runtime_db::transitions::execution_protocol_repository as protocol;
+        let key = Key::new(Family::Message, &recovery);
+        let CanonicalInputEvidence::Message(message) = decode_canonical(
+            &key, &payload_on(tx, "agent-a", &key)?.context("accepted recovery disappeared")?,
+        )? else { anyhow::bail!("original recovery is not a Message") };
+        validate_existing_input_evidence_tx(tx, &scope(), &key)?;
+        let sequence = message.message_seq.context("actual recovery sequence missing")?;
+        let fences = protocol::authority_fences_tx(tx, "agent-a")?;
+        let attempt_id = format!("activation:message:{}", message.id);
+        let command = ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+            attempt: ExecutionAttempt {
+                attempt_id: attempt_id.clone(), agent_id: message.agent_id.clone(),
+                source_message_id: Some(message.id.clone()),
+                source: ExecutionSource {
+                    identity: ExecutionSourceIdentity::QueueMessage {message_id: message.id.clone()},
+                    generation: sequence,
+                },
+                binding: ExecutionBinding::Conversation {interaction_id: message.id.clone()},
+                provenance: ExecutionProvenance {
+                    origin: ExecutionOrigin::System, trust: ExecutionTrust::RuntimeInstruction,
+                    priority: ExecutionPriority::Next, correlation_id: None, causation_id: None,
+                },
+                admitted_fences: AdmittedFences {
+                    source_revision: sequence, work_item_source_revision: None,
+                    work_item_generation: None, rejoin: None,
+                    agent_control_revision: fences.agent_control_revision,
+                    host_registry_revision: fences.host_registry_revision,
+                },
+                state: ExecutionAttemptState::Open, run_id: None, turn_id: None,
+                recovery_of_attempt_id: None, terminal_outcome_id: None,
+                admitted_at: Utc::now().to_rfc3339(), terminal_at: None,
+            },
+        }));
+        let mut claimed: QueueEntryRecord = serde_json::from_str(&tx.query_row(
+            "SELECT payload_json FROM queue_entries WHERE agent_id=?1 AND message_id=?2",
+            params![scope().agent_id,recovery], |r|r.get::<_, String>(0),
+        )?)?;
+        assert_eq!(claimed.status, QueueEntryStatus::Queued);
+        assert_eq!(claimed.message_id, message.id);
+        assert_eq!(claimed.agent_id, message.agent_id);
+        claimed.updated_at = Utc::now();
+        assert!(crate::runtime_db::repositories::try_claim_queued_message_tx(tx, &claimed)?,
+            "original recovery Queue must be actually claimed before claim-only D3 ACK");
+        assert_eq!(tx.query_row("SELECT status FROM queue_entries WHERE agent_id=?1 AND message_id=?2",
+            params![scope().agent_id,recovery], |r|r.get::<_, String>(0))?, "dequeued");
+        let prepared = protocol::validate_execution_commands_tx(
+            tx, "agent-a", None, &[command], &[], &[], &[],
+        )?;
+        let (actual, delta) = protocol::persist_execution_commands_with_input_facts_tx(
+            tx, prepared, Some(&scope()),
+        )?;
+        assert_eq!(actual.context("actual admission state missing")?.attempts[&attempt_id].state,
+            ExecutionAttemptState::Open);
+        assert!(delta.records.iter().any(|record| record.locator.key == Key::new(Family::Attempt, &attempt_id)));
+        let source: String = tx.query_row(
+            "SELECT metadata_json FROM input_evidence_execution_current_sources WHERE agent_id=?1 AND identity_incarnation=?2 AND source_message_id=?3",
+            params![scope().agent_id,scope().identity_incarnation,recovery], |r|r.get(0),
+        )?;
+        let source: crate::runtime::resident_input_evidence::ExecutionSourceCoverage = serde_json::from_str(&source)?;
+        assert!(source.attempts.contains_key(&attempt_id));
+        assert_eq!(source.allocation_highwater, 1);
+        Ok(())
+    })?;
+    let before: usize =
+        db.connection()?
+            .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| {
+                r.get(0)
+            })?;
+    assert!(before > 0);
+    db.connection()?.execute(
+        "UPDATE episode_continuity_seeds SET boundary_id=?1 WHERE agent_id='agent-a'",
+        ["x".repeat(9 * 1024 * 1024)],
+    )?;
+    observe_origin_material(&db, &policy, &ledger)?;
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    assert_eq!(
+        db.connection()?
+            .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| r
+                .get::<_, usize>(
+                0
+            ))?,
+        before
+    );
+    Ok(())
+}

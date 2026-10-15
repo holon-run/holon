@@ -218,6 +218,7 @@ fn new_incarnation_never_uses_old_source_order_metadata() -> Result<()> {
         &BTreeSet::from(["input".into()]),
         100,
         1024 * 1024,
+        None,
     )?;
     assert!(observed.initialized); // structural container only
     assert!(observed.sources.is_empty());

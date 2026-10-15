@@ -82,7 +82,7 @@ pub(super) fn scope_facts(
     // The raw guard precedes SQLite JSON traversal; the node guard precedes
     // WorkingMemory/State collection allocation in the canonical decoder.
     let nodes: usize = tx.query_row(
-        "SELECT COUNT(*) FROM json_tree((SELECT payload_json FROM agent_states WHERE agent_id=?1))",
+        "SELECT COUNT(*)+COUNT(CASE WHEN typeof(key)='text' THEN 1 END) FROM json_tree((SELECT payload_json FROM agent_states WHERE agent_id=?1))",
         [&scope.agent_id],
         |row| row.get(0),
     )?;
@@ -319,6 +319,54 @@ pub(super) fn load_with_revision(
     prior_material: Option<(usize, usize)>,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
 ) -> Result<SchedulingBootstrapSnapshot> {
+    load_with_revision_inner(
+        tx,
+        scope,
+        request,
+        ledger,
+        prepare,
+        original_recovery,
+        revision_override,
+        prior_material,
+        memory_budget,
+        false,
+    )
+}
+
+pub(super) fn load_for_input(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+    original_recovery: bool,
+    memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+) -> Result<SchedulingBootstrapSnapshot> {
+    load_with_revision_inner(
+        tx,
+        scope,
+        request,
+        ledger,
+        true,
+        original_recovery,
+        None,
+        None,
+        memory_budget,
+        true,
+    )
+}
+
+fn load_with_revision_inner(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+    prepare: bool,
+    original_recovery: bool,
+    revision_override: Option<u64>,
+    prior_material: Option<(usize, usize)>,
+    memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    input_memory: bool,
+) -> Result<SchedulingBootstrapSnapshot> {
     bound(0, 0, request)?;
     ensure!(
         request.capture.history_limit <= SCHEDULING_HISTORY_WINDOW,
@@ -326,6 +374,7 @@ pub(super) fn load_with_revision(
     );
     let mut material = Material::new(scope, request, ledger);
     material.memory_budget = memory_budget;
+    material.input_memory = input_memory;
     if let Some((bytes, records)) = prior_material {
         material.bytes = bytes;
         material.records = records;

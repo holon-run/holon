@@ -3,7 +3,10 @@ use std::sync::atomic::AtomicUsize;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -37,7 +40,7 @@ use crate::{
     system::{LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
-        ActiveWorkspaceEntry, AgentState, AuditEvent, ResolvedModelAvailability,
+        ActiveWorkspaceEntry, AgentKind, AgentState, AuditEvent, ResolvedModelAvailability,
         SkillActivationSource, SkillActivationState, TaskRecord, TaskStatus,
     },
 };
@@ -440,6 +443,41 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
+    pub(super) fn new_without_user_home_for_test(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        callback_base_url: String,
+        provider: Arc<dyn AgentProvider>,
+        default_agent_id: String,
+        context_config: ContextConfig,
+    ) -> Result<Self> {
+        let base_context_config = context_config.clone();
+        let user_home_dir = None;
+        Self::new_internal(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            callback_base_url,
+            provider,
+            default_agent_id,
+            base_context_config,
+            context_config,
+            user_home_dir,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Arc::new(SystemClock),
+        )
+    }
+
     pub(super) fn new_offline_with_runtime_db(
         agent_id: impl Into<String>,
         data_dir: PathBuf,
@@ -482,6 +520,42 @@ impl RuntimeHandle {
     ) -> Result<Self> {
         let base_context_config = context_config.clone();
         let user_home_dir = crate::config::default_user_home_dir();
+        Self::new_internal(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            callback_base_url,
+            provider,
+            default_agent_id,
+            base_context_config,
+            context_config,
+            user_home_dir,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            clock,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_with_clock_without_user_home_for_test(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        callback_base_url: String,
+        provider: Arc<dyn AgentProvider>,
+        default_agent_id: String,
+        context_config: ContextConfig,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        let base_context_config = context_config.clone();
+        let user_home_dir = None;
         Self::new_internal(
             agent_id,
             data_dir,
@@ -590,6 +664,35 @@ impl RuntimeHandle {
             Some(runtime_db),
             Some(host_bridge),
             Some(event_bus),
+            Arc::new(SystemClock),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn new_isolated_resource_fixture(
+        agent_id: &str,
+        home: PathBuf,
+        config: ContextConfig,
+    ) -> Result<Self> {
+        Self::new_internal(
+            agent_id,
+            home,
+            None::<crate::types::WorkspaceEntry>,
+            String::new(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            agent_id.to_owned(),
+            config.clone(),
+            config,
+            None,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            None,
+            None,
+            None,
             Arc::new(SystemClock),
         )
     }
@@ -708,6 +811,11 @@ impl RuntimeHandle {
                     .unwrap_or_default(),
             )?,
         };
+        let resource_default_skill_visibility = runtime_db
+            .agent_identities()
+            .latest(&agent_id)?
+            .map(|identity| identity.kind == AgentKind::Default)
+            .unwrap_or(agent_id == default_agent_id);
         let identity_incarnation = runtime_db
             .agent_identities()
             .latest(&agent_id)?
@@ -731,10 +839,11 @@ impl RuntimeHandle {
             context_config.recent_episode_candidates,
             &input_evidence_budget,
         )?;
-        super::episode_recovery::resolve_episode_recovery(
+        super::episode_recovery::resolve_episode_recovery_with_budget(
             &runtime_db,
             std::slice::from_mut(&mut bootstrap_reservation),
             context_config.recent_episode_candidates,
+            &input_evidence_budget,
         )?;
         mutation_owner.validate_bootstrap()?;
         if bootstrap_reservation.recovery()?.is_some() {
@@ -834,6 +943,13 @@ impl RuntimeHandle {
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
                 context_resource_observation: std::sync::atomic::AtomicU64::new(0),
+                context_resources: Arc::new(
+                    super::resource_observation::ContextResourceRegistry::default(),
+                ),
+                context_resource_observer:
+                    super::resource_refresh::ContextResourceObserver::default(),
+                resource_config_generation: AtomicU64::new(0),
+                resource_default_skill_visibility,
                 #[cfg(test)]
                 context_capture_checkpoint:
                     super::context_capture::ContextCaptureCheckpoint::default(),
@@ -890,6 +1006,10 @@ impl RuntimeHandle {
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };
+        runtime.initialize_context_resources();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            runtime.start_context_resource_observer()?;
+        }
         Ok(runtime)
     }
 
@@ -1090,6 +1210,15 @@ impl RuntimeHandle {
             .transpose()?
             .flatten()
             .map(|hook| Arc::new(hook) as Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>);
+        // Invalidate before publication; a late resource read cannot claim the
+        // new config generation even when a source path remains identical.
+        self.inner
+            .resource_config_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .map_err(|_| anyhow!("resource config generation exhausted"))?;
+        self.invalidate_context_resources(
+            super::resource_observation::ResourceInvalidation::ConfigurationChange,
+        )?;
         // Atomically swap the snapshot.
         self.inner.config_snapshot.store(new_snapshot);
         self.inner.view_image_candidate_health.lock().await.reset();
@@ -1107,6 +1236,7 @@ impl RuntimeHandle {
             };
             self.reconfigure_provider_for_state(&state).await?;
         }
+        self.refresh_dirty_context_resources_after_write().await;
         tracing::info!("hot-reloaded runtime config (provider/catalog/availability)");
         Ok(())
     }
@@ -1780,14 +1910,16 @@ fn prepare_runtime_storage_setup(
 fn finish_bootstrap_metadata_phase(
     reservation: &mut super::mutation_owner::MutationReservation,
     facts: crate::runtime_db::context_inputs::ContextScopeFacts,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<()> {
     super::mutation_owner::MutationReservation::committed_all(
         std::slice::from_mut(reservation),
         vec![super::mutation_owner::KnownCommit::Metadata(Arc::new(
-            super::mutation_owner::IdentityMutationFacts {
-                identity: facts.identity.map(Arc::new),
-                state: facts.state.map(Arc::new),
-            },
+            super::mutation_owner::IdentityMutationFacts::budgeted_owned(
+                facts.identity,
+                facts.state.map(Arc::new),
+                budget,
+            )?,
         ))],
     )?;
     let known = super::mutation_owner::MutationReservation::validate_group_known(
@@ -1879,7 +2011,7 @@ fn prepare_runtime_storage_owned(
         "bootstrap import identity changed before its metadata handoff"
     );
     if let Some(reservation) = reservation.as_deref_mut() {
-        finish_bootstrap_metadata_phase(reservation, imported)?;
+        finish_bootstrap_metadata_phase(reservation, imported, input_budget)?;
         reservation.begin(crate::ids::audit_event_id())?;
     }
     let normalized = match runtime_db
@@ -1903,7 +2035,7 @@ fn prepare_runtime_storage_owned(
     if let Some(reservation) = reservation.as_deref_mut() {
         // Queue/wake normalization is its original independent transaction.
         // Save its exact ACK before audit or further bootstrap work can fail.
-        finish_bootstrap_metadata_phase(reservation, normalized.scope_facts.clone())?;
+        finish_bootstrap_metadata_phase(reservation, normalized.scope_facts.clone(), input_budget)?;
         reservation.begin(crate::ids::audit_event_id())?;
     }
     // No Message/Episode evidence was rewritten by normalization. Its exact
@@ -2114,187 +2246,227 @@ fn prepare_runtime_storage_owned(
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
 
     let recent_episode_candidates = context_config.recent_episode_candidates;
-    let (episodes, inputs, work, tasks, scheduling, pending) = runtime_db.transaction(|tx| {
-        let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
-            tx,
-            &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
-                agent_id: agent_id.clone(),
-                identity_incarnation: durable_identity.incarnation,
-            },
-            recent_episode_candidates,
-            None,
-        )?
-        .require_current()?;
-        let pending = crate::runtime_db::bootstrap_inputs::pending_queue_inputs_and_charges_tx(
-            tx,
-            &input_scope,
-            input_budget,
-        )?;
-        anyhow::ensure!(
-            current.identity == durable_identity
-                && current.state.as_ref() == Some(&state)
-                && current.control_revision.is_some()
-                && pending.metadata.facts.identity.as_ref() == Some(&current.identity)
-                && pending.metadata.facts.state == current.state
-                && pending.metadata.facts.control_revision == current.control_revision
-                && pending.metadata.count == state.pending,
-            "bootstrap domains do not match their canonical State ACK"
-        );
-        let input_config = config_snapshot
-            .filter(|snap| snap.provider_reconfig.is_some())
-            .map(|snap| {
-                snap.model_catalog.resolved_context_config(
-                    &snap.base_context_config,
-                    state.model_override.as_ref(),
-                )
-            })
-            .unwrap_or_else(|| context_config.clone());
-        let history = config_snapshot
-            .map(|snap| {
-                let model = snap
-                    .model_catalog
-                    .effective_model(state.model_override.as_ref());
-                super::turn::context_history_preparation(&state.id, &model)
-            })
-            .unwrap_or_default();
-        let limits = input_budget.limits();
-        let mut request = super::context_capture::context_input_evidence_request(
-            &state,
-            None,
-            &input_config,
-            history,
-            Default::default(),
-            usize::try_from(limits.record_limit)?,
-            usize::try_from(
-                limits
-                    .history_per_agent_bytes
-                    .checked_add(limits.pending_per_agent_bytes)
-                    .ok_or_else(|| anyhow!("bootstrap input byte limit overflow"))?,
-            )?,
-        )?;
-        // Ordinary loaded closure readers do not expand windows on a miss.
-        super::scheduler::include_scheduler_brief_window(&mut request.windows);
-        for message in &pending.messages {
-            use super::resident_input_evidence::{
-                InputEvidenceFamily as Family, InputEvidenceKey as Key,
-            };
-            request
-                .mandatory_roots
-                .insert(Key::new(Family::Message, &message.id));
-            // Snapshot preparation validates asserted recovery sources on its
-            // same read view, including focused canonical absence observations.
-        }
-        let mut work_request = super::resident_work::WorkCaptureRequest::current();
-        for message in &pending.messages {
-            work_request
-                .required_trigger_message_ids
-                .insert(message.id.clone());
-            if message.kind == crate::types::MessageKind::TaskResult {
-                if let crate::types::MessageOrigin::Task { task_id } = &message.origin {
-                    anyhow::ensure!(
-                        message.task_id.as_deref() == Some(task_id.as_str()),
-                        "bootstrap TaskResult source differs"
-                    );
-                    work_request.required_task_ids.insert(task_id.clone());
-                }
-            }
-        }
-        let tasks = crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
-            tx,
-            &input_scope,
-            &state,
-            &super::resident_task::TaskCaptureRequest::current(),
-            &pending.messages,
-            request.record_limit,
-            request.byte_limit,
-            input_budget,
-        )?;
-        request.mandatory_roots.extend(tasks.input_roots);
-        work_request
-            .mandatory_roots
-            .extend(tasks.work_roots.iter().map(|id| {
-                super::resident_work::WorkKey::new(super::resident_work::WorkFamily::Work, id)
-            }));
-        let tasks = tasks.resident;
-        let recovered_tasks = BootstrapTaskRecovery {
-            selected: tasks.capture(&super::task_reads::active_task_request())?,
-            record_limit: request.record_limit,
-            byte_limit: request.byte_limit,
-        };
-        let work = crate::runtime_db::work_snapshot::prepare_work_domain_snapshot_tx(
-            tx,
-            &input_scope,
-            &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
-                capture: work_request,
-                record_limit: request.record_limit,
-                byte_limit: request.byte_limit,
-            },
-        )?
-        .require_current()?;
-        anyhow::ensure!(
-            work.facts.identity.as_ref() == Some(&current.identity)
-                && work.facts.state == current.state
-                && work.facts.control_revision == current.control_revision,
-            "bootstrap Work domain differs from its canonical State ACK"
-        );
-        request.mandatory_roots.extend(work.owning_input_roots);
-        let work = Arc::new(work.resident.with_budget(input_budget.clone())?);
-        let scheduling =
-            crate::runtime_db::scheduling_snapshot::prepare_scheduling_domain_snapshot_tx(
+    let input_bootstrap_epoch = reservation
+        .as_deref()
+        .map(|reservation| reservation.owner_epoch());
+    let (episodes, inputs, work, tasks, scheduling, current_reads, pending) = runtime_db
+        .transaction(|tx| {
+            let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
                 tx,
-                &input_scope,
-                &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
-                    capture: super::resident_scheduling::SchedulingCaptureRequest::current(),
-                    record_limit: request.record_limit,
-                    byte_limit: request.byte_limit,
+                &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
+                    agent_id: agent_id.clone(),
+                    identity_incarnation: durable_identity.incarnation,
                 },
-                input_budget,
+                recent_episode_candidates,
+                None,
             )?
             .require_current()?;
-        anyhow::ensure!(
-            scheduling.facts.identity.as_ref() == Some(&current.identity)
-                && scheduling.facts.state == current.state
-                && scheduling.facts.control_revision == current.control_revision,
-            "bootstrap Scheduling domain differs from its canonical State ACK"
-        );
-        request.mandatory_roots.extend(scheduling.input_roots);
-        let scheduling = Arc::new(scheduling.resident);
-        let crate::runtime_db::input_evidence_snapshot::InputEvidenceBootstrapSnapshot::Current(
-            inputs,
-        ) = crate::runtime_db::input_evidence_snapshot::prepare_input_evidence_snapshot_tx(
-            tx,
-            &input_scope,
-            &request,
-        )?
-        else {
-            return Err(anyhow!("bootstrap input evidence scope retired"));
-        };
-        anyhow::ensure!(
-            inputs.facts.identity.as_ref() == Some(&current.identity)
-                && inputs.facts.state == current.state
-                && inputs.facts.control_revision == current.control_revision,
-            "bootstrap Episode/input domains were read from different canonical facts"
-        );
-        tracing::debug!(agent_id=%agent_id,control_revision=current.control_revision,
+            let pending = crate::runtime_db::bootstrap_inputs::pending_queue_inputs_and_charges_tx(
+                tx,
+                &input_scope,
+                input_budget,
+            )?;
+            anyhow::ensure!(
+                current.identity == durable_identity
+                    && current.state.as_ref() == Some(&state)
+                    && current.control_revision.is_some()
+                    && pending.metadata.facts.identity.as_ref() == Some(&current.identity)
+                    && pending.metadata.facts.state == current.state
+                    && pending.metadata.facts.control_revision == current.control_revision
+                    && pending.metadata.count == state.pending,
+                "bootstrap domains do not match their canonical State ACK"
+            );
+            let input_config = config_snapshot
+                .filter(|snap| snap.provider_reconfig.is_some())
+                .map(|snap| {
+                    snap.model_catalog.resolved_context_config(
+                        &snap.base_context_config,
+                        state.model_override.as_ref(),
+                    )
+                })
+                .unwrap_or_else(|| context_config.clone());
+            let history = config_snapshot
+                .map(|snap| {
+                    let model = snap
+                        .model_catalog
+                        .effective_model(state.model_override.as_ref());
+                    super::turn::context_history_preparation(&state.id, &model)
+                })
+                .unwrap_or_default();
+            let limits = input_budget.limits();
+            let mut request = super::context_capture::context_input_evidence_request(
+                &state,
+                None,
+                &input_config,
+                history,
+                Default::default(),
+                usize::try_from(limits.record_limit)?,
+                usize::try_from(
+                    limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .ok_or_else(|| anyhow!("bootstrap input byte limit overflow"))?,
+                )?,
+            )?;
+            // Ordinary loaded closure readers do not expand windows on a miss.
+            super::scheduler::include_scheduler_brief_window(&mut request.windows);
+            for message in &pending.messages {
+                use super::resident_input_evidence::{
+                    InputEvidenceFamily as Family, InputEvidenceKey as Key,
+                };
+                request
+                    .mandatory_roots
+                    .insert(Key::new(Family::Message, &message.id));
+                // Snapshot preparation validates asserted recovery sources on its
+                // same read view, including focused canonical absence observations.
+            }
+            let mut work_request = super::resident_work::WorkCaptureRequest::current();
+            for message in &pending.messages {
+                work_request
+                    .required_trigger_message_ids
+                    .insert(message.id.clone());
+                if message.kind == crate::types::MessageKind::TaskResult {
+                    if let crate::types::MessageOrigin::Task { task_id } = &message.origin {
+                        anyhow::ensure!(
+                            message.task_id.as_deref() == Some(task_id.as_str()),
+                            "bootstrap TaskResult source differs"
+                        );
+                        work_request.required_task_ids.insert(task_id.clone());
+                    }
+                }
+            }
+            let tasks = crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
+                tx,
+                &input_scope,
+                &state,
+                &super::resident_task::TaskCaptureRequest::current(),
+                &pending.messages,
+                request.record_limit,
+                request.byte_limit,
+                input_budget,
+            )?;
+            request.mandatory_roots.extend(tasks.input_roots);
+            work_request
+                .mandatory_roots
+                .extend(tasks.work_roots.iter().map(|id| {
+                    super::resident_work::WorkKey::new(super::resident_work::WorkFamily::Work, id)
+                }));
+            let tasks = tasks.resident;
+            let recovered_tasks = BootstrapTaskRecovery {
+                selected: tasks.capture(&super::task_reads::active_task_request())?,
+                record_limit: request.record_limit,
+                byte_limit: request.byte_limit,
+            };
+            let work =
+                crate::runtime_db::work_snapshot::prepare_work_domain_snapshot_with_budget_tx(
+                    tx,
+                    &input_scope,
+                    &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                        capture: work_request,
+                        record_limit: request.record_limit,
+                        byte_limit: request.byte_limit,
+                    },
+                    false,
+                    input_budget,
+                    None,
+                )?
+                .require_current()?;
+            anyhow::ensure!(
+                work.facts.identity.as_ref() == Some(&current.identity)
+                    && work.facts.state == current.state
+                    && work.facts.control_revision == current.control_revision,
+                "bootstrap Work domain differs from its canonical State ACK"
+            );
+            request
+                .mandatory_roots
+                .extend(work.owning_input_roots.iter().cloned());
+            request.selected_completion_brief_ids.extend(
+                work.resident
+                    .coverage()
+                    .latest_results
+                    .values()
+                    .flatten()
+                    .map(|head| head.brief_id.clone()),
+            );
+
+            let scheduling =
+                crate::runtime_db::scheduling_snapshot::prepare_scheduling_domain_snapshot_tx(
+                    tx,
+                    &input_scope,
+                    &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                        capture: super::resident_scheduling::SchedulingCaptureRequest::current(),
+                        record_limit: request.record_limit,
+                        byte_limit: request.byte_limit,
+                    },
+                    input_budget,
+                )?
+                .require_current()?;
+            anyhow::ensure!(
+                scheduling.facts.identity.as_ref() == Some(&current.identity)
+                    && scheduling.facts.state == current.state
+                    && scheduling.facts.control_revision == current.control_revision,
+                "bootstrap Scheduling domain differs from its canonical State ACK"
+            );
+            request.mandatory_roots.extend(scheduling.input_roots);
+            let scheduling = Arc::new(scheduling.resident);
+            let current_read =
+                crate::runtime_db::current_read_snapshot::prepare_current_read_snapshot_tx(
+                    tx,
+                    &input_scope,
+                    &state,
+                    &super::current_read_facts::CurrentReadRequest::current(
+                        request.byte_limit,
+                        request.record_limit,
+                    ),
+                    &input_budget,
+                )?;
+            anyhow::ensure!(
+                Some(current_read.control_revision) == current.control_revision,
+                "CurrentRead bootstrap canonical view differs"
+            );
+            let current_reads = current_read.resident;
+            let _current_read_material = current_read._material;
+            let (prepared_inputs, _input_material_views) = match input_bootstrap_epoch {
+                Some(epoch)=>crate::runtime_db::work_snapshot::prepare_bootstrap_work_owning_input_snapshot_tx(
+                    tx,&input_scope,&request,&work,input_budget,epoch)?,
+                None=>crate::runtime_db::work_snapshot::prepare_work_owning_input_snapshot_tx(
+                    tx,&input_scope,&request,false,&work,input_budget)?,
+            };
+            let crate::runtime_db::input_evidence_snapshot::InputEvidenceBootstrapSnapshot::Current(
+                inputs,
+            ) = prepared_inputs
+            else {
+                return Err(anyhow!("bootstrap input evidence scope retired"));
+            };
+            anyhow::ensure!(
+                inputs.facts.identity.as_ref() == Some(&current.identity)
+                    && inputs.facts.state == current.state
+                    && inputs.facts.control_revision == current.control_revision,
+                "bootstrap Episode/input domains were read from different canonical facts"
+            );
+            tracing::debug!(agent_id=%agent_id,control_revision=current.control_revision,
             continuity=?current.continuity,"prepared coherent Episode/input bootstrap domains");
-        let episodes = Arc::new(super::resident_state::ResidentEpisodes::bootstrap(
-            &agent_id,
-            durable_identity.incarnation,
-            recent_episode_candidates,
-            !current.has_more,
-            current.episodes,
-        )?);
-        let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
-        input_budget.check_history_budget()?;
-        Ok((
-            episodes,
-            inputs,
-            work,
-            (tasks, recovered_tasks),
-            scheduling,
-            pending,
-        ))
-    })?;
+            let episodes = Arc::new(super::resident_state::ResidentEpisodes::bootstrap(
+                &agent_id,
+                durable_identity.incarnation,
+                recent_episode_candidates,
+                !current.has_more,
+                current.episodes,
+            )?);
+            let _work_material_views = work.material_views;
+            let work = Arc::new(work.resident.with_budget(input_budget.clone())?);
+            let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
+            input_budget.check_history_budget()?;
+            Ok((
+                episodes,
+                inputs,
+                work,
+                (tasks, recovered_tasks),
+                scheduling,
+                current_reads,
+                pending,
+            ))
+        })?;
     let (tasks, recovered_tasks) = tasks;
     let recovered_timers =
         scheduling.capture(&super::resident_scheduling::SchedulingCaptureRequest::current())?;
@@ -2308,13 +2480,14 @@ fn prepare_runtime_storage_owned(
         // not an in-place rewrite of that already acknowledged commit.
         reservation.publish(Arc::new(state.clone()))?;
         reservation.begin(crate::ids::audit_event_id())?;
-        reservation.committed_prepared_with_scheduling_domains(
+        reservation.committed_prepared_with_current_read_domains(
             Arc::new(state.clone()),
             Some(episodes),
             Some(inputs),
             Some(work),
             Some(tasks),
             Some(scheduling),
+            Some(current_reads),
         )?;
     }
 
@@ -2999,3 +3172,7 @@ mod mutation_bootstrap_tests {
 #[cfg(test)]
 #[path = "bootstrap_task_recovery_tests.rs"]
 mod task_recovery_tests;
+
+#[cfg(test)]
+#[path = "input_bootstrap_query_source_tests.rs"]
+mod input_bootstrap_query_source_tests;

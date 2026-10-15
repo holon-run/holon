@@ -227,6 +227,7 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
     };
 
     EffectivePrompt {
+        resource_pins: None,
         agent_home: PathBuf::from("/tmp/baseline-agent"),
         identity: baseline_identity(),
         execution: baseline_execution(),

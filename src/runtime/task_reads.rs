@@ -21,7 +21,8 @@ use std::collections::BTreeSet;
 mod dispatch;
 pub(in crate::runtime) use dispatch::{
     dispatch_plan_material, dispatch_result_is_invalid, dispatch_task_record, dispatch_task_rejoin,
-    scheduler_task_request, task_result_recovery_deliverable,
+    scheduler_task_request, scheduler_task_request_with_material, task_result_recovery_deliverable,
+    SchedulerTaskSelectorMaterial,
 };
 
 #[path = "task_status_read.rs"]
@@ -283,7 +284,8 @@ impl RuntimeMutation {
     }
 
     pub(in crate::runtime) fn capture_scheduler_task_domains(
-        &self,
+        root: &super::resident_state::AgentSnapshot,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
         request: &super::resident_work::WorkCaptureRequest,
         task_request: &TaskCaptureRequest,
     ) -> Result<(
@@ -292,7 +294,6 @@ impl RuntimeMutation {
         super::resident_input_evidence::CapturedInputEvidence,
         CapturedTasks,
     )> {
-        let root = self.capture_published_root()?;
         let work = root
             .work
             .as_ref()
@@ -302,7 +303,7 @@ impl RuntimeMutation {
                 "resident input domain has not been prepared".into()))?;
         let tasks = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
         anyhow::ensure!(
-            work.scope() == &self.input_evidence_scope()
+            work.scope() == scope
                 && work.scope() == inputs.scope()
                 && inputs.scope() == tasks.scope(),
             "scheduler domain scope differs"

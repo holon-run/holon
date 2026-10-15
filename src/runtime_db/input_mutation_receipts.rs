@@ -757,19 +757,36 @@ pub(crate) fn with_fresh_input_mutation_resolution_and_preflight<T, G>(
     preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
     read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
 ) -> Result<T> {
+    with_fresh_input_mutation_resolution_and_retained_material(
+        connection,
+        attempt,
+        preflight,
+        |tx, resolution, _| read_current(tx, resolution),
+    )
+    .map(|(result, _)| result)
+}
+
+/// The original caller retains the same accounting through owner installation.
+/// Receipt-first resolution and the original transaction authority are unchanged.
+pub(crate) fn with_fresh_input_mutation_resolution_and_retained_material<T, G>(
+    connection: &mut Connection,
+    attempt: &OriginalInputMutationAttempt,
+    preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
+    read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution, &mut G) -> Result<T>,
+) -> Result<(T, G)> {
     ensure!(
         attempt.original_attempt_finished(),
         ReceiptError::OriginalAttemptNotFinished
     );
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-    let _material = preflight(&tx)?;
+    let mut material = preflight(&tx)?;
     let resolution = match lookup_input_mutation_receipt_tx(&tx, attempt.prepared())? {
         Some(receipt) => InputMutationResolution::Present(receipt),
         None => InputMutationResolution::Absent,
     };
-    let result = read_current(&tx, resolution)?;
+    let result = read_current(&tx, resolution, &mut material)?;
     tx.commit()?;
-    Ok(result)
+    Ok((result, material))
 }
 
 /// Stable serde encoding with recursively ordered object keys. Callers freeze

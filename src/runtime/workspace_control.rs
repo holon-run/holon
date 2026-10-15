@@ -218,7 +218,26 @@ impl RuntimeHandle {
         &self,
         path: PathBuf,
     ) -> Result<AttachWorkspaceResult> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&path)?;
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .attach_workspace_path_owned(path, material, &admission)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace path attach worker ended before its ACK")?
+    }
+    async fn attach_workspace_path_owned(
+        &self,
+        path: PathBuf,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<AttachWorkspaceResult> {
         let discovery = crate::system::workspace::discover_workspace_path(&path)?;
         let workspace = self
             .ensure_workspace_entry_for_path(discovery.workspace_anchor.clone())
@@ -229,7 +248,8 @@ impl RuntimeHandle {
             .iter()
             .any(|workspace_id| workspace_id == &workspace.workspace_id);
         if !already_attached {
-            self.attach_workspace(&workspace).await?;
+            self.attach_workspace_owned(&workspace, material, admission)
+                .await?;
         }
         Ok(AttachWorkspaceResult {
             workspace,
@@ -249,7 +269,27 @@ impl RuntimeHandle {
         &self,
         workspace_id: &str,
     ) -> Result<DetachWorkspaceResult> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&workspace_id)?;
+        let workspace_id = workspace_id.to_owned();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .detach_workspace_with_fallback_owned(&workspace_id, material, &admission)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace fallback detach worker ended before its ACK")?
+    }
+    async fn detach_workspace_with_fallback_owned(
+        &self,
+        workspace_id: &str,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<DetachWorkspaceResult> {
         let state = self.agent_state().await?;
         let canonical_agent_home_id = crate::types::agent_home_workspace_id(&state.id);
         if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id == canonical_agent_home_id {
@@ -267,7 +307,10 @@ impl RuntimeHandle {
             .into_iter()
             .filter(|entry| entry.root_kind == WorkspaceProjectionKind::GitWorktreeRoot)
             .collect::<Vec<_>>();
-        self.detach_workspace(workspace_id).await?;
+        let original_id = workspace_id.trim();
+        anyhow::ensure!(!original_id.is_empty(), "workspace_id is required");
+        self.detach_workspace_owned(original_id, material, admission)
+            .await?;
         Ok(DetachWorkspaceResult {
             workspace_id: workspace_id.to_string(),
             detached: true,
@@ -348,7 +391,37 @@ impl RuntimeHandle {
         target: WorkspaceSwitchTarget,
         requested_cwd: Option<PathBuf>,
     ) -> Result<SwitchWorkspaceResult> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let material = match &target {
+            WorkspaceSwitchTarget::WorkspaceId(id) => {
+                self.prepare_original_workspace_request_material(&(0, id, &requested_cwd))?
+            }
+            WorkspaceSwitchTarget::ExecutionRootId(id) => {
+                self.prepare_original_workspace_request_material(&(1, id, &requested_cwd))?
+            }
+            WorkspaceSwitchTarget::Path(path) => {
+                self.prepare_original_workspace_request_material(&(2, path, &requested_cwd))?
+            }
+        };
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .switch_workspace_target_owned(target, requested_cwd, material, &admission)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace switch worker ended before its ACK")?
+    }
+    async fn switch_workspace_target_owned(
+        &self,
+        target: WorkspaceSwitchTarget,
+        requested_cwd: Option<PathBuf>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<SwitchWorkspaceResult> {
         let state = self.agent_state().await?;
         let (workspace, execution_root, projection_kind, default_cwd, selected_root_id) =
             match target {
@@ -356,9 +429,10 @@ impl RuntimeHandle {
                     if workspace_id == AGENT_HOME_WORKSPACE_ID
                         || workspace_id == crate::types::agent_home_workspace_id(&state.id)
                     {
-                        self.activate_agent_home(
+                        self.activate_agent_home_owned(
                             WorkspaceAccessMode::SharedRead,
                             requested_cwd.clone(),
+                            material.clone(),
                         )
                         .await?;
                         return self.switch_workspace_result("switched").await;
@@ -457,12 +531,14 @@ impl RuntimeHandle {
 
         match projection_kind {
             WorkspaceProjectionKind::CanonicalRoot => {
-                self.enter_workspace(
+                self.enter_workspace_owned(
                     &workspace,
                     WorkspaceProjectionKind::CanonicalRoot,
                     WorkspaceAccessMode::SharedRead,
                     cwd,
                     None,
+                    material.clone(),
+                    _admission,
                 )
                 .await?;
             }
@@ -482,12 +558,14 @@ impl RuntimeHandle {
                         None,
                     )
                     .await?;
-                self.enter_existing_git_worktree_with_id(
+                self.enter_existing_git_worktree_with_id_owned(
                     &workspace,
                     execution_root,
                     WorkspaceAccessMode::ExclusiveWrite,
                     cwd,
                     registered.execution_root_id,
+                    material.clone(),
+                    _admission,
                 )
                 .await?;
             }
@@ -522,7 +600,57 @@ impl RuntimeHandle {
         activate: bool,
         on_existing: ExistingWorktreePolicy,
     ) -> Result<CreateWorktreeResult> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let policy = match on_existing {
+            ExistingWorktreePolicy::Reuse => "reuse",
+            ExistingWorktreePolicy::Error => "error",
+        };
+        let material = self.prepare_original_workspace_request_material(&(
+            workspace_id,
+            branch,
+            base_ref,
+            label,
+            activate,
+            policy,
+        ))?;
+        let (workspace_id, branch, base_ref, label) = (
+            workspace_id.to_owned(),
+            branch.to_owned(),
+            base_ref.to_owned(),
+            label.map(str::to_owned),
+        );
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .create_worktree_for_workspace_owned(
+                    &workspace_id,
+                    &branch,
+                    &base_ref,
+                    label.as_deref(),
+                    activate,
+                    on_existing,
+                    material,
+                    &admission,
+                )
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace create worker ended before its ACK")?
+    }
+    async fn create_worktree_for_workspace_owned(
+        &self,
+        workspace_id: &str,
+        branch: &str,
+        base_ref: &str,
+        label: Option<&str>,
+        activate: bool,
+        on_existing: ExistingWorktreePolicy,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<CreateWorktreeResult> {
         let state = self.agent_state().await?;
         if !state.execution_profile.supports_managed_worktrees {
             return Err(anyhow!(
@@ -655,9 +783,11 @@ impl RuntimeHandle {
                 )
                 .await?;
             let activation_error = if activate {
-                self.switch_workspace_target(
+                self.switch_workspace_target_owned(
                     WorkspaceSwitchTarget::ExecutionRootId(entry.execution_root_id.clone()),
                     None,
+                    material.clone(),
+                    admission,
                 )
                 .await
                 .err()
@@ -759,9 +889,11 @@ impl RuntimeHandle {
             )
             .await?;
         let activation_error = if activate {
-            self.switch_workspace_target(
+            self.switch_workspace_target_owned(
                 WorkspaceSwitchTarget::ExecutionRootId(entry.execution_root_id.clone()),
                 None,
+                material.clone(),
+                admission,
             )
             .await
             .err()
@@ -769,17 +901,17 @@ impl RuntimeHandle {
         } else {
             None
         };
-        self.append_audit_event(
-            "worktree_created",
-            serde_json::json!({
-                "workspace_id": workspace.workspace_id,
-                "execution_root_id": entry.execution_root_id,
-                "branch": branch,
-                "requested_base_ref": base_ref,
-                "resolved_base_commit": base_commit,
-                "activated": activate && activation_error.is_none(),
-            }),
+        let audit = self.prepare_original_registered_worktree_created_observation(
+            material,
+            &workspace.workspace_id,
+            &entry.execution_root_id,
+            branch,
+            base_ref,
+            &base_commit,
+            activate && activation_error.is_none(),
         )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(CreateWorktreeResult {
             disposition: "created".into(),
             created: true,
@@ -825,7 +957,54 @@ impl RuntimeHandle {
         branch_policy: WorktreeBranchPolicy,
         merged_into: Option<&str>,
     ) -> Result<RemoveWorktreeResult> {
-        let _admission = self.execution_admission_lease()?;
+        let admission = self.execution_admission_lease()?;
+        let policy = match branch_policy {
+            WorktreeBranchPolicy::Keep => "keep",
+            WorktreeBranchPolicy::DeleteIfMerged => "delete_if_merged",
+        };
+        let material = self.prepare_original_workspace_request_material(&(
+            execution_root_id,
+            path,
+            return_to,
+            policy,
+            merged_into,
+        ))?;
+        let (execution_root_id, path, return_to, merged_into) = (
+            execution_root_id.map(str::to_owned),
+            path.map(Path::to_owned),
+            return_to.map(str::to_owned),
+            merged_into.map(str::to_owned),
+        );
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime
+                .remove_registered_worktree_selector_owned(
+                    execution_root_id.as_deref(),
+                    path.as_deref(),
+                    return_to.as_deref(),
+                    branch_policy,
+                    merged_into.as_deref(),
+                    material,
+                    &admission,
+                )
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original Workspace removal worker ended before its ACK")?
+    }
+    async fn remove_registered_worktree_selector_owned(
+        &self,
+        execution_root_id: Option<&str>,
+        path: Option<&Path>,
+        return_to: Option<&str>,
+        branch_policy: WorktreeBranchPolicy,
+        merged_into: Option<&str>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        admission: &super::execution_admission::ExecutionLease,
+    ) -> Result<RemoveWorktreeResult> {
         let state = self.agent_state().await?;
         let resolved_execution_root_id = match (execution_root_id, path) {
             (Some(execution_root_id), None) => execution_root_id.to_string(),
@@ -1036,13 +1215,13 @@ impl RuntimeHandle {
                 .runtime_db
                 .execution_root_entries()
                 .upsert(&entry)?;
-            self.append_audit_event(
-                "worktree_cleanup_retained",
-                serde_json::json!({
-                    "execution_root_id": &resolved_execution_root_id,
-                    "changed_files": changed_files,
-                }),
+            let audit = self.prepare_original_registered_worktree_retained_observation(
+                material,
+                &resolved_execution_root_id,
+                &changed_files,
             )?;
+            self.finish_owned_original_workspace_observation(audit)
+                .await?;
             return Ok(RemoveWorktreeResult {
                 execution_root_id: resolved_execution_root_id.clone(),
                 disposition: "retained_dirty".into(),
@@ -1092,7 +1271,8 @@ impl RuntimeHandle {
         }
 
         let switched = if let Some(target) = return_target {
-            self.switch_workspace_target(target, None).await?;
+            self.switch_workspace_target_owned(target, None, material.clone(), admission)
+                .await?;
             true
         } else {
             false
@@ -1182,15 +1362,15 @@ impl RuntimeHandle {
                 branch_deleted = true;
             }
         }
-        self.append_audit_event(
-            "worktree_cleanup_removed",
-            serde_json::json!({
-                "execution_root_id": &resolved_execution_root_id,
-                "branch": branch,
-                "branch_deleted": branch_deleted,
-                "branch_retained_reason": branch_retained_reason,
-            }),
+        let audit = self.prepare_original_registered_worktree_removed_observation(
+            material,
+            &resolved_execution_root_id,
+            branch,
+            branch_deleted,
+            branch_retained_reason.as_deref(),
         )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         let branch_retained = branch_retained_reason.is_some();
         Ok(RemoveWorktreeResult {
             execution_root_id: resolved_execution_root_id,

@@ -56,7 +56,8 @@ mod tests;
 
 pub(in crate::runtime) struct OwnedSchedulingTriggers {
     pub records: Vec<ExternalTriggerRecord>,
-    _material: Arc<super::input_evidence_budget::BudgetViewGuard>,
+    pub(in crate::runtime) material: Arc<super::input_evidence_budget::BudgetViewGuard>,
+    pub(in crate::runtime) cost: (usize, usize),
 }
 impl CapturedScheduling {
     pub(in crate::runtime) fn clone_trigger_records(
@@ -65,33 +66,74 @@ impl CapturedScheduling {
         record_limit: usize,
         byte_limit: usize,
     ) -> Result<OwnedSchedulingTriggers> {
+        self.clone_trigger_records_with_prior(ledger, (byte_limit, record_limit), None)
+    }
+    pub(in crate::runtime) fn clone_trigger_records_with_prior(
+        &self,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+        prior: Option<(u64, usize)>,
+    ) -> Result<OwnedSchedulingTriggers> {
+        let (byte_limit, record_limit) = if prior.is_some() {
+            let configured = ledger.limits();
+            (
+                limits.0.min(64 * 1024 * 1024).min(usize::try_from(
+                    configured
+                        .history_per_agent_bytes
+                        .checked_add(configured.pending_per_agent_bytes)
+                        .ok_or_else(|| anyhow::anyhow!("Trigger phase byte limit overflow"))?,
+                )?),
+                limits
+                    .1
+                    .min(65536)
+                    .min(usize::try_from(configured.record_limit)?),
+            )
+        } else {
+            limits
+        };
         use super::input_evidence_budget::{
             serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
         };
         let mut count = 0usize;
         let mut bytes = 0u64;
+        let mut native = 0usize;
         for record in &self.records {
             if let CanonicalSchedulingFact::ExternalTrigger(trigger) = &record.fact {
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("Trigger count overflow"))?;
+                native = native
+                    .checked_add(super::resource_refresh::borrowed_resource_record_count(
+                        trigger,
+                    )?)
+                    .ok_or_else(|| anyhow::anyhow!("Trigger native count overflow"))?;
                 bytes = bytes
                     .checked_add(serialized_bytes(trigger)?)
                     .ok_or_else(|| anyhow::anyhow!("Trigger copy bytes overflow"))?;
             }
         }
+        let slot_bytes = u64::try_from(count)?
+            .checked_mul(128)
+            .ok_or_else(|| anyhow::anyhow!("Trigger slot bytes overflow"))?;
+        let native_bytes = u64::try_from(native)?
+            .checked_mul(256)
+            .ok_or_else(|| anyhow::anyhow!("Trigger native bytes overflow"))?;
         let bytes = bytes
-            .checked_add(
-                u64::try_from(count)?
-                    .checked_mul(128)
-                    .ok_or_else(|| anyhow::anyhow!("Trigger slot bytes overflow"))?,
-            )
+            .checked_add(slot_bytes)
+            .and_then(|n| n.checked_add(native_bytes))
             .and_then(|n| n.checked_add(512))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| anyhow::anyhow!("Trigger owned material overflow"))?;
-        let (selected, selected_records) = self.selected_material_estimate()?;
-        let output_records = count
-            .checked_add(1)
+        let (selected, selected_records) = match prior {
+            Some(prior) => {
+                self.validate_material_binding(&self.scope, ledger)?;
+                prior
+            }
+            None => self.selected_material_estimate()?,
+        };
+        let output_records = native
+            .checked_add(count)
+            .and_then(|n| n.checked_add(1))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| anyhow::anyhow!("Trigger output records overflow"))?;
         ensure!(
@@ -126,7 +168,8 @@ impl CapturedScheduling {
         });
         Ok(OwnedSchedulingTriggers {
             records,
-            _material: material,
+            material,
+            cost: (usize::try_from(bytes)?, output_records),
         })
     }
 }

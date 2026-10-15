@@ -2957,6 +2957,7 @@ async fn turn_end_refreshes_changed_work_item_plan_artifact_snapshot() {
     let plan_path = original_artifact.path.clone();
     std::fs::write(&plan_path, "changed plan body").unwrap();
     bind_turn_to_work_item(&runtime, &work.id).await;
+    runtime.refresh_context_resources().await.unwrap();
 
     let committed = runtime
         .maybe_commit_turn_end_work_item_transition()
@@ -3074,6 +3075,7 @@ async fn turn_end_work_item_plan_artifact_refresh_rejects_missing_existing_artif
     let plan_path = work.plan_artifact.as_ref().unwrap().path.clone();
     std::fs::remove_file(&plan_path).unwrap();
     bind_turn_to_work_item(&runtime, &work.id).await;
+    runtime.refresh_context_resources().await.unwrap();
 
     let error = runtime
         .maybe_commit_turn_end_work_item_transition()
@@ -3115,6 +3117,7 @@ async fn complete_work_item_refreshes_latest_plan_artifact_snapshot() {
         crate::work_item_plan::describe_plan_artifact(&plan_path, &work.agent_id, &work.id)
             .unwrap();
 
+    runtime.refresh_context_resources().await.unwrap();
     let completed = runtime
         .complete_work_item(work.id.clone(), Vec::new())
         .await
@@ -9355,7 +9358,10 @@ fn rebase_completion_accepts_diverged_baseline_after_concurrent_persist() {
         index_changes: Vec::new(),
         tool_execution: None,
         transcript_entries: Vec::new(),
+        _work_source_material: None,
         _work_read_budget: None,
+        _resource_plan: None,
+        _result_view_material: None,
     };
 
     let rebased = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline)
@@ -9403,7 +9409,10 @@ fn rebase_completion_rejects_mismatched_agent_id() {
         index_changes: Vec::new(),
         tool_execution: None,
         transcript_entries: Vec::new(),
+        _work_source_material: None,
         _work_read_budget: None,
+        _resource_plan: None,
+        _result_view_material: None,
     };
 
     let result = crate::runtime::rebase_prepared_completion_agent_state(&prepared, &baseline);

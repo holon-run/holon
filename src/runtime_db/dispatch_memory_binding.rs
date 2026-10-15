@@ -124,6 +124,13 @@ pub(crate) struct ValidatedDispatchMemoryFinish<'tx, 'connection> {
     frozen: FrozenEpisodeMemoryValues,
 }
 impl<'tx, 'connection> ValidatedDispatchMemoryFinish<'tx, 'connection> {
+    pub(in crate::runtime_db) fn original_audit_id_tx(&self, tx: &Transaction<'_>) -> Result<&str> {
+        ensure!(
+            std::ptr::eq(self.tx, tx),
+            "memory audit footprint belongs to another transaction"
+        );
+        Ok(&self.frozen.audit_event_id)
+    }
     pub(in crate::runtime_db) fn embedded_inputs(
         &self,
     ) -> (
@@ -190,6 +197,9 @@ pub(crate) fn finish_dispatch_memory_tx(
     final_business_state: &AgentState,
     final_work: &CapturedWork,
     request: &WorkDomainLoadRequest,
+    current_reads: Option<
+        &mut super::super::current_read_snapshot::CurrentReadBusinessTransaction<'_, '_>,
+    >,
 ) -> Result<TransitionCommit> {
     let tx = validated.tx;
     let start = validated
@@ -243,8 +253,12 @@ pub(crate) fn finish_dispatch_memory_tx(
         plan,
         validated.frozen.timestamp,
     )?;
-    let committed =
-        episode_memory::write_embedded_episode_memory_tx(embedded, &command, final_business_state)?;
+    let committed = episode_memory::write_embedded_episode_memory_with_current_read_tx(
+        embedded,
+        &command,
+        final_business_state,
+        current_reads,
+    )?;
     let EpisodeMemoryCommit::Applied {
         mut transition,
         episode,

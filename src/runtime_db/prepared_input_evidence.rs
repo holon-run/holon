@@ -280,7 +280,7 @@ impl EvidenceRepository<'_> {
         prepared: &PreparedInputEvidence,
         work_request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
-        self.commit_prepared_input_evidence_with_budgets(prepared, work_request, None)
+        self.commit_prepared_input_evidence_with_budgets(prepared, work_request, None, None)
     }
 
     pub(crate) fn commit_prepared_input_evidence_with_task_budget(
@@ -294,6 +294,20 @@ impl EvidenceRepository<'_> {
             prepared,
             work_request,
             Some((task_request, ledger)),
+            None,
+        )
+    }
+
+    pub(crate) fn commit_prepared_input_evidence_with_input_query_source(
+        &self,
+        prepared: &PreparedInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        input_source: &std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>,
+    ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
+        self.commit_prepared_input_evidence_with_budgets(
+            prepared, work_request, Some((task_request, ledger)), Some(input_source),
         )
     }
 
@@ -305,6 +319,7 @@ impl EvidenceRepository<'_> {
             &super::task_snapshot::TaskDomainLoadRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         )>,
+        input_source: Option<&std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>>,
     ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
         let scope = &prepared.primary_scope;
         let (agent, id, family, result_family) = prepared.command.identity();
@@ -340,11 +355,20 @@ impl EvidenceRepository<'_> {
                         scope,
                         result,
                         work_request,
+                        task_budget.map(|(_, ledger)| ledger),
                     )?)
                 } else {
                     None
                 };
             validate_existing_input_evidence_tx(tx, scope, &InputEvidenceKey::new(family, id))?;
+            // Observe the original address before this standalone writer's
+            // business SQL; only its exact D3 readback below can mint a birth.
+            let native_input = task_budget.map(|(_, ledger)| {
+                super::input_evidence_snapshot::native_birth::NativeInputWriteProof::prepare_with_query_source_tx(
+                    tx, scope, |visit| visit(family, id), ledger,
+                    (work_request.byte_limit, work_request.record_limit), input_source,
+                )
+            }).transpose()?.flatten();
             let before = canonical_marker_tx(tx, agent, id, family)?;
             let before_index = index_frontier_tx(tx, agent)?;
             let (record, fact, actual_seq, created_event_seq, audit_events) =
@@ -452,12 +476,15 @@ impl EvidenceRepository<'_> {
                         }
                     }
                 }
-                value.work_delta = super::work_snapshot::finish_work_completion_write_tx(
+                let (delta, guards) = super::work_snapshot::finish_work_completion_write_tx(
                     tx,
                     completion,
                     &brief_ids,
                     work_request,
                 )?;
+                value.work_delta = delta;
+                value.work_material_budget_views =
+                    (!guards.is_empty()).then(|| std::sync::Arc::new(guards));
             }
             if let Some((task_request, ledger)) = task_budget {
                 if let Some((delta, guards)) =
@@ -473,6 +500,9 @@ impl EvidenceRepository<'_> {
                     value.task_delta = Some(delta);
                     value.task_material_budget_views = guards;
                 }
+            }
+            if let Some(native) = native_input {
+                native.finish_delta_tx(tx, &mut value.input_delta)?;
             }
             let applied = value.agent_state.is_some()
                 || before != canonical_marker_tx(tx, agent, id, family)?
@@ -646,7 +676,7 @@ impl RuntimeDb {
         prepared: &PreparedExternalInputEvidence,
         work_request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
-        self.commit_prepared_external_input_evidence_with_budgets(prepared, work_request, None)
+        self.commit_prepared_external_input_evidence_with_budgets(prepared, work_request, None, None)
     }
 
     pub(crate) fn commit_prepared_external_input_evidence_with_task_budget(
@@ -660,6 +690,19 @@ impl RuntimeDb {
             prepared,
             work_request,
             Some((task_request, ledger)),
+            None,
+        )
+    }
+    pub(crate) fn commit_prepared_external_input_evidence_with_input_query_source(
+        &self,
+        prepared: &PreparedExternalInputEvidence,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        input_source: &std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>,
+    ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
+        self.commit_prepared_external_input_evidence_with_budgets(
+            prepared, work_request, Some((task_request, ledger)), Some(input_source),
         )
     }
 
@@ -671,6 +714,7 @@ impl RuntimeDb {
             &super::task_snapshot::TaskDomainLoadRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         )>,
+        input_source: Option<&std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>>,
     ) -> Result<InputMutationExecution<PreparedExternalInputValue>> {
         match prepared {
             PreparedExternalInputEvidence::BriefCreated(prepared) => Ok(
@@ -680,6 +724,7 @@ impl RuntimeDb {
                         prepared,
                         work_request,
                         task_budget,
+                        input_source,
                     )? {
                     InputMutationExecution::Committed { value, receipt } => {
                         InputMutationExecution::Committed {
@@ -722,6 +767,7 @@ impl RuntimeDb {
                                 scope,
                                 None,
                                 work_request,
+                                task_budget.map(|(_, ledger)| ledger),
                             )
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -732,13 +778,20 @@ impl RuntimeDb {
                         prepared.descriptor.scopes(),
                     )?;
                     for (scope, completion) in prepared.descriptor.scopes().iter().zip(completion) {
-                        if let Some(delta) = super::work_snapshot::finish_work_completion_write_tx(
-                            tx,
-                            completion,
-                            &Default::default(),
-                            work_request,
-                        )? {
+                        let (delta, guards) =
+                            super::work_snapshot::finish_work_completion_write_tx(
+                                tx,
+                                completion,
+                                &Default::default(),
+                                work_request,
+                            )?;
+                        if let Some(delta) = delta {
                             value.work_deltas.push((scope.clone(), delta));
+                        }
+                        if !guards.is_empty() {
+                            value
+                                .work_material_budget_views
+                                .push((scope.clone(), std::sync::Arc::new(guards)));
                         }
                     }
                     if let Some((task_request, ledger)) = task_budget {

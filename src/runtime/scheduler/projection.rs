@@ -237,6 +237,36 @@ impl SchedulerProjection {
         observations: SchedulerObservations,
         now: DateTime<Utc>,
     ) -> Self {
+        Self::from_observations_observed(
+            snapshot,
+            queue_len,
+            work_queue,
+            observations,
+            now,
+            &mut None,
+        )
+        .expect("unobserved Scheduler projection cannot fail")
+    }
+    pub(in crate::runtime) fn from_observations_observed(
+        snapshot: &SchedulerAgentSnapshot,
+        queue_len: usize,
+        work_queue: WorkQueueReadModel,
+        observations: SchedulerObservations,
+        now: DateTime<Utc>,
+        observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+    ) -> Result<Self> {
+        use crate::work_item_scheduling::{
+            observe_scheduling_clone as observe, observe_scheduling_slots as slots,
+        };
+        observe(
+            &(
+                &snapshot.id,
+                &snapshot.active_run_id,
+                &snapshot.last_turn_terminal,
+            ),
+            observer,
+        )?;
+        slots(32, observer)?;
         let SchedulerObservations {
             active_tasks,
             has_interrupted_replay,
@@ -250,8 +280,11 @@ impl SchedulerProjection {
         let queued_runnable_work_items = work_queue
             .queued_runnable
             .iter()
-            .map(|item| item.work_item.clone())
-            .collect::<Vec<_>>();
+            .map(|item| {
+                observe(&item.work_item, observer)?;
+                Ok(item.work_item.clone())
+            })
+            .collect::<Result<Vec<_>>>()?;
         let current_work_item_scheduling_state = work_queue
             .items
             .iter()
@@ -268,9 +301,23 @@ impl SchedulerProjection {
                         | WorkItemSchedulingState::WaitingSystem
                 )
         });
-        let waiting_work_item = waiting_work_item_projection.map(|item| item.work_item.clone());
+        let waiting_work_item = waiting_work_item_projection
+            .map(|item| {
+                observe(&item.work_item, observer)?;
+                Ok::<_, anyhow::Error>(item.work_item.clone())
+            })
+            .transpose()?;
         let waiting_work_item_scheduling_state =
             waiting_work_item_projection.map(|item| item.scheduling_state);
+        if let Some(snapshot) = &execution_snapshot {
+            for (id, record) in &snapshot.work_items {
+                observe(id, observer)?;
+                if let WorkItemExecutionState::Waiting { wait, .. } = &record.state {
+                    observe(&wait.wait_id, observer)?;
+                }
+                slots(4, observer)?;
+            }
+        }
         let canonical_work_states = Some(
             execution_snapshot
                 .as_ref()
@@ -316,7 +363,7 @@ impl SchedulerProjection {
                 )
             })
             .count();
-        Self {
+        Ok(Self {
             now,
             agent_id: snapshot.id.clone(),
             status: snapshot.status.clone(),
@@ -341,7 +388,7 @@ impl SchedulerProjection {
             runtime_error,
             activation_waits,
             canonical_work_states,
-        }
+        })
     }
 
     pub(crate) fn work_reactivation_signal(&self) -> Option<WorkReactivationSignal> {

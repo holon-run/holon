@@ -1094,7 +1094,19 @@ impl RuntimeHandle {
                 promoted_from_exec_command,
             }),
         };
-        self.append_audit_event(
+        let observation = self.prepare_original_runtime_observation_material(
+            super::OriginalLifecycleNoopKind::CommandExecutionRequested,
+            &(
+                &task_id,
+                &authority_class,
+                &resolved.spec.cmd,
+                &diagnostics,
+                &resolved.execution,
+                &resolved.workdir,
+                promoted_from_exec_command,
+            ),
+        )?;
+        let audit = observation.freeze(self, crate::types::AuditEvent::legacy(
             "process_execution_requested",
             serde_json::json!({
                 "surface": "command_task",
@@ -1108,7 +1120,8 @@ impl RuntimeHandle {
                 "workdir": resolved.workdir.clone(),
                 "promoted_from_exec_command": promoted_from_exec_command,
             }),
-        )?;
+        ))?;
+        self.finish_owned_runtime_observation_audit(audit).await?;
         self.apply_task_transition(task_state_reducer::TaskTransition::new(
             &task,
             "task_created",
@@ -1807,6 +1820,8 @@ impl RuntimeHandle {
             &process_scope,
             &self.inner.input_evidence_budget,
         )?;
+        process_responsibility
+            .attach_resource_changes(self.original_command_resource_changes()?)?;
         self.inner.control_cancellations.retain_managed_process(
             process_responsibility.clone(),
             &self.inner.input_evidence_budget,
@@ -3098,8 +3113,10 @@ mod tests {
             true,
             false,
         );
-        runtime.inner.storage.append_task(&task).unwrap();
-        runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+        runtime
+            .persist_task_transition(&task, "task_completed")
+            .await
+            .unwrap();
 
         let result = runtime.task_input(&task.id, "hello\n").await.unwrap();
 

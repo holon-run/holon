@@ -68,10 +68,11 @@ pub(super) fn prepare_known_tx(
     );
     let mut guards = Vec::new();
     let known = if view.mode() != TaskStatusMetadataInstallMode::Current {
-        KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-            identity: view.identity().cloned().map(Arc::new),
-            state: None,
-        }))
+        KnownCommit::Metadata(Arc::new(IdentityMutationFacts::budgeted(
+            view.identity(),
+            None,
+            ledger,
+        )?))
     } else {
         let original = witness
             .input_runtime(&scope.agent_id)
@@ -79,6 +80,7 @@ pub(super) fn prepare_known_tx(
             .or_else(|| witness.input_task_status_parent().cloned());
         match original {
             Some(KnownCommit::State {
+                current_reads,
                 state,
                 episodes,
                 input_evidence,
@@ -87,6 +89,12 @@ pub(super) fn prepare_known_tx(
                 scheduling,
                 runtime,
             }) => {
+                if let Some(current) = &current_reads {
+                    current.validate_identity(
+                        view.identity()
+                            .context("Status CurrentRead fresh identity missing")?,
+                    )?;
+                }
                 let tasks = if let Some(tasks) = tasks {
                     let (delta, material) =
                         crate::runtime_db::task_snapshot::read_task_status_metadata_recovery_tx(
@@ -112,6 +120,7 @@ pub(super) fn prepare_known_tx(
                         .task_status_metadata_known()
                 } else {
                     KnownCommit::State {
+                        current_reads,
                         state,
                         episodes,
                         input_evidence,
@@ -127,10 +136,11 @@ pub(super) fn prepare_known_tx(
                     witness.input_storage_replayed() || ack.task_revision.is_none(),
                     "cold Status ACK changed unobserved Task"
                 );
-                KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                    identity: view.identity().cloned().map(Arc::new),
-                    state: None,
-                }))
+                KnownCommit::Metadata(Arc::new(IdentityMutationFacts::budgeted(
+                    view.identity(),
+                    None,
+                    ledger,
+                )?))
             }
             Some(KnownCommit::Metadata(_)) => {
                 anyhow::bail!("Status original state observation is invalid")

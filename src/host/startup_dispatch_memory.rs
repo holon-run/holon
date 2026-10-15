@@ -395,10 +395,11 @@ impl RuntimeHost {
                             )?;
                         }
                         Ok(Some(vec![KnownCommit::Metadata(Arc::new(
-                            IdentityMutationFacts {
-                                identity: Some(Arc::new(identity)),
-                                state: None,
-                            },
+                            IdentityMutationFacts::observed(
+                                Arc::new(identity),
+                                None,
+                                _resolution_guard.clone(),
+                            ),
                         ))]))
                     },
                 )?;
@@ -869,9 +870,17 @@ impl RuntimeHost {
             } else {
                 None
             };
-            facts.push(IdentityMutationFacts {
-                identity: read.identity.map(Arc::new),
-                state,
+            facts.push(match read.identity {
+                Some(identity) => IdentityMutationFacts::observed(
+                    Arc::new(identity),
+                    state,
+                    guards.last().expect("identity raw material guard").clone(),
+                ),
+                None => IdentityMutationFacts {
+                    identity: None,
+                    state,
+                    _identity_budget: None,
+                },
             });
         }
         Ok(StartupIdentityFacts {
@@ -1222,7 +1231,13 @@ impl RuntimeHost {
                 None,
             )?;
             state = self
-                .commit_startup_phase(reservations, &posture, &selected.identity, &work_request)?
+                .commit_startup_phase(
+                    reservations,
+                    &posture,
+                    &selected.identity,
+                    &selected._guard,
+                    &work_request,
+                )?
                 .context("startup posture ACK omitted its exact final State")?;
         }
         let finish = PreparedInputTransition::terminal(
@@ -1248,8 +1263,14 @@ impl RuntimeHost {
             },
             EndedDispatchAuthorization::from_startup(selected.authorization),
         )?;
-        self.commit_startup_phase(reservations, &finish, &selected.identity, &work_request)
-            .map(|_| ())
+        self.commit_startup_phase(
+            reservations,
+            &finish,
+            &selected.identity,
+            &selected._guard,
+            &work_request,
+        )
+        .map(|_| ())
     }
 
     fn commit_startup_phase(
@@ -1257,6 +1278,7 @@ impl RuntimeHost {
         reservations: &mut [MutationReservation],
         prepared: &PreparedInputTransition,
         identity: &Arc<AgentIdentityRecord>,
+        identity_material: &Arc<BudgetViewGuard>,
         request: &WorkDomainLoadRequest,
     ) -> Result<Option<AgentState>> {
         let scope = reservation_scope(&reservations[0]);
@@ -1267,6 +1289,10 @@ impl RuntimeHost {
                 .checked_mul(3)
                 .context("startup prepared size overflow")?,
             InputMemoryCategory::Candidate,
+        )?;
+        let input_source = reservations[0].input_query_source(
+            &scope, &self.inner.input_evidence_budget,
+            (request.byte_limit, request.record_limit),
         )?;
         let operation = prepared.descriptor().command_nonce().to_owned();
         let witness = MutationWitness::input_mutation(
@@ -1284,7 +1310,7 @@ impl RuntimeHost {
         let committed = self
             .runtime_db()
             .transitions_in_scope(&scope)
-            .commit_prepared_transition_with_work_request_and_memory_budget(
+            .commit_prepared_transition_with_input_query_source(
                 prepared,
                 request,
                 &self.inner.input_evidence_budget,
@@ -1294,6 +1320,7 @@ impl RuntimeHost {
                     record_limit: request.record_limit,
                     byte_limit: request.byte_limit,
                 },
+                &input_source,
             );
         let replay_observation =
             if matches!(&committed, Ok(InputMutationExecution::Replayed { .. })) {
@@ -1321,10 +1348,13 @@ impl RuntimeHost {
                 };
                 MutationReservation::committed_all(
                     reservations,
-                    vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                        identity: Some(identity.clone()),
-                        state: None,
-                    }))],
+                    vec![KnownCommit::Metadata(Arc::new(
+                        IdentityMutationFacts::observed(
+                            identity.clone(),
+                            None,
+                            identity_material.clone(),
+                        ),
+                    ))],
                 )?;
                 self.publish_startup_cold_phase(reservations)?;
                 self.publish_startup_phase_notifications(&witness)?;
@@ -1531,6 +1561,7 @@ mod tests {
         MutationReservation::committed_all(
             &mut reservations,
             vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                _identity_budget: None,
                 identity: Some(Arc::new(identity)),
                 state: Some(Arc::new(state)),
             }))],
@@ -2103,7 +2134,13 @@ mod tests {
                 byte_limit: 64 * 1024 * 1024,
             };
             let actual = host
-                .commit_startup_phase(&mut reservations, &posture, &selected.identity, &request)?
+                .commit_startup_phase(
+                    &mut reservations,
+                    &posture,
+                    &selected.identity,
+                    &selected._guard,
+                    &request,
+                )?
                 .unwrap();
             let finish = PreparedInputTransition::terminal(
                 scope.clone(),

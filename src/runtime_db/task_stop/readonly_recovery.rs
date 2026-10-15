@@ -34,6 +34,9 @@ impl TaskStopReadonlyIdentity {
     pub(crate) fn identity(&self) -> &Arc<AgentIdentityRecord> {
         &self.identity
     }
+    pub(crate) fn identity_material(&self) -> Arc<BudgetViewGuard> {
+        self._material.clone()
+    }
     // None means retired: no successor/retired State query was made.
     pub(crate) fn state_present(&self) -> Option<bool> {
         self.state_present

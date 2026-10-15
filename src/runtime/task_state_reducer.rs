@@ -71,6 +71,7 @@ pub(super) struct TaskTransition<'a> {
     pub(super) message_evidence: Option<&'a MessageEnvelope>,
     pub(super) admit_result_message: bool,
     pub(super) agent_deletion: Option<crate::runtime_db::repositories::AgentDeletionRequest>,
+    original_workspace_material: Option<Arc<super::OriginalWorkspaceRequestMaterial>>,
 }
 
 impl<'a> TaskTransition<'a> {
@@ -81,7 +82,16 @@ impl<'a> TaskTransition<'a> {
             message_evidence: None,
             admit_result_message: false,
             agent_deletion: None,
+            original_workspace_material: None,
         }
+    }
+
+    pub(super) fn with_original_worktree_request_material(
+        mut self,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+    ) -> Self {
+        self.original_workspace_material = Some(material);
+        self
     }
 
     #[cfg(test)]
@@ -376,16 +386,24 @@ impl RuntimeHandle {
                 && is_terminal_task_status(&task.status),
             fault: self.take_transition_fault(),
         };
-        let (commit, _original_deletion) = agent_guard
-            .as_mut()
-            .expect("prepared mutation")
-            .commit_task_transition(
-                crate::ids::audit_event_id(),
-                command,
-                Default::default(),
-                true,
-            )
-            .await?;
+        let owner = agent_guard.as_mut().expect("prepared mutation");
+        let operation_id = crate::ids::audit_event_id();
+        let (commit, _original_deletion) =
+            if let Some(material) = &transition.original_workspace_material {
+                owner
+                    .commit_task_transition_with_original_workspace_request(
+                        operation_id,
+                        command,
+                        Default::default(),
+                        true,
+                        material.clone(),
+                    )
+                    .await?
+            } else {
+                owner
+                    .commit_task_transition(operation_id, command, Default::default(), true)
+                    .await?
+            };
         drop(agent_guard);
         self.apply_transition_commit(commit).await;
         Ok(())
@@ -801,7 +819,7 @@ impl RuntimeHandle {
                 self.persist_brief(&brief).await?;
             }
         } else {
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_owned_runtime_audit_event(AuditEvent::legacy(
                 "stale_task_result_rejoin_suppressed",
                 serde_json::json!({
                     "agent_id": message.agent_id,
@@ -809,7 +827,8 @@ impl RuntimeHandle {
                     "parent_turn_id": task_parent_turn_id(&task),
                     "reason": "parent_turn_already_delivered",
                 }),
-            ))?;
+            ))
+            .await?;
         }
         self.build_reducer_only_terminal_transition(
             if parent_turn_already_delivered {
@@ -1632,6 +1651,41 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event.kind == "stale_task_result_rejoin_suppressed"));
+        // The real TaskResult reducer ACK above must qualify its original Audit,
+        // rather than merely leaving a raw event visible to the repository.
+        let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+        let current = root
+            .current_reads
+            .as_ref()
+            .unwrap()
+            .capture(
+                &crate::runtime::current_read_facts::CurrentReadRequest::current(
+                    64 * 1024 * 1024,
+                    65536,
+                ),
+            )
+            .unwrap();
+        let original = current
+            .events
+            .iter()
+            .find_map(|record| match &record.fact {
+                crate::runtime::current_read_facts::CurrentReadFact::Event(event)
+                    if event.kind == "stale_task_result_rejoin_suppressed" =>
+                {
+                    Some(event)
+                }
+                _ => None,
+            })
+            .expect("actual reducer Audit must be in its published Current facts");
+        assert_eq!(original.data["parent_turn_id"], "turn-parent");
+        let native:bool=runtime.runtime_db().connection().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM current_event_native_births WHERE agent_id=?1 AND identity_incarnation=?2 AND event_id=?3 AND birth_seq=?4)",
+            rusqlite::params![root.state.id,root.token.identity_incarnation,original.id,original.event_seq],|r|r.get(0),
+        ).unwrap();
+        assert!(
+            native,
+            "the real suppression Audit must retain its actual append sequence"
+        );
         let terminal = runtime
             .agent_state()
             .await

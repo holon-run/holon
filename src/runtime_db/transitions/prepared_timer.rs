@@ -81,7 +81,7 @@ impl PreparedTimerTransition {
     pub(super) fn agent_id(&self) -> &str {
         &self.record().agent_id
     }
-    fn record(&self) -> &crate::types::TimerRecord {
+    pub(super) fn record(&self) -> &crate::types::TimerRecord {
         match self {
             Self::Create { record, .. } => record,
             Self::Fire { command, .. } => &command.record,
@@ -164,6 +164,20 @@ impl PreparedTimerTransition {
         ledger: &InputEvidenceBudgetLedger,
         memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     ) -> Result<(TransitionCommit, InputMutationResult)> {
+        self.execute_with_current_read_tx(tx, db, scope, work, tasks, ledger, memory, None)
+    }
+
+    pub(super) fn execute_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        db: &RuntimeDb,
+        scope: &InputEvidenceScope,
+        work: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        tasks: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        ledger: &InputEvidenceBudgetLedger,
+        memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    ) -> Result<(TransitionCommit, InputMutationResult)> {
         let mut value = TransitionCommit::default();
         let outcome = match self {
             Self::Create { record, fault } => {
@@ -186,7 +200,7 @@ impl PreparedTimerTransition {
                 pending,
                 fault,
             } => {
-                let ack = db.timers().fire_with_wait_tx(
+                let ack = db.timers().fire_with_wait_with_current_read_tx(
                     tx,
                     command,
                     *fault,
@@ -195,6 +209,7 @@ impl PreparedTimerTransition {
                     &mut value.effects.wait_condition_writes,
                     &mut value.effects.audit_events,
                     memory,
+                    current_reads.as_deref_mut(),
                 )?;
                 value.applied = ack.record.advanced;
                 value.effects.input_evidence_delta = ack.input_delta;
@@ -240,7 +255,11 @@ impl PreparedTimerTransition {
                 fault,
             } => {
                 inject_fault(*fault, TransitionFaultPoint::AfterValidation)?;
-                let result = db.timers().cancel_tx(tx, command)?;
+                let result = db.timers().cancel_with_current_read_tx(
+                    tx,
+                    command,
+                    current_reads.as_deref_mut(),
+                )?;
                 value.applied = result.cancelled;
                 if result.cancelled {
                     value.effects.fault = *fault;
@@ -323,43 +342,41 @@ pub(super) struct SchedulingTransaction<'tx, 'conn> {
     guards: Vec<Arc<BudgetViewGuard>>,
 }
 impl SchedulingTransaction<'_, '_> {
+    pub(super) fn input_writer_material(
+        &self,
+        tx: &Transaction<'_>,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        for guard in &self.guards {
+            guard.validate_owned_material_binding(scope, ledger, 0)?;
+        }
+        // The proof's counters already include these external Timer/Queue
+        // guards. Adding their bytes again would count one allocation twice.
+        self.proof.input_writer_material(tx, scope, ledger)
+    }
     pub(super) fn fires_wake(&self) -> bool {
         self.fire_wake
     }
-    pub(super) fn finish(
-        self,
-        tx: &Transaction<'_>,
-        value: &mut TransitionCommit,
-        request: &scheduling::SchedulingDomainLoadRequest,
-        memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
-    ) -> Result<()> {
-        let state = crate::runtime_db::context_inputs::ContextDurableRead::new(
-            tx,
-            &self.proof.scope().agent_id,
-        )
-        .scope_facts()?
-        .state
-        .context("Scheduling finalizer has no final State")?;
-        let mut facts = scheduling::register_scheduling_writes_with_memory_budget_tx(
-            tx,
-            &self.proof,
-            &value.effects.scheduling_write_keys,
-            &state,
-            request,
-            memory,
-        )?;
-        value
-            .effects
-            .scheduling_material_budget_views
-            .extend(self.guards);
-        value
-            .effects
-            .scheduling_material_budget_views
-            .extend(facts.take_budget_views());
-        value.effects.scheduling_delta_requires_prepared_domain = facts.requires_prepared_domain;
-        value.effects.scheduling_delta = Some(Box::new(facts.delta));
-        Ok(())
+    pub(super) fn finish_using_original_material(
+        self, tx:&Transaction<'_>, value:&mut TransitionCommit,
+        request:&scheduling::SchedulingDomainLoadRequest, original_state:&crate::types::AgentState,
+        memory:Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    )->Result<(usize,usize)> {
+        // The actual business State is already held. register still proves it
+        // against canonical State through its own bounded material before ACK.
+        let final_state=value.effects.agent_state.as_ref().map(|state|state.record.as_ref())
+            .unwrap_or(original_state);
+        let mut facts=scheduling::register_scheduling_writes_with_memory_budget_tx(
+            tx,&self.proof,&value.effects.scheduling_write_keys,final_state,request,memory)?;
+        let usage=facts.material_usage;
+        value.effects.scheduling_material_budget_views.extend(self.guards);
+        value.effects.scheduling_material_budget_views.extend(facts.take_budget_views());
+        value.effects.scheduling_delta_requires_prepared_domain=facts.requires_prepared_domain;
+        value.effects.scheduling_delta=Some(Box::new(facts.delta));
+        Ok(usage)
     }
+
 }
 pub(super) fn prepare_tx<'tx, 'conn>(
     tx: &'tx Transaction<'conn>,

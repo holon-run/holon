@@ -495,6 +495,7 @@ fn scoped_state(agent_id: &str, pending: usize) -> Arc<AgentState> {
 
 fn state_facts(state: Arc<AgentState>) -> KnownCommit {
     KnownCommit::State {
+        current_reads: None,
         work: None,
 
         tasks: None,
@@ -508,6 +509,7 @@ fn state_facts(state: Arc<AgentState>) -> KnownCommit {
 
 fn absent_metadata() -> KnownCommit {
     KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+        _identity_budget: None,
         identity: None,
         state: None,
     }))
@@ -761,6 +763,7 @@ fn episode_witness(operation: &str, agent_id: &str, incarnation: u64) -> Mutatio
 
 fn prepared_facts(state: Arc<AgentState>, episodes: Arc<ResidentEpisodes>) -> KnownCommit {
     KnownCommit::State {
+        current_reads: None,
         work: None,
 
         tasks: None,
@@ -1113,6 +1116,7 @@ async fn prepared_domains_survive_active_metadata_only_for_the_current_incarnati
         MutationReservation::committed_all(
             &mut permits,
             vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                _identity_budget: None,
                 identity: Some(Arc::new(identity)),
                 state: Some(state(2 + index)),
             }))],
@@ -1179,6 +1183,7 @@ async fn positive_receipt_for_retired_scope_publishes_absence_without_touching_s
         .remove(0);
         witness.finish_original_attempt();
         let facts = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity,
             state: None,
         }));
@@ -1215,14 +1220,17 @@ async fn retired_receipt_resolution_rejects_current_active_or_any_successor_stat
     witness.finish_original_attempt();
     for facts in [
         IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(7, AgentRegistryStatus::Active)),
             state: None,
         },
         IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(8, AgentRegistryStatus::Active)),
             state: Some(state(8)),
         },
         IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(6, AgentRegistryStatus::Deleted)),
             state: None,
         },

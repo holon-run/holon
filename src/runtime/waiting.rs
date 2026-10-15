@@ -30,6 +30,70 @@ fn task_wait_preserves_blocker(
 }
 
 impl PreparedWaitForSettlement {
+    pub(super) fn work_resource_material_loan(&self) -> Option<super::WorkResourceMaterialLoan> {
+        let original = if let Some(material) = &self._result_view_material {
+            Some(super::WorkResourceMaterialLoan::result(material.clone()))
+        } else {
+            self._resource_plan
+                .as_ref()
+                .map(|read| super::WorkResourceMaterialLoan::plan(read.clone()))
+        };
+        match &self._owner_selection_material {
+            Some(metadata) => Some(super::WorkResourceMaterialLoan::with_wait_metadata(
+                original,
+                metadata.clone(),
+            )),
+            None => original,
+        }
+    }
+    pub(crate) fn retain_owner_selection_material(
+        &mut self,
+        material: Arc<super::work_reads::WorkQueryMetadataMaterial>,
+    ) {
+        self._owner_selection_material = Some(material);
+        self._owner_selection_expanded = false;
+    }
+    pub(crate) fn prepare_owner_selection_result_material(
+        &mut self,
+        runtime: &RuntimeHandle,
+    ) -> Result<()> {
+        if !self._owner_selection_expanded {
+            if let Some(original) = &self._owner_selection_material {
+                self._owner_selection_material = Some(runtime.retain_wait_registration_material(
+                    original,
+                    &self.registration,
+                    self._resource_plan.as_ref(),
+                )?);
+                self._owner_selection_expanded = true;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn owner_selection_result_material(
+        &self,
+    ) -> Option<&Arc<super::work_reads::WorkQueryMetadataMaterial>> {
+        self._owner_selection_material.as_ref()
+    }
+    pub(crate) fn prepare_result_read(
+        &mut self,
+        runtime: &RuntimeHandle,
+    ) -> Result<Option<super::resource_refresh::OwnedWorkItemMutationRead>> {
+        self.prepare_owner_selection_result_material(runtime)?;
+        let Some(record) = &self.registration.work_item else {
+            return Ok(None);
+        };
+        let read = runtime.prepare_planned_work_item_result_read_with_metadata(
+            record,
+            self._resource_plan
+                .clone()
+                .context("Wait original Work plan absent")?,
+            self._owner_selection_material.as_ref(),
+        )?;
+        self._result_view_material = Some(runtime.result_read_material(&read).clone());
+        Ok(Some(read))
+    }
+
     pub(crate) fn outcome(&self) -> WaitForRegistrationOutcome {
         if let Some(admission) = self.command.task_result_admission.as_ref() {
             WaitForRegistrationOutcome::TaskResultQueued {
@@ -159,7 +223,14 @@ pub(crate) struct PreparedWaitForSettlement {
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) brief: Option<crate::types::BriefRecord>,
     pub(crate) brief_publication_scope: Option<WaitForBriefPublicationScope>,
+    _work_source_material: Option<Arc<super::work_owned_preparation::WorkItemSourceMaterial>>,
     _scheduling_material: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+    _execution_read: Option<Arc<super::resident_input_evidence::ExecutionCommandRead>>,
+    _resource_plan: Option<Arc<super::resource_refresh::ObservedWorkPlanRead>>,
+    _owner_selection_material: Option<Arc<super::work_reads::WorkQueryMetadataMaterial>>,
+    _owner_selection_expanded: bool,
+    pub(in crate::runtime) _result_view_material:
+        Option<Arc<super::resource_refresh::WorkItemMutationMaterial>>,
 }
 
 pub(crate) enum PrepareWaitForOutcome {
@@ -176,6 +247,7 @@ pub(super) struct WorkItemBlockerClearance {
     pub(super) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(super) blocker_cleared: bool,
     pub(super) cancelled_wait_condition_ids: Vec<String>,
+    pub(super) _resource_plan: Option<Arc<super::resource_refresh::ObservedWorkPlanRead>>,
 }
 
 impl WorkItemBlockerClearance {
@@ -188,15 +260,41 @@ impl WorkItemBlockerClearance {
             index_changes: Vec::new(),
             blocker_cleared: false,
             cancelled_wait_condition_ids: Vec::new(),
+            _resource_plan: None,
         }
     }
 }
 
 impl RuntimeHandle {
+    pub(super) fn wait_resolution_plan_target<'a>(
+        &self,
+        message: &MessageEnvelope,
+        work: &'a super::resident_work::CapturedWork,
+    ) -> Result<Option<&'a WorkItemRecord>> {
+        anyhow::ensure!(
+            work.scope.agent_id == message.agent_id,
+            "Wait resolution Work scope differs"
+        );
+        let unresolved = work.unresolved_wait_conditions()?;
+        let Some(condition) = unresolved.into_iter().find(|condition| {
+            condition.status == WaitConditionStatus::Triggered
+                && condition.trigger_message_id() == Some(message.id.as_str())
+        }) else {
+            return Ok(None);
+        };
+        let Some(id) = condition.work_item_id.as_deref() else {
+            return Ok(None);
+        };
+        Ok(work.work_item(id)?.filter(|existing| {
+            existing.state == WorkItemState::Open
+                && existing.blocked_by_wait_id.as_deref() == Some(condition.id.as_str())
+        }))
+    }
     pub(super) fn wait_resolution_transition_for_message(
         &self,
         message: &MessageEnvelope,
         work: &super::resident_work::CapturedWork,
+        observed_plan: Option<&super::resource_refresh::ObservedWorkPlanRead>,
     ) -> Result<Option<crate::runtime_db::transitions::QueueWaitTransition>> {
         anyhow::ensure!(
             work.scope.agent_id == message.agent_id,
@@ -235,10 +333,9 @@ impl RuntimeHandle {
                         updated_at: now,
                         ..existing.clone()
                     };
-                    crate::work_item_plan::refresh_plan_artifact_metadata(
-                        self.agent_home().as_path(),
-                        &mut record,
-                    )?;
+                    observed_plan
+                        .context("claim Work plan was not captured")?
+                        .apply(&mut record)?;
                     index_changes.extend(self.inner.storage.index_changes_for_work_item(&record)?);
                     work_item = Some(crate::runtime_db::transitions::WorkItemMutation::Update {
                         record,
@@ -327,9 +424,103 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
     ) -> Result<WaitForRegistrationOutcome> {
+        Ok(self
+            .register_wait_for_outcome_inner(
+                agent_id,
+                work_item_id,
+                wake,
+                resource,
+                reason,
+                recheck_after_ms,
+                false,
+                None,
+            )
+            .await?
+            .0)
+    }
+    #[cfg(test)]
+    pub(crate) async fn register_wait_for_outcome_owned_result(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+        recheck_after_ms: Option<u64>,
+    ) -> Result<(
+        WaitForRegistrationOutcome,
+        Option<super::resource_refresh::OwnedWorkItemMutationRead>,
+    )> {
+        let (outcome, read, _) = self
+            .register_wait_for_outcome_inner(
+                agent_id,
+                work_item_id,
+                wake,
+                resource,
+                reason,
+                recheck_after_ms,
+                true,
+                None,
+            )
+            .await?;
+        Ok((outcome, read))
+    }
+    pub(crate) async fn register_wait_for_outcome_with_selection(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+        recheck_after_ms: Option<u64>,
+        metadata: &Arc<super::work_reads::WorkQueryMetadataMaterial>,
+    ) -> Result<(
+        WaitForRegistrationOutcome,
+        Option<super::resource_refresh::OwnedWorkItemMutationRead>,
+        Arc<super::work_reads::WorkQueryMetadataMaterial>,
+    )> {
+        let (outcome, read, returned) = self
+            .register_wait_for_outcome_inner(
+                agent_id,
+                work_item_id,
+                wake,
+                resource,
+                reason,
+                recheck_after_ms,
+                true,
+                Some(metadata),
+            )
+            .await?;
+        Ok((
+            outcome,
+            read,
+            returned.context("Wait original selection material absent")?,
+        ))
+    }
+    async fn register_wait_for_outcome_inner(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+        recheck_after_ms: Option<u64>,
+        owned_result: bool,
+        selection: Option<&Arc<super::work_reads::WorkQueryMetadataMaterial>>,
+    ) -> Result<(
+        WaitForRegistrationOutcome,
+        Option<super::resource_refresh::OwnedWorkItemMutationRead>,
+        Option<Arc<super::work_reads::WorkQueryMetadataMaterial>>,
+    )> {
         let _admission = self.execution_admission_lease()?;
         for attempt in 0..3 {
             let mut mutation = self.begin_mutation().await?;
+            if let Some(selection) = selection {
+                selection.validate_accounting(
+                    &mutation.input_evidence_scope(),
+                    &self.inner.input_evidence_budget,
+                )?;
+            }
             match mutation
                 .prepare_wait_for_outcome_with_id(
                     agent_id,
@@ -342,8 +533,21 @@ impl RuntimeHandle {
                 )
                 .await?
             {
-                PrepareWaitForOutcome::Immediate(outcome) => return Ok(outcome),
-                PrepareWaitForOutcome::Prepared(prepared) => {
+                PrepareWaitForOutcome::Immediate(outcome) => {
+                    return Ok((outcome, None, selection.cloned()))
+                }
+                PrepareWaitForOutcome::Prepared(mut prepared) => {
+                    if let Some(selection) = selection {
+                        prepared.retain_owner_selection_material(selection.clone());
+                    }
+                    let result_read = if owned_result {
+                        prepared.prepare_result_read(self)?
+                    } else {
+                        None
+                    };
+                    if let Some(loan) = prepared.work_resource_material_loan() {
+                        mutation.retain_work_resource_material(loan)?;
+                    }
                     let operation_id = prepared
                         .command
                         .audit_events
@@ -358,11 +562,17 @@ impl RuntimeHandle {
                             prepared.expected_task.clone(),
                         )
                         .await;
+                    if commit_result.is_ok() {
+                        if let Some(read) = &result_read {
+                            self.validate_result_read_ack(&mutation, read)?;
+                        }
+                    }
                     drop(mutation);
                     match commit_result {
                         Ok(commit) => {
                             self.apply_transition_commit(commit).await;
-                            return Ok(prepared.outcome());
+                            let returned = prepared.owner_selection_result_material().cloned();
+                            return Ok((prepared.outcome(), result_read, returned));
                         }
                         Err(error)
                             if attempt + 1 < 3
@@ -438,6 +648,7 @@ impl RuntimeHandle {
         condition_id: Option<String>,
         base_state: &AgentState,
         scheduling: Option<super::state_mutation::WaitSchedulingRead>,
+        execution_source: Result<super::resident_input_evidence::ExecutionCommandReadSource<'_>>,
     ) -> Result<PrepareWaitForOutcome> {
         let runtime_agent_id = base_state.id.as_str();
         if agent_id != runtime_agent_id {
@@ -470,7 +681,13 @@ impl RuntimeHandle {
             }
             if task_state_reducer::is_terminal_task_status(&task.status) {
                 return self
-                    .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
+                    .prepare_terminal_task_result(
+                        task,
+                        work_item_id,
+                        reason,
+                        condition_id,
+                        execution_source,
+                    )
                     .await;
             }
             expected_task = Some(task_expectation(&task));
@@ -496,6 +713,7 @@ impl RuntimeHandle {
         let expected_state = state.clone();
         let current_turn_id = state.current_turn_id.clone();
         let mut work_item = None;
+        let mut resource_plan = None;
         let active_waits = if let Some(work_item_id) = work_item_id.as_deref() {
             self.inner
                 .storage
@@ -576,8 +794,10 @@ impl RuntimeHandle {
                 }),
             ));
         }
+        let mut work_source_material = None;
         if let Some(work_item_id) = work_item_id.as_deref() {
-            let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
+            let (existing, material) = self.validate_owned_work_item(agent_id, work_item_id)?;
+            work_source_material = Some(material);
             if existing.state != WorkItemState::Open {
                 return Err(RuntimeError::validation(
                     "work_item_completed",
@@ -613,10 +833,11 @@ impl RuntimeHandle {
                 updated_at: now,
                 ..existing.clone()
             };
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut updated,
-            )?;
+            let plan_read = self
+                .prepare_observed_work_plan(&existing.id, existing.revision)
+                .await?;
+            let plan_artifact_changed = plan_read.apply(&mut updated)?;
+            resource_plan = Some(plan_read);
             if plan_artifact_changed {
                 if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
                     audit_events.push(event);
@@ -698,8 +919,14 @@ impl RuntimeHandle {
                 "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
             }),
         ));
-        let execution_protocol =
-            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)?;
+        let execution_read =
+            execution_source?.capture(condition.work_item_id.as_deref(), &[&condition.id])?;
+        let execution_protocol = self.execution_wait_settlement_transition(
+            &execution_read,
+            &condition,
+            work_item.as_ref(),
+            now,
+        )?;
         let command = crate::runtime_db::transitions::WaitTransitionCommand {
             task_result_admission: None,
             agent_id: agent_id.to_string(),
@@ -746,7 +973,13 @@ impl RuntimeHandle {
                 tool_execution: None,
                 brief: None,
                 brief_publication_scope: None,
+                _work_source_material: work_source_material,
                 _scheduling_material: scheduling_material,
+                _execution_read: Some(execution_read),
+                _resource_plan: resource_plan,
+                _result_view_material: None,
+                _owner_selection_material: None,
+                _owner_selection_expanded: false,
             },
         )))
     }
@@ -769,13 +1002,17 @@ impl RuntimeHandle {
         waiter_work_item_id: Option<String>,
         reason: String,
         condition_id: Option<String>,
+        execution_source: Result<super::resident_input_evidence::ExecutionCommandReadSource<'_>>,
     ) -> Result<PrepareWaitForOutcome> {
         // The terminal fast path keeps the normal registration's waiter
         // restrictions: an explicit waiter must be an owned, still-open
         // WorkItem (#3124).
         let mut existing_waiter_work_item = None;
+        let mut work_source_material = None;
         if let Some(work_item_id) = waiter_work_item_id.as_deref() {
-            let existing = self.validate_owned_work_item(&task.agent_id, work_item_id)?;
+            let (existing, material) =
+                self.validate_owned_work_item(&task.agent_id, work_item_id)?;
+            work_source_material = Some(material);
             if existing.state != WorkItemState::Open {
                 return Err(RuntimeError::validation(
                     "work_item_completed",
@@ -1014,6 +1251,7 @@ impl RuntimeHandle {
         let mut work_items = Vec::new();
         let mut index_changes = Vec::new();
         let mut work_item = None;
+        let mut resource_plan = None;
         let mut blocked_readiness = Value::Null;
         if let Some(existing) = existing_waiter_work_item.as_ref() {
             let (blocked_by, blocked_by_wait_id) = match existing.blocked_by.clone() {
@@ -1034,10 +1272,11 @@ impl RuntimeHandle {
                 updated_at: now,
                 ..existing.clone()
             };
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut updated,
-            )?;
+            let plan_read = self
+                .prepare_observed_work_plan(&existing.id, existing.revision)
+                .await?;
+            let plan_artifact_changed = plan_read.apply(&mut updated)?;
+            resource_plan = Some(plan_read);
             if plan_artifact_changed {
                 if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
                     audit_events.push(event);
@@ -1069,10 +1308,20 @@ impl RuntimeHandle {
             work_item = Some(updated);
         }
         let expected_task = task_expectation(&task);
+        let execution_read = execution_source?.capture(
+            condition.work_item_id.as_deref(),
+            &[&condition.id, &result_message.id],
+        )?;
         let execution_protocol = if work_item.is_some() {
-            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)?
+            self.execution_wait_settlement_transition(
+                &execution_read,
+                &condition,
+                work_item.as_ref(),
+                now,
+            )?
         } else {
             self.execution_continue_settlement_transition(
+                &execution_read,
                 &task,
                 waiter_work_item_id.as_deref(),
                 &result_message,
@@ -1166,13 +1415,20 @@ impl RuntimeHandle {
                 tool_execution: None,
                 brief: None,
                 brief_publication_scope: None,
+                _work_source_material: work_source_material,
                 _scheduling_material: None,
+                _execution_read: Some(execution_read),
+                _resource_plan: resource_plan,
+                _result_view_material: None,
+                _owner_selection_material: None,
+                _owner_selection_expanded: false,
             },
         )))
     }
 
     fn execution_continue_settlement_transition(
         &self,
+        execution: &super::resident_input_evidence::ExecutionCommandRead,
         task: &TaskRecord,
         waiter_work_item_id: Option<&str>,
         result_message: &MessageEnvelope,
@@ -1183,15 +1439,8 @@ impl RuntimeHandle {
             ExecutionProtocolCommand, SettleExecution, WorkItemOutcome,
         };
 
-        let Some(state) = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&task.agent_id)?
-        else {
-            return Ok(Default::default());
-        };
-        let Some(attempt) = state.open_attempt() else {
+        execution.validate_scope(&task.agent_id)?;
+        let Some(attempt) = execution.open_attempt() else {
             return Ok(Default::default());
         };
         let outcome = match &attempt.binding {
@@ -1238,6 +1487,7 @@ impl RuntimeHandle {
 
     fn execution_wait_settlement_transition(
         &self,
+        execution: &super::resident_input_evidence::ExecutionCommandRead,
         condition: &WaitConditionRecord,
         work_item: Option<&WorkItemRecord>,
         settled_at: DateTime<Utc>,
@@ -1248,15 +1498,8 @@ impl RuntimeHandle {
             WorkItemExecutionRecord, WorkItemExecutionState, WorkItemOutcome,
         };
 
-        let Some(state) = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&condition.agent_id)?
-        else {
-            return Ok(Default::default());
-        };
-        let Some(attempt) = state.open_attempt() else {
+        execution.validate_scope(&condition.agent_id)?;
+        let Some(attempt) = execution.open_attempt() else {
             return Ok(Default::default());
         };
         let wait = WaitReference {
@@ -1276,7 +1519,7 @@ impl RuntimeHandle {
                         .ok_or_else(|| {
                             anyhow!("WorkItem wait handoff is missing its updated WorkItem")
                         })?;
-                    let expected = state.work_items.get(work_item_id).cloned();
+                    let expected = execution.work_execution(work_item_id)?.cloned();
                     let generation = expected
                         .as_ref()
                         .map_or(work_item.revision.max(1), |record| record.generation() + 1);
@@ -1335,6 +1578,9 @@ impl RuntimeHandle {
         agent_id: &str,
         existing: WorkItemRecord,
         work: &super::resident_work::CapturedWork,
+        prior_state: &crate::types::AgentState,
+        prior_stamp: &crate::runtime::resource_refresh::WorkResourceReadStamp,
+        prior_material: (u64, usize),
         reason: &str,
     ) -> Result<WorkItemBlockerClearance> {
         let now = Utc::now();
@@ -1375,6 +1621,7 @@ impl RuntimeHandle {
         }
         let mut record = existing.clone();
         let mut index_changes = Vec::new();
+        let mut resource_plan = None;
         if needs_record_write {
             record = WorkItemRecord {
                 revision: existing.revision + 1,
@@ -1385,10 +1632,20 @@ impl RuntimeHandle {
                 updated_at: now,
                 ..existing.clone()
             };
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut record,
-            )?;
+            let plan_read = self
+                .prepare_observed_work_plan_with_prior(
+                    &existing.id,
+                    existing.revision,
+                    Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(
+                        prior_state,
+                        work,
+                        prior_stamp,
+                        prior_material,
+                    )),
+                )
+                .await?;
+            let plan_artifact_changed = plan_read.apply(&mut record)?;
+            resource_plan = Some(plan_read);
             if plan_artifact_changed {
                 if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
                     audit_events.push(event);
@@ -1412,6 +1669,7 @@ impl RuntimeHandle {
             index_changes,
             blocker_cleared: true,
             cancelled_wait_condition_ids,
+            _resource_plan: resource_plan,
         })
     }
 
@@ -1471,7 +1729,7 @@ impl RuntimeHandle {
             WakeDisposition::Coalesced => "wake_hint_coalesced",
             WakeDisposition::Ignored => "wake_hint_ignored",
         };
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_runtime_audit_event(AuditEvent::legacy(
             event_kind,
             serde_json::json!({
                 "agent_id": runtime_agent_id,
@@ -1487,7 +1745,8 @@ impl RuntimeHandle {
                 "correlation_id": hint.correlation_id,
                 "causation_id": hint.causation_id,
             }),
-        ))?;
+        ))
+        .await?;
 
         if trigger_now {
             if let Err(err) = self
@@ -1590,9 +1849,11 @@ impl RuntimeHandle {
             }
         }
         let audit = self
-            .inner
-            .storage
-            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)));
+            .append_owned_runtime_audit_event(AuditEvent::legacy(
+                "timer_created",
+                to_json_value(&timer),
+            ))
+            .await;
         // Once creation committed, audit failure must not strand its live timer.
         self.spawn_timer_loop(timer.clone()).await?;
         audit?;
@@ -1687,7 +1948,7 @@ impl RuntimeHandle {
                 Ok(_) if timer_result.as_ref().is_some_and(|result| result.cancelled) => {
                     let result = timer_result.expect("successful timer cancellation has a result");
                     drop(guard);
-                    self.inner.storage.append_event(&AuditEvent::legacy(
+                    self.append_runtime_audit_event(AuditEvent::legacy(
                         "timer_cancelled",
                         serde_json::json!({
                             "timer_id": timer.id,
@@ -1695,7 +1956,8 @@ impl RuntimeHandle {
                             "fire_count": timer.fire_count,
                             "dropped_message_id": result.dropped_message_id,
                         }),
-                    ))?;
+                    ))
+                    .await?;
                     self.inner.notify.notify_waiters();
                     return Ok(timer);
                 }
@@ -1848,13 +2110,15 @@ impl RuntimeHandle {
                     break;
                 }
                 if let Err(err) = runtime.fire_timer_record(&mut timer).await {
-                    let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
-                        "timer_fire_failed",
-                        serde_json::json!({
-                            "timer_id": timer.id,
-                            "error": err.to_string(),
-                        }),
-                    ));
+                    let _ = runtime
+                        .append_owned_runtime_audit_event(AuditEvent::legacy(
+                            "timer_fire_failed",
+                            serde_json::json!({
+                                "timer_id": timer.id,
+                                "error": err.to_string(),
+                            }),
+                        ))
+                        .await;
                     break;
                 }
                 if timer.status != TimerStatus::Active {
@@ -2015,7 +2279,7 @@ impl RuntimeHandle {
                     let result = timer_result.expect("successful timer firing has a result");
                     drop(guard);
                     *timer = record.clone();
-                    self.inner.storage.append_event(&AuditEvent::legacy(
+                    self.append_owned_runtime_audit_event(AuditEvent::legacy(
                         "timer_fired",
                         serde_json::json!({
                             "timer_id": timer.id,
@@ -2025,7 +2289,8 @@ impl RuntimeHandle {
                             "next_fire_at": timer.next_fire_at,
                             "wake_created": result.wake_created,
                         }),
-                    ))?;
+                    ))
+                    .await?;
                     if result.wake_created {
                         self.inner.notify.notify_one();
                     }
@@ -2190,10 +2455,11 @@ impl RuntimeHandle {
             if duplicate {
                 continue;
             }
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_owned_runtime_audit_event(AuditEvent::legacy(
                 "wait_reconciliation_requested",
                 signal.clone(),
-            ))?;
+            ))
+            .await?;
         }
 
         Ok(())
@@ -2254,15 +2520,10 @@ impl RuntimeHandle {
             ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
         };
 
-        let Some(execution) = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(agent_id)?
-        else {
-            return Ok(None);
-        };
-        let Some(attempt) = execution.attempts.values().find(|attempt| {
+        let owner = self.begin_mutation().await?;
+        let execution = owner.execution_command_source()?.capture(None, &[])?;
+        execution.validate_scope(agent_id)?;
+        let Some(attempt) = execution.open_attempt().filter(|attempt| {
             attempt.state == ExecutionAttemptState::Open
                 && attempt.source_message_id.as_deref() == Some(message.id.as_str())
         }) else {
@@ -2800,3 +3061,7 @@ mod mutation_tests {
 #[cfg(test)]
 #[path = "timer_producer_reads_tests.rs"]
 mod timer_producer_resident_tests;
+
+#[cfg(test)]
+#[path = "execution_wait_command_tests.rs"]
+mod execution_command_tests;

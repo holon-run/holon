@@ -19,16 +19,18 @@ pub async fn list_skills(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let skills = state
+    let (skills, _material) = state
         .host
         .operator_agent_skills_view(&agent_id)
         .await
-        .map_err(agent_access_error)?;
+        .map_err(agent_access_error)?
+        .into_parts();
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,
         "skills": skills.discoverable_skills,
-    })))
+    }))
+    .into_response())
 }
 
 pub async fn install_skill(
@@ -43,10 +45,14 @@ pub async fn install_skill(
         .get_operator_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    let resource_write = runtime
+        .begin_context_resource_write()
+        .map_err(error_response)?;
     let agent_home = runtime.agent_home();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let kind = request.kind.clone();
     let skill_name = tokio::task::spawn_blocking(move || {
+        let _resource_write = resource_write;
         crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &kind)
     })
     .await
@@ -76,8 +82,14 @@ pub async fn add_skill_to_catalog(
     ApiJson(request): ApiJson<crate::types::AddSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let resource_write = state
+        .host
+        .begin_loaded_context_resource_write()
+        .await
+        .map_err(error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
+        let _resource_write = resource_write;
         crate::skills::add_library_skill(&user_home, &request.kind)
     })
     .await
@@ -96,8 +108,14 @@ pub async fn remove_skill_from_catalog(
     ApiJson(request): ApiJson<crate::types::RemoveSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let resource_write = state
+        .host
+        .begin_loaded_context_resource_write()
+        .await
+        .map_err(error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     crate::skills::remove_library_skill(&user_home, &request.name).map_err(error_response)?;
+    drop(resource_write);
     Ok(Json(json!({
         "ok": true,
         "skill_name": request.name,
@@ -111,9 +129,15 @@ pub async fn reconcile_skill_catalog(
     ApiJson(request): ApiJson<crate::types::ReconcileSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let resource_write = state
+        .host
+        .begin_loaded_context_resource_write()
+        .await
+        .map_err(error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
+    drop(resource_write);
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
@@ -126,6 +150,13 @@ pub async fn refresh_skill_catalog(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    state
+        .host
+        .invalidate_loaded_context_resources(
+            crate::runtime::resource_observation::ResourceInvalidation::ExplicitRefresh,
+        )
+        .await
+        .map_err(error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let roots = crate::skills::existing_skill_roots(
         Some(&user_home),
@@ -147,6 +178,12 @@ pub async fn refresh_skill_catalog(
         .map_err(error_response)?;
     registry.rescan();
     let catalog = registry.catalog_for_roots(&roots, None);
+    drop(registry);
+    state
+        .host
+        .refresh_loaded_context_resources()
+        .await
+        .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
@@ -293,39 +330,26 @@ pub async fn skills_catalog(
         _ => None,
     });
 
-    let user_home = effective_user_home_dir(&state).ok();
-    let roots = crate::skills::existing_skill_roots(
-        user_home.as_deref(),
-        &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
-    )
-    .into_iter()
-    .map(|root| {
-        crate::skills::skill_root_registration(
-            crate::types::SkillRootSourceKind::UserGlobal,
-            None,
-            root,
-        )
-    })
-    .collect::<Vec<_>>();
-
-    let mut registry = state.skills_registry.write().await;
-    registry
-        .sync_effective_roots(roots.clone())
-        .map_err(error_response)?;
-    let catalog = registry.catalog_for_roots(&roots, scope_filter);
+    let (catalog, _material) = state
+        .host
+        .global_skills_catalog_read(scope_filter)
+        .await
+        .map_err(error_response)?
+        .into_parts();
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
         "catalog": catalog,
         "scope": scope_filter,
-    })))
+    }))
+    .into_response())
 }
 
 pub async fn skill_detail(
     Path(skill_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
     // Parse skill_id to determine the search scope. Agent-scoped skill_ids
@@ -335,49 +359,35 @@ pub async fn skill_detail(
         return agent_scoped_skill_detail(&agent_id, &skill_id, &state).await;
     }
 
-    let user_home = effective_user_home_dir(&state).ok();
-    let roots = crate::skills::existing_skill_roots(
-        user_home.as_deref(),
-        &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
-    )
-    .into_iter()
-    .map(|root| {
-        crate::skills::skill_root_registration(
-            crate::types::SkillRootSourceKind::UserGlobal,
-            None,
-            root,
-        )
-    })
-    .collect::<Vec<_>>();
-
-    let mut registry = state.skills_registry.write().await;
-    registry
-        .sync_effective_roots(roots.clone())
-        .map_err(error_response)?;
-    let Some(skill) = registry
-        .catalog_for_roots(&roots, Some(crate::types::SkillScope::UserGlobal))
-        .into_iter()
-        .find(|entry| entry.skill_id == skill_id)
-    else {
+    let (catalog, material) = state
+        .host
+        .global_skills_catalog_read(Some(crate::types::SkillScope::UserGlobal))
+        .await
+        .map_err(error_response)?
+        .into_parts();
+    let Some(skill) = catalog.into_iter().find(|entry| entry.skill_id == skill_id) else {
         return Err(not_found(format!("skill {skill_id} not found")));
     };
-    let content = tokio::fs::read_to_string(&skill.path)
+    let (skill, content, _material, _content_material) = state
+        .host
+        .global_skill_detail_read(material, skill)
         .await
-        .map_err(|error| error_response(error.into()))?;
+        .map_err(error_response)?;
 
     Ok(Json(json!({
         "ok": true,
         "library": USER_GLOBAL_LIBRARY_LABEL,
         "skill": skill,
         "content": content,
-    })))
+    }))
+    .into_response())
 }
 
 pub async fn agent_skill_detail(
     Path((agent_id, skill_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     agent_scoped_skill_detail(&agent_id, &skill_id, &state).await
 }
@@ -397,12 +407,13 @@ async fn agent_scoped_skill_detail(
     agent_id: &str,
     skill_id: &str,
     state: &AppState,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let skills = state
+) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
+    let (skills, material) = state
         .host
         .operator_agent_skills_view(agent_id)
         .await
-        .map_err(agent_access_error)?;
+        .map_err(agent_access_error)?
+        .into_parts();
     let Some(skill) = skills
         .discoverable_skills
         .into_iter()
@@ -410,13 +421,16 @@ async fn agent_scoped_skill_detail(
     else {
         return Err(not_found(format!("skill {skill_id} not found")));
     };
-    let content = tokio::fs::read_to_string(&skill.path)
+    let (skill, content, _material, _content_material) = state
+        .host
+        .agent_skill_detail_read(material, skill)
         .await
-        .map_err(|error| error_response(error.into()))?;
+        .map_err(error_response)?;
 
     Ok(Json(json!({
         "ok": true,
         "skill": skill,
         "content": content,
-    })))
+    }))
+    .into_response())
 }

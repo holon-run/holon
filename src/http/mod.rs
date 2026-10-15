@@ -1288,6 +1288,33 @@ pub(crate) fn traced_json<T: Serialize>(
     Ok(traced_json_bytes(route, started_at, bytes))
 }
 
+pub(crate) fn traced_summary_json(
+    route: &'static str,
+    started_at: std::time::Instant,
+    summary: crate::runtime::OwnedAgentSummaryRead,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let owned = summary.into_json_wire().map_err(error_response)?;
+    let bytes = Bytes::from_owner(owned);
+    Ok(traced_json_bytes(route, started_at, bytes))
+}
+
+/// Loaded compact responses retain their selected source and exact encoder
+/// allocation in the same Bytes owner used by the full-summary response.
+pub(crate) fn traced_compact_json(
+    route: &'static str,
+    started_at: std::time::Instant,
+    projection: crate::runtime::LightweightAgentStateProjection,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let owned = projection
+        .into_compact_json_wire()
+        .map_err(error_response)?;
+    Ok(traced_json_bytes(
+        route,
+        started_at,
+        Bytes::from_owner(owned),
+    ))
+}
+
 pub(crate) fn serialize_json<T: Serialize>(
     route: &'static str,
     value: &T,

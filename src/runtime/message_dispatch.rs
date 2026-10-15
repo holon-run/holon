@@ -315,11 +315,8 @@ impl RuntimeHandle {
                 continuation_resolution: plan.continuation_resolution.as_ref(),
             },
         );
-        scheduler::append_scheduler_decision(
-            &self.inner.storage,
-            &self.inner.default_agent_id,
-            &scheduler_decision,
-        )?;
+        self.append_owned_scheduler_decision(&scheduler_decision)
+            .await?;
         self.process_message_with_plan(message, plan, &scheduler_decision)
             .await
     }
@@ -428,10 +425,11 @@ impl RuntimeHandle {
         turn_trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<turn::TurnTerminalTransition> {
         message.normalize_admission_fields();
-        self.inner.storage.append_event(&AuditEvent::typed(
+        self.append_owned_runtime_audit_event(AuditEvent::typed(
             RuntimeEventKind::MessageProcessingStarted,
             &MessageLifecycleAuditEvent::from_message(&message),
-        )?)?;
+        )?)
+        .await?;
         let MessageDispatchPlan {
             prior_closure,
             task,
@@ -692,13 +690,14 @@ impl RuntimeHandle {
                 self.apply_transition_commit(commit).await;
             }
         }
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "closure_decided",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
                 "closure": final_closure,
             }),
-        ))?;
+        ))
+        .await?;
 
         info!("processed message {}", message.id);
         match terminal_transition {

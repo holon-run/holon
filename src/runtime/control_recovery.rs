@@ -84,6 +84,15 @@ fn resolve_control_recovery_with_run(
                 .ok_or_else(|| anyhow::anyhow!("Control recovery byte limit overflow"))?,
         )?,
     };
+    let event_scope = super::resident_input_evidence::InputEvidenceScope {
+        agent_id: key.agent_id.clone(),
+        identity_incarnation: key.identity_incarnation,
+    };
+    let event_roles = reservations[0].current_event_roles(
+        &event_scope,
+        budget,
+        (input_request.byte_limit, input_request.record_limit),
+    )?;
     // Positive receipts prepare current State and all three domains in one view.
     let known = match db.load_control_recovery_with_queries(
         key,
@@ -100,6 +109,7 @@ fn resolve_control_recovery_with_run(
                 reservations[0].owner_epoch(),
             )
         }),
+        event_roles.as_ref(),
     )? {
         ControlRecoveryObservation::Absent { obligations } => {
             validate_obligation_receipt(key, None, &obligations)?;
@@ -136,6 +146,7 @@ fn resolve_control_recovery_with_run(
                     cancellation.clone(),
                 )?;
                 Some(KnownCommit::State {
+                    current_reads: domains.current_reads.clone(),
                     work: Some(domains.work),
 
                     tasks: Some(domains.tasks),
@@ -162,12 +173,13 @@ fn resolve_control_recovery_with_run(
                     &[],
                 )?;
             }
-            receipt.map(|_| {
-                KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                    identity: current_identity.map(Arc::new),
-                    state: None,
-                }))
-            })
+            receipt
+                .map(|_| -> Result<_> {
+                    Ok(KnownCommit::Metadata(Arc::new(
+                        IdentityMutationFacts::budgeted_owned(current_identity, None, budget)?,
+                    )))
+                })
+                .transpose()?
         }
     };
     MutationReservation::resolve_control_unknown(
@@ -343,6 +355,46 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
+        let held = runtime.inner.mutation_owner.reserve().await.unwrap();
+        let root = held.capture_ready_snapshot().unwrap().unwrap();
+        let event_role = runtime
+            .register_current_event_birth_session_from_snapshot(&held, &root)
+            .unwrap();
+        drop((held, root));
+        let mut seed = runtime.begin_mutation().await.unwrap();
+        let mut after = seed.last_persisted_state.clone();
+        after.last_wake_reason = Some("control-recovery-live-events".into());
+        let events = (0..70)
+            .map(|i| {
+                let mut e = crate::types::AuditEvent::legacy(
+                    "original_control_recovery_event",
+                    serde_json::json!({"i":i}),
+                );
+                e.id = format!("original-control-recovery-{i:03}");
+                e
+            })
+            .collect();
+        let command = crate::runtime_db::transitions::PreparedInputTransition::posture(
+            seed.input_evidence_scope(),
+            "control-recovery-live-event-seed".into(),
+            chrono::Utc::now(),
+            crate::runtime_db::transitions::AgentPostureTransitionCommand {
+                agent_id: after.id.clone(),
+                expected_incarnation: Some(runtime.instance_incarnation()),
+                agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(seed.last_persisted_state.clone())),
+                    record: Box::new(after),
+                },
+                audit_events: events,
+                fault: None,
+            },
+            None,
+        )
+        .unwrap();
+        seed.commit_prepared_input_transition(command)
+            .await
+            .unwrap();
+        drop(seed);
         let (key, invocation) =
             runtime.freeze_direct_control(ControlAction::Stop, AuthorityClass::OperatorInstruction);
         let mut mutation = runtime.begin_mutation().await.unwrap();
@@ -380,6 +432,15 @@ mod tests {
         let restored = runtime.begin_mutation().await.unwrap();
         assert_eq!(restored.state.status, AgentStatus::Stopped);
         assert!(restored.queue.is_empty());
+        let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+        let selected = runtime
+            .capture_current_event_birth_session_from_snapshot(&event_role, &root)
+            .unwrap();
+        assert_eq!(selected.selected.events.iter().filter(|r|
+            matches!(&r.fact, crate::runtime::current_read_facts::CurrentReadFact::Event(e)
+                if e.kind == "original_control_recovery_event")).count(), 70,
+            "original unknown Control receipt must retain every live birth beyond64");
+        drop((selected, root, event_role));
         let tasks = restored
             .capture_tasks(&super::super::resident_task::TaskCaptureRequest::current())
             .unwrap();

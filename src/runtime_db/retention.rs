@@ -203,6 +203,10 @@ pub(crate) struct ScopedRuntimeDbRetentionCommit {
         InputEvidenceScope,
         crate::runtime::resident_work::CommittedWorkDelta,
     )>,
+    pub work_material_budget_views: Vec<(
+        InputEvidenceScope,
+        std::sync::Arc<Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>>,
+    )>,
     pub task_deltas: Vec<(
         InputEvidenceScope,
         crate::runtime::resident_task::CommittedTaskDelta,
@@ -320,6 +324,7 @@ impl RuntimeDb {
                 committed: self.commit_retention_pass(policy, now)?,
                 input_deltas: Vec::new(),
                 work_deltas: Vec::new(),
+                work_material_budget_views: Vec::new(),
                 task_deltas: Vec::new(),
             });
         }
@@ -410,6 +415,7 @@ impl RuntimeDb {
             committed,
             input_deltas,
             work_deltas: Vec::new(),
+            work_material_budget_views: Vec::new(),
             task_deltas: Vec::new(),
         })
     }
@@ -1070,6 +1076,8 @@ fn collect_strong_roots(connection: &Connection) -> Result<StrongRoots> {
             Family::ToolExecution => {
                 roots.tool_execution_ids.insert(key.id);
             }
+            // Legacy summaries are retained and do not own their hinted Turn.
+            Family::LegacyDelivery => {}
             // Briefs/Episodes are canonical retained records; their concrete
             // content sources are already followed by their original root readers.
             Family::Brief | Family::WorkExecution | Family::Attempt | Family::Outcome => {}

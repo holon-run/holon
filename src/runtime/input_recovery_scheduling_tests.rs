@@ -69,12 +69,19 @@ fn positive_original_receipt_installs_fresh_scheduling_and_never_replays_old_tim
     assert!(f.resolve(&mut reservation)?);
     let known = MutationReservation::validate_group_known(std::slice::from_ref(&reservation))?;
     let Some(KnownCommit::State {
+        current_reads: Some(current_reads),
+        state,
         scheduling: Some(domain),
         ..
     }) = &known[0]
     else {
         panic!("positive recovery must install current Scheduling from the same fresh TX")
     };
+    current_reads.validate_state(state)?;
+    current_reads
+        .validate_identity(&f.db.agent_identities().latest(&f.scope.agent_id)?.unwrap())?;
+    assert_eq!(current_reads.scope(), &f.scope);
+    let actual_current_read = current_reads.clone();
     let captured = domain.capture(&SchedulingCaptureRequest::current())?;
     assert_eq!(captured.revision, revision);
     assert_eq!(captured.active_timer_count()?, 0);
@@ -84,6 +91,10 @@ fn positive_original_receipt_installs_fresh_scheduling_and_never_replays_old_tim
     assert_eq!(row.fact, CanonicalSchedulingFact::Timer(cancelled));
     MutationReservation::reconcile_all(std::slice::from_mut(&mut reservation), known)?;
     let root = f.owner.capture()?.unwrap();
+    assert!(Arc::ptr_eq(
+        root.current_reads.as_ref().unwrap(),
+        &actual_current_read
+    ));
     assert_eq!(
         root.scheduling.as_ref().unwrap().coverage().revision,
         revision

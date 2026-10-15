@@ -93,3 +93,57 @@ pub(crate) fn read_cold_scheduling_scope_tx(
         .ok_or(SchedulingSnapshotError::RetiredScope)?;
     Ok((facts, (material.bytes, material.records), material.guards))
 }
+
+/// Resource inspection needs the same bounded identity/State headers, without
+/// asserting any Scheduling coverage. A real active identity may have no State.
+pub(crate) fn read_cold_resource_scope_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+) -> Result<(ContextScopeFacts, (usize, usize), Vec<Arc<BudgetViewGuard>>)> {
+    let has_state: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_states WHERE agent_id=?1)",
+        [&scope.agent_id],
+        |row| row.get(0),
+    )?;
+    if has_state {
+        return read_cold_scheduling_scope_tx(tx, scope, request, ledger);
+    }
+    bound(0, 0, request)?;
+    let mut material = Material::new(scope, request, ledger);
+    let identity = loader::scope_identity(tx, scope, &mut material, false)?
+        .ok_or(SchedulingSnapshotError::RetiredScope)?;
+    Ok((
+        ContextScopeFacts {
+            identity: Some(identity),
+            state: None,
+            control_revision: None,
+        },
+        (material.bytes, material.records),
+        material.guards,
+    ))
+}
+
+/// Exact resource-body reads qualify identity without hydrating State or
+/// asserting Scheduling coverage before opening the selected file.
+pub(crate) fn read_cold_resource_identity_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+) -> Result<(
+    crate::types::AgentIdentityRecord,
+    (usize, usize),
+    Vec<Arc<BudgetViewGuard>>,
+)> {
+    bound(0, 0, request)?;
+    let mut material = Material::new(scope, request, ledger);
+    let identity = loader::scope_identity(tx, scope, &mut material, false)?
+        .ok_or(SchedulingSnapshotError::RetiredScope)?;
+    Ok((
+        identity,
+        (material.bytes, material.records),
+        material.guards,
+    ))
+}

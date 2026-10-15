@@ -175,6 +175,20 @@ impl RuntimeRegistry {
             .cloned())
     }
 
+    /// A synchronous original-cache read. The caller must admit its selected
+    /// owned copies before returning; no reference or lock escapes this closure.
+    pub(crate) fn with_agent_identity_records<R>(
+        &self,
+        read: impl FnOnce(&HashMap<String, AgentIdentityRecord>) -> Result<R>,
+    ) -> Result<R> {
+        let identities = self
+            .inner
+            .agent_identities
+            .read()
+            .expect("agent identities cache poisoned");
+        read(&identities)
+    }
+
     pub(crate) fn agent_identity_records(&self) -> Result<Vec<AgentIdentityRecord>> {
         let mut records = self
             .inner

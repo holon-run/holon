@@ -428,3 +428,97 @@ fn standalone_group_keeps_primary_when_sorted_after_secondary() -> Result<()> {
     assert!(receipt.outcome.scopes[1].notify_memory_index);
     Ok(())
 }
+
+
+fn native_commit(
+    f: &Fixture,
+    prepared: &PreparedInputEvidence,
+    ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
+    let work = super::super::work_snapshot::WorkDomainLoadRequest {
+        capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+        byte_limit:64*1024*1024, record_limit:65_536,
+    };
+    let tasks = super::super::task_snapshot::TaskDomainLoadRequest {
+        query:Default::default(),capture:crate::runtime::resident_task::TaskCaptureRequest::current(),
+        byte_limit:work.byte_limit,record_limit:work.record_limit,
+    };
+    f.db.evidence().commit_prepared_input_evidence_with_task_budget(prepared,&work,&tasks,ledger)
+}
+
+#[test]
+fn original_standalone_evidence_writers_mint_native_births_once_and_preserve_receipt_replay() -> Result<()> {
+    let f=Fixture::new()?;
+    let ledger=crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
+    let transcript=PreparedInputEvidence::transcript(f.scope.clone(),"native-transcript".into(),f.at,f.transcript())?;
+    let tool=PreparedInputEvidence::tool(f.scope.clone(),"native-tool".into(),f.at,f.tool(),Vec::new())?;
+    let mut brief=BriefRecord::new(&f.scope.agent_id,BriefKind::Ack,"actual native Brief",None,None);
+    brief.id="native-brief".into();brief.created_at=f.at;
+    let brief=PreparedInputEvidence::brief_created(f.scope.clone(),"native-brief-command".into(),f.at,brief.clone(),brief_created_event_for(&brief)?,Vec::new())?;
+    for (index,prepared) in [transcript,tool,brief].iter().enumerate() {
+        let InputMutationExecution::Committed{value,receipt}=native_commit(&f,prepared,&ledger)? else{panic!("original writer must commit")};
+        assert!(!value.input_delta.records.is_empty());
+        let expected=u64::try_from(index+1)?;
+        assert_eq!(f.db.connection()?.query_row("SELECT high_water FROM input_query_birth_cursors WHERE agent_id=?1 AND identity_incarnation=?2",params![f.scope.agent_id,f.scope.identity_incarnation],|r|r.get::<_,u64>(0))?,expected);
+        let (agent,id,family,_)=prepared.command.identity();
+        assert_eq!(f.db.connection()?.query_row("SELECT birth_seq FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4",params![agent,f.scope.identity_incarnation,family.as_str(),id],|r|r.get::<_,u64>(0))?,expected);
+        drop(value);
+        let InputMutationExecution::Replayed{receipt:replayed,..}=native_commit(&f,prepared,&ledger)? else{panic!("same original receipt must replay")};
+        assert_eq!(replayed,receipt);
+        assert_eq!(f.count("input_query_birth_members")?,i64::try_from(index+1)?);
+        assert_eq!(ledger.report()?.observed_bytes,0,"before-proof selectors die only after the actual finish consumes them");
+        if index==0 {
+            f.db.transaction(|tx| {
+                tx.execute("DELETE FROM transcript_entries WHERE evidence_id=?1",[id])?;
+                register_pruned_input_evidence_tx(tx,&f.scope,&[InputEvidenceKey::new(family,id)])?;
+                Ok(())
+            })?;
+            let InputMutationExecution::Replayed{receipt:after_prune,..}=native_commit(&f,prepared,&ledger)? else{panic!("original receipt must survive actual body prune")};
+            assert_eq!(after_prune,receipt);
+            assert_eq!(f.count("transcript_entries")?,0);
+            assert_eq!(f.db.connection()?.query_row("SELECT birth_seq FROM input_query_birth_members WHERE family='transcript'",[],|r|r.get::<_,u64>(0))?,1);
+        }
+    }
+    assert_eq!(f.count("input_mutation_receipts")?,3);
+    Ok(())
+}
+
+#[test]
+fn existing_accepted_evidence_and_new_nonce_keep_birth_zero_without_raw_adoption() -> Result<()> {
+    let f=Fixture::new()?;
+    let original=PreparedInputEvidence::transcript(f.scope.clone(),"before-native-source".into(),f.at,f.transcript())?;
+    let first=f.db.evidence().commit_prepared_input_evidence(&original)?;
+    assert!(matches!(first,InputMutationExecution::Committed{..}));
+    let next=PreparedInputEvidence::transcript(f.scope.clone(),"new-native-observation".into(),f.at,f.transcript())?;
+    let ledger=crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
+    assert!(matches!(native_commit(&f,&next,&ledger)?,InputMutationExecution::Committed{..}));
+    assert_eq!(f.db.connection()?.query_row("SELECT birth_seq FROM input_query_birth_members",[],|r|r.get::<_,u64>(0))?,0);
+    assert_eq!(f.db.connection()?.query_row("SELECT high_water FROM input_query_birth_cursors",[],|r|r.get::<_,u64>(0))?,0);
+    let mut raw=f.transcript();raw.id="unqualified-late-transcript".into();
+    f.db.transaction(|tx| {append_transcript_entry_tx(tx,&raw)?;Ok(())})?;
+    let late=PreparedInputEvidence::transcript(f.scope.clone(),"do-not-adopt-late".into(),f.at,raw)?;
+    let error=native_commit(&f,&late,&ledger).err().expect("native proof cannot replace original D3 qualification");
+    assert!(error.downcast_ref::<super::super::input_evidence_snapshot::InputEvidenceSnapshotError>().is_some(),"{error:#}");
+    assert_eq!(f.count("input_query_birth_members")?,1);
+    assert_eq!(f.count("input_mutation_receipts")?,2);
+    assert_eq!(ledger.report()?.observed_bytes,0);
+    Ok(())
+}
+
+#[test]
+fn native_evidence_births_and_original_body_rollback_with_the_last_whole_receipt() -> Result<()> {
+    let f=Fixture::new()?;
+    let ledger=crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
+    let prepared=PreparedInputEvidence::transcript(f.scope.clone(),"native-before-receipt-fault".into(),f.at,f.transcript())?;
+    f.db.connection()?.execute_batch("CREATE TRIGGER fail_native_evidence_receipt BEFORE INSERT ON input_mutation_receipts BEGIN SELECT RAISE(ABORT,'actual last receipt fault'); END")?;
+    let error=native_commit(&f,&prepared,&ledger).err().expect("actual last receipt fault must fail");
+    assert!(format!("{error:#}").contains("actual last receipt fault"),"{error:#}");
+    for table in ["transcript_entries","input_evidence_current","input_query_birth_members","input_query_birth_cursors","input_mutation_receipts"] {assert_eq!(f.count(table)?,0,"whole original transaction rolled back {table}");}
+    assert_eq!(ledger.report()?.observed_bytes,0);
+    f.db.connection()?.execute_batch("DROP TRIGGER fail_native_evidence_receipt")?;
+    assert!(matches!(native_commit(&f,&prepared,&ledger)?,InputMutationExecution::Committed{..}));
+    assert_eq!(f.db.connection()?.query_row("SELECT birth_seq FROM input_query_birth_members",[],|r|r.get::<_,u64>(0))?,1);
+    assert_eq!(f.count("input_mutation_receipts")?,1);
+    assert_eq!(ledger.report()?.observed_bytes,0);
+    Ok(())
+}

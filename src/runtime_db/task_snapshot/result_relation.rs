@@ -250,7 +250,9 @@ pub(super) fn observe_task_predicate_tx(
         .is_some_and(|a| a.availability == TaskAvailability::Present)
         || fixed.is_some()
     {
-        let n = checkpoint_material_size_on(tx, &key)?.context("qualified Task disappeared")?;
+        let n = material
+            .admit_stored_tx(tx, &scope.agent_id, &key)?
+            .context("qualified Task disappeared")?;
         bound(
             1,
             metadata_bytes
@@ -258,7 +260,6 @@ pub(super) fn observe_task_predicate_tx(
                 .context("Task relation bytes overflow")?,
             Some(request),
         )?;
-        material.charge_record(&key, n)?;
         let stored = stored_on(tx, &scope.agent_id, &key)?.context("qualified Task missing")?;
         Some((
             qualification::validate_member(tx, scope, seed, &key, &stored)?,

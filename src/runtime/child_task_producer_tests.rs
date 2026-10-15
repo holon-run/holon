@@ -107,6 +107,18 @@ fn child_receipt(
             .map(Option::flatten)
     })
 }
+fn original_input_birth_inventory(runtime: &RuntimeHandle) -> Result<(u64, u64, u64)> {
+    Ok(runtime.runtime_db().connection()?.query_row(
+        "SELECT COALESCE((SELECT SUM(high_water) FROM input_query_birth_cursors),0),(SELECT COUNT(*) FROM input_query_birth_members),(SELECT COUNT(*) FROM input_query_birth_cursors)",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    )?)
+}
+fn original_child_result_birth(runtime: &RuntimeHandle) -> Result<(u64, Option<u64>)> {
+    Ok(runtime.runtime_db().connection()?.query_row(
+        "SELECT COUNT(*),MIN(b.birth_seq) FROM messages m JOIN input_query_birth_members b ON b.family='message' AND b.record_id=m.evidence_id AND b.agent_id=m.agent_id AND b.identity_incarnation=?1 JOIN input_evidence_current a ON a.agent_id=b.agent_id AND a.identity_incarnation=b.identity_incarnation AND a.family=b.family AND a.record_id=b.record_id WHERE m.agent_id='default' AND m.kind='task_result' AND a.availability='present' AND a.qualification='committed_writer'",
+        [runtime.inner.identity_incarnation], |row| Ok((row.get(0)?,row.get(1)?)),
+    )?)
+}
 #[tokio::test]
 async fn child_original_terminal_whole_ack_replays_after_both_fault_boundaries() -> Result<()> {
     for fault in [
@@ -115,11 +127,14 @@ async fn child_original_terminal_whole_ack_replays_after_both_fault_boundaries()
         Some(TransitionFaultPoint::BeforeCacheUpdate),
     ] {
         let f = child_monitor_fixture(fault).await?;
+        let original_birth = original_input_birth_inventory(&f.runtime)?;
         f.start.send(()).unwrap();
         let first = tokio::time::timeout(Duration::from_secs(10), f.done).await??;
         assert_eq!(first.is_err(), fault.is_some());
         f.lease.join().await?;
         if fault == Some(TransitionFaultPoint::BeforeCommit) {
+            assert_eq!(original_input_birth_inventory(&f.runtime)?, original_birth);
+            assert_eq!(original_child_result_birth(&f.runtime)?, (0, None));
             assert!(child_receipt(&f.runtime, &f.source)?.is_none());
             assert_eq!(
                 f.runtime
@@ -129,6 +144,12 @@ async fn child_original_terminal_whole_ack_replays_after_both_fault_boundaries()
                     .unwrap()
                     .status,
                 TaskStatus::Running
+            );
+        }
+        if fault == Some(TransitionFaultPoint::BeforeCacheUpdate) {
+            assert_eq!(
+                original_child_result_birth(&f.runtime)?,
+                (1, Some(original_birth.0 + 1))
             );
         }
         if fault.is_some() {
@@ -157,9 +178,17 @@ async fn child_original_terminal_whole_ack_replays_after_both_fault_boundaries()
         let counts:(u64,u64)=f.runtime.runtime_db().connection()?.query_row("SELECT (SELECT COUNT(*) FROM messages WHERE kind='task_result'),(SELECT COUNT(*) FROM input_mutation_receipts WHERE command_nonce=?1)",
             [format!("child-terminal:{}",f.source.address().lease_id)],|row|Ok((row.get(0)?,row.get(1)?)))?;
         assert_eq!(counts, (1, 1));
+        let born = original_input_birth_inventory(&f.runtime)?;
+        assert_eq!(born.0, original_birth.0 + 1);
+        assert_eq!(born.1, original_birth.1 + 1);
+        assert_eq!(
+            original_child_result_birth(&f.runtime)?,
+            (1, Some(original_birth.0 + 1))
+        );
         f.runtime
             .continue_original_child_terminal(f.source.clone())
             .await?;
+        assert_eq!(original_input_birth_inventory(&f.runtime)?, born);
         assert!(f
             .runtime
             .inner
@@ -192,6 +221,7 @@ async fn child_no_state_terminal_preserves_preexisting_accepted_input_and_keeps_
         ))
         .await?;
     let before = f.runtime.inner.input_evidence_budget.report()?;
+    let original_birth = original_input_birth_inventory(&f.runtime)?;
     let original_resident_state = f.runtime.agent_state().await?;
     f.runtime.runtime_db().transaction(|tx| {
         tx.execute("DELETE FROM agent_states WHERE agent_id='default'", [])?;
@@ -242,12 +272,15 @@ async fn child_no_state_terminal_preserves_preexisting_accepted_input_and_keeps_
     assert_eq!(queued, 1);
     let after = f.runtime.inner.input_evidence_budget.report()?;
     assert_eq!(after.pending, before.pending);
+    assert_eq!(original_input_birth_inventory(&f.runtime)?, original_birth);
+    assert_eq!(original_child_result_birth(&f.runtime)?, (0, None));
     Ok(())
 }
 #[tokio::test]
 async fn child_retired_terminal_never_reads_poisoned_successor_state_or_changes_task() -> Result<()>
 {
     let f = child_monitor_fixture(None).await?;
+    let original_birth = original_input_birth_inventory(&f.runtime)?;
     f.runtime.runtime_db().transaction(|tx|{
         tx.execute("UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2) WHERE agent_id='default'",[])?;
         tx.execute("UPDATE agent_states SET payload_json=?1 WHERE agent_id='default'",[format!("{{bad{}","x".repeat(1024*1024))])?;Ok(())
@@ -275,6 +308,8 @@ async fn child_retired_terminal_never_reads_poisoned_successor_state_or_changes_
         |row| row.get(0),
     )?;
     assert_eq!(count, 0);
+    assert_eq!(original_input_birth_inventory(&f.runtime)?, original_birth);
+    assert_eq!(original_child_result_birth(&f.runtime)?, (0, None));
     Ok(())
 }
 
@@ -767,6 +802,7 @@ async fn child_fresh_receipt_and_primary_joint_task_material_share_one_remaining
             context.recent_episode_candidates,
             &work,
             &tasks,
+            None,
             None,
         )?;
         assert!(

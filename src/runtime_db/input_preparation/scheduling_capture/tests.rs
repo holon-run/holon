@@ -104,6 +104,22 @@ fn input_scheduling_selector_rejects_before_clone_and_corrupt_saved_coverage_dec
                 })
                 .collect(),
         };
+        // Prove the selector's own gate directly before any clone. The whole
+        // owner path first admits actual Input scope material under the same cap.
+        let selector_error =
+            PreparedSchedulingRequest::new(&scope, Some(&capture), records, bytes, &ledger)
+                .err()
+                .context("oversized selector was cloned")?;
+        assert!(
+            matches!(
+                selector_error.downcast_ref::<SchedulingSnapshotError>(),
+                Some(SchedulingSnapshotError::ResourceExhausted(
+                    "Input-owned Scheduling selector"
+                ))
+            ),
+            "{selector_error:#}"
+        );
+        assert_eq!(ledger.report()?.observed_bytes, 0);
         let request = input_request(records, bytes);
         let result = db.transaction(|tx| {
             crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
@@ -115,10 +131,8 @@ fn input_scheduling_selector_rejects_before_clone_and_corrupt_saved_coverage_dec
             .context("over-budget owned selector accepted")?;
         assert!(
             matches!(
-                error.downcast_ref::<SchedulingSnapshotError>(),
-                Some(SchedulingSnapshotError::ResourceExhausted(
-                    "Input-owned Scheduling selector"
-                ))
+                error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+                Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted(_))
             ),
             "{error:#}"
         );

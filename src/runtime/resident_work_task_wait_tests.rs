@@ -30,6 +30,7 @@ fn wait(id: &str, task: &str) -> WaitConditionRecord {
 }
 fn coverage(records: &[Arc<QualifiedWorkRecord>]) -> WorkCoverage {
     WorkCoverage {
+        legacy_delivery_heads: std::collections::BTreeMap::new(),
         revision: 1,
         live_complete: true,
         live_work_ids: BTreeSet::new(),

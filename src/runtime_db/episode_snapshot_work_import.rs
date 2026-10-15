@@ -1,8 +1,7 @@
 //! Exact one-time legacy-domain records, never ordinary append authority.
 
 use super::*;
-
-const CHECKPOINT_FIELD: &str = "work_domain_actual_writes";
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +59,32 @@ impl ImportWrites {
             self.keys.insert(key, (agent_id.to_owned(), origin));
         }
         bound(self.metadata_bytes)
+    }
+
+    /// Borrow the old import map only when a new original Input source phase
+    /// coexists with it. This grants no source member and makes no body copy.
+    pub(in crate::runtime_db) fn input_import_material_estimate(&self) -> Result<(u64, usize)> {
+        let mut bytes = 1024u64;
+        for ((family, id), (agent, origin)) in &self.keys {
+            bytes = bytes
+                .checked_add(crate::runtime::input_evidence_budget::serialized_bytes(&(
+                    family, id, agent, origin,
+                ))?)
+                .and_then(|n| n.checked_add(512))
+                .context("Evidence Work import map bytes overflow")?;
+        }
+        let records = self
+            .keys
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(32))
+            .and_then(|n| n.checked_mul(8))
+            .context("Evidence Work import map records overflow")?;
+        let bytes = bytes
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(u64::try_from(records).ok()?.checked_mul(256)?))
+            .context("Evidence Work import map bytes overflow")?;
+        Ok((bytes, records))
     }
 
     /// Must run after every write in this original domain import transaction.
@@ -163,9 +188,12 @@ fn bound(bytes: usize) -> Result<()> {
     Ok(())
 }
 
+#[path = "episode_snapshot_work_import_records.rs"]
+mod imported_records;
+
 pub(in crate::runtime_db) struct ImportAuthority {
     frozen: EpisodeContinuityRoots,
-    records: BTreeMap<String, ImportRecord>,
+    records: imported_records::ImportedRecords,
     heads: BTreeMap<String, BTreeSet<String>>,
     additional: BTreeSet<(String, String)>,
     startup_wait_versions: BTreeMap<String, String>,
@@ -181,55 +209,7 @@ impl ImportAuthority {
             .work_domain_checkpoint
             .as_ref()
             .context("fixed Work checkpoint missing before legacy import")?;
-        let mut records = BTreeMap::<String, ImportRecord>::new();
-        let mut metadata_bytes = 0usize;
-        for (domain, families) in [
-            ("work_items", &["work_item"][..]),
-            ("wait_conditions", &["wait"][..]),
-            ("messages", &["message"][..]),
-            ("transcript_entries", &["transcript"][..]),
-            ("evidence", &["brief", "message", "transcript"][..]),
-        ] {
-            let bytes: Option<usize> = tx.query_row(
-                "SELECT length(CAST(source_checkpoint_json AS BLOB)) FROM storage_domains WHERE domain=?1 AND import_status='complete' AND canonical_source='db'",
-                [domain], |row| row.get(0),
-            ).optional()?.flatten();
-            let Some(bytes) = bytes else {
-                continue;
-            };
-            metadata_bytes = metadata_bytes.saturating_add(bytes);
-            bound(metadata_bytes)?;
-            let payload: String = tx.query_row(
-                "SELECT source_checkpoint_json FROM storage_domains WHERE domain=?1",
-                [domain],
-                |row| row.get(0),
-            )?;
-            let payload: serde_json::Value = serde_json::from_str(&payload)?;
-            let Some(footprint) = payload.get(CHECKPOINT_FIELD) else {
-                continue;
-            };
-            let footprint: ImportCheckpoint = serde_json::from_value(footprint.clone())?;
-            ensure!(
-                footprint.policy_version == 1,
-                "legacy Work footprint policy mismatch"
-            );
-            for (key, record) in footprint.records {
-                let (family, _) = key
-                    .split_once(':')
-                    .context("invalid legacy Work footprint key")?;
-                ensure!(
-                    families.contains(&family),
-                    "legacy Work footprint domain mismatch"
-                );
-                if record.agent_id != agent_id {
-                    continue;
-                }
-                // Domain order matches the original importer: Evidence follows
-                // Message/Transcript and may legitimately refine the same row.
-                records.insert(key, record);
-                bound(metadata_bytes)?;
-            }
-        }
+        let records = imported_records::ImportedRecords::load(tx, agent_id)?;
         let mut heads = BTreeMap::<String, BTreeSet<String>>::new();
         for (work, head) in &checkpoint.latest_results {
             if let Some(head) = head {
@@ -240,22 +220,16 @@ impl ImportAuthority {
             }
         }
         let mut additional = BTreeSet::new();
-        for (key, record) in &records {
-            let (family, id) = key
-                .split_once(':')
-                .context("invalid legacy Work footprint key")?;
-            if checkpoint.record_digests.contains_key(key) {
+        for key in checkpoint.record_digests.keys() {
+            if records.has(tx, key)? {
+                let (family, id) = key
+                    .split_once(':')
+                    .context("invalid legacy Work footprint key")?;
                 additional.insert((family.to_owned(), id.to_owned()));
             }
-            if family == "brief" {
-                if let Some(work) = &record.work_item_id {
-                    heads.entry(work.clone()).or_default().insert(id.to_owned());
-                    if checkpoint
-                        .record_digests
-                        .contains_key(&format!("work_item:{work}"))
-                    {
-                        additional.insert(("work_item".into(), work.clone()));
-                    }
+            if let Some(work) = key.strip_prefix("work_item:") {
+                if records.has_brief_for_work(tx, work)? {
+                    additional.insert(("work_item".to_owned(), work.to_owned()));
                 }
             }
         }
@@ -274,13 +248,18 @@ impl ImportAuthority {
         })
     }
     /// Only exact received rows from the original, sealed domain imports.
-    pub(in crate::runtime_db) fn task_query_message_imports(
+    pub(in crate::runtime_db) fn visit_task_query_message_imports(
         &self,
-    ) -> impl Iterator<Item = (&str, &str)> {
-        self.records.iter().filter_map(|(key, record)| {
-            key.strip_prefix("message:")
-                .map(|id| (id, record.raw_digest.as_str()))
-        })
+        connection: &Connection,
+        visit: impl FnMut(&str, &str) -> Result<()>,
+    ) -> Result<()> {
+        self.records.visit_messages(connection, visit)
+    }
+    pub(in crate::runtime_db::episode_snapshot) fn finish(
+        self,
+        connection: &Connection,
+    ) -> Result<()> {
+        self.records.finish(connection)
     }
     pub(super) fn original_relations(&self) -> &WorkContinuityCheckpoint {
         self.frozen
@@ -288,18 +267,26 @@ impl ImportAuthority {
             .as_ref()
             .expect("ImportAuthority validated its fixed Work checkpoint")
     }
-    pub(super) fn permits_relation_source(&self, id: &str, digest: &str) -> bool {
+    pub(super) fn permits_relation_source(
+        &self,
+        connection: &Connection,
+        id: &str,
+        digest: &str,
+    ) -> Result<bool> {
         let key = format!("message:{id}");
-        self.frozen
+        Ok(self
+            .frozen
             .record_digests
             .get(&key)
             .is_some_and(|stored| stored == digest)
-            || self
-                .records
-                .get(&key)
-                .is_some_and(|record| record.raw_digest == digest)
+            || self.records.matches(connection, &key, digest)?)
     }
-    pub(super) fn validate_relation_wait(&self, id: &str, digest: &str) -> Result<()> {
+    pub(super) fn validate_relation_wait(
+        &self,
+        connection: &Connection,
+        id: &str,
+        digest: &str,
+    ) -> Result<()> {
         let key = format!("wait:{id}");
         ensure!(
             self.original_relations()
@@ -310,10 +297,7 @@ impl ImportAuthority {
                     .startup_wait_versions
                     .get(&key)
                     .is_some_and(|stored| stored == digest)
-                || self
-                    .records
-                    .get(&key)
-                    .is_some_and(|record| record.raw_digest == digest),
+                || self.records.matches(connection, &key, digest)?,
             "Wait relation has no original fixed or legacy import footprint: {id}"
         );
         Ok(())
@@ -321,10 +305,29 @@ impl ImportAuthority {
     pub(super) fn additional(&self) -> &BTreeSet<(String, String)> {
         &self.additional
     }
-    pub(super) fn heads(&self, work: &str) -> BTreeSet<String> {
-        self.heads.get(work).cloned().unwrap_or_default()
+    pub(super) fn select_head(
+        &self,
+        connection: &Connection,
+        agent: &str,
+        work: &str,
+    ) -> Result<(
+        Option<(String, String)>,
+        Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    )> {
+        let empty = BTreeSet::new();
+        self.records.select_head(
+            connection,
+            agent,
+            work,
+            self.heads.get(work).unwrap_or(&empty),
+        )
     }
-    pub(super) fn validate_fixed_version(&self, key: &str, digest: &str) -> Result<()> {
+    pub(super) fn validate_fixed_version(
+        &self,
+        connection: &Connection,
+        key: &str,
+        digest: &str,
+    ) -> Result<()> {
         if let Some(original) = self.frozen.record_digests.get(key) {
             ensure!(
                 original == digest
@@ -332,10 +335,7 @@ impl ImportAuthority {
                         .startup_wait_versions
                         .get(key)
                         .is_some_and(|stored| stored == digest)
-                    || self
-                        .records
-                        .get(key)
-                        .is_some_and(|record| record.raw_digest == digest),
+                    || self.records.matches(connection, key, digest)?,
                 "fixed Work member changed outside original legacy import footprint: {key}"
             );
         }
@@ -353,21 +353,24 @@ impl ImportAuthority {
         );
         Ok(())
     }
-    pub(super) fn validate_head(&self, id: &str, payload: &str) -> Result<()> {
+    pub(super) fn validate_head(
+        &self,
+        connection: &Connection,
+        id: &str,
+        payload: &str,
+    ) -> Result<()> {
         let key = format!("brief:{id}");
         let digest = bytes_digest(payload.as_bytes());
         ensure!(
             self.frozen.record_digests.get(&key) == Some(&digest)
-                || self
-                    .records
-                    .get(&key)
-                    .is_some_and(|record| record.raw_digest == digest),
+                || self.records.matches(connection, &key, &digest)?,
             "Work completion head has no original import or fixed proof"
         );
         Ok(())
     }
     pub(super) fn validate_inputs(
         &self,
+        connection: &Connection,
         baseline: &EpisodeContinuityRoots,
         actual: &BTreeMap<String, String>,
     ) -> Result<()> {
@@ -378,10 +381,7 @@ impl ImportAuthority {
             ensure!(
                 self.frozen.record_digests.get(key) == Some(digest)
                     || self.startup_wait_versions.get(key) == Some(digest)
-                    || self
-                        .records
-                        .get(key)
-                        .is_some_and(|record| record.raw_digest == *digest),
+                    || self.records.matches(connection, key, digest)?,
                 "Work imported owning input has no original import or fixed proof: {key}"
             );
         }

@@ -172,6 +172,11 @@ pub(super) fn prepare_partial_stop_known_tx(
             .iter()
             .map(|id| WorkKey::new(WorkFamily::Frame, id)),
     );
+    let event_roles = reservation.current_event_roles(
+        scope,
+        budget,
+        (request.byte_limit, request.record_limit),
+    )?;
     let current =
         crate::runtime_db::input_preparation::prepare_partial_task_stop_input_recovery_tx(
             tx,
@@ -181,6 +186,7 @@ pub(super) fn prepare_partial_stop_known_tx(
             context.recent_episode_candidates,
             budget,
             &work,
+            event_roles.as_ref(),
         )?;
     ensure!(
         current.tasks.is_none(),
@@ -263,8 +269,11 @@ pub(super) fn prepare_partial_stop_known_tx(
         view.receipt().outcome.applied,
         facts.identity,
         cache,
-    )?
-    .with_task_stop_queue_metadata(queue_metadata);
+    )?;
+    if let Some(current) = current.current_reads {
+        runtime = runtime.with_current_read_facts(current)?;
+    }
+    runtime = runtime.with_task_stop_queue_metadata(queue_metadata);
     if witness.input_storage_replayed() {
         runtime.suppress_observed_input_replay_publication();
     }

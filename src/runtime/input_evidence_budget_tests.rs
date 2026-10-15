@@ -45,6 +45,7 @@ fn accepted(
 fn record(scope: &InputEvidenceScope, id: &str, bytes: usize) -> Arc<QualifiedInputEvidence> {
     Arc::new(QualifiedInputEvidence {
         attempt_turn_keys: None,
+        tool_run_report: None,
         locator: EvidenceLocator {
             scope: scope.clone(),
             key: InputEvidenceKey::new(InputEvidenceFamily::Turn, id),
@@ -241,6 +242,7 @@ fn shared_allocations_are_physical_once_categories_overlap_and_pins_prevent_recl
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let scope = scope("a", 1);
     let item = record(&scope, "turn", 90);
+    let bytes=item.resident_material_estimate().unwrap().0 as u64;
     let history = ledger
         .register_view(
             &scope,
@@ -256,22 +258,22 @@ fn shared_allocations_are_physical_once_categories_overlap_and_pins_prevent_recl
         report.physical_records,
         AllocationUsage {
             allocations: 1,
-            bytes: 90
+            bytes
         }
     );
-    assert_eq!(report.categories[&InputMemoryCategory::History].bytes, 90);
-    assert_eq!(report.categories[&InputMemoryCategory::Pins].bytes, 90);
+    assert_eq!(report.categories[&InputMemoryCategory::History].bytes, bytes);
+    assert_eq!(report.categories[&InputMemoryCategory::Pins].bytes, bytes);
     assert_eq!(report.reclaimable_history.bytes, 0);
     let shared = pins.clone();
     drop(pins);
     assert_eq!(
         ledger.report().unwrap().categories[&InputMemoryCategory::Pins].bytes,
-        90
+        bytes
     );
     drop(shared);
-    assert_eq!(ledger.report().unwrap().reclaimable_history.bytes, 90);
+    assert_eq!(ledger.report().unwrap().reclaimable_history.bytes, bytes);
     drop(history);
-    assert_eq!(ledger.report().unwrap().retained_unclassified.bytes, 90);
+    assert_eq!(ledger.report().unwrap().retained_unclassified.bytes, bytes);
     drop(item);
     assert_eq!(ledger.report().unwrap().physical_records.bytes, 0);
 }
@@ -281,6 +283,8 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
     let scope = scope("a", 1);
     let old = record(&scope, "old", 60);
     let new = record(&scope, "new", 70);
+    let old_bytes=old.resident_material_estimate().unwrap().0 as u64;
+    let new_bytes=new.resident_material_estimate().unwrap().0 as u64;
     let old_view = ledger
         .register_view(&scope, InputMemoryCategory::History, &[old.clone()])
         .unwrap();
@@ -289,7 +293,7 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
         .unwrap();
     assert_eq!(
         ledger.report().unwrap().categories[&InputMemoryCategory::History].bytes,
-        130
+        old_bytes+new_bytes
     );
     assert!(matches!(
         ledger.check_history_budget(),
@@ -302,8 +306,8 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
     let weak = Arc::downgrade(&old);
     drop(old);
     assert!(weak.upgrade().is_none());
-    assert_eq!(report.physical_records.bytes, 130);
-    assert_eq!(ledger.report().unwrap().physical_records.bytes, 70);
+    assert_eq!(report.physical_records.bytes, old_bytes+new_bytes);
+    assert_eq!(ledger.report().unwrap().physical_records.bytes, new_bytes);
     drop(old_view);
     drop(new_view);
     drop(new);
@@ -311,11 +315,16 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
 }
 #[test]
 fn host_history_limit_deduplicates_shared_views_and_remains_separate_from_current() {
-    let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let a = scope("a", 1);
     let b = scope("b", 1);
     let ar = record(&a, "a", 80);
     let br = record(&b, "b", 80);
+    let a_bytes=ar.resident_material_estimate().unwrap().0 as u64;
+    let b_bytes=br.resident_material_estimate().unwrap().0 as u64;
+    let mut actual_limits=limits();
+    actual_limits.history_per_agent_bytes=a_bytes.max(b_bytes)+1;
+    actual_limits.history_host_bytes=a_bytes+b_bytes-1;
+    let ledger=InputEvidenceBudgetLedger::new(actual_limits).unwrap();
     let _a = ledger
         .register_view(&a, InputMemoryCategory::History, &[ar.clone()])
         .unwrap();
@@ -338,7 +347,7 @@ fn host_history_limit_deduplicates_shared_views_and_remains_separate_from_curren
         .unwrap();
     assert_eq!(
         ledger.report().unwrap().categories[&InputMemoryCategory::History].bytes,
-        160
+        a_bytes+b_bytes
     );
 }
 #[test]

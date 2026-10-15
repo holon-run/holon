@@ -2403,3 +2403,268 @@ mod prepared_task_stop_phase_tests;
 
 #[path = "prepared_task_stop_result_tests.rs"]
 mod prepared_task_stop_result_tests;
+
+
+fn original_wait_tool_terminal(f: &Fixture, fault: Option<TransitionFaultPoint>) -> Result<PreparedInputTransition> {
+    let mut turn = TurnRecord::new(&f.scope.agent_id, "actual-tool-writer-turn", 1);
+    turn.created_at = f.at;
+    turn.terminal = Some(TurnTerminalSummary { kind: TurnTerminalKind::Completed,
+        reason: None, no_brief_reason: None, completed_at: f.at, duration_ms: 0 });
+    let tool = ToolExecutionRecord {
+        id: "actual-tool-writer".into(), agent_id: f.scope.agent_id.clone(), work_item_id: None,
+        turn_index: 1, turn_id: None, tool_name: crate::tool::names::WAIT_FOR.into(),
+        created_at: f.at, completed_at: Some(f.at), duration_ms: 0,
+        authority_class: AuthorityClass::RuntimeInstruction, status: crate::types::ToolExecutionStatus::Success,
+        input: serde_json::json!({"waiting_for":"original terminal result"}),
+        output: serde_json::json!({"stdout":"x".repeat(10*1024*1024)}),
+        summary: "original finite WaitFor prompt".into(), invocation_surface: None,
+    };
+    PreparedInputTransition::terminal(f.scope.clone(),"actual-tool-writer-nonce".into(),f.at,
+        TurnTerminalTransitionCommand {agent_id:f.scope.agent_id.clone(),
+            agent_state: AgentStateMutation {expected:Some(Box::new(f.state()?)),record:Box::new(f.state()?)},
+            turn_record:turn,terminal_tool_executions:vec![tool],audit_events:Vec::new(),fault})
+}
+
+#[test]
+fn original_generic_tool_writer_streams_actual_ack_and_keeps_raw_nanos_and_guard_until_last_delta() -> Result<()> {
+    use crate::runtime::{input_queries::{source_roles_for_fixture,InputQuerySpec},mutation_owner::MutationOwner};
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    use crate::runtime::resident_input_evidence::{InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence};
+    let f=Fixture::new()?;
+    let ledger=InputEvidenceBudgetLedger::new(Default::default())?;
+    let owner=MutationOwner::standalone(&f.scope.agent_id,1);
+    let (reservation,lease,roles)=source_roles_for_fixture(&owner,&f.scope,
+        InputQuerySpec{birth_after:Some(0),..Default::default()},&ledger,(64*1024*1024,65536))?;
+    drop(roles);
+    let source=reservation.input_query_source(&f.scope,&ledger,(64*1024*1024,65536))?;
+    let baseline=ledger.report()?.observed_bytes;
+    let prepared=original_wait_tool_terminal(&f,None)?;
+    let work=crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+        capture:crate::runtime::resident_work::WorkCaptureRequest::current(),byte_limit:64*1024*1024,record_limit:65536};
+    let task=crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        capture:crate::runtime::resident_task::TaskCaptureRequest::current(),query:Default::default(),byte_limit:64*1024*1024,record_limit:65536};
+    let InputMutationExecution::Committed{value,receipt}=f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition_with_input_query_source(&prepared,&work,&ledger,&task,&source)?
+        else {anyhow::bail!("actual first Tool writer did not commit")};
+    let delta=&value.effects.input_evidence_delta;
+    let actual=delta.records.iter().find(|record|record.locator.key==Key::new(Family::ToolExecution,"actual-tool-writer"))
+        .context("actual Tool D3 ACK missing")?;
+    assert_eq!(actual.tool_run_report()?,&crate::runtime::run_report_projection::ToolRunReportProjection::default());
+    assert!(actual.resident_bytes<32*1024);
+    let PreparedInputEvidence::ToolExecution(prompt)=&actual.record else{anyhow::bail!("actual ACK retained full Tool body")};
+    assert_eq!(prompt.summary,"original finite WaitFor prompt");
+    assert_eq!(prompt.created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis,true),"2026-10-13T00:00:00.123Z");
+    let (raw,hash):(String,String)=f.db.connection()?.query_row(
+        "SELECT payload_json,content_hash FROM tool_executions WHERE evidence_id='actual-tool-writer'",[],|row|Ok((row.get(0)?,row.get(1)?)))?;
+    let canonical:ToolExecutionRecord=serde_json::from_str(&raw)?;
+    assert_eq!(canonical.created_at,f.at);assert_eq!(canonical.output["stdout"].as_str().unwrap().len(),10*1024*1024);
+    assert_eq!(hash,crate::runtime_db::evidence::content_hash(&raw));
+    assert_eq!(f.receipt_count()?,1);
+    assert!(delta.query_advance.is_some());
+    assert_eq!(f.db.connection()?.query_row("SELECT birth_seq FROM input_query_birth_members WHERE family='tool_execution' AND record_id='actual-tool-writer'",[],|row|row.get::<_,u64>(0))?,2);
+    let last=delta.clone();
+    assert!(ledger.report()?.observed_bytes>baseline);
+    drop(value);
+    assert!(ledger.report()?.observed_bytes>baseline,"last actual delta clone keeps the original phase guard");
+    drop(last);assert_eq!(ledger.report()?.observed_bytes,baseline);
+    // Receipt-first replay cannot read Tool payload or mint a second birth.
+    f.db.connection()?.execute_batch("ALTER TABLE tool_executions RENAME TO forbidden_original_tool_body")?;
+    let replay=f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition_with_input_query_source(&prepared,&work,&ledger,&task,&source)?;
+    let InputMutationExecution::Replayed{receipt:replayed,..}=replay else{anyhow::bail!("original Tool receipt replay entered writer")};
+    assert_eq!(replayed,receipt);assert_eq!(f.receipt_count()?,1);
+    f.db.connection()?.execute_batch("ALTER TABLE forbidden_original_tool_body RENAME TO tool_executions")?;
+    drop((source,lease,reservation,owner));assert_eq!(ledger.report()?.observed_bytes,0);
+    Ok(())
+}
+
+#[test]
+fn original_generic_tool_source_budget_and_same_length_raw_tamper_reject_the_whole_writer() -> Result<()> {
+    use crate::runtime::{input_queries::{source_roles_for_fixture,InputQuerySpec},mutation_owner::MutationOwner};
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    for mode in 0..3 {
+        let tamper = mode != 0;
+        let f=Fixture::new()?;let ledger=InputEvidenceBudgetLedger::new(Default::default())?;
+        let owner=MutationOwner::standalone(&f.scope.agent_id,1);
+        let (reservation,lease,roles)=source_roles_for_fixture(&owner,&f.scope,InputQuerySpec{birth_after:Some(0),..Default::default()},
+            &ledger,(64*1024*1024,65536))?;drop(roles);
+        let source=reservation.input_query_source(&f.scope,&ledger,(64*1024*1024,65536))?;
+        let baseline=ledger.report()?.observed_bytes;
+        if mode==2 {
+            f.db.connection()?.execute_batch("CREATE TRIGGER actual_tool_same_length_drift AFTER INSERT ON tool_executions WHEN NEW.evidence_id='actual-tool-writer' BEGIN UPDATE tool_executions SET created_at='2026-10-13T00:00:00.999Z' WHERE evidence_id=NEW.evidence_id; END;")?;
+        } else if tamper {
+            // Same-byte-length canonical drift after original SQL, with its
+            // old normalized hash left intact; the full Blob SHA must catch it.
+            f.db.connection()?.execute_batch("CREATE TRIGGER actual_tool_same_length_drift AFTER INSERT ON tool_executions WHEN NEW.evidence_id='actual-tool-writer' BEGIN UPDATE tool_executions SET payload_json=replace(payload_json,'original finite WaitFor prompt','forgedxx finite WaitFor prompt') WHERE evidence_id=NEW.evidence_id; END;")?;
+        }
+        let prepared=original_wait_tool_terminal(&f,None)?;
+        let work=crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+            capture:crate::runtime::resident_work::WorkCaptureRequest::current(),byte_limit:if tamper{64*1024*1024}else{8*1024*1024},record_limit:65536};
+        let task=crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            capture:crate::runtime::resident_task::TaskCaptureRequest::current(),query:Default::default(),byte_limit:64*1024*1024,record_limit:65536};
+        let error=f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_input_query_source(&prepared,&work,&ledger,&task,&source)
+            .err().context("original Tool source must reject before whole receipt")?;
+        if tamper {assert!(matches!(error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+            Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ProjectionChanged(id)) if id=="actual-tool-writer"),"{error:#}");}
+        else {assert!(matches!(error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+            Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted(_))),"{error:#}");}
+        assert_eq!(f.receipt_count()?,0);
+        assert_eq!(f.db.connection()?.query_row("SELECT (SELECT COUNT(*) FROM tool_executions),(SELECT COUNT(*) FROM turn_records),(SELECT COUNT(*) FROM input_query_birth_members),(SELECT COUNT(*) FROM input_evidence_current)",[],|row|Ok((row.get::<_,usize>(0)?,row.get::<_,usize>(1)?,row.get::<_,usize>(2)?,row.get::<_,usize>(3)?)))?,(0,0,0,0));
+        assert_eq!(ledger.report()?.observed_bytes,baseline);
+        if tamper {f.db.connection()?.execute_batch("DROP TRIGGER actual_tool_same_length_drift")?;}
+        drop((source,lease,reservation,owner));assert_eq!(ledger.report()?.observed_bytes,0);
+    }
+    Ok(())
+}
+
+// Released v81 can contain any valid JSON formatting. Freeze that original
+// row before qualification; never corrupt an already accepted body to seed it.
+fn original_legacy_completion_tool(has_hash: bool, current_alias: bool) -> Result<(Fixture, ToolExecutionRecord, String)> {
+    use crate::runtime_db::migrations::{apply_migration, ensure_migration_table, MIGRATIONS};
+    let directory=tempfile::tempdir()?;
+    let path=directory.path().join("runtime.sqlite");
+    let scope=InputEvidenceScope {agent_id:"prepared-input".into(),identity_incarnation:1};
+    let at:chrono::DateTime<Utc>="2026-10-13T00:00:00.123456789Z".parse()?;
+    let tool=ToolExecutionRecord {id:"original-noop-completion".into(),agent_id:scope.agent_id.clone(),
+        work_item_id:None,turn_index:0,turn_id:None,tool_name:crate::tool::names::COMPLETE_WORK_ITEM.into(),
+        created_at:at,completed_at:Some(at),duration_ms:0,authority_class:AuthorityClass::RuntimeInstruction,
+        status:crate::types::ToolExecutionStatus::Success,input:serde_json::json!({"work_item_id":"original-noop-work"}),
+        output:serde_json::json!({"status":"completed"}),summary:"old qualified completion".into(),invocation_surface:None};
+    let raw=serde_json::to_string_pretty(&tool)?;
+    assert_ne!(raw,serde_json::to_string(&tool)?);
+    assert_eq!(serde_json::from_str::<ToolExecutionRecord>(&raw)?,tool);
+    {
+        let mut connection=rusqlite::Connection::open(&path)?;
+        ensure_migration_table(&connection)?;
+        for migration in MIGRATIONS.iter().filter(|m|m.version<=81) {apply_migration(&mut connection,migration)?;}
+        let tx=connection.transaction()?;
+        upsert_agent_identity_tx(&tx,&AgentIdentityRecord::new(&scope.agent_id,AgentKind::Named,
+            AgentVisibility::Public,AgentOwnership::SelfOwned,AgentProfilePreset::PublicNamed,None,None))?;
+        upsert_agent_state_tx(&tx,&AgentState::new(&scope.agent_id))?;
+        tx.execute("INSERT INTO storage_domains(domain,schema_version,import_status,canonical_source,updated_at) VALUES('context_episode_anchors',1,'complete','db',?1)",[at.to_rfc3339()])?;
+        crate::runtime_db::evidence::insert_tool_evidence_tx(&tx,&tool)?;
+        let hash=has_hash.then(||crate::runtime_db::evidence::content_hash(&raw));
+        assert_eq!(tx.execute("UPDATE tool_executions SET payload_json=?1,content_hash=?2 WHERE evidence_id=?3",
+            rusqlite::params![raw,hash,tool.id])?,1);
+        tx.commit()?;
+    }
+    let db=RuntimeDb::open_and_migrate(&path,directory.path().join("runtime.lock"))?;
+    assert_eq!(db.connection()?.query_row("SELECT payload_json FROM tool_executions WHERE evidence_id=?1",[&tool.id],|r|r.get::<_,String>(0))?,raw,
+        "real upgrade must retain the original valid v81 raw bytes");
+    assert!(db.connection()?.query_row("SELECT EXISTS(SELECT 1 FROM input_evidence_seed_membership WHERE family='tool_execution' AND record_id=?1)",[&tool.id],|r|r.get::<_,bool>(0))?);
+    if current_alias {
+        // This is the original explicit named preparation, after the immutable
+        // v81 cohort was sealed; raw text is never changed after qualification.
+        db.transaction(|tx| {
+            let request=crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+                windows:Vec::new(),mandatory_roots:std::collections::BTreeSet::from([
+                    crate::runtime::resident_input_evidence::InputEvidenceKey::new(
+                        crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution,&tool.id)]),
+                interrupted_sources:Default::default(),selected_completion_brief_ids:Default::default(),
+                byte_limit:64*1024*1024,record_limit:65536};
+            let snapshot=crate::runtime_db::input_evidence_snapshot::prepare_input_evidence_snapshot_tx(tx,&scope,&request)?;
+            assert!(matches!(snapshot,crate::runtime_db::input_evidence_snapshot::InputEvidenceBootstrapSnapshot::Current(_)));
+            assert!(tx.query_row("SELECT EXISTS(SELECT 1 FROM input_evidence_current WHERE family='tool_execution' AND record_id=?1 AND availability='present')",[&tool.id],|r|r.get::<_,bool>(0))?);
+            Ok(())
+        })?;
+    }
+    Ok((Fixture {_directory:directory,db,scope,at},tool,raw))
+}
+fn original_noop_tool_focus(f:&Fixture,tool:ToolExecutionRecord) -> Result<PreparedInputTransition> {
+    let mut command=original_focus_command(f,true,None)?;
+    let mut completed=WorkItemRecord::new(&f.scope.agent_id,"original completed Work",WorkItemState::Completed);
+    completed.id="original-noop-work".into();completed.created_at=f.at;completed.updated_at=f.at;
+    completed.result_brief_id=Some("original-noop-result".into());
+    completed.completion_intent=Some(crate::types::WorkItemCompletionIntent {
+        work_item_id:completed.id.clone(),source_activation_id:None,source_message_id:None,source_turn_id:None,
+        expected_work_revision:1,report_requirement:crate::types::CompletionReportRequirement::Required,
+        report_state:crate::types::CompletionReportState::Bound,result_brief_id:completed.result_brief_id.clone(),
+        created_at:f.at,updated_at:f.at});
+    let mut brief=crate::types::BriefRecord::new(&f.scope.agent_id,crate::types::BriefKind::Result,"completed",None,None);
+    brief.id="original-noop-result".into();brief.work_item_id=Some(completed.id.clone());brief.created_at=f.at;
+    command.work_items.push(WorkItemMutation::Insert {record:completed});command.brief_evidence.push(brief);
+    PreparedInputTransition::focus(f.scope.clone(),"original-noop-focus".into(),f.at,command,
+        ExecutionProtocolTransition::default(),false,Some(tool))
+}
+#[test]
+fn original_focus_state_change_reuses_qualified_legacy_tool_bytes_without_a_new_birth() -> Result<()> {
+    use sha2::Digest;
+    use crate::runtime::{input_queries::{source_roles_for_fixture,InputQuerySpec},mutation_owner::MutationOwner,
+        input_evidence_budget::InputEvidenceBudgetLedger,resident_input_evidence::{InputEvidenceFamily as Family,InputEvidenceKey as Key}};
+    for (has_hash,current_alias) in [(true,true),(true,false),(false,false)] {
+        let (f,tool,raw)=original_legacy_completion_tool(has_hash,current_alias)?;
+        let before=f.state()?;
+        let ledger=InputEvidenceBudgetLedger::new(Default::default())?;let owner=MutationOwner::standalone(&f.scope.agent_id,1);
+        let (reservation,lease,roles)=source_roles_for_fixture(&owner,&f.scope,
+            InputQuerySpec{birth_after:Some(0),..Default::default()},&ledger,(64*1024*1024,65536))?;drop(roles);
+        let source=reservation.input_query_source(&f.scope,&ledger,(64*1024*1024,65536))?;
+        let baseline=ledger.report()?.observed_bytes;
+        let prepared=original_noop_tool_focus(&f,tool.clone())?;
+        let work=crate::runtime_db::work_snapshot::WorkDomainLoadRequest {capture:crate::runtime::resident_work::WorkCaptureRequest::current(),byte_limit:64*1024*1024,record_limit:65536};
+        let task=crate::runtime_db::task_snapshot::TaskDomainLoadRequest {capture:crate::runtime::resident_task::TaskCaptureRequest::current(),query:Default::default(),byte_limit:64*1024*1024,record_limit:65536};
+        let InputMutationExecution::Committed{value,receipt}=f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_input_query_source(&prepared,&work,&ledger,&task,&source)?
+            else {anyhow::bail!("original Focus must ACK real State change and qualified no-op Tool")};
+        assert!(value.applied);assert!(receipt.outcome.applied);assert_ne!(f.state()?,before);
+        assert_eq!(f.state()?.last_wake_reason.as_deref(),Some("original-focus-receipt"));
+        assert_eq!(f.db.work_items().latest("original-noop-work")?.unwrap().state,WorkItemState::Completed);
+        let actual=value.effects.input_evidence_delta.records.iter().find(|r|r.locator.key==Key::new(Family::ToolExecution,&tool.id))
+            .context("original no-op Tool D3 fact missing")?;
+        assert_eq!(actual.locator.content_digest,format!("{:x}",sha2::Sha256::digest(raw.as_bytes())));
+        assert_eq!(actual.tool_run_report.is_some(),has_hash,"old no-hash report must remain Incomplete");
+        let (stored,hash):(String,Option<String>)=f.db.connection()?.query_row("SELECT payload_json,content_hash FROM tool_executions WHERE evidence_id=?1",[&tool.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        assert_eq!(stored,raw);assert_eq!(serde_json::from_str::<ToolExecutionRecord>(&stored)?,tool);
+        assert_eq!(hash,has_hash.then(||crate::runtime_db::evidence::content_hash(&raw)));
+        assert_eq!(f.db.connection()?.query_row("SELECT COUNT(*) FROM input_query_birth_members WHERE family='tool_execution' AND record_id=?1 AND birth_seq>0",[&tool.id],|r|r.get::<_,usize>(0))?,0);
+        assert_eq!(f.db.connection()?.query_row("SELECT qualification FROM input_evidence_current WHERE family='tool_execution' AND record_id=?1",[&tool.id],|r|r.get::<_,String>(0))?,
+            if current_alias {"legacy_prepared"} else {"committed_writer"},
+            "a real no-op must retain the original alias provenance");
+        assert_eq!(f.db.connection()?.query_row("SELECT birth_seq FROM input_query_birth_members WHERE family='tool_execution' AND record_id=?1",[&tool.id],|r|r.get::<_,u64>(0))?,0);
+        assert_eq!(f.receipt_count()?,1);
+        let last=value.effects.input_evidence_delta.clone();drop(value);
+        assert!(ledger.report()?.observed_bytes>baseline);drop(last);assert_eq!(ledger.report()?.observed_bytes,baseline);
+        // Exact original receipt still precedes any old Tool payload lookup.
+        f.db.connection()?.execute_batch("ALTER TABLE tool_executions RENAME TO forbidden_noop_tool_body")?;
+        let InputMutationExecution::Replayed{receipt:replayed,..}=f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_input_query_source(&prepared,&work,&ledger,&task,&source)?
+            else {anyhow::bail!("original no-op Focus replay entered body path")};
+        assert_eq!(replayed,receipt);
+        f.db.connection()?.execute_batch("ALTER TABLE forbidden_noop_tool_body RENAME TO tool_executions")?;
+        drop((source,lease,reservation,owner));assert_eq!(ledger.report()?.observed_bytes,0);
+    }
+    Ok(())
+}
+#[test]
+fn original_focus_noop_tool_seal_rejects_post_business_raw_or_normalized_drift() -> Result<()> {
+    use crate::runtime::{input_queries::{source_roles_for_fixture,InputQuerySpec},mutation_owner::MutationOwner,
+        input_evidence_budget::InputEvidenceBudgetLedger};
+    for normalized in [false,true] {
+        let (f,tool,raw)=original_legacy_completion_tool(true,true)?;let before=f.state()?;
+        let ledger=InputEvidenceBudgetLedger::new(Default::default())?;let owner=MutationOwner::standalone(&f.scope.agent_id,1);
+        let (reservation,lease,roles)=source_roles_for_fixture(&owner,&f.scope,
+            InputQuerySpec{birth_after:Some(0),..Default::default()},&ledger,(64*1024*1024,65536))?;drop(roles);
+        let source=reservation.input_query_source(&f.scope,&ledger,(64*1024*1024,65536))?;
+        let baseline=ledger.report()?.observed_bytes;
+        // Brief insertion happens after the actual Focus Tool no-op branch.
+        let update=if normalized {"created_at='2026-10-13T00:00:00.999Z'"}
+            else {"payload_json=replace(payload_json,'old qualified completion','old forgedxxx completion')"};
+        assert_eq!("old qualified completion".len(),"old forgedxxx completion".len());
+        f.db.connection()?.execute_batch(&format!("CREATE TRIGGER original_noop_tool_drift AFTER INSERT ON briefs WHEN NEW.evidence_id='original-noop-result' BEGIN UPDATE tool_executions SET {update} WHERE evidence_id='original-noop-completion'; END;"))?;
+        let prepared=original_noop_tool_focus(&f,tool.clone())?;
+        let work=crate::runtime_db::work_snapshot::WorkDomainLoadRequest {capture:crate::runtime::resident_work::WorkCaptureRequest::current(),byte_limit:64*1024*1024,record_limit:65536};
+        let task=crate::runtime_db::task_snapshot::TaskDomainLoadRequest {capture:crate::runtime::resident_task::TaskCaptureRequest::current(),query:Default::default(),byte_limit:64*1024*1024,record_limit:65536};
+        let error=f.db.transitions_in_scope(&f.scope).commit_prepared_transition_with_input_query_source(&prepared,&work,&ledger,&task,&source)
+            .err().context("original no-op source drift must reject the whole Focus")?;
+        assert!(matches!(error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError>(),
+            Some(crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ProjectionChanged(id)) if id==&tool.id),"{error:#}");
+        assert_eq!(f.state()?,before);assert_eq!(f.receipt_count()?,0);
+        assert_eq!(f.db.work_items().latest("original-noop-work")?,None);
+        assert_eq!(f.db.connection()?.query_row("SELECT payload_json FROM tool_executions WHERE evidence_id=?1",[&tool.id],|r|r.get::<_,String>(0))?,raw);
+        assert_eq!(f.db.connection()?.query_row("SELECT COUNT(*) FROM briefs WHERE evidence_id='original-noop-result'",[],|r|r.get::<_,usize>(0))?,0);
+        assert_eq!(ledger.report()?.observed_bytes,baseline);
+        f.db.connection()?.execute_batch("DROP TRIGGER original_noop_tool_drift")?;
+        drop((source,lease,reservation,owner));assert_eq!(ledger.report()?.observed_bytes,0);
+    }
+    Ok(())
+}

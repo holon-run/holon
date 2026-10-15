@@ -271,6 +271,53 @@ fn write_original_wake_work_fixture(
     tx.commit().unwrap();
 }
 
+// Observe the original StubProvider's durable result, never infer progress from
+// a fixed wall-clock delay or discard an early runtime-loop error.
+async fn wait_for_restart_work_tick_completion(
+    runtime: &RuntimeHandle,
+    running: &mut tokio::task::JoinHandle<Result<()>>,
+    work_id: &str,
+    reason: Option<&str>,
+) {
+    let observed = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            bootstrap = runtime.wait_for_bootstrap() => bootstrap.expect("original work restart bootstrap failed"),
+            result = &mut *running => panic!("original work restart loop exited during bootstrap: {result:?}"),
+        }
+        loop {
+            let messages = runtime.storage().read_recent_messages(64).unwrap();
+            let tick = messages.iter().find(|message| {
+                let work = message.metadata.as_ref().and_then(|value| value.get("work_queue"));
+                message.kind == MessageKind::SystemTick
+                    && work.and_then(|value|value.get("work_item_id")).and_then(serde_json::Value::as_str)==Some(work_id)
+                    && reason.is_none_or(|reason|work.and_then(|value|value.get("reason")).and_then(serde_json::Value::as_str)==Some(reason))
+            });
+            if let Some(tick) = tick {
+                let events = runtime.storage().read_recent_events(256).unwrap();
+                let emitted = events.iter().any(|event|event.kind=="system_tick_emitted"
+                    && event.data["work_queue"]["work_item_id"].as_str()==Some(work_id));
+                let processed = runtime.runtime_db().queue_entries().latest(&tick.id).unwrap()
+                    .is_some_and(|entry|entry.status==QueueEntryStatus::Processed);
+                let completed = runtime.storage().read_recent_turns(16).unwrap().iter().any(|turn|
+                    turn.input_message_ids.contains(&tick.id)
+                    && turn.terminal.as_ref().is_some_and(|terminal|terminal.kind==TurnTerminalKind::Completed));
+                if emitted && processed && completed { return; }
+            }
+            tokio::select! {
+                result = &mut *running => panic!("original work restart loop exited before Tick completion: {result:?}; events={:?}", runtime.storage().read_recent_events(32)),
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+            }
+        }
+    }).await;
+    if observed.is_err() {
+        // Clone only these small fixture diagnostics; keep the synchronous
+        // bootstrap-result lock out of every await.
+        let bootstrap = runtime.inner.bootstrap_result.lock().unwrap().clone();
+        panic!("original work restart did not reach actual Tick/StubProvider completion; bootstrap={bootstrap:?}; loop_finished={}; state={:?}; events={:?}; turns={:?}",
+            running.is_finished(), runtime.storage().read_agent(), runtime.storage().read_recent_events(32), runtime.storage().read_recent_turns(4));
+    }
+}
+
 #[tokio::test]
 async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
     let dir = tempdir().unwrap();
@@ -284,7 +331,7 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
     agent.current_work_item_id = Some(active.id.clone());
     write_original_wake_work_fixture(dir.path(), std::slice::from_ref(&active), &agent, true);
 
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_without_user_home_for_test(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -294,8 +341,15 @@ async fn runtime_emits_work_queue_system_tick_for_active_item_on_restart() {
         context_config(),
     )
     .unwrap();
-    let runtime_task = tokio::spawn(runtime.clone().run());
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(runtime.inner.config_snapshot.load().user_home_dir.is_none());
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    wait_for_restart_work_tick_completion(
+        &runtime,
+        &mut runtime_task,
+        &active.id,
+        Some("continue_active"),
+    )
+    .await;
 
     let messages = runtime.storage().read_recent_messages(20).unwrap();
     assert!(messages.iter().any(|message| {
@@ -546,7 +600,7 @@ async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restar
         true,
     );
 
-    let runtime = RuntimeHandle::new(
+    let runtime = RuntimeHandle::new_without_user_home_for_test(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
@@ -556,8 +610,9 @@ async fn runtime_surfaces_queued_work_item_with_work_queue_system_tick_on_restar
         context_config(),
     )
     .unwrap();
-    let runtime_task = tokio::spawn(runtime.clone().run());
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(runtime.inner.config_snapshot.load().user_home_dir.is_none());
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    wait_for_restart_work_tick_completion(&runtime, &mut runtime_task, &queued_id, None).await;
 
     let active = runtime
         .latest_work_item(&queued_id)

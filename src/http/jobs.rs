@@ -154,6 +154,7 @@ async fn create_skill_install_job(
     };
     state.jobs.insert(job.clone());
 
+    let resource_host = state.host.clone();
     let jobs = state.jobs.clone();
     let skill_library_write_jobs = state.skill_library_write_jobs.clone();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
@@ -192,11 +193,36 @@ async fn create_skill_install_job(
             }
         };
         let kind = request.kind.clone();
+        let resource_write = match resource_host.begin_loaded_context_resource_write().await {
+            Ok(lease) => lease,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
+        let physical_write = resource_write.share_physical();
         let result = tokio::task::spawn_blocking(move || {
+            let _resource_write = physical_write;
             let _permit = permit;
             crate::skills::add_library_skill(&user_home, &kind)
         })
         .await;
+        drop(resource_write);
+        if let Err(error) = resource_host
+            .invalidate_loaded_context_resources(
+                crate::runtime::resource_observation::ResourceInvalidation::KnownWrite,
+            )
+            .await
+        {
+            tracing::warn!(%error,"resource invalidation after skill write failed");
+        }
+        if let Err(error) = resource_host.refresh_loaded_context_resources().await {
+            tracing::debug!(%error,"skill write resource refresh remains pending");
+        }
         match result {
             Ok(Ok(skill_name)) => jobs.update(&job_id, |job| {
                 job.status = JobStatus::Completed;
@@ -281,6 +307,7 @@ pub(super) async fn create_skill_update_job(
     };
     state.jobs.insert(job.clone());
 
+    let resource_host = state.host.clone();
     let jobs = state.jobs.clone();
     let skill_library_write_jobs = state.skill_library_write_jobs.clone();
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
@@ -308,7 +335,20 @@ pub(super) async fn create_skill_update_job(
         let progress_jobs = jobs.clone();
         let progress_job_id = job_id.clone();
         let name = request.name.clone();
+        let resource_write = match resource_host.begin_loaded_context_resource_write().await {
+            Ok(lease) => lease,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
+        let physical_write = resource_write.share_physical();
         let result = tokio::task::spawn_blocking(move || {
+            let _resource_write = physical_write;
             let _permit = permit;
             crate::skills::update_library_skills_with_progress(
                 &user_home,
@@ -339,6 +379,18 @@ pub(super) async fn create_skill_update_job(
         })
         .await;
 
+        drop(resource_write);
+        if let Err(error) = resource_host
+            .invalidate_loaded_context_resources(
+                crate::runtime::resource_observation::ResourceInvalidation::KnownWrite,
+            )
+            .await
+        {
+            tracing::warn!(%error,"resource invalidation after skill write failed");
+        }
+        if let Err(error) = resource_host.refresh_loaded_context_resources().await {
+            tracing::debug!(%error,"skill write resource refresh remains pending");
+        }
         match result {
             Ok(Ok(update_result)) => jobs.update(&job_id, |job| {
                 let (updated, unchanged, skipped, failed) =
@@ -439,6 +491,7 @@ pub(super) async fn create_template_remote_source_sync_job(
     };
     state.jobs.insert(job.clone());
 
+    let resource_host = state.host.clone();
     let jobs = state.jobs.clone();
     let sync_jobs = state.template_remote_source_sync_jobs.clone();
     let db = state.host.runtime_db().clone();
@@ -532,6 +585,17 @@ pub(super) async fn create_template_remote_source_sync_job(
             }
         };
 
+        let resource_write = match resource_host.begin_loaded_context_resource_write().await {
+            Ok(lease) => lease,
+            Err(error) => {
+                jobs.update(&job_id, |job| {
+                    job.status = JobStatus::Failed;
+                    job.phase = "failed".into();
+                    job.error = Some(error.to_string());
+                });
+                return;
+            }
+        };
         let mut completed = 0usize;
         let mut failed = 0usize;
         let mut source_results = Vec::new();
@@ -599,6 +663,18 @@ pub(super) async fn create_template_remote_source_sync_job(
             }
         }
 
+        drop(resource_write);
+        if let Err(error) = resource_host
+            .invalidate_loaded_context_resources(
+                crate::runtime::resource_observation::ResourceInvalidation::KnownWrite,
+            )
+            .await
+        {
+            tracing::warn!(%error,"resource invalidation after template sync failed");
+        }
+        if let Err(error) = resource_host.refresh_loaded_context_resources().await {
+            tracing::debug!(%error,"template source resource refresh remains pending");
+        }
         jobs.update(&job_id, |job| {
             if failed == 0 {
                 job.status = JobStatus::Completed;

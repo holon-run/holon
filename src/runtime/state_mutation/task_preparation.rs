@@ -336,12 +336,13 @@ impl RuntimeMutation {
             "Task preparation reservation/publication generation differs"
         );
         self.tasks = Some(Arc::new(tasks));
-        let facts = Arc::new(self.facts(Default::default()));
+        let facts = Arc::new(self.facts(Default::default())?);
         let reservation = &mut self.reservations[self.primary_index];
         reservation.begin(crate::ids::audit_event_id())?;
         MutationReservation::committed_all(
             std::slice::from_mut(reservation),
             vec![KnownCommit::State {
+                current_reads: facts.current_reads.clone(),
                 state: facts.state.clone(),
                 episodes: facts.episodes.clone(),
                 input_evidence: facts.input_evidence.clone(),
@@ -362,6 +363,7 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.base = self.candidate.clone();
+        self.base_work = self.work.clone();
         Ok(())
     }
 }

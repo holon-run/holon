@@ -258,3 +258,71 @@ async fn loaded_host_state_query_reconciles_original_timer_cancel_ack_before_its
     host.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn scheduling_read_prior_retains_original_read_guard_and_owned_wire_to_last_drop(
+) -> Result<()> {
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime
+        .schedule_timer(3_600_000, None, Some("real prior Timer".into()))
+        .await?;
+    drop(runtime.acquire_scheduling_records_read(100).await?);
+    let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+    let read = runtime.acquire_scheduling_records_read(100).await?;
+    let (timers, triggers, material) = read.into_parts();
+    let selected = material
+        ._selected
+        .as_ref()
+        .unwrap()
+        .selected_material_estimate()?;
+    let original_owned = material._owned.owned_material_bytes()?;
+    let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+    let prior = material.material_estimate()?;
+    assert_eq!(prior.0, selected.0 + original_owned);
+    assert!(prior.1 > selected.1);
+    assert_eq!(
+        runtime.inner.input_evidence_budget.report()?.observed_bytes,
+        before
+    );
+    let weak = Arc::downgrade(&material._owned);
+    let wire = serde_json::to_string(&timers)?;
+    assert!(!wire.is_empty());
+    assert!(weak.upgrade().is_some());
+    drop((timers, triggers, material));
+    assert!(weak.upgrade().is_none());
+    assert_eq!(
+        runtime.inner.input_evidence_budget.report()?.observed_bytes,
+        baseline
+    );
+    let scope = super::super::resident_input_evidence::InputEvidenceScope {
+        agent_id: runtime.instance_agent_id().into(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    let read_guard = runtime.inner.input_evidence_budget.register_owned_bytes(
+        &scope,
+        InputMemoryCategory::Candidate,
+        OwnedBytesEstimate {
+            payload_bytes: 4096,
+            metadata_estimate_bytes: 0,
+        },
+    )?;
+    let weak = Arc::downgrade(&read_guard);
+    let empty = SchedulingReadMaterial::proven_empty_cold(
+        &scope,
+        &runtime.inner.input_evidence_budget,
+        8192,
+        32,
+        (4096, 8),
+        vec![read_guard],
+    )?;
+    assert_eq!(empty.material_estimate()?, (6144, 12));
+    assert!(weak.upgrade().is_some());
+    drop(empty);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(
+        runtime.inner.input_evidence_budget.report()?.observed_bytes,
+        baseline
+    );
+    Ok(())
+}

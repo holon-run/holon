@@ -1,3 +1,7 @@
+#[path = "tasks/task_input_owned.rs"]
+mod task_input_owned;
+pub(in crate::runtime) use task_input_owned::OriginalTaskInputMaterial;
+pub use task_input_owned::OwnedTaskInputResult;
 #[path = "tasks/work_planning.rs"]
 mod work_planning;
 use work_planning::{WorkCommandRead, WorkCommandReadMode};
@@ -34,7 +38,8 @@ pub(super) enum ReplyReconciliation {
 
 #[path = "task_output.rs"]
 mod output;
-pub(crate) use output::TaskOutputResultRead;
+pub(in crate::runtime) use output::RunTaskOutputSelection;
+pub(crate) use output::{RunTaskOutputLifetime, TaskOutputResultRead};
 
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
@@ -334,6 +339,29 @@ pub(in crate::runtime) fn task_with_result_message(
 
 pub(super) fn restart_task_result_message_id(task_id: &str) -> String {
     format!("message:task-restart:{task_id}")
+}
+
+// Interruption observes the original Task. A Result's own synthetic Turn must
+// not promote a real creator's parent-less obligation into a rejoin fence.
+fn task_with_original_interrupted_result(
+    task: &TaskRecord,
+    result_message: &MessageEnvelope,
+) -> TaskRecord {
+    let mut terminal = task_with_result_message(
+        task,
+        TaskStatus::Interrupted,
+        task.detail.clone(),
+        result_message,
+    );
+    if unbound_task_rejoin_generation(task).is_some() {
+        terminal
+            .detail
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("validated original unbound Task detail")
+            .remove(PARENT_TURN_ID_DETAIL);
+    }
+    terminal
 }
 
 fn interrupted_task_result_message(
@@ -2076,14 +2104,15 @@ impl RuntimeHandle {
                 match recovery {
                     Ok(_) => reattached.push(task),
                     Err(error) => {
-                        self.inner.storage.append_event(&AuditEvent::legacy(
+                        self.append_owned_runtime_audit_event(AuditEvent::legacy(
                             "agent_message_wait_recovery_failed",
                             serde_json::json!({
                                 "task_id": task.id,
                                 "target_agent_id": target_agent_id,
                                 "error": error.to_string(),
                             }),
-                        ))?;
+                        ))
+                        .await?;
                         remaining.push(task);
                     }
                 }
@@ -2183,14 +2212,15 @@ impl RuntimeHandle {
             match recovery_result {
                 Ok(()) => reattached.push(task),
                 Err(error) => {
-                    self.inner.storage.append_event(&AuditEvent::legacy(
+                    self.append_owned_runtime_audit_event(AuditEvent::legacy(
                         "supervised_child_task_recovery_failed",
                         serde_json::json!({
                             "task_id": task.id,
                             "target_agent_id": target_agent_id,
                             "error": error.to_string(),
                         }),
-                    ))?;
+                    ))
+                    .await?;
                     remaining.push(task);
                 }
             }
@@ -2292,12 +2322,8 @@ impl RuntimeHandle {
             };
             let result_message =
                 interrupted_task_result_message(&interrupted_task, "runtime_restarted");
-            let interrupted_task = task_with_result_message(
-                &interrupted_task,
-                TaskStatus::Interrupted,
-                interrupted_task.detail.clone(),
-                &result_message,
-            );
+            let interrupted_task =
+                task_with_original_interrupted_result(&interrupted_task, &result_message);
             self.commit_terminal_task_result(
                 &interrupted_task,
                 "task_interrupted_on_restart",
@@ -2345,13 +2371,19 @@ impl RuntimeHandle {
                 detail_map.insert("interrupted_at".into(), to_json_value(&Utc::now()));
             }
             if task.is_worktree_child_agent_task() {
-                let _ = self
-                    .cleanup_task_owned_worktree_in_detail(
-                        &task.id,
-                        &mut detail,
-                        "agent_lifecycle_stop",
-                    )
-                    .await;
+                // Bootstrap has no original child-exit/owner capability. A
+                // cancelled parent monitor cannot authorize filesystem removal.
+                if let Some(worktree) = detail
+                    .get_mut("worktree")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    worktree.insert("cleanup_status".into(), serde_json::json!("retained"));
+                    worktree.insert(
+                        "cleanup_reason".into(),
+                        serde_json::json!("original_child_exit_unproven"),
+                    );
+                    worktree.insert("retained_for_review".into(), serde_json::json!(true));
+                }
             }
 
             let interrupted_task = TaskRecord {
@@ -2369,12 +2401,8 @@ impl RuntimeHandle {
             };
             let result_message =
                 interrupted_task_result_message(&interrupted_task, "agent_stopped");
-            let interrupted_task = task_with_result_message(
-                &interrupted_task,
-                TaskStatus::Interrupted,
-                interrupted_task.detail.clone(),
-                &result_message,
-            );
+            let interrupted_task =
+                task_with_original_interrupted_result(&interrupted_task, &result_message);
             self.commit_terminal_task_result(
                 &interrupted_task,
                 "task_interrupted_on_agent_stop",
@@ -2407,89 +2435,20 @@ impl RuntimeHandle {
         Ok(original.task)
     }
 
-    pub async fn task_input(&self, task_id: &str, input: &str) -> Result<TaskInputResult> {
-        let _admission = self.execution_admission_lease()?;
-        let task = self
-            .task_record(task_id)
-            .await?
-            .ok_or_else(|| task_not_found_error(task_id))?;
-        let snapshot = TaskStatusSnapshot::from_task_record(&task);
-        let command = snapshot.command.clone();
-        if matches!(
-            task.status,
-            TaskStatus::Cancelling
-                | TaskStatus::Completed
-                | TaskStatus::Failed
-                | TaskStatus::Cancelled
-                | TaskStatus::Interrupted
-        ) {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: command.and_then(|value| value.input_target),
-                bytes_written: None,
-                summary_text: Some("task is not currently accepting input".into()),
-            });
-        }
-        if task.kind != TaskKind::CommandTask {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: None,
-                bytes_written: None,
-                summary_text: Some("task does not support input delivery".into()),
-            });
-        }
-        self.deliver_command_task_input(&task, snapshot, command, input)
+    pub async fn task_input(&self, task_id: &str, input: &str) -> Result<OwnedTaskInputResult> {
+        self.start_original_task_input_owned(task_id, input, None)?
             .await
+            .context("original TaskInput worker ended before its reply")?
     }
-
     pub async fn task_input_with_trust(
         &self,
         task_id: &str,
         input: &str,
         authority_class: &AuthorityClass,
-    ) -> Result<TaskInputResult> {
-        let _admission = self.execution_admission_lease()?;
-        let task = self
-            .task_record(task_id)
-            .await?
-            .ok_or_else(|| task_not_found_error(task_id))?;
-        let snapshot = TaskStatusSnapshot::from_task_record(&task);
-        let command = snapshot.command.clone();
-        if matches!(
-            task.status,
-            TaskStatus::Cancelling
-                | TaskStatus::Completed
-                | TaskStatus::Failed
-                | TaskStatus::Cancelled
-                | TaskStatus::Interrupted
-        ) {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: command.clone().and_then(|value| value.input_target),
-                bytes_written: None,
-                summary_text: Some("task is not currently accepting input".into()),
-            });
-        }
-        if task.kind == TaskKind::CommandTask {
-            return self
-                .deliver_command_task_input(&task, snapshot, command, input)
-                .await;
-        }
-        if task.is_child_agent_task() {
-            return self
-                .deliver_child_task_input(&task, snapshot, input, authority_class)
-                .await;
-        }
-        Ok(TaskInputResult {
-            task: snapshot,
-            accepted_input: false,
-            input_target: None,
-            bytes_written: None,
-            summary_text: Some("task does not support input delivery".into()),
-        })
+    ) -> Result<OwnedTaskInputResult> {
+        self.start_original_task_input_owned(task_id, input, Some(*authority_class))?
+            .await
+            .context("original TaskInput worker ended before its reply")?
     }
 
     async fn deliver_command_task_input(
@@ -2498,42 +2457,78 @@ impl RuntimeHandle {
         snapshot: TaskStatusSnapshot,
         command: Option<CommandTaskStatusSnapshot>,
         input: &str,
-    ) -> Result<TaskInputResult> {
+        material: &mut OriginalTaskInputMaterial,
+    ) -> Result<(TaskInputResult, Option<AuditEvent>)> {
         if command.as_ref().and_then(|value| value.accepts_input) != Some(true) {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: None,
-                bytes_written: None,
-                summary_text: Some("task is not currently accepting input".into()),
-            });
+            return Ok((
+                TaskInputResult {
+                    task: snapshot,
+                    accepted_input: false,
+                    input_target: None,
+                    bytes_written: None,
+                    summary_text: Some("task is not currently accepting input".into()),
+                },
+                None,
+            ));
         }
 
         let input_tx = {
             let handles = self.inner.task_handles.lock().await;
             match handles.get(&task.id) {
-                Some(command_task::ManagedTaskHandle::Command(handle)) => handle.input_tx.clone(),
+                Some(command_task::ManagedTaskHandle::Command(handle)) => {
+                    if !handle
+                        .control_lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.matches_task_generation(task))
+                    {
+                        return Ok((
+                            TaskInputResult {
+                                task: snapshot,
+                                accepted_input: false,
+                                input_target: command.and_then(|value| value.input_target),
+                                bytes_written: None,
+                                summary_text: Some("task is not currently accepting input".into()),
+                            },
+                            None,
+                        ));
+                    }
+                    // The exact original channel and lease are inspected under
+                    // the same handle lock. This grants no Stop or exit right.
+                    handle.input_tx.clone()
+                }
                 Some(command_task::ManagedTaskHandle::Async(_)) => {
-                    return Ok(TaskInputResult {
-                        task: snapshot,
-                        accepted_input: false,
-                        input_target: None,
-                        bytes_written: None,
-                        summary_text: Some("task does not support input delivery".into()),
-                    });
+                    return Ok((
+                        TaskInputResult {
+                            task: snapshot,
+                            accepted_input: false,
+                            input_target: None,
+                            bytes_written: None,
+                            summary_text: Some("task does not support input delivery".into()),
+                        },
+                        None,
+                    ));
                 }
                 None => {
-                    return Ok(TaskInputResult {
-                        task: snapshot,
-                        accepted_input: false,
-                        input_target: command.and_then(|value| value.input_target),
-                        bytes_written: None,
-                        summary_text: Some("task is not currently accepting input".into()),
-                    });
+                    return Ok((
+                        TaskInputResult {
+                            task: snapshot,
+                            accepted_input: false,
+                            input_target: command.and_then(|value| value.input_target),
+                            bytes_written: None,
+                            summary_text: Some("task is not currently accepting input".into()),
+                        },
+                        None,
+                    ));
                 }
             }
         };
 
+        let input_target = command
+            .as_ref()
+            .and_then(|value| value.input_target.as_deref())
+            .unwrap_or("stdin");
+        material.reserve_original_event(task, input_target, None)?;
+        let input_target = input_target.to_owned();
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         input_tx
             .send(command_task::CommandTaskInputRequest {
@@ -2568,27 +2563,18 @@ impl RuntimeHandle {
                 .with_safe_context("task_id", &task.id)
             })?;
 
-        let input_target = command
-            .as_ref()
-            .and_then(|value| value.input_target.clone())
-            .unwrap_or_else(|| "stdin".into());
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "task_input_delivered",
-            serde_json::json!({
-                "task_id": task.id,
-                "task_kind": task.kind,
-                "bytes_written": bytes_written,
-                "input_target": input_target,
-            }),
-        ))?;
+        let event = material.original_event(task, bytes_written, &input_target, None)?;
 
-        Ok(TaskInputResult {
-            task: snapshot,
-            accepted_input: true,
-            input_target: Some(input_target),
-            bytes_written: Some(bytes_written),
-            summary_text: Some(format!("delivered input to task {}", task.id)),
-        })
+        Ok((
+            TaskInputResult {
+                task: snapshot,
+                accepted_input: true,
+                input_target: Some(input_target),
+                bytes_written: Some(bytes_written),
+                summary_text: Some(format!("delivered input to task {}", task.id)),
+            },
+            Some(event),
+        ))
     }
 
     async fn deliver_child_task_input(
@@ -2597,69 +2583,82 @@ impl RuntimeHandle {
         snapshot: TaskStatusSnapshot,
         input: &str,
         authority_class: &AuthorityClass,
-    ) -> Result<TaskInputResult> {
+        material: &mut OriginalTaskInputMaterial,
+    ) -> Result<(TaskInputResult, Option<AuditEvent>)> {
         let Some(child_agent_id) = detail_string(&task.detail, "child_agent_id") else {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: None,
-                bytes_written: None,
-                summary_text: Some("task does not support input delivery".into()),
-            });
+            return Ok((
+                TaskInputResult {
+                    task: snapshot,
+                    accepted_input: false,
+                    input_target: None,
+                    bytes_written: None,
+                    summary_text: Some("task does not support input delivery".into()),
+                },
+                None,
+            ));
         };
         let Some(bridge) = self.inner.host_bridge.as_ref() else {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: None,
-                bytes_written: None,
-                summary_text: Some("task is not currently accepting input".into()),
-            });
+            return Ok((
+                TaskInputResult {
+                    task: snapshot,
+                    accepted_input: false,
+                    input_target: None,
+                    bytes_written: None,
+                    summary_text: Some("task is not currently accepting input".into()),
+                },
+                None,
+            ));
         };
 
-        let parent_agent_id = self.agent_id().await?;
+        let Some(binding) = self
+            .capture_original_task_input_child_binding(task, material, &child_agent_id)
+            .await?
+        else {
+            return Ok((
+                TaskInputResult {
+                    task: snapshot,
+                    accepted_input: false,
+                    input_target: None,
+                    bytes_written: None,
+                    summary_text: Some("task is not currently accepting input".into()),
+                },
+                None,
+            ));
+        };
         let delivered = bridge
-            .deliver_child_followup(
-                &parent_agent_id,
-                &task.id,
-                &child_agent_id,
-                input,
-                authority_class.clone(),
-            )
+            .deliver_original_task_input_followup(binding, input, *authority_class)
             .await?;
         if !delivered {
-            return Ok(TaskInputResult {
-                task: snapshot,
-                accepted_input: false,
-                input_target: None,
-                bytes_written: None,
-                summary_text: Some("task is not currently accepting input".into()),
-            });
+            return Ok((
+                TaskInputResult {
+                    task: snapshot,
+                    accepted_input: false,
+                    input_target: None,
+                    bytes_written: None,
+                    summary_text: Some("task is not currently accepting input".into()),
+                },
+                None,
+            ));
         }
 
         let bytes_written = input.len() as u64;
         let input_target = "child_followup";
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "task_input_delivered",
-            serde_json::json!({
-                "task_id": task.id,
-                "task_kind": task.kind,
-                "child_agent_id": child_agent_id,
-                "bytes_written": bytes_written,
-                "input_target": input_target,
-            }),
-        ))?;
+        let event =
+            material.original_event(task, bytes_written, input_target, Some(&child_agent_id))?;
 
-        Ok(TaskInputResult {
-            task: snapshot,
-            accepted_input: true,
-            input_target: Some(input_target.into()),
-            bytes_written: Some(bytes_written),
-            summary_text: Some(format!(
-                "delivered parent follow-up to child {} via supervision task {}",
-                child_agent_id, task.id
-            )),
-        })
+        Ok((
+            TaskInputResult {
+                task: snapshot,
+                accepted_input: true,
+                input_target: Some(input_target.into()),
+                bytes_written: Some(bytes_written),
+                summary_text: Some(format!(
+                    "delivered parent follow-up to child {} via supervision task {}",
+                    child_agent_id, task.id
+                )),
+            },
+            Some(event),
+        ))
     }
 
     pub async fn create_work_item(
@@ -2669,17 +2668,43 @@ impl RuntimeHandle {
         plan: Option<String>,
         todo_list: Vec<TodoItem>,
     ) -> Result<WorkItemRecord> {
+        Ok(self
+            .create_work_item_inner(objective, plan_status, plan, todo_list, false)
+            .await?
+            .0)
+    }
+    pub(crate) async fn create_work_item_owned_result(
+        &self,
+        objective: String,
+        plan_status: Option<WorkItemPlanStatus>,
+        plan: Option<String>,
+        todo_list: Vec<TodoItem>,
+    ) -> Result<crate::runtime::OwnedCreatedWorkItemRead> {
+        let (_, owned) = self
+            .create_work_item_inner(objective, plan_status, plan, todo_list, true)
+            .await?;
+        owned.context("created Work result material absent")
+    }
+    async fn create_work_item_inner(
+        &self,
+        objective: String,
+        plan_status: Option<WorkItemPlanStatus>,
+        plan: Option<String>,
+        todo_list: Vec<TodoItem>,
+        owned_result: bool,
+    ) -> Result<(
+        WorkItemRecord,
+        Option<crate::runtime::OwnedCreatedWorkItemRead>,
+    )> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let mut record = WorkItemRecord::new(agent_id.clone(), objective, WorkItemState::Open);
         if let Some(plan_status) = plan_status {
             record.plan_status = plan_status;
         }
-        record.plan_artifact = Some(crate::work_item_plan::ensure_plan_artifact(
-            self.agent_home().as_path(),
-            &record,
-            plan.as_deref(),
-        )?);
+        let (plan_artifact, plan_file_material, file_cost) =
+            self.create_work_plan_file_with_material(&record, plan.as_deref())?;
+        record.plan_artifact = Some(plan_artifact);
         record.todo_list = todo_list;
         record.workspace_id = self
             .agent_state()
@@ -2687,9 +2712,30 @@ impl RuntimeHandle {
             .active_workspace_entry
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
-        let execution_protocol = self.plan_work_item_execution_create(&record)?;
+        // Admit owned result copies before any business SQL. The public DTO
+        // API keeps its original behavior and does not acquire this view.
+        let result_material = owned_result
+            .then(|| {
+                self.prepare_created_work_item_result_material(
+                    &record,
+                    plan_file_material.clone(),
+                    file_cost,
+                )
+            })
+            .transpose()?
+            .map(Arc::new);
+        let mut mutation = self.begin_mutation().await?;
+        mutation.retain_work_resource_material(match &result_material {
+            Some(material) => super::WorkResourceMaterialLoan::result(material.clone()),
+            None => {
+                super::WorkResourceMaterialLoan::created_file(plan_file_material.clone(), file_cost)
+            }
+        })?;
+        let execution_read = mutation
+            .execution_command_source()?
+            .capture(None, &[&record.id])?;
+        let execution_protocol = self.plan_work_item_execution_create(&record, &execution_read)?;
         let commit = {
-            let mut mutation = self.begin_mutation().await?;
             mutation
                 .commit_work_transition(
                     crate::ids::audit_event_id(),
@@ -2714,28 +2760,38 @@ impl RuntimeHandle {
                 )
                 .await
         }?;
+        let owned =
+            if let Some(material) = result_material {
+                Some(self.confirm_created_work_item_result(
+                    &mutation,
+                    &record,
+                    Arc::try_unwrap(material).map_err(|_| {
+                        anyhow!("original Work SQL loan survived its completed ACK")
+                    })?,
+                )?)
+            } else {
+                None
+            };
+        drop(mutation);
         self.apply_transition_commit(commit).await;
-        Ok(record)
+        drop(execution_read);
+        Ok((record, owned))
     }
 
     fn plan_work_item_execution_create(
         &self,
         record: &WorkItemRecord,
+        execution: &super::resident_input_evidence::ExecutionCommandRead,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
             ExecutionProtocolCommand, ExecutionProtocolState, RegisterWorkItemExecution,
             WorkItemExecutionRecord, WorkItemExecutionState,
         };
 
-        let existing = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
+        execution.validate_scope(&record.agent_id)?;
         Ok(
             crate::runtime_db::transitions::ExecutionProtocolTransition {
-                bootstrap: existing
-                    .is_none()
+                bootstrap: (!execution.is_initialized())
                     .then(|| ExecutionProtocolState::empty(&record.agent_id)),
                 commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
                     RegisterWorkItemExecution {
@@ -2753,10 +2809,20 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
+    pub(in crate::runtime) fn plan_work_item_execution_create_for_test(
+        &self,
+        record: &WorkItemRecord,
+        execution: &super::resident_input_evidence::ExecutionCommandRead,
+    ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
+        self.plan_work_item_execution_create(record, execution)
+    }
+
     fn plan_work_item_execution_update(
         &self,
         record: &WorkItemRecord,
         readiness_mutation: Option<WorkItemReadinessMutation>,
+        execution: &super::resident_input_evidence::ExecutionCommandRead,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
             AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
@@ -2764,14 +2830,8 @@ impl RuntimeHandle {
             WorkItemExecutionState,
         };
 
-        let existing = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
-        let authoritative = existing
-            .as_ref()
-            .and_then(|state| state.work_items.get(&record.id));
+        execution.validate_scope(&record.agent_id)?;
+        let authoritative = execution.work_execution(&record.id)?;
         let Some(authoritative) = authoritative else {
             let state = match readiness_mutation {
                 Some(WorkItemReadinessMutation::Pause(reason)) => WorkItemExecutionState::Paused {
@@ -2785,8 +2845,7 @@ impl RuntimeHandle {
             };
             return Ok(
                 crate::runtime_db::transitions::ExecutionProtocolTransition {
-                    bootstrap: existing
-                        .is_none()
+                    bootstrap: (!execution.is_initialized())
                         .then(|| ExecutionProtocolState::empty(&record.agent_id)),
                     commands: vec![ExecutionProtocolCommand::RegisterWorkItem(Box::new(
                         RegisterWorkItemExecution {
@@ -3093,7 +3152,8 @@ impl RuntimeHandle {
     ) -> Result<PickedWorkItem> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
-        let mut record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let (mut record, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if record.state != WorkItemState::Open {
             return Err(RuntimeError::validation(
                 "work_item_not_open",
@@ -3127,6 +3187,9 @@ impl RuntimeHandle {
                 &agent_id,
                 record,
                 &read.work,
+                &read.state,
+                &read.resource_stamp,
+                read.material_estimate()?,
                 normalized_reason
                     .as_deref()
                     .expect("clear_blocker reason validated"),
@@ -3143,6 +3206,7 @@ impl RuntimeHandle {
             index_changes,
             blocker_cleared,
             cancelled_wait_condition_ids,
+            _resource_plan,
         } = blocker_clearance;
         record = work_item;
         let switching = current_id.as_deref().is_some_and(|id| id != record.id);
@@ -3435,6 +3499,11 @@ impl RuntimeHandle {
         }
         let commit = {
             let mut mutation = self.begin_mutation().await?;
+            if let Some(read) = &_resource_plan {
+                mutation.retain_work_resource_material(super::WorkResourceMaterialLoan::plan(
+                    read.clone(),
+                ))?;
+            }
             mutation
                 .commit_focus_transition(
                     crate::ids::audit_event_id(),
@@ -3513,9 +3582,59 @@ impl RuntimeHandle {
         blocked_by: Option<Option<String>>,
         recheck_after_ms: Option<u64>,
     ) -> Result<WorkItemRecord> {
+        Ok(self
+            .update_work_item_fields_with_recheck_inner(
+                work_item_id,
+                objective,
+                plan_status,
+                _plan,
+                todo_list,
+                blocked_by,
+                recheck_after_ms,
+                false,
+            )
+            .await?
+            .0)
+    }
+    pub(crate) async fn update_work_item_owned_result(
+        &self,
+        id: String,
+        objective: Option<String>,
+        plan_status: Option<WorkItemPlanStatus>,
+        todo_list: Option<Vec<TodoItem>>,
+    ) -> Result<crate::runtime::OwnedWorkItemMutationRead> {
+        let (_, read) = self
+            .update_work_item_fields_with_recheck_inner(
+                id,
+                objective,
+                plan_status,
+                None,
+                todo_list,
+                None,
+                None,
+                true,
+            )
+            .await?;
+        read.context("updated Work result material absent")
+    }
+    async fn update_work_item_fields_with_recheck_inner(
+        &self,
+        work_item_id: String,
+        objective: Option<String>,
+        plan_status: Option<WorkItemPlanStatus>,
+        _plan: Option<Option<String>>,
+        todo_list: Option<Vec<TodoItem>>,
+        blocked_by: Option<Option<String>>,
+        recheck_after_ms: Option<u64>,
+        owned_result: bool,
+    ) -> Result<(
+        WorkItemRecord,
+        Option<crate::runtime::OwnedWorkItemMutationRead>,
+    )> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state != WorkItemState::Open {
             return Err(RuntimeError::validation(
                 "work_item_not_open",
@@ -3547,10 +3666,7 @@ impl RuntimeHandle {
             record.updated_at = Utc::now();
             wrote_item = true;
         }
-        let readiness_mutation = blocked_by.as_ref().map(|blocked_by| match blocked_by {
-            Some(reason) => WorkItemReadinessMutation::Pause(reason.clone()),
-            None => WorkItemReadinessMutation::Resume,
-        });
+        let changes_readiness = blocked_by.is_some();
         if let Some(blocked_by) = blocked_by {
             let now = self.now();
             record.blocked_by = blocked_by;
@@ -3573,12 +3689,24 @@ impl RuntimeHandle {
             record.updated_at = now;
             wrote_item = true;
         }
+        let mut owned = None;
         if wrote_item {
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut record,
-            )?;
+            let plan_read = self
+                .prepare_observed_work_plan(&record.id, existing.revision)
+                .await?;
+            let plan_artifact_changed = plan_read.apply(&mut record)?;
             record.revision = existing.revision + 1;
+            let result_material = owned_result
+                .then(|| {
+                    self.prepare_observed_work_item_result_material(
+                        &record,
+                        plan_read.clone(),
+                        true,
+                    )
+                })
+                .transpose()?
+                .map(Arc::new);
+
             let mut audit_events = Vec::new();
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
                 if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
@@ -3627,10 +3755,24 @@ impl RuntimeHandle {
                     });
                 }
             }
+            let mut mutation = self.begin_mutation().await?;
+            mutation.retain_work_resource_material(match &result_material {
+                Some(material) => super::WorkResourceMaterialLoan::result(material.clone()),
+                None => super::WorkResourceMaterialLoan::plan(plan_read.clone()),
+            })?;
+            mutation.prepare_execution_work_command(&record.id).await?;
+            let execution_read = mutation.execution_command_source()?.capture(
+                Some(&record.id),
+                &[&record.id, record.blocked_by.as_deref().unwrap_or("")],
+            )?;
+            // The new readiness command owns its reason only after admission.
+            let readiness_mutation = changes_readiness.then(|| match &record.blocked_by {
+                Some(reason) => WorkItemReadinessMutation::Pause(reason.clone()),
+                None => WorkItemReadinessMutation::Resume,
+            });
             let execution_protocol =
-                self.plan_work_item_execution_update(&record, readiness_mutation)?;
+                self.plan_work_item_execution_update(&record, readiness_mutation, &execution_read)?;
             let commit = {
-                let mut mutation = self.begin_mutation().await?;
                 mutation
                     .commit_work_transition(
                         crate::ids::audit_event_id(),
@@ -3655,7 +3797,18 @@ impl RuntimeHandle {
                     )
                     .await
             }?;
+            if let Some(material) = result_material {
+                owned = Some(self.confirm_work_item_mutation_result(
+                    &mutation,
+                    &record,
+                    Arc::try_unwrap(material).map_err(|_| {
+                        anyhow!("original Work SQL loan survived its completed ACK")
+                    })?,
+                )?);
+            }
+            drop(mutation);
             self.apply_transition_commit(commit).await;
+            drop(execution_read);
             if clear_blocker {
                 let wake_at = self.now();
                 self.apply_task_result_operation((&record.id, wake_at), || {
@@ -3668,7 +3821,13 @@ impl RuntimeHandle {
                 .count()?;
             }
         }
-        Ok(record)
+        if owned_result && owned.is_none() {
+            let read = self.capture_observed_work_plan(&record.id, record.revision)?;
+            let material = self.prepare_observed_work_item_result_material(&record, read, false)?;
+            let mutation = self.begin_mutation().await?;
+            owned = Some(self.confirm_work_item_mutation_result(&mutation, &record, material)?);
+        }
+        Ok((record, owned))
     }
 
     pub async fn consume_work_item_recheck(
@@ -3676,10 +3835,11 @@ impl RuntimeHandle {
         work_item_id: &str,
     ) -> Result<Option<WorkItemRecord>> {
         let agent_id = self.agent_id().await?;
-        let existing = match self.validate_owned_work_item(&agent_id, work_item_id) {
-            Ok(record) => record,
-            Err(_) => return Ok(None),
-        };
+        let (existing, _work_source_material) =
+            match self.validate_owned_work_item(&agent_id, work_item_id) {
+                Ok(record) => record,
+                Err(_) => return Ok(None),
+            };
         if existing.state != WorkItemState::Open || existing.blocked_by.is_none() {
             return Ok(None);
         }
@@ -3700,10 +3860,16 @@ impl RuntimeHandle {
             updated_at: consumed_at,
             ..existing
         };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
+        let plan_read = self
+            .prepare_observed_work_plan(
+                &record.id,
+                record
+                    .revision
+                    .checked_sub(1)
+                    .context("Work plan base revision missing")?,
+            )
+            .await?;
+        let plan_artifact_changed = plan_read.apply(&mut record)?;
         let mut audit_events = Vec::new();
         if plan_artifact_changed {
             if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
@@ -3721,6 +3887,9 @@ impl RuntimeHandle {
         ));
         let commit = {
             let mut mutation = self.begin_mutation().await?;
+            mutation.retain_work_resource_material(super::WorkResourceMaterialLoan::plan(
+                plan_read.clone(),
+            ))?;
             mutation
                 .commit_work_transition(
                     crate::ids::audit_event_id(),
@@ -3763,7 +3932,8 @@ impl RuntimeHandle {
         warnings: Vec<serde_json::Value>,
     ) -> Result<CompletedWorkItem> {
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state != WorkItemState::Open {
             return Ok(CompletedWorkItem {
                 work_item: existing,
@@ -3812,10 +3982,22 @@ impl RuntimeHandle {
             updated_at: now,
             ..existing
         };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
+        let plan_read = self
+            .prepare_observed_work_plan_with_prior(
+                &record.id,
+                record
+                    .revision
+                    .checked_sub(1)
+                    .context("Work plan base revision missing")?,
+                Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(
+                    &read.state,
+                    &read.work,
+                    &read.resource_stamp,
+                    read.material_estimate()?,
+                )),
+            )
+            .await?;
+        let plan_artifact_changed = plan_read.apply(&mut record)?;
         let mut audit_events = Vec::new();
         if plan_artifact_changed {
             if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
@@ -3880,6 +4062,9 @@ impl RuntimeHandle {
         ));
         let commit = {
             let mut mutation = self.begin_mutation().await?;
+            mutation.retain_work_resource_material(super::WorkResourceMaterialLoan::plan(
+                plan_read.clone(),
+            ))?;
             mutation
                 .commit_focus_transition(
                     crate::ids::audit_event_id(),
@@ -3954,7 +4139,8 @@ impl RuntimeHandle {
         warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemCompletionReportPromotionOutcome> {
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Completed {
             return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
                 existing,
@@ -4023,7 +4209,8 @@ impl RuntimeHandle {
             )
             .await?
         else {
-            let latest = self.validate_owned_work_item(&self.agent_id().await?, &work_item_id)?;
+            let (latest, _work_source_material) =
+                self.validate_owned_work_item(&self.agent_id().await?, &work_item_id)?;
             return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(latest));
         };
         Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
@@ -4085,7 +4272,8 @@ impl RuntimeHandle {
         warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemCompletionDispatch> {
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Completed {
             return Ok(WorkItemCompletionDispatch::Unchanged(existing));
         }
@@ -4154,9 +4342,9 @@ impl RuntimeHandle {
             )
             .await?
         else {
-            return Ok(WorkItemCompletionDispatch::Unchanged(
-                self.validate_owned_work_item(&agent_id, &work_item_id)?,
-            ));
+            let (record, _work_source_material) =
+                self.validate_owned_work_item(&agent_id, &work_item_id)?;
+            return Ok(WorkItemCompletionDispatch::Unchanged(record));
         };
         Ok(WorkItemCompletionDispatch::Prepared(prepared))
     }
@@ -4167,7 +4355,8 @@ impl RuntimeHandle {
         authority: &WorkItemCompletionAuthority,
     ) -> Result<(u64, WorkItemCompletionSettlement)> {
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, work_item_id)?;
         if existing.state != WorkItemState::Open {
             return Err(RuntimeError::new(
                 RuntimeErrorDomain::Conflict,
@@ -4356,7 +4545,8 @@ impl RuntimeHandle {
         warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemCompletionReportPromotionOutcome> {
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Open {
             return Err(anyhow!(
                 "cannot promote completion report for open work item {}",
@@ -4415,7 +4605,8 @@ impl RuntimeHandle {
             )
             .await?
         else {
-            let latest = self.validate_owned_work_item(&self.agent_id().await?, &work_item_id)?;
+            let (latest, _work_source_material) =
+                self.validate_owned_work_item(&self.agent_id().await?, &work_item_id)?;
             return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(latest));
         };
         Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
@@ -4497,6 +4688,15 @@ impl RuntimeHandle {
                 };
             let commit = {
                 let mut mutation = self.begin_mutation().await?;
+                if let Some(material) = &prepared._result_view_material {
+                    mutation.retain_work_resource_material(
+                        super::WorkResourceMaterialLoan::result(material.clone()),
+                    )?;
+                } else if let Some(read) = &prepared._resource_plan {
+                    mutation.retain_work_resource_material(
+                        super::WorkResourceMaterialLoan::plan(read.clone()),
+                    )?;
+                }
                 mutation
                     .commit_focus_transition(
                         crate::ids::audit_event_id(),
@@ -4562,6 +4762,14 @@ impl RuntimeHandle {
         let execution_protocol =
             execution_protocol_detached_completion_transition_from_prepared(&prepared)?;
         let tool_execution = prepared.tool_execution.clone();
+        let resource_material = if let Some(material) = &prepared._result_view_material {
+            Some(super::WorkResourceMaterialLoan::result(material.clone()))
+        } else {
+            prepared
+                ._resource_plan
+                .as_ref()
+                .map(|read| super::WorkResourceMaterialLoan::plan(read.clone()))
+        };
         let command = crate::runtime_db::transitions::WorkItemFocusTransitionCommand {
             agent_id: record.agent_id.clone(),
             work_items: vec![crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -4582,32 +4790,20 @@ impl RuntimeHandle {
             notify_scheduler: true,
             fault: self.take_transition_fault(),
         };
-        let commit = if let Some(tool_execution) = tool_execution.as_ref() {
-            {
-                let mut mutation = self.begin_mutation().await?;
-                mutation
-                    .commit_focus_transition(
-                        crate::ids::audit_event_id(),
-                        command,
-                        execution_protocol,
-                        true,
-                        Some(tool_execution.clone()),
-                    )
-                    .await
-            }?
-        } else {
-            {
-                let mut mutation = self.begin_mutation().await?;
-                mutation
-                    .commit_focus_transition(
-                        crate::ids::audit_event_id(),
-                        command,
-                        execution_protocol,
-                        true,
-                        None,
-                    )
-                    .await
-            }?
+        let commit = {
+            let mut mutation = self.begin_mutation().await?;
+            if let Some(loan) = resource_material {
+                mutation.retain_work_resource_material(loan)?;
+            }
+            mutation
+                .commit_focus_transition(
+                    crate::ids::audit_event_id(),
+                    command,
+                    execution_protocol,
+                    true,
+                    tool_execution,
+                )
+                .await?
         };
         self.apply_transition_commit(commit).await;
         Ok(CompletedWorkItem {
@@ -4650,7 +4846,8 @@ impl RuntimeHandle {
         require_completion_commit_attempt: bool,
     ) -> Result<Option<PreparedWorkItemCompletion>> {
         let agent_id = self.agent_id().await?;
-        let existing = self.validate_owned_work_item(&agent_id, work_item_id)?;
+        let (existing, _work_source_material) =
+            self.validate_owned_work_item(&agent_id, work_item_id)?;
         if existing.state == WorkItemState::Completed {
             return Ok(None);
         }
@@ -4903,10 +5100,22 @@ impl RuntimeHandle {
             updated_at: now,
             ..existing
         };
-        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-            self.agent_home().as_path(),
-            &mut record,
-        )?;
+        let plan_read = self
+            .prepare_observed_work_plan_with_prior(
+                &record.id,
+                record
+                    .revision
+                    .checked_sub(1)
+                    .context("Work plan base revision missing")?,
+                Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(
+                    &read.state,
+                    &read.work,
+                    &read.resource_stamp,
+                    read.material_estimate()?,
+                )),
+            )
+            .await?;
+        let plan_artifact_changed = plan_read.apply(&mut record)?;
 
         let active_waits = read
             .active_waits_for(&record.id)?
@@ -5079,7 +5288,10 @@ impl RuntimeHandle {
             index_changes,
             tool_execution: None,
             transcript_entries: Vec::new(),
+            _work_source_material: Some(_work_source_material),
             _work_read_budget: Some(read.owned.clone()),
+            _resource_plan: Some(plan_read),
+            _result_view_material: None,
         }))
     }
 
@@ -5091,48 +5303,43 @@ impl RuntimeHandle {
         source_turn_index: Option<u64>,
         source_round: Option<usize>,
     ) -> Result<()> {
-        let agent_id = self.agent_id().await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "work_item_completion_warning",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "work_item_id": work_item_id,
-                "kind": kind,
-                "message": message,
-                "source_turn_index": source_turn_index,
-                "source_round": source_round,
-            }),
-        ))?;
-        Ok(())
+        let admission = self.execution_admission_lease()?;
+        let audit = self.prepare_original_work_completion_warning(
+            &work_item_id,
+            kind,
+            message,
+            source_turn_index,
+            source_round,
+        )?;
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime.finish_owned_runtime_observation_audit(audit).await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("Work warning worker ended before its original ACK")?
     }
 
-    pub(super) fn validate_owned_work_item(
+    pub(in crate::runtime) async fn record_owned_work_item_completion_warning(
         &self,
-        agent_id: &str,
-        work_item_id: &str,
-    ) -> Result<WorkItemRecord> {
-        let record = self
-            .inner
-            .runtime_db
-            .work_items()
-            .latest(work_item_id)?
-            .ok_or_else(|| {
-                RuntimeError::not_found(
-                    "work_item_not_found",
-                    format!("unknown work item {work_item_id}"),
-                )
-                .with_safe_context("work_item_id", work_item_id)
-            })?;
-        if record.agent_id != agent_id {
-            return Err(RuntimeError::policy(
-                "work_item_access_denied",
-                format!("work item {work_item_id} belongs to another agent"),
-            )
-            .with_safe_context("work_item_id", work_item_id)
-            .with_safe_context("agent_id", agent_id)
-            .into());
-        }
-        Ok(record)
+        work_item_id: String,
+        kind: &str,
+        message: &str,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+    ) -> Result<()> {
+        // The original turn worker already owns this continuation.
+        let audit = self.prepare_original_work_completion_warning(
+            &work_item_id,
+            kind,
+            message,
+            source_turn_index,
+            source_round,
+        )?;
+        self.finish_owned_runtime_observation_audit(audit).await
     }
 }
 
@@ -5583,3 +5790,11 @@ mod control_task_result_tests {
         assert_eq!(result.task.rejoin_fence().unwrap().generation, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "execution_work_command_tests.rs"]
+mod execution_command_tests;
+
+#[cfg(test)]
+#[path = "bootstrap_worktree_exit_tests.rs"]
+mod bootstrap_worktree_exit_tests;

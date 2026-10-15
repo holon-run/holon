@@ -110,6 +110,7 @@ pub(super) fn commit_result_tx(
     work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
     request: &tasks::TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
+    input_source: Option<&std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>>,
 ) -> Result<InputMutationExecution<TransitionCommit>> {
     let scope = command.scope();
     anyhow::ensure!(
@@ -374,59 +375,47 @@ pub(super) fn commit_result_tx(
             created_at: command.plan.message.created_at,
             updated_at: command.plan.message.created_at,
         };
-        let previous: Option<(String, String)> = tx
+        let previous: Option<(bool, bool)> = tx
             .query_row(
-                "SELECT agent_id,status FROM queue_entries WHERE message_id=?1",
-                [&queue.message_id],
+                "SELECT agent_id=?2,status IN('queued','interrupted') FROM queue_entries WHERE message_id=?1",
+                params![queue.message_id,scope.agent_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
         anyhow::ensure!(
             previous
                 .as_ref()
-                .is_none_or(|(owner, status)| owner == &scope.agent_id
-                    && matches!(status.as_str(), "queued" | "interrupted")),
+                .is_none_or(|(same_owner, pending)| *same_owner && *pending),
             "Stop Result cannot requeue a foreign, claimed or terminal input"
         );
-        let (predicted, projection_guard) = predicted_trigger_wait_tx(
-            tx,
-            scope,
-            &command.plan.message,
-            &queue,
-            work_request,
-            ledger,
-            memory_budget.as_mut(),
-        )?;
-        guards.extend(projection_guard);
-        let waits: Vec<_> = predicted.into_iter().collect();
-        let mut work_keys = crate::runtime_db::work_snapshot::work_wait_write_keys_tx(tx, &waits)?;
-        if let Some(work) = &command.plan.message.work_item_id {
-            work_keys.insert(WorkKey::new(WorkFamily::Work, work));
-        }
+        // Validate the original Current Task observation before borrowing
+        // Memory for the single Work prediction/proof material below.
         if mode == stops::TaskStopPhaseInstallMode::Current {
             tasks::preflight_task_write_snapshot_with_memory_budget_tx(
-                tx,
-                &original_task_proof,
-                request,
-                ledger,
-                memory_budget.as_mut(),
-            )?
-            .require_current()?;
+                tx, &original_task_proof, request, ledger, memory_budget.as_mut(),
+            )?.require_current()?;
         }
-        let work_proof = crate::runtime_db::work_snapshot::prepare_original_work_write_tx(
-            tx, scope, &work_keys,
+        let mut work_material = crate::runtime_db::work_snapshot::WorkWriteMaterial::new(
+            scope, work_request, ledger, memory_budget.as_mut(),
         )?;
-        let preflight_request = memory_budget
-            .as_ref()
-            .map(|budget| budget.work_request(work_request))
-            .transpose()?
+        let predicted = predicted_trigger_wait_with_material_tx(
+            tx, scope, &command.plan.message, &queue, &mut work_material,
+        )?;
+        if let Some(wait) = &predicted { work_material.admit_wait(wait)?; }
+        work_material.wait_slots(usize::from(predicted.is_some()))?;
+        let waits: Vec<_> = predicted.into_iter().collect();
+        let mut work_keys = BTreeSet::new();
+        work_material.wait_keys_tx(tx, waits.iter(), &mut work_keys)?;
+        if let Some(work) = &command.plan.message.work_item_id {
+            work_keys.insert(work_material.key(WorkFamily::Work, work)?);
+        }
+        let work_proof = work_material.prepare_tx(tx, scope, &work_keys, true)?;
+        let preflight_request = memory_budget.as_ref()
+            .map(|budget| budget.work_request(work_request)).transpose()?
             .unwrap_or_else(|| work_request.clone());
-        crate::runtime_db::work_snapshot::preflight_work_write_snapshot_tx(
-            tx,
-            &work_proof,
-            &preflight_request,
-        )?
-        .require_current()?;
+        crate::runtime_db::work_snapshot::preflight_work_write_snapshot_with_shared_phase_tx(
+            tx, &work_proof, &preflight_request, memory_budget.as_mut(),
+        )?;
         let detached = match &prepared.memory {
             Some(crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Deferred {
                 binding,
@@ -464,6 +453,22 @@ pub(super) fn commit_result_tx(
             old.pending == count,
             "Stop Result original pending accounting differs"
         );
+        let original_current = selected.original_cleanup_view(&prepared.descriptor)?;
+        let mut current_reads = super::task_stop_current_reads::prepare_result_tx(
+            tx,
+            &original_current,
+            original_task_proof.task_before(&frozen_task.id)?,
+            &old,
+            ledger,
+        )?;
+        // Only an actual deliverable original Result enters this source. The
+        // unavailable branch above never inspects or initializes a successor.
+        let native_input = crate::runtime_db::input_evidence_snapshot::native_birth::NativeInputWriteProof::prepare_with_query_source_tx(
+            tx, scope, |visit| visit(
+                crate::runtime::resident_input_evidence::InputEvidenceFamily::Message,
+                &command.plan.message.id,
+            ), ledger, (work_request.byte_limit, work_request.record_limit), input_source,
+        )?;
         let mut next = old.clone();
         next.pending = count
             .checked_add(usize::from(previous.is_none()))
@@ -473,11 +478,13 @@ pub(super) fn commit_result_tx(
             record: Box::new(next),
         };
         validate_agent_state_mutation_tx(tx, Some(&state))?;
-        let triggered = trigger_wait_and_enqueue_at_tx(
+        let triggered = trigger_wait_and_enqueue_original_stop_tx(
             tx,
+            &original_current,
             &command.plan.message,
             &queue,
             command.plan.message.created_at,
+            &mut current_reads,
         )?;
         let (actual_result_ids, pending_changed) = if let Some(pending_command) = pending_command {
             let pending_ack = pending_command.execute_original_task_cleanup(
@@ -520,31 +527,23 @@ pub(super) fn commit_result_tx(
             effects,
         )?;
         value.applied |= pending_changed || triggered.applied();
-        value.effects.audit_events.extend(triggered.audit_events);
-        let actual_work: BTreeSet<_> = value
-            .effects
-            .wait_condition_writes
-            .wait_ids
-            .iter()
-            .map(|id| WorkKey::new(WorkFamily::Wait, id))
-            .collect();
-        if let Some(budget) = &mut memory_budget {
-            budget.before_finalizer_tx(tx)?;
+        if let Some(native) = native_input {
+            native.finish_delta_tx(tx, &mut value.effects.input_evidence_delta)?;
         }
-        let final_request = memory_budget
-            .as_ref()
-            .map(|budget| budget.work_request(work_request))
-            .transpose()?
+        value.effects.audit_events.extend(triggered.audit_events);
+        if let Some(budget) = &mut memory_budget { budget.before_finalizer_tx(tx)?; }
+        let final_request = memory_budget.as_ref()
+            .map(|budget| budget.work_request(work_request)).transpose()?
             .unwrap_or_else(|| work_request.clone());
-        let final_state =
-            agent_state_tx(tx, &scope.agent_id)?.context("Stop Result final State missing")?;
-        let work = crate::runtime_db::work_snapshot::register_work_writes_tx(
-            tx,
-            &work_proof,
-            &actual_work,
-            &BTreeSet::new(),
-            &final_state,
-            &final_request,
+        let mut final_material = crate::runtime_db::work_snapshot::WorkWriteMaterial::for_readback(
+            &work_proof, &final_request, memory_budget.as_mut(),
+        )?.context("original Stop Result omitted Work material")?;
+        final_material.reserve_actual_ids(value.effects.wait_condition_writes.wait_ids.iter().map(String::as_str))?;
+        let actual_work: BTreeSet<_> = value.effects.wait_condition_writes.wait_ids.iter()
+            .map(|id| WorkKey::new(WorkFamily::Wait, id)).collect();
+        let final_state = final_material.final_state_tx(tx, &work_proof)?;
+        let (work, _) = final_material.register_tx(
+            tx, &work_proof, &actual_work, &BTreeSet::new(), &final_state, &final_request, false,
         )?;
         value.effects.work_input_preparation = Some(WorkInputPreparation {
             scope: scope.clone(),
@@ -581,6 +580,7 @@ pub(super) fn commit_result_tx(
                 )?;
             }
         }
+        super::task_stop_current_reads::finish_result(current_reads, &mut value)?;
         let message_seq = triggered
             .message
             .message_seq

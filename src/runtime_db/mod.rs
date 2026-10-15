@@ -21,12 +21,16 @@ pub mod content_reports;
 pub(crate) mod context_inputs;
 pub(crate) mod control_transition;
 pub mod conversation;
+pub(crate) mod current_read_snapshot;
+pub(crate) mod cold_child_domains;
 pub mod destructive_operations;
 pub(crate) mod dispatch_memory;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;
 pub(crate) mod input_evidence_snapshot;
+#[cfg(test)]
+pub(crate) use input_evidence_snapshot::read_material::probe_original_report_input_prior_for_test;
 pub(crate) mod input_evidence_writes;
 pub(crate) mod input_mutation_receipts;
 pub(crate) mod input_preparation;
@@ -43,6 +47,7 @@ pub mod retired_scheduler_cleanup;
 pub(crate) mod startup_ended_memory;
 pub mod storage_domain;
 pub(crate) mod task_result_settlement;
+mod task_input_queue;
 pub(crate) mod transitions;
 pub mod turn_settlement_repair;
 pub use input_evidence_snapshot::maintenance::{
@@ -57,6 +62,7 @@ pub(crate) mod task_status_metadata;
 pub(crate) mod task_stop;
 pub mod types;
 pub mod unread;
+pub(crate) mod work_item_recall;
 pub(crate) mod work_snapshot;
 pub mod write_queue;
 
@@ -1276,32 +1282,37 @@ impl RuntimeDb {
             ));
         }
         for expected_domain in expected {
-            match read_storage_domain_connection(&connection, expected_domain.domain)? {
+            // Success diagnostics inspect marker metadata only. A complete
+            // original v1 footprint can contain 100k SQL-held records.
+            let marker:Option<(String,String,Option<String>)>=connection.query_row(
+                "SELECT import_status,canonical_source,CASE WHEN import_status='failed' THEN source_checkpoint_json ELSE NULL END FROM storage_domains WHERE domain=?1",
+                [expected_domain.domain],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+            ).optional()?;
+            match marker {
                 None => diagnostics.push(format!(
                     "storage domain {} is missing; expected canonical_source={}",
                     expected_domain.domain, expected_domain.canonical_source
                 )),
-                Some(snapshot) => {
-                    if snapshot.import_status == "failed" {
+                Some((import_status, canonical_source, failure_checkpoint)) => {
+                    if import_status == "failed" {
                         diagnostics.push(format!(
                             "storage domain {} import failed: {}",
-                            snapshot.domain,
-                            snapshot
-                                .source_checkpoint_json
+                            expected_domain.domain,
+                            failure_checkpoint
                                 .as_deref()
                                 .unwrap_or("no failure checkpoint recorded")
                         ));
-                    } else if snapshot.import_status != "complete" {
+                    } else if import_status != "complete" {
                         diagnostics.push(format!(
                             "storage domain {} import is {}; expected complete",
-                            snapshot.domain, snapshot.import_status
+                            expected_domain.domain, import_status
                         ));
                     }
-                    if snapshot.canonical_source != expected_domain.canonical_source {
+                    if canonical_source != expected_domain.canonical_source {
                         diagnostics.push(format!(
                             "storage domain {} has canonical_source={}; expected {}",
-                            snapshot.domain,
-                            snapshot.canonical_source,
+                            expected_domain.domain,
+                            canonical_source,
                             expected_domain.canonical_source
                         ));
                     }
@@ -1331,10 +1342,10 @@ impl RuntimeDb {
         canonical_source: &str,
     ) -> Result<bool> {
         let connection = self.connection()?;
-        let Some(snapshot) = read_storage_domain_connection(&connection, domain)? else {
-            return Ok(false);
-        };
-        Ok(snapshot.import_status == "complete" && snapshot.canonical_source == canonical_source)
+        connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM storage_domains WHERE domain=?1 AND import_status='complete' AND canonical_source=?2)",
+            rusqlite::params![domain,canonical_source],|row|row.get(0),
+        ).map_err(Into::into)
     }
 
     fn run_storage_domain_import(

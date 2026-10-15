@@ -331,6 +331,7 @@ mod tests {
         MutationReservation::committed_all(
             &mut reservations,
             vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                _identity_budget: None,
                 identity: Some(Arc::new(deleted)),
                 state: None,
             }))],

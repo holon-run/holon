@@ -1465,6 +1465,7 @@ async fn schedule_worktree_child_agent_task_rejects_when_background_tasks_disabl
 #[test]
 fn current_input_summary_extracts_body_from_context_section() {
     let prompt = EffectivePrompt {
+        resource_pins: None,
         identity: AgentIdentityView {
             agent_id: "default".into(),
             name: None,

@@ -22,6 +22,7 @@ pub(crate) fn qualified_dispatch_briefs_tx(
         &binding,
         &InputWindowSelector::RecentBriefs,
         limit,
+        None,
     )?;
     let mut bytes = 0usize;
     let mut result = Vec::with_capacity(keys.len());
@@ -88,6 +89,7 @@ pub(crate) fn qualified_dispatch_brief_material_tx(
         &binding,
         &InputWindowSelector::RecentBriefs,
         limit,
+        None,
     )?;
     let mut bytes = 0usize;
     for key in &keys {

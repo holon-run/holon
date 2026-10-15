@@ -856,7 +856,7 @@ fn discover_local_templates(
     source: AgentTemplateSourceKind,
     use_absolute_selector: bool,
 ) -> Vec<AgentTemplateCatalogEntry> {
-    let Ok(read_dir) = fs::read_dir(root) else {
+    let Ok(read_dir) = crate::diagnostics::io_probe::read_dir(root) else {
         return Vec::new();
     };
     let mut entries = Vec::new();
@@ -872,7 +872,7 @@ fn discover_local_templates(
             continue;
         }
         let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
-        let Ok(agents_md) = fs::read_to_string(&agents_md_path) else {
+        let Ok(agents_md) = crate::diagnostics::io_probe::read_to_string(&agents_md_path) else {
             continue;
         };
         if agents_md.trim().is_empty() {
@@ -1329,6 +1329,7 @@ fn trim_leading_html_comments<'a>(mut trimmed: &'a str, in_comment: &mut bool) -
 
 /// Parse a `template.toml` manifest string (e.g., from a builtin template).
 fn parse_template_manifest(content: &str) -> Option<TemplateManifest> {
+    crate::diagnostics::resource_io::charge_structured_text(content).ok()?;
     toml::from_str(content)
         .map_err(|error| {
             tracing::warn!(%error, "failed to parse template.toml manifest");
@@ -1339,7 +1340,7 @@ fn parse_template_manifest(content: &str) -> Option<TemplateManifest> {
 /// Parse `template.toml` from a local template directory.
 fn parse_local_template_manifest(template_dir: &Path) -> Option<TemplateManifest> {
     let manifest_path = template_dir.join(TEMPLATE_MANIFEST_FILENAME);
-    fs::read_to_string(&manifest_path)
+    crate::diagnostics::io_probe::read_to_string(&manifest_path)
         .ok()
         .and_then(|content| parse_template_manifest(&content))
 }
@@ -1927,8 +1928,9 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let content = crate::diagnostics::io_probe::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    crate::diagnostics::resource_io::charge_structured_text(&content)?;
     let manifest: TemplateSkillsManifest =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
     let skill_refs: Vec<TemplateSkillRef> = manifest

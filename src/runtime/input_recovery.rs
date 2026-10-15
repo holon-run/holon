@@ -16,9 +16,9 @@ use crate::{
     runtime_db::{
         context_inputs::ContextDurableRead,
         input_mutation_receipts::{
-            with_fresh_input_mutation_resolution_and_preflight, InputMutationResolution,
+            with_fresh_input_mutation_resolution_and_retained_material, InputMutationResolution,
         },
-        input_preparation::prepare_original_input_recovery_with_queries_tx,
+        input_preparation::prepare_original_input_recovery_with_queries_and_event_roles_tx,
         RuntimeDb,
     },
     types::AgentRegistryStatus,
@@ -192,10 +192,9 @@ pub(crate) fn resolve_input_recovery_with_queries(
             {
                 witness.mark_original_input_receipt_pending(proof.receipt(), true)?;
                 witness.retain_original_command_notifications(&proof, budget)?;
-                let known = vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                    identity: proof.identity().cloned().map(Arc::new),
-                    state: None,
-                }))];
+                let known = vec![KnownCommit::Metadata(Arc::new(
+                    IdentityMutationFacts::budgeted(proof.identity(), None, budget)?,
+                ))];
                 MutationReservation::resolve_original_command_input_unknown(
                     reservations,
                     &recovery.key,
@@ -238,10 +237,9 @@ pub(crate) fn resolve_input_recovery_with_queries(
                         super::mutation_owner::OriginalInputRecoveryEvidence::Partial(partial),
                     )?;
                 } else {
-                    let known = vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                        identity: proof.identity().cloned().map(Arc::new),
-                        state: None,
-                    }))];
+                    let known = vec![KnownCommit::Metadata(Arc::new(
+                        IdentityMutationFacts::budgeted(proof.identity(), None, budget)?,
+                    ))];
                     MutationReservation::resolve_task_stop_input_unknown(
                         reservations,
                         &recovery.key,
@@ -258,255 +256,371 @@ pub(crate) fn resolve_input_recovery_with_queries(
         }
         let mut readonly_proofs = Vec::new();
         let mut connection = db.connection()?;
-        let current = with_fresh_input_mutation_resolution_and_preflight(
-            &mut connection,
-            attempt,
-            |tx| {
-                use crate::runtime_db::{
-                    input_mutation_receipts::InputMutationFamily,
-                    task_snapshot::TaskDomainLoadRequest,
-                    transitions::task_result_receipt_budget_tx,
-                };
-                if !matches!(
-                    prepared.family(),
-                    InputMutationFamily::Task
-                        | InputMutationFamily::TaskResult
-                        | InputMutationFamily::Timer
-                ) {
-                    return Ok(None);
-                }
-                let limits = budget.limits();
-                let request = TaskDomainLoadRequest {
-                    query: Default::default(),
-                    capture: super::resident_task::TaskCaptureRequest::current(),
-                    record_limit: usize::try_from(limits.record_limit)?,
-                    byte_limit: usize::try_from(
-                        limits
-                            .history_per_agent_bytes
-                            .checked_add(limits.pending_per_agent_bytes)
-                            .context("Result recovery receipt limit overflow")?,
-                    )?,
-                };
-                let (owner, incarnation) = witness.owner();
-                let scope = super::resident_input_evidence::InputEvidenceScope {
-                    agent_id: owner.to_owned(),
-                    identity_incarnation: incarnation,
-                };
-                task_result_receipt_budget_tx(tx, prepared, &scope, &request, budget).map(Some)
-            },
-            |tx, result| {
-                let InputMutationResolution::Present(receipt) = result else {
-                    return Ok(None);
-                };
-                // Only this original positive receipt can promote these tickets.
-                // Retrying preparation preserves this shared accepted observation.
-                witness.mark_original_input_receipt_pending(&receipt, true)?;
-                let mut known = Vec::with_capacity(prepared.scopes().len());
-                for (scope, outcome) in prepared.scopes().iter().zip(&receipt.outcome.scopes) {
-                    ensure!(&outcome.scope == scope, "receipt scope group changed");
-                    let reservation = reservations
-                        .iter()
-                        .find(|reservation| {
-                            reservation.agent_id() == scope.agent_id
-                                && reservation.identity_incarnation() == scope.identity_incarnation
-                        })
-                        .context("original input owner group is incomplete")?;
-                    if let Some(original) = witness.initial_task_stop_readonly(&scope.agent_id) {
-                        let proof=crate::runtime_db::task_stop::observe_initial_task_stop_readonly_recovery_tx(
-                            tx,attempt,&receipt,original.target(),&task_load,budget)?;
-                        let original_known = original.known();
-                        let facts = if proof.child().state_present() == Some(true)
-                            && matches!(original_known, KnownCommit::State { .. })
-                        {
-                            original_known
-                        } else {
-                            KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                                identity: Some(proof.child().identity().clone()),
-                                state: None,
-                            }))
-                        };
-                        known.push(facts);
-                        readonly_proofs.push(Arc::new(proof));
-                        continue;
-                    }
-                    let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
-                    if !facts.identity.as_ref().is_some_and(|identity| {
-                        identity.agent_id == scope.agent_id
-                            && identity.incarnation == scope.identity_incarnation
-                            && matches!(
-                                identity.status,
-                                AgentRegistryStatus::Active | AgentRegistryStatus::Deleting
-                            )
-                    }) {
-                        // Withdraw this retired namespace's accepted accounting;
-                        // its successor's State and pending bodies are never read.
-                        budget.install_actual_pending(scope, &[])?;
-                        known.push(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                            identity: facts.identity.map(Arc::new),
-                            state: None,
-                        })));
-                        continue;
-                    }
-                    let Some(state) = facts.state.as_ref() else {
-                        let pending = crate::runtime_db::bootstrap_inputs::pending_metadata_for_input_recovery_tx(tx, scope, budget)?;
-                        ensure!(
-                            pending.count == 0,
-                            "cold input recovery has pending work without State"
-                        );
-                        budget.install_actual_pending(scope, &[])?;
-                        known.push(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                            identity: facts.identity.map(Arc::new),
-                            state: None,
-                        })));
-                        continue;
+        let (current, _fresh_material) =
+            with_fresh_input_mutation_resolution_and_retained_material(
+                &mut connection,
+                attempt,
+                |tx| {
+                    use crate::runtime_db::{
+                        input_mutation_receipts::InputMutationFamily,
+                        task_snapshot::TaskDomainLoadRequest,
+                        transitions::task_result_receipt_budget_tx,
                     };
-                    let context =
-                        models.resolved_context_config(config, state.model_override.as_ref());
-                    let model = models.effective_model(state.model_override.as_ref());
-                    let history = super::turn::context_history_preparation(&state.id, &model);
+                    let scope = prepared
+                        .scopes()
+                        .first()
+                        .context("original input scopes absent")?;
+                    let source_prior = witness.original_input_material_prior(scope, budget)?;
+                    if source_prior != (0, 0) {
+                        let limits = budget.limits();
+                        let bounds = (
+                            usize::try_from(
+                                limits
+                                    .history_per_agent_bytes
+                                    .checked_add(limits.pending_per_agent_bytes)
+                                    .context("fresh Source byte limit overflow")?,
+                            )?
+                            .min(64 * 1024 * 1024),
+                            usize::try_from(limits.record_limit)?.min(65_536),
+                        );
+                        let remaining = (
+                            bounds.0.checked_sub(source_prior.0),
+                            bounds.1.checked_sub(source_prior.1),
+                        );
+                        let exhausted = || {
+                            crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::ResourceExhausted("fresh retained Source")
+                        };
+                        let remaining = (
+                            remaining.0.context(exhausted())?,
+                            remaining.1.context(exhausted())?,
+                        );
+                        let reservation = reservations
+                            .iter()
+                            .find(|r| {
+                                r.agent_id() == scope.agent_id
+                                    && r.identity_incarnation() == scope.identity_incarnation
+                            })
+                            .context("original retained Input reservation absent")?;
+                        // Both live role snapshots share the original retained request's
+                        // remaining budget before their first selector clone.
+                        let input_source =
+                            reservation.input_query_source(scope, budget, remaining)?;
+                        let remaining = input_source.remaining_limits(scope, budget, remaining)?;
+                        let roles = reservation.current_event_roles(scope, budget, remaining)?;
+                        let mut phase = crate::runtime_db::input_preparation::OriginalInputRecoveryMaterial::new_with_input_source(scope, budget, bounds, source_prior, roles.as_ref(), Some(input_source.as_ref()))?;
+                        phase.receipt_tx(tx, prepared)?;
+                        return Ok((None, Some(phase), roles, Some(input_source)));
+                    }
+                    if !matches!(
+                        prepared.family(),
+                        InputMutationFamily::Task
+                            | InputMutationFamily::TaskResult
+                            | InputMutationFamily::Timer
+                    ) {
+                        return Ok((None, None, None, None));
+                    }
                     let limits = budget.limits();
-                    let request = super::context_capture::context_input_evidence_request(
-                        state,
-                        None,
-                        &context,
-                        history,
-                        Default::default(),
-                        usize::try_from(limits.record_limit)?,
-                        usize::try_from(
+                    let request = TaskDomainLoadRequest {
+                        query: Default::default(),
+                        capture: super::resident_task::TaskCaptureRequest::current(),
+                        record_limit: usize::try_from(limits.record_limit)?,
+                        byte_limit: usize::try_from(
                             limits
                                 .history_per_agent_bytes
                                 .checked_add(limits.pending_per_agent_bytes)
-                                .context("input recovery byte limit overflow")?,
+                                .context("Result recovery receipt limit overflow")?,
                         )?,
-                    )?;
-                    let mut work_request = super::resident_work::WorkCaptureRequest::current();
-                    use super::resident_work::{WorkFamily, WorkKey};
-                    work_request.mandatory_roots.extend(
-                        outcome
-                            .install_keys
-                            .work_items
+                    };
+                    let (owner, incarnation) = witness.owner();
+                    let scope = super::resident_input_evidence::InputEvidenceScope {
+                        agent_id: owner.to_owned(),
+                        identity_incarnation: incarnation,
+                    };
+                    task_result_receipt_budget_tx(tx, prepared, &scope, &request, budget)
+                        .map(|guard| (Some(guard), None, None, None))
+                },
+                |tx, result, fresh| {
+                    let (_, phase, original_event_roles, _input_source) = fresh;
+                    let InputMutationResolution::Present(receipt) = result else {
+                        return Ok(None);
+                    };
+                    // Only this original positive receipt can promote these tickets.
+                    // Retrying preparation preserves this shared accepted observation.
+                    witness.confirm_original_work_report(&receipt)?;
+                    if let Some(phase) = phase.as_mut() {
+                        phase.refresh_source_prior(
+                            witness.original_input_material_prior(&prepared.scopes()[0], budget)?,
+                        )?;
+                        phase.projected(&receipt.outcome.scopes)?;
+                    }
+                    witness.mark_original_input_receipt_pending(&receipt, true)?;
+                    let mut known = Vec::with_capacity(prepared.scopes().len());
+                    for (scope, outcome) in prepared.scopes().iter().zip(&receipt.outcome.scopes) {
+                        ensure!(&outcome.scope == scope, "receipt scope group changed");
+                        let reservation = reservations
                             .iter()
-                            .map(|id| WorkKey::new(WorkFamily::Work, id)),
-                    );
-                    work_request.mandatory_roots.extend(
-                        outcome
-                            .install_keys
-                            .wait_conditions
-                            .iter()
-                            .map(|id| WorkKey::new(WorkFamily::Wait, id)),
-                    );
-                    work_request.mandatory_roots.extend(
-                        outcome
-                            .install_keys
-                            .continuations
-                            .iter()
-                            .map(|id| WorkKey::new(WorkFamily::Frame, id)),
-                    );
-                    work_request
-                        .latest_result_work_ids
-                        .extend(outcome.install_keys.work_items.iter().cloned());
-                    work_request
-                        .required_task_ids
-                        .extend(outcome.install_keys.tasks.iter().cloned());
-                    let mut task_request = super::resident_task::TaskCaptureRequest::current();
-                    task_request
-                        .required_keys
-                        .extend(outcome.install_keys.tasks.iter().map(|id| {
-                            super::resident_task::TaskKey::new(
-                                super::resident_task::TaskFamily::Task,
-                                id,
-                            )
-                        }));
-                    task_request.required_keys.extend(
-                        outcome
-                            .install_keys
-                            .task_result_settlements
-                            .iter()
-                            .map(|id| {
+                            .find(|reservation| {
+                                reservation.agent_id() == scope.agent_id
+                                    && reservation.identity_incarnation()
+                                        == scope.identity_incarnation
+                            })
+                            .context("original input owner group is incomplete")?;
+                        if let Some(original) = witness.initial_task_stop_readonly(&scope.agent_id)
+                        {
+                            let proof=crate::runtime_db::task_stop::observe_initial_task_stop_readonly_recovery_tx(
+                            tx,attempt,&receipt,original.target(),&task_load,budget)?;
+                            let original_known = original.known();
+                            let facts = if proof.child().state_present() == Some(true)
+                                && matches!(original_known, KnownCommit::State { .. })
+                            {
+                                original_known
+                            } else {
+                                KnownCommit::Metadata(Arc::new(IdentityMutationFacts::observed(
+                                    proof.child().identity().clone(),
+                                    None,
+                                    proof.child().identity_material(),
+                                )))
+                            };
+                            known.push(facts);
+                            readonly_proofs.push(Arc::new(proof));
+                            continue;
+                        }
+                        let facts = if let Some(phase) = phase.as_mut() {
+                            phase.scope_facts_tx(tx, scope, budget)?
+                        } else {
+                            ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?
+                        };
+                        if !facts.identity.as_ref().is_some_and(|identity| {
+                            identity.agent_id == scope.agent_id
+                                && identity.incarnation == scope.identity_incarnation
+                                && matches!(
+                                    identity.status,
+                                    AgentRegistryStatus::Active | AgentRegistryStatus::Deleting
+                                )
+                        }) {
+                            // Withdraw this retired namespace's accepted accounting;
+                            // its successor's State and pending bodies are never read.
+                            budget.install_actual_pending(scope, &[])?;
+                            known.push(KnownCommit::Metadata(Arc::new(
+                                IdentityMutationFacts::budgeted_owned(
+                                    facts.identity,
+                                    None,
+                                    budget,
+                                )?,
+                            )));
+                            continue;
+                        }
+                        let Some(state) = facts.state.as_ref() else {
+                            let pending = if let Some(phase) = phase.as_mut() {
+                                phase.pending_metadata_tx(tx, scope, budget)?
+                            } else {
+                                crate::runtime_db::bootstrap_inputs::pending_metadata_for_input_recovery_tx(tx, scope, budget)?
+                            };
+                            ensure!(
+                                pending.count == 0,
+                                "cold input recovery has pending work without State"
+                            );
+                            budget.install_actual_pending(scope, &[])?;
+                            known.push(KnownCommit::Metadata(Arc::new(
+                                IdentityMutationFacts::budgeted_owned(
+                                    facts.identity,
+                                    None,
+                                    budget,
+                                )?,
+                            )));
+                            continue;
+                        };
+                        if let Some(phase) = phase.as_mut() {
+                            phase.projected(state)?;
+                        }
+                        let context =
+                            models.resolved_context_config(config, state.model_override.as_ref());
+                        let model = models.effective_model(state.model_override.as_ref());
+                        let history = super::turn::context_history_preparation(&state.id, &model);
+                        let limits = budget.limits();
+                        let request = super::context_capture::context_input_evidence_request(
+                            state,
+                            None,
+                            &context,
+                            history,
+                            Default::default(),
+                            usize::try_from(limits.record_limit)?,
+                            usize::try_from(
+                                limits
+                                    .history_per_agent_bytes
+                                    .checked_add(limits.pending_per_agent_bytes)
+                                    .context("input recovery byte limit overflow")?,
+                            )?,
+                        )?;
+                        let mut work_request = super::resident_work::WorkCaptureRequest::current();
+                        use super::resident_work::{WorkFamily, WorkKey};
+                        work_request.mandatory_roots.extend(
+                            outcome
+                                .install_keys
+                                .work_items
+                                .iter()
+                                .map(|id| WorkKey::new(WorkFamily::Work, id)),
+                        );
+                        work_request.mandatory_roots.extend(
+                            outcome
+                                .install_keys
+                                .wait_conditions
+                                .iter()
+                                .map(|id| WorkKey::new(WorkFamily::Wait, id)),
+                        );
+                        work_request.mandatory_roots.extend(
+                            outcome
+                                .install_keys
+                                .continuations
+                                .iter()
+                                .map(|id| WorkKey::new(WorkFamily::Frame, id)),
+                        );
+                        work_request
+                            .latest_result_work_ids
+                            .extend(outcome.install_keys.work_items.iter().cloned());
+                        work_request
+                            .required_task_ids
+                            .extend(outcome.install_keys.tasks.iter().cloned());
+                        let mut task_request = super::resident_task::TaskCaptureRequest::current();
+                        task_request
+                            .required_keys
+                            .extend(outcome.install_keys.tasks.iter().map(|id| {
                                 super::resident_task::TaskKey::new(
-                                    super::resident_task::TaskFamily::ResultSettlement,
+                                    super::resident_task::TaskFamily::Task,
                                     id,
                                 )
-                            }),
-                    );
-                    let current = prepare_original_input_recovery_with_queries_tx(
-                        tx,
-                        scope,
-                        state,
-                        &request,
-                        context.recent_episode_candidates,
-                        budget,
-                        &work_request,
-                        &task_request,
-                        live.iter().find_map(|queries| {
-                            queries.selection_for(scope, reservation.owner_epoch())
-                        }),
-                    )?;
-                    let work = current
-                        .work
-                        .context("input recovery omitted current Work domain")?;
-                    let tasks = current
-                        .tasks
-                        .context("input recovery omitted current Task domain")?;
-                    let charges = current
-                        .pending
-                        .messages
-                        .iter()
-                        .map(|message| {
-                            Ok(PendingBodyCharge {
-                                message_id: message.id.clone(),
-                                body_bytes: serialized_bytes(&message.body)?,
+                            }));
+                        task_request.required_keys.extend(
+                            outcome
+                                .install_keys
+                                .task_result_settlements
+                                .iter()
+                                .map(|id| {
+                                    super::resident_task::TaskKey::new(
+                                        super::resident_task::TaskFamily::ResultSettlement,
+                                        id,
+                                    )
+                                }),
+                        );
+                        let fresh_roles;
+                        let event_roles = if phase.is_some() {
+                            original_event_roles.as_ref()
+                        } else {
+                            fresh_roles = reservation.current_event_roles(
+                                scope,
+                                budget,
+                                (request.byte_limit, request.record_limit),
+                            )?;
+                            fresh_roles.as_ref()
+                        };
+                        let current = if let Some(phase) = phase.as_mut() {
+                            phase.prepare_tx(
+                                tx,
+                                scope,
+                                state,
+                                &request,
+                                context.recent_episode_candidates,
+                                budget,
+                                &work_request,
+                                &task_request,
+                                live.iter().find_map(|queries| {
+                                    queries.selection_for(scope, reservation.owner_epoch())
+                                }),
+                                event_roles,
+                            )?
+                        } else {
+                            prepare_original_input_recovery_with_queries_and_event_roles_tx(
+                                tx,
+                                scope,
+                                state,
+                                &request,
+                                context.recent_episode_candidates,
+                                budget,
+                                &work_request,
+                                &task_request,
+                                live.iter().find_map(|queries| {
+                                    queries.selection_for(scope, reservation.owner_epoch())
+                                }),
+                                event_roles,
+                            )?
+                        };
+                        let work = current
+                            .work
+                            .context("input recovery omitted current Work domain")?;
+                        let tasks = current
+                            .tasks
+                            .context("input recovery omitted current Task domain")?;
+                        if let Some(phase) = phase.as_mut() {
+                            phase.projected(&(
+                                state,
+                                &current.pending.messages,
+                                &facts.identity,
+                                &outcome.install_keys,
+                                &outcome.audit_events,
+                            ))?;
+                        }
+                        let charges = current
+                            .pending
+                            .messages
+                            .iter()
+                            .map(|message| {
+                                Ok(PendingBodyCharge {
+                                    message_id: message.id.clone(),
+                                    body_bytes: serialized_bytes(&message.body)?,
+                                })
                             })
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    budget.install_actual_pending(scope, &charges)?;
-                    let state = Arc::new(state.clone());
-                    let episodes = Arc::new(current.episodes);
-                    let inputs = Arc::new(current.inputs.with_budget(budget.clone())?);
-                    let cache =
+                            .collect::<Result<Vec<_>>>()?;
+                        budget.install_actual_pending(scope, &charges)?;
+                        let state = Arc::new(state.clone());
+                        let episodes = Arc::new(current.episodes);
+                        let inputs = Arc::new(current.inputs.with_budget(budget.clone())?);
+                        let cache =
                         crate::runtime_db::input_recovery_install::load_current_install_facts_tx(
                             tx,
                             scope,
                             &outcome.install_keys,
                         )?;
-                    let mut runtime = RuntimeMutationFacts::for_input_recovery(
-                        reservation.owner_epoch(),
-                        state.clone(),
-                        episodes.clone(),
-                        inputs.clone(),
-                        work.clone(),
-                        Some(tasks.clone()),
-                        current.scheduling.clone(),
-                        current.pending.messages,
-                        budget,
-                        witness.input_runtime(&scope.agent_id).map(Arc::as_ref),
-                        outcome,
-                        receipt.outcome.applied,
-                        facts.identity,
-                        cache,
-                    )?;
-                    if witness.input_storage_replayed() {
-                        runtime.suppress_observed_input_replay_publication();
-                    }
-                    let runtime = Arc::new(runtime);
-                    known.push(KnownCommit::State {
-                        work: Some(work),
+                        let mut runtime = RuntimeMutationFacts::for_input_recovery(
+                            reservation.owner_epoch(),
+                            state.clone(),
+                            episodes.clone(),
+                            inputs.clone(),
+                            work.clone(),
+                            Some(tasks.clone()),
+                            current.scheduling.clone(),
+                            current.pending.messages,
+                            budget,
+                            witness.input_runtime(&scope.agent_id).map(Arc::as_ref),
+                            outcome,
+                            receipt.outcome.applied,
+                            facts.identity,
+                            cache,
+                        )?
+                        .with_current_read_facts(current.current_reads.clone())?;
+                        if witness.input_storage_replayed() {
+                            runtime.suppress_observed_input_replay_publication();
+                        }
+                        let runtime = Arc::new(runtime);
+                        known.push(KnownCommit::State {
+                            current_reads: Some(current.current_reads.clone()),
+                            work: Some(work),
 
-                        tasks: Some(tasks),
-                        scheduling: Some(current.scheduling),
-                        state,
-                        episodes: Some(episodes),
-                        input_evidence: Some(inputs),
-                        runtime: Some(runtime),
-                    });
-                }
-                Ok(Some(known))
-            },
-        )?;
+                            tasks: Some(tasks),
+                            scheduling: Some(current.scheduling),
+                            state,
+                            episodes: Some(episodes),
+                            input_evidence: Some(inputs),
+                            runtime: Some(runtime),
+                        });
+                    }
+                    Ok(Some(known))
+                },
+            )?;
         // Validate again before the fallible whole-ticket release. The owner
         // gates stay unknown if ledger validation fails for any original member.
         MutationReservation::validate_input_unknown(reservations, &recovery.key, witness)?;
         if current.is_none() {
+            witness.release_original_work_report()?;
             witness.release_pending_not_committed(true)?;
         }
         if readonly_proofs.is_empty() {

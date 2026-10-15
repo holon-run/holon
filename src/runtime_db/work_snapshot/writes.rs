@@ -6,23 +6,73 @@ pub(crate) use wait_cleanup::{
 #[cfg(test)]
 pub(crate) use wait_cleanup::{prepare_work_wait_cleanup_tx, register_work_wait_cleanup_tx};
 
+use super::read_preparation::WorkReadMaterial;
 use super::*;
+use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
 
 pub(crate) struct WorkWriteProof {
     scope: InputEvidenceScope,
     base_revision: u64,
     before: BTreeMap<WorkKey, Option<StoredRecord>>,
     original_recovery: bool,
+    material_budget: Option<InputEvidenceBudgetLedger>,
+    preparation_usage: (usize, usize),
+    original_material_limits: Option<(usize, usize)>,
     preparation_guards: Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
 }
 
 impl WorkWriteProof {
+    fn read_material<'a>(
+        &'a self,
+        request: &WorkDomainLoadRequest,
+        memory: Option<&'a mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    ) -> Result<Option<WorkReadMaterial<'a>>> {
+        self.material_budget
+            .as_ref()
+            .map(|ledger| {
+                WorkReadMaterial::resume(
+                    &self.scope,
+                    request,
+                    ledger,
+                    memory,
+                    self.preparation_usage,
+                    self.original_material_limits
+                        .context("budgeted Work proof omitted original phase limits")?,
+                )
+            })
+            .transpose()
+    }
+
+    pub(super) fn into_preparation_guards(
+        self,
+    ) -> Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>> {
+        self.preparation_guards
+    }
+
     /// Transaction-local preparation ownership, never admission authority.
     pub(crate) fn retain_preparation_budget(
         &mut self,
         guards: Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     ) {
         self.preparation_guards.extend(guards);
+    }
+    #[cfg(test)]
+    pub(super) fn original_phase_usage(&self) -> (usize, usize) {
+        self.preparation_usage
+    }
+    pub(in crate::runtime_db) fn input_writer_material(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        ensure!(self.scope == *scope
+            && self.material_budget.as_ref().is_some_and(|actual| actual.same_ledger(ledger))
+            && !self.preparation_guards.is_empty(),
+            "Native Input Work prior lacks original scope/ledger/guards");
+        for guard in &self.preparation_guards {
+            guard.validate_owned_material_binding(scope, ledger, 0)?;
+        }
+        Ok(self.preparation_usage)
     }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         &self.scope
@@ -89,7 +139,7 @@ pub(crate) fn prepare_work_write_tx(
     scope: &InputEvidenceScope,
     keys: &BTreeSet<WorkKey>,
 ) -> Result<WorkWriteProof> {
-    prepare(tx, scope, keys, false)
+    prepare(tx, scope, keys, false, None)
 }
 /// Only same-incarnation already-admitted cleanup may use this proof. Existing
 /// keys must already belong to its immutable/current namespace; no adoption.
@@ -98,19 +148,357 @@ pub(crate) fn prepare_original_work_write_tx(
     scope: &InputEvidenceScope,
     keys: &BTreeSet<WorkKey>,
 ) -> Result<WorkWriteProof> {
-    prepare(tx, scope, keys, true)
+    prepare(tx, scope, keys, true, None)
+}
+/// A transaction-local accounting carrier. It cannot admit a Work key; the
+/// unchanged original validator still runs after the exact footprint is frozen.
+pub(in crate::runtime_db) struct WorkWriteMaterial<'a> {
+    material: WorkReadMaterial<'a>,
+}
+impl<'a> WorkWriteMaterial<'a> {
+    pub(in crate::runtime_db) fn new(
+        scope: &'a InputEvidenceScope,
+        request: &WorkDomainLoadRequest,
+        ledger: &'a InputEvidenceBudgetLedger,
+        memory: Option<&'a mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    ) -> Result<Self> {
+        Ok(Self {
+            material: WorkReadMaterial::new(scope, request, ledger, memory)?,
+        })
+    }
+    pub(in crate::runtime_db) fn with_resource_material(
+        scope: &'a InputEvidenceScope,
+        request: &WorkDomainLoadRequest,
+        ledger: &'a InputEvidenceBudgetLedger,
+        memory: Option<&'a mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+        loan: Option<&crate::runtime::WorkResourceMaterialLoan>,
+    ) -> Result<Self> {
+        let Some(loan) = loan else {
+            return Self::new(scope, request, ledger, memory);
+        };
+        let prior = loan.validate_accounting(scope, ledger)?;
+        Ok(Self {
+            material: WorkReadMaterial::resume(
+                scope,
+                request,
+                ledger,
+                memory,
+                prior,
+                (
+                    request.byte_limit.min(MAX_METADATA_BYTES),
+                    request.record_limit.min(MAX_METADATA_RECORDS),
+                ),
+            )?,
+        })
+    }
+    fn value_nodes(value: &serde_json::Value, depth: usize) -> Result<usize> {
+        ensure!(
+            depth < 128,
+            "Work incoming JSON depth exceeds decoder bound"
+        );
+        let children = match value {
+            serde_json::Value::Array(values) => values.iter().try_fold(0usize, |n, value| {
+                n.checked_add(Self::value_nodes(value, depth + 1)?)
+                    .context("Work incoming nodes overflow")
+            })?,
+            serde_json::Value::Object(values) => {
+                values.values().try_fold(values.len(), |n, value| {
+                    n.checked_add(Self::value_nodes(value, depth + 1)?)
+                        .context("Work incoming nodes overflow")
+                })?
+            }
+            _ => 0,
+        };
+        children
+            .checked_add(1)
+            .context("Work incoming nodes overflow")
+    }
+    pub(in crate::runtime_db) fn admit_work(
+        &mut self,
+        record: &crate::types::WorkItemRecord,
+    ) -> Result<()> {
+        self.material.raw(
+            usize::try_from(crate::runtime::input_evidence_budget::serialized_bytes(
+                record,
+            )?)?,
+            1,
+        )?;
+        // Fixed Work/plan-artifact/completion-intent structs fit within 64
+        // native slots; every variable collection/value is counted below.
+        let mut nodes = record
+            .todo_list
+            .len()
+            .checked_mul(3)
+            .and_then(|n| {
+                record
+                    .work_refs
+                    .len()
+                    .checked_mul(12)
+                    .and_then(|refs| n.checked_add(refs))
+            })
+            .and_then(|n| n.checked_add(64))
+            .context("Work incoming record nodes overflow")?;
+        for reference in &record.work_refs {
+            nodes = nodes
+                .checked_add(reference.metadata.len())
+                .context("Work metadata keys overflow")?;
+            for value in reference.metadata.values() {
+                nodes = nodes
+                    .checked_add(Self::value_nodes(value, 0)?)
+                    .context("Work metadata nodes overflow")?;
+            }
+        }
+        self.material.native(nodes)
+    }
+    pub(in crate::runtime_db) fn admit_wait(
+        &mut self,
+        record: &crate::types::WaitConditionRecord,
+    ) -> Result<()> {
+        self.material.raw(
+            usize::try_from(crate::runtime::input_evidence_budget::serialized_bytes(
+                record,
+            )?)?,
+            1,
+        )?;
+        let nodes = record
+            .wake_sources
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(32))
+            .context("Wait incoming nodes overflow")?;
+        let nodes = nodes
+            .checked_add(
+                record
+                    .continuation
+                    .as_ref()
+                    .map(|v| Self::value_nodes(v, 0))
+                    .transpose()?
+                    .unwrap_or_default(),
+            )
+            .context("Wait continuation nodes overflow")?;
+        self.material.native(nodes)
+    }
+    pub(in crate::runtime_db) fn admit_frame(
+        &mut self,
+        record: &crate::types::WorkItemContinuationFrame,
+    ) -> Result<()> {
+        self.material.raw(
+            usize::try_from(crate::runtime::input_evidence_budget::serialized_bytes(
+                record,
+            )?)?,
+            1,
+        )?;
+        self.material.native(32)
+    }
+    pub(in crate::runtime_db) fn for_readback(
+        proof: &'a WorkWriteProof,
+        request: &WorkDomainLoadRequest,
+        memory: Option<&'a mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    ) -> Result<Option<Self>> {
+        proof
+            .read_material(request, memory)
+            .map(|m| m.map(|material| Self { material }))
+    }
+    pub(in crate::runtime_db) fn reserve_result_briefs(
+        &mut self,
+        briefs: &[crate::types::BriefRecord],
+    ) -> Result<()> {
+        self.material.input_ids(
+            briefs
+                .iter()
+                .filter(|b| b.kind == BriefKind::Result)
+                .map(|b| b.id.as_str()),
+        )
+    }
+    pub(in crate::runtime_db) fn reserve_actual_ids<'b>(
+        &mut self,
+        ids: impl IntoIterator<Item = &'b str>,
+    ) -> Result<()> {
+        self.material.input_ids(ids)
+    }
+    #[cfg(test)]
+    pub(in crate::runtime_db) fn reserve_actual_keys(
+        &mut self,
+        proof: &WorkWriteProof,
+    ) -> Result<()> {
+        ensure!(
+            self.material.scope() == &proof.scope,
+            "Work actual-key accounting scope differs"
+        );
+        self.material.keys(proof.before.keys(), 8)
+    }
+    pub(in crate::runtime_db) fn final_state_tx(
+        &mut self,
+        tx: &Transaction<'_>,
+        proof: &WorkWriteProof,
+    ) -> Result<AgentState> {
+        self.material
+            .scope_tx(tx, proof.original_recovery)?
+            .context("Work finalizer scope retired")?
+            .state
+            .context("Work finalizer requires actual final State")
+    }
+    pub(in crate::runtime_db) fn register_tx(
+        self,
+        tx: &Transaction<'_>,
+        proof: &WorkWriteProof,
+        actual: &BTreeSet<WorkKey>,
+        result_briefs: &BTreeSet<String>,
+        final_state: &AgentState,
+        request: &WorkDomainLoadRequest,
+        capture_final_view: bool,
+    ) -> Result<(CommittedWorkFacts, Option<CapturedWork>)> {
+        ensure!(
+            self.material.scope() == &proof.scope,
+            "Work readback material belongs to another proof scope"
+        );
+        register_work_writes_inner_tx(
+            tx,
+            proof,
+            actual,
+            result_briefs,
+            final_state,
+            request,
+            capture_final_view,
+            Some(self.material),
+        )
+    }
+    pub(in crate::runtime_db) fn key(&mut self, family: WorkFamily, id: &str) -> Result<WorkKey> {
+        self.material.raw(id.len(), 1)?;
+        Ok(WorkKey::new(family, id))
+    }
+    pub(in crate::runtime_db) fn wait_slots(&mut self, count: usize) -> Result<()> {
+        self.material.charge(
+            0,
+            count
+                .checked_mul(8 * 256)
+                .context("Work Wait selector slots overflow")?,
+            count
+                .checked_mul(8)
+                .context("Work Wait selector records overflow")?,
+        )
+    }
+    pub(in crate::runtime_db) fn trigger_wait_pool_tx(
+        &mut self,
+        tx: &Transaction<'_>,
+        scope: &InputEvidenceScope,
+    ) -> Result<()> {
+        ensure!(
+            self.material.scope() == scope,
+            "Wait projection material belongs to another scope"
+        );
+        self.material.trigger_wait_pool_tx(tx)
+    }
+    pub(in crate::runtime_db) fn into_guards(
+        self,
+    ) -> Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>> {
+        self.material.into_guards()
+    }
+    pub(in crate::runtime_db) fn active_frame_keys_tx(
+        &mut self,
+        tx: &Transaction<'_>,
+        keys: &mut BTreeSet<WorkKey>,
+    ) -> Result<()> {
+        self.material.active_frame_keys_tx(tx, keys)
+    }
+
+    pub(in crate::runtime_db) fn wait_keys_tx<'b>(
+        &mut self,
+        tx: &Transaction<'_>,
+        records: impl IntoIterator<Item = &'b crate::types::WaitConditionRecord>,
+        keys: &mut BTreeSet<WorkKey>,
+    ) -> Result<()> {
+        for record in records {
+            keys.insert(self.key(WorkFamily::Wait, &record.id)?);
+            if matches!(
+                record.status,
+                crate::types::WaitConditionStatus::Active
+                    | crate::types::WaitConditionStatus::Triggered
+            ) {
+                let sql="SELECT wait_condition_id AS id FROM wait_conditions WHERE agent_id=?1 AND work_item_id IS ?2 AND status IN ('active','triggered') AND wait_condition_id!=?3 LIMIT ?4";
+                self.material.ids_query(
+                    tx,
+                    sql,
+                    params![
+                        record.agent_id,
+                        record.work_item_id,
+                        record.id,
+                        i64::try_from(MAX_METADATA_RECORDS + 1)?
+                    ],
+                )?;
+                let mut query = tx.prepare(sql)?;
+                for id in query.query_map(
+                    params![
+                        record.agent_id,
+                        record.work_item_id,
+                        record.id,
+                        i64::try_from(MAX_METADATA_RECORDS + 1)?
+                    ],
+                    |r| r.get::<_, String>(0),
+                )? {
+                    keys.insert(WorkKey::new(WorkFamily::Wait, id?));
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(in crate::runtime_db) fn prepare_tx(
+        self,
+        tx: &Transaction<'_>,
+        scope: &InputEvidenceScope,
+        keys: &BTreeSet<WorkKey>,
+        original_recovery: bool,
+    ) -> Result<WorkWriteProof> {
+        ensure!(
+            self.material.scope() == scope,
+            "Work material/proof scope differs"
+        );
+        prepare(tx, scope, keys, original_recovery, Some(self.material))
+    }
+}
+/// The actual caller's original phase bounds and Host ledger are required.
+/// Material accounting never changes the original admission predicate.
+#[cfg(test)]
+pub(crate) fn prepare_work_write_with_budget_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    keys: &BTreeSet<WorkKey>,
+    request: &WorkDomainLoadRequest,
+    original_recovery: bool,
+    ledger: &InputEvidenceBudgetLedger,
+    memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+) -> Result<WorkWriteProof> {
+    let material = WorkReadMaterial::new(scope, request, ledger, memory)?;
+    prepare(tx, scope, keys, original_recovery, Some(material))
+}
+pub(super) fn prepare_with_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    keys: &BTreeSet<WorkKey>,
+    original_recovery: bool,
+    material: WorkReadMaterial<'_>,
+) -> Result<WorkWriteProof> {
+    prepare(tx, scope, keys, original_recovery, Some(material))
 }
 fn prepare(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     keys: &BTreeSet<WorkKey>,
     original_recovery: bool,
+    mut material: Option<WorkReadMaterial<'_>>,
 ) -> Result<WorkWriteProof> {
-    ensure!(
-        scope_facts(tx, scope, original_recovery)?.is_some(),
-        "Work write scope retired"
-    );
-    let seed = binding(tx, scope)?;
+    let facts = match material.as_mut() {
+        Some(m) => m.scope_tx(tx, original_recovery)?,
+        None => scope_facts(tx, scope, original_recovery)?,
+    };
+    ensure!(facts.is_some(), "Work write scope retired");
+    let seed = match material.as_mut() {
+        Some(m) => m.binding_tx(tx)?,
+        None => binding(tx, scope)?,
+    };
+    if let Some(m) = material.as_mut() {
+        m.keys(keys, 8)?;
+    }
     bound_metadata(
         keys.len(),
         keys.iter()
@@ -120,7 +508,10 @@ fn prepare(
     let mut before = BTreeMap::new();
     let mut bytes = 0usize;
     for key in keys {
-        let prior = alias(tx, scope, key)?;
+        let prior = match material.as_mut() {
+            Some(m) => m.alias_tx(tx, key)?,
+            None => alias(tx, scope, key)?,
+        };
         ensure!(
             !prior
                 .as_ref()
@@ -137,9 +528,15 @@ fn prepare(
             .optional()?;
         bytes = bytes.saturating_add(length.unwrap_or_default());
         bound_metadata(keys.len(), bytes)?;
-        let stored = stored_on(tx, &scope.agent_id, key)?;
+        let stored = match material.as_mut() {
+            Some(m) => m.record_tx(tx, key)?,
+            None => stored_on(tx, &scope.agent_id, key)?,
+        };
         if let Some(stored) = &stored {
-            qualification::validate_member(tx, scope, seed.as_deref(), key, stored)?;
+            match material.as_mut() {
+                Some(m) => m.validate_member_tx(tx, seed.as_deref(), key, stored)?,
+                None => qualification::validate_member(tx, scope, seed.as_deref(), key, stored)?,
+            };
         } else {
             ensure!(
                 !qualification::known_anywhere(tx, key)?,
@@ -154,12 +551,22 @@ fn prepare(
         }
         before.insert(key.clone(), stored);
     }
+    let coverage = match material.as_mut() {
+        Some(m) => m.coverage_tx(tx)?,
+        None => loader::current_coverage(tx, scope)?,
+    };
+    let material_budget = material.as_ref().map(|m| m.ledger().clone());
     Ok(WorkWriteProof {
         scope: scope.clone(),
-        base_revision: loader::current_coverage(tx, scope)?.map_or(1, |coverage| coverage.revision),
+        base_revision: coverage.as_ref().map_or(1, |coverage| coverage.revision),
         before,
         original_recovery,
-        preparation_guards: Vec::new(),
+        material_budget,
+        preparation_usage: material.as_ref().map_or((0, 0), WorkReadMaterial::usage),
+        original_material_limits: material.as_ref().map(WorkReadMaterial::limits),
+        preparation_guards: material
+            .map(WorkReadMaterial::into_guards)
+            .unwrap_or_default(),
     })
 }
 
@@ -168,15 +575,91 @@ pub(crate) fn preflight_work_write_snapshot_tx(
     proof: &WorkWriteProof,
     request: &WorkDomainLoadRequest,
 ) -> Result<WorkBootstrapSnapshot> {
-    // Preflight uses the proof's original scope and never advances its base.
+    preflight_work_write_snapshot_with_memory_tx(tx, proof, request, None)
+}
+pub(crate) fn preflight_work_write_snapshot_with_memory_tx(
+    tx: &Transaction<'_>,
+    proof: &WorkWriteProof,
+    request: &WorkDomainLoadRequest,
+    memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+) -> Result<WorkBootstrapSnapshot> {
+    let mut material = proof.read_material(request, memory)?;
+    let coverage = match material.as_mut() {
+        Some(m) => m.coverage_tx(tx)?,
+        None => loader::current_coverage(tx, &proof.scope)?,
+    };
     ensure!(
-        loader::current_coverage(tx, &proof.scope)?
-            .as_ref()
-            .map_or(1, |coverage| coverage.revision)
-            == proof.base_revision,
+        coverage.as_ref().map_or(1, |c| c.revision) == proof.base_revision,
         "Work preflight proof base changed"
     );
-    loader::preflight_original_work_snapshot_tx(tx, &proof.scope, request, proof.original_recovery)
+    let mut snapshot = match material.as_mut() {
+        Some(m) => loader::prepare_work_domain_snapshot_with_material_tx(
+            tx,
+            &proof.scope,
+            request,
+            proof.original_recovery,
+            false,
+            m,
+        )?,
+        None => loader::preflight_original_work_snapshot_tx(
+            tx,
+            &proof.scope,
+            request,
+            proof.original_recovery,
+        )?,
+    };
+    if let WorkBootstrapSnapshot::Current(current) = &mut snapshot {
+        current.material_views = material
+            .map(WorkReadMaterial::into_guards)
+            .unwrap_or_default();
+    }
+    Ok(snapshot)
+}
+
+/// Check the complete view while its original proof is held, then release
+/// this temporary phase before business SQL. The proof retains its own guards.
+pub(in crate::runtime_db) fn preflight_work_write_snapshot_with_shared_phase_tx(
+    tx: &Transaction<'_>,
+    proof: &WorkWriteProof,
+    request: &WorkDomainLoadRequest,
+    memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+) -> Result<(usize, usize)> {
+    let mut material = proof.read_material(request, memory)?;
+    let coverage = match material.as_mut() {
+        Some(m) => m.coverage_tx(tx)?,
+        None => loader::current_coverage(tx, &proof.scope)?,
+    };
+    ensure!(
+        coverage.as_ref().map_or(1, |c| c.revision) == proof.base_revision,
+        "Work preflight proof base changed"
+    );
+    let snapshot = match material.as_mut() {
+        Some(m) => loader::prepare_work_domain_snapshot_with_material_tx(
+            tx,
+            &proof.scope,
+            request,
+            proof.original_recovery,
+            false,
+            m,
+        )?,
+        None => loader::preflight_original_work_snapshot_tx(
+            tx,
+            &proof.scope,
+            request,
+            proof.original_recovery,
+        )?,
+    };
+    #[cfg(test)]
+    if let Some(m) = material.as_ref() {
+        m.report_phase_usage("preflight", proof.preparation_usage);
+    }
+    let peak = material.as_ref().map_or((0, 0), WorkReadMaterial::usage);
+    drop(snapshot.require_current()?);
+    drop(coverage);
+    if let Some(material) = material {
+        material.finish_transient()?;
+    }
+    Ok(peak)
 }
 
 /// Freeze primary and all implicit owner-cancellation candidates before SQL.
@@ -215,6 +698,8 @@ pub(crate) fn work_wait_write_keys_tx(
 pub(crate) struct CommittedWorkFacts {
     pub delta: CommittedWorkDelta,
     pub owning_input_roots: BTreeSet<InputEvidenceKey>,
+    /// Includes the original loan/proof/preflight/final readback and capture.
+    pub(in crate::runtime_db) material_usage: Option<(usize, usize)>,
 }
 
 #[cfg(test)]
@@ -251,6 +736,7 @@ pub(crate) fn register_work_writes_tx(
         final_state,
         request,
         false,
+        proof.read_material(request, None)?,
     )
     .map(|(facts, _)| facts)
 }
@@ -273,6 +759,7 @@ pub(crate) fn register_work_writes_with_view_tx(
         final_state,
         request,
         true,
+        proof.read_material(request, None)?,
     )?;
     Ok((
         facts,
@@ -288,18 +775,31 @@ fn register_work_writes_inner_tx(
     final_state: &AgentState,
     request: &WorkDomainLoadRequest,
     capture_final_view: bool,
+    mut material: Option<WorkReadMaterial<'_>>,
 ) -> Result<(CommittedWorkFacts, Option<CapturedWork>)> {
+    if let Some(m) = material.as_mut() {
+        m.keys(actual, 8)?;
+    }
     ensure!(
         final_state.id == proof.scope.agent_id,
         "Work final State scope mismatch"
     );
-    let facts = scope_facts(tx, &proof.scope, proof.original_recovery)?
-        .context("Work writer identity changed during original transaction")?;
+    let facts = match material.as_mut() {
+        Some(m) => m.scope_tx(tx, proof.original_recovery)?,
+        None => scope_facts(tx, &proof.scope, proof.original_recovery)?,
+    }
+    .context("Work writer identity changed during original transaction")?;
     ensure!(
         facts.state.as_ref() == Some(final_state),
         "Work delta does not use exact final canonical State"
     );
-    let original_coverage = loader::current_coverage(tx, &proof.scope)?;
+    let original_coverage = match material.as_mut() {
+        Some(m) => m.coverage_tx(tx)?,
+        None => loader::current_coverage(tx, &proof.scope)?,
+    };
+    if let (Some(m), Some(c)) = (material.as_mut(), original_coverage.as_ref()) {
+        m.coverage_copy(c, 1)?;
+    }
     ensure!(
         original_coverage
             .as_ref()
@@ -321,18 +821,27 @@ fn register_work_writes_inner_tx(
             .before
             .get(key)
             .context("actual Work footprint omitted from pre-SQL proof")?;
-        match stored_on(tx, &proof.scope.agent_id, key)? {
+        match match material.as_mut() {
+            Some(m) => m.record_tx(tx, key)?,
+            None => stored_on(tx, &proof.scope.agent_id, key)?,
+        } {
             Some(stored) => {
                 ensure!(
-                    !alias(tx, &proof.scope, key)?
-                        .is_some_and(|alias| alias.availability == WorkAvailability::Pruned),
+                    !match material.as_mut() {
+                        Some(m) => m.alias_tx(tx, key)?,
+                        None => alias(tx, &proof.scope, key)?,
+                    }
+                    .is_some_and(|alias| alias.availability == WorkAvailability::Pruned),
                     "Work write resurrected a pruned ID"
                 );
                 let unchanged = before.as_ref().is_some_and(|prior| {
                     prior.payload == stored.payload && prior.fingerprint == stored.fingerprint
                 });
                 if let CanonicalWorkRecord::Wait(wait) = &stored.record {
-                    let prior_alias = alias(tx, &proof.scope, key)?;
+                    let prior_alias = match material.as_mut() {
+                        Some(m) => m.alias_tx(tx, key)?,
+                        None => alias(tx, &proof.scope, key)?,
+                    };
                     if !unchanged || prior_alias.is_some() {
                         let edge_revision = if unchanged {
                             prior_alias.as_ref().expect("checked alias").revision
@@ -407,18 +916,44 @@ fn register_work_writes_inner_tx(
     }
     if !actual_result_brief_ids.is_empty() {
         let coverage = coverage.get_or_insert_with(|| empty_coverage(proof.base_revision));
-        update_result_heads(tx, &proof.scope, coverage, actual_result_brief_ids)?;
+        update_result_heads_with_material_tx(
+            tx,
+            &proof.scope,
+            coverage,
+            actual_result_brief_ids,
+            material.as_mut(),
+        )?;
     }
     if let Some(coverage) = &mut coverage {
         coverage.revision = revision;
         loader::persist_coverage(tx, &proof.scope, coverage)?;
     }
-    let snapshot = if proof.original_recovery {
-        loader::prepare_original_work_recovery_snapshot_tx(tx, &proof.scope, request)?
-    } else {
-        loader::prepare_work_domain_snapshot_tx(tx, &proof.scope, request)?
+    #[cfg(test)]
+    if let Some(m) = material.as_ref() {
+        m.report_phase_usage("before final snapshot", proof.preparation_usage);
+    }
+    let snapshot = match material.as_mut() {
+        Some(m) => loader::prepare_work_domain_snapshot_with_material_tx(
+            tx,
+            &proof.scope,
+            request,
+            proof.original_recovery,
+            true,
+            m,
+        )?,
+        None => {
+            if proof.original_recovery {
+                loader::prepare_original_work_recovery_snapshot_tx(tx, &proof.scope, request)?
+            } else {
+                loader::prepare_work_domain_snapshot_tx(tx, &proof.scope, request)?
+            }
+        }
     }
     .require_current()?;
+    #[cfg(test)]
+    if let Some(m) = material.as_ref() {
+        m.report_phase_usage("after final snapshot", proof.preparation_usage);
+    }
     // Only ACK bodies outside the ordinary final selection need an extra
     // root. Promoting an already-live key would make its next no-op change
     // coverage just by removing that unnecessary mandatory membership.
@@ -434,16 +969,32 @@ fn register_work_writes_inner_tx(
         snapshot
     } else {
         drop(snapshot);
+        if let Some(m) = material.as_mut() {
+            m.selectors(&request.capture)?;
+            m.keys(&extra, 8)?;
+        }
         let mut request = request.clone();
         request.capture.mandatory_roots.extend(extra);
-        if proof.original_recovery {
-            loader::prepare_original_work_recovery_snapshot_tx(tx, &proof.scope, &request)?
-        } else {
-            loader::prepare_work_domain_snapshot_tx(tx, &proof.scope, &request)?
+        match material.as_mut() {
+            Some(m) => loader::prepare_work_domain_snapshot_with_material_tx(
+                tx,
+                &proof.scope,
+                &request,
+                proof.original_recovery,
+                true,
+                m,
+            )?,
+            None => {
+                if proof.original_recovery {
+                    loader::prepare_original_work_recovery_snapshot_tx(tx, &proof.scope, &request)?
+                } else {
+                    loader::prepare_work_domain_snapshot_tx(tx, &proof.scope, &request)?
+                }
+            }
         }
         .require_current()?
     };
-    finish_delta_inner(
+    let (mut facts, view) = finish_delta_inner(
         tx,
         &proof.scope,
         proof.base_revision,
@@ -452,7 +1003,13 @@ fn register_work_writes_inner_tx(
         changed,
         removals,
         capture_final_view,
-    )
+        material.as_mut(),
+    )?;
+    if let Some(material) = material {
+        facts.material_usage = Some(material.usage());
+        facts.delta._material_views = Some(Arc::new(material.into_guards()));
+    }
+    Ok((facts, view))
 }
 
 #[cfg(test)]
@@ -474,6 +1031,7 @@ fn finish_delta(
         changed,
         removals,
         false,
+        None,
     )
     .map(|(facts, _)| facts)
 }
@@ -488,7 +1046,11 @@ fn finish_delta_inner(
     changed: Vec<Arc<QualifiedWorkRecord>>,
     removals: BTreeMap<WorkKey, WorkAvailability>,
     capture_final_view: bool,
+    mut material: Option<&mut WorkReadMaterial<'_>>,
 ) -> Result<(CommittedWorkFacts, Option<CapturedWork>)> {
+    if let Some(m) = material.as_deref_mut() {
+        m.coverage_copy(snapshot.resident.coverage(), 4)?;
+    }
     let mut coverage = snapshot.resident.coverage().clone();
     coverage.revision = base_revision;
     let is_changed = !changed.is_empty() || !removals.is_empty() || original != Some(&coverage);
@@ -509,7 +1071,7 @@ fn finish_delta_inner(
         );
     }
     let captured = if is_changed || capture_final_view {
-        let mut captured = snapshot.resident.capture(&WorkCaptureRequest {
+        let capture_request = WorkCaptureRequest {
             include_live: true,
             nonopen_limit: coverage.nonopen.limit,
             mandatory_roots: coverage.mandatory_roots.clone(),
@@ -517,7 +1079,11 @@ fn finish_delta_inner(
             required_turn_ids: coverage.turn_wait_keys.keys().cloned().collect(),
             required_task_ids: coverage.task_wait_keys.keys().cloned().collect(),
             required_trigger_message_ids: coverage.trigger_wait_keys.keys().cloned().collect(),
-        })?;
+        };
+        let mut captured = match material.as_deref_mut() {
+            Some(m) => m.capture_resident(&snapshot.resident, &capture_request)?,
+            None => snapshot.resident.capture(&capture_request)?,
+        };
         // The loader temporarily uses base+1; a true no-op retains base.
         captured.revision = coverage.revision;
         if is_changed {
@@ -531,9 +1097,12 @@ fn finish_delta_inner(
     } else {
         None
     };
+    let material_usage = (!snapshot.material_views.is_empty()).then_some(snapshot.material_usage);
     Ok((
         CommittedWorkFacts {
             delta: CommittedWorkDelta {
+                _material_views: (!snapshot.material_views.is_empty())
+                    .then(|| Arc::new(snapshot.material_views)),
                 scope: scope.clone(),
                 base_revision,
                 revision: coverage.revision,
@@ -542,6 +1111,7 @@ fn finish_delta_inner(
                 coverage,
             },
             owning_input_roots: snapshot.owning_input_roots,
+            material_usage,
         },
         captured,
     ))
@@ -562,6 +1132,7 @@ pub(super) fn empty_coverage(revision: u64) -> WorkCoverage {
             is_exhaustive: true,
         },
         latest_results: BTreeMap::new(),
+        legacy_delivery_heads: BTreeMap::new(),
         turn_wait_keys: BTreeMap::new(),
         task_wait_keys: BTreeMap::new(),
         trigger_wait_keys: BTreeMap::new(),
@@ -609,6 +1180,18 @@ pub(super) fn update_result_heads(
     coverage: &mut WorkCoverage,
     brief_ids: &BTreeSet<String>,
 ) -> Result<()> {
+    update_result_heads_with_material_tx(tx, scope, coverage, brief_ids, None)
+}
+pub(super) fn update_result_heads_with_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    coverage: &mut WorkCoverage,
+    brief_ids: &BTreeSet<String>,
+    mut material: Option<&mut WorkReadMaterial<'_>>,
+) -> Result<()> {
+    if let Some(m) = material.as_deref_mut() {
+        m.input_ids(brief_ids.iter().map(String::as_str))?;
+    }
     let mut touched = BTreeSet::new();
     bound_metadata(brief_ids.len(), brief_ids.iter().map(String::len).sum())?;
     for id in brief_ids {
@@ -618,6 +1201,9 @@ pub(super) fn update_result_heads(
             present,
             "actual Result Brief was not qualified by its original D3 writer"
         );
+        if let Some(m) = material.as_deref_mut() {
+            m.input_key_tx(tx, &key)?;
+        }
         let _ = super::completion::proven_payload(tx, scope, &key)?;
         let payload: String = tx.query_row(
             "SELECT payload_json FROM briefs WHERE evidence_id=?1",
@@ -642,16 +1228,37 @@ pub(super) fn update_result_heads(
             |row| row.get(0),
         )?;
         bound_metadata(1, bytes)?;
-        let stored =
-            stored_on(tx, &scope.agent_id, &key)?.context("actual Result has no original Work")?;
-        qualification::validate_member(tx, scope, binding(tx, scope)?.as_deref(), &key, &stored)?;
+        if let Some(m) = material.as_deref_mut() {
+            m.keys(std::iter::once(&key), 8)?;
+        }
+        let stored = match material.as_deref_mut() {
+            Some(m) => m.record_tx(tx, &key)?,
+            None => stored_on(tx, &scope.agent_id, &key)?,
+        }
+        .context("actual Result has no original Work")?;
+        let seed = match material.as_deref_mut() {
+            Some(m) => m.binding_tx(tx)?,
+            None => binding(tx, scope)?,
+        };
+        match material.as_deref_mut() {
+            Some(m) => m.validate_member_tx(tx, seed.as_deref(), &key, &stored)?,
+            None => qualification::validate_member(tx, scope, seed.as_deref(), &key, &stored)?,
+        };
         touched.insert(work);
     }
     for work in touched {
+        if let Some(m) = material.as_deref_mut() {
+            m.completion_result_pool_tx(tx, &work)?;
+        }
         // Qualification is explicit. Existing raw same-name rows never win.
         let head:Option<String>=tx.query_row("SELECT b.evidence_id FROM briefs b WHERE b.agent_id=?1 AND b.work_item_id=?3 AND b.kind='result' AND length(json_extract(b.payload_json,'$.text'))>0 AND (EXISTS(SELECT 1 FROM input_evidence_current a WHERE a.family='brief' AND a.record_id=b.evidence_id AND a.agent_id=?1 AND a.identity_incarnation=?2 AND a.availability='present') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current a WHERE a.family='brief' AND a.record_id=b.evidence_id AND a.agent_id=?1 AND a.identity_incarnation=?2) AND EXISTS(SELECT 1 FROM agent_episode_continuity c JOIN input_evidence_eligibility e USING(seed_id) WHERE c.agent_id=?1 AND c.identity_incarnation=?2 AND e.family='brief' AND e.record_id=b.evidence_id))) ORDER BY b.created_at DESC,b.evidence_id DESC LIMIT 1",params![scope.agent_id,scope.identity_incarnation,work],|row|row.get(0)).optional()?;
         let head = head.context("actual qualified Result has no current head")?;
-        let result = super::completion::completion_head_refs_tx(tx, scope, &head)?;
+        let result = super::completion::completion_head_refs_with_material_tx(
+            tx,
+            scope,
+            &head,
+            material.as_deref_mut(),
+        )?;
         loader::persist_result_head(
             tx,
             scope,

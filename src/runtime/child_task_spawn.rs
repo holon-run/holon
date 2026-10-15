@@ -290,6 +290,50 @@ impl OriginalChildTaskProducer {
         }));
         Ok(())
     }
+    /// The original registered Host worker alone continues this exact created
+    /// child/physical seed. This validates a source; it grants no new FS right.
+    pub(crate) fn validate_original_spawn_worktree_target(
+        &self,
+        child_id: &str,
+        incarnation: u64,
+        seed: &crate::runtime::ManagedWorktreeSeed,
+    ) -> Result<()> {
+        let spawn = self
+            .original_child_spawn()
+            .context("original worktree target has no spawn")?;
+        ensure!(
+            spawn.registered.load(Ordering::Acquire)
+                && spawn.worktree
+                && spawn.worktree_created.load(Ordering::Acquire)
+                && !spawn.done.load(Ordering::Acquire),
+            "original worktree target has no live actual creation"
+        );
+        let identity = spawn
+            .identity
+            .lock()
+            .map_err(|_| anyhow::anyhow!("original child target poisoned"))?;
+        ensure!(
+            identity
+                .as_ref()
+                .is_some_and(|(id, inc)| id == child_id && *inc == incarnation),
+            "original worktree target crossed child incarnation"
+        );
+        drop(identity);
+        let planned = spawn
+            .worktree_seed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("original worktree seed poisoned"))?;
+        ensure!(
+            planned
+                .as_ref()
+                .is_some_and(|old| old.original_cwd == seed.original_cwd
+                    && old.original_branch == seed.original_branch
+                    && old.worktree_path == seed.worktree_path
+                    && old.worktree_branch == seed.worktree_branch),
+            "original worktree target changed its actual seed"
+        );
+        Ok(())
+    }
     pub(crate) fn original_spawn_worktree_created(
         &self,
         path: &std::path::Path,
@@ -920,3 +964,7 @@ mod accepted_legacy_command_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "physical_worktree_source_tests.rs"]
+mod physical_worktree_source_tests;

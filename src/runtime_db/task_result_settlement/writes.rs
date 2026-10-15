@@ -4,6 +4,10 @@ use super::*;
 use anyhow::{ensure, Context};
 use std::collections::BTreeSet;
 
+#[path = "selection_material.rs"]
+mod selection_material;
+pub(crate) use selection_material::{admit_original_selection_material_tx,TaskResultSelectionRead};
+
 const OWNER_SQL: &str =         "SELECT payload_json
          FROM task_result_settlements
          WHERE agent_id = ?1
@@ -869,6 +873,7 @@ pub(crate) struct TaskResultSelection<'tx, 'connection> {
     material: TaskResultMaterialEstimate,
 }
 impl<'tx, 'connection> TaskResultSelection<'tx, 'connection> {
+    #[cfg(test)]
     pub(crate) fn material_estimate(&self) -> TaskResultMaterialEstimate {
         self.material
     }

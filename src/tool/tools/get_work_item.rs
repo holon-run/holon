@@ -12,8 +12,9 @@ use crate::{
 use super::{
     serialize_success,
     work_item_query::{
-        projection_outside_query_window, query_context_from_work_items, view_for_record,
-        WorkItemQueryContext, WorkItemView,
+        projection_outside_query_window, query_context_from_work_items,
+        view_for_recalled_record_observed, view_for_record_in_snapshot, WorkItemQueryContext,
+        WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -53,41 +54,59 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: GetWorkItemArgs = parse_tool_args(NAME, input)?;
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
-    let snapshot = runtime.capture_work_query_snapshot().await?;
+    let snapshot = runtime.capture_work_query_snapshot_with_resources().await?;
     let context = query_context_from_work_items(&snapshot.state, &snapshot.items);
     let projection = snapshot
         .items
         .iter()
-        .find(|item| item.work_item.id == work_item_id)
-        .cloned();
-    let (record, projection, _historical_budget) = match projection {
-        Some(projection) => (projection.work_item.clone(), projection, None),
-        None => {
-            // Get names an explicit historical reference. Preserve the existing
-            // by-ID query (including foreign records), without adopting it or
-            // changing the ordinary scheduling window.
-            let record = runtime
-                .latest_work_item(&work_item_id)
-                .await?
+        .find(|item| item.work_item.id == work_item_id);
+    let (record, projection, _historical_budget, plan_read) =
+        if let Some(selected) = snapshot.selected_work_item(&work_item_id) {
+            // Owning closure can select a closed Work body outside display heads.
+            let plan = runtime.capture_work_item_plan_query(&snapshot, selected)?;
+            let projection = projection
+                .cloned()
+                .unwrap_or_else(|| projection_outside_query_window(&context, selected));
+            (selected.clone(), projection, None, plan)
+        } else {
+            // Original by-ID recall only when this publication did not select it.
+            let read = runtime
+                .inspect_historical_work_item(&snapshot, &work_item_id)?
                 .ok_or_else(|| {
                     crate::tool::ToolError::new(
                         "unknown_work_item",
                         format!("unknown work item {work_item_id}"),
                     )
                 })?;
+            let (record, budget) = read.into_parts();
             let projection = projection_outside_query_window(&context, &record);
-            let budget = runtime.account_historical_work_query_record(&snapshot, &record)?;
-            (record, projection, Some(budget))
-        }
+            let plan = runtime.inspect_historical_work_item_plan(&snapshot, &record)?;
+            (record, projection, Some(budget), plan)
+        };
+    let (work_item, _plan_material) = if _historical_budget.is_none() {
+        view_for_record_in_snapshot(
+            runtime,
+            &snapshot,
+            record,
+            args.include_todo_list,
+            false,
+            projection,
+            plan_read,
+        )?
+    } else {
+        // Explicit recall keeps its separate named original inspection cause.
+        view_for_recalled_record_observed(
+            runtime,
+            record,
+            args.include_todo_list,
+            _historical_budget
+                .as_ref()
+                .expect("explicit recall material retained"),
+            projection,
+            plan_read,
+        )?
     };
-    let work_item = view_for_record(
-        runtime,
-        &context,
-        record,
-        args.include_todo_list,
-        None,
-        Some(projection),
-    )
-    .await?;
-    serialize_success(NAME, &GetWorkItemResult { context, work_item })
+    let result = serialize_success(NAME, &GetWorkItemResult { context, work_item });
+    drop(_plan_material);
+    result
 }

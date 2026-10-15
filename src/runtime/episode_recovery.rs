@@ -20,15 +20,29 @@ use crate::runtime_db::{
 /// True means the addressed unknown was resolved (known, or proven not committed).
 /// Known results remain fenced until the caller installs and reconciles them.
 /// False leaves an ineligible/unfinished operation fenced for its own resolver.
+#[cfg(test)]
 pub(crate) fn resolve_episode_recovery(
     db: &RuntimeDb,
     reservations: &mut [MutationReservation],
     recent_limit: usize,
 ) -> Result<bool> {
+    let budget = super::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
+    resolve_episode_recovery_with_budget(db, reservations, recent_limit, &budget)
+}
+pub(crate) fn resolve_episode_recovery_with_budget(
+    db: &RuntimeDb,
+    reservations: &mut [MutationReservation],
+    recent_limit: usize,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<bool> {
     let mut resolved = false;
     for reservation in reservations {
-        resolved |=
-            resolve_single_episode_recovery(db, std::slice::from_mut(reservation), recent_limit)?;
+        resolved |= resolve_single_episode_recovery(
+            db,
+            std::slice::from_mut(reservation),
+            recent_limit,
+            budget,
+        )?;
     }
     Ok(resolved)
 }
@@ -37,6 +51,7 @@ fn resolve_single_episode_recovery(
     db: &RuntimeDb,
     reservations: &mut [MutationReservation],
     recent_limit: usize,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<bool> {
     let Some(recovery) = reservations[0].recovery()? else {
         return Ok(false);
@@ -98,6 +113,7 @@ fn resolve_single_episode_recovery(
                     current.episodes,
                 )?;
                 Some(KnownCommit::State {
+                    current_reads: None,
                     work: None,
 
                     tasks: None,
@@ -118,14 +134,13 @@ fn resolve_single_episode_recovery(
                 requested_scope == scope,
                 "retired Episode recovery scope changed"
             );
-            receipt.map(|_| {
-                KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                    identity: current_identity.map(Arc::new),
-                    // An old scope cannot install either its historical candidate
-                    // or the successor incarnation's current State.
-                    state: None,
-                }))
-            })
+            receipt
+                .map(|_| -> Result<_> {
+                    Ok(KnownCommit::Metadata(Arc::new(
+                        IdentityMutationFacts::budgeted_owned(current_identity, None, budget)?,
+                    )))
+                })
+                .transpose()?
         }
     };
 

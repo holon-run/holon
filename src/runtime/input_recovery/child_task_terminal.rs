@@ -100,10 +100,9 @@ pub(super) fn prepare_known_tx(
         if mode != ChildTaskTerminalInstallMode::Current {
             // This ACK never proves old Accepted work absent. Only own new
             // admission tickets are disposed by mark_original_input_receipt_pending.
-            known.push(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                identity: view.identity(member).cloned().map(Arc::new),
-                state: None,
-            })));
+            known.push(KnownCommit::Metadata(Arc::new(
+                IdentityMutationFacts::budgeted(view.identity(member), None, budget)?,
+            )));
             continue;
         }
         if ack.deletion.as_ref().is_some_and(|deletion| {
@@ -118,10 +117,9 @@ pub(super) fn prepare_known_tx(
                 Some(KnownCommit::State { state, .. }) => Some(state),
                 _ => None,
             };
-            known.push(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                identity: view.identity(member).cloned().map(Arc::new),
-                state,
-            })));
+            known.push(KnownCommit::Metadata(Arc::new(
+                IdentityMutationFacts::budgeted(view.identity(member), state, budget)?,
+            )));
             continue;
         }
         if member != scope {
@@ -136,6 +134,7 @@ pub(super) fn prepare_known_tx(
                 .context("child related scope ACK absent")?;
             let facts = match original {
                 Some(KnownCommit::State {
+                    current_reads,
                     state,
                     episodes,
                     input_evidence,
@@ -144,6 +143,12 @@ pub(super) fn prepare_known_tx(
                     scheduling,
                     runtime,
                 }) => {
+                    if let Some(current) = &current_reads {
+                        current.validate_identity(
+                            view.identity(member)
+                                .context("child related CurrentRead fresh identity missing")?,
+                        )?;
+                    }
                     let tasks = if let Some(tasks) = tasks {
                         let delta = reader.read_related_status(
                             tx,
@@ -179,6 +184,7 @@ pub(super) fn prepare_known_tx(
                             .task_status_metadata_known()
                     } else {
                         KnownCommit::State {
+                            current_reads,
                             state,
                             episodes,
                             input_evidence,
@@ -194,10 +200,11 @@ pub(super) fn prepare_known_tx(
                         witness.input_storage_replayed() || scope_ack.revision.is_none(),
                         "cold related child ACK changed an unobserved Task domain"
                     );
-                    KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                        identity: view.identity(member).cloned().map(Arc::new),
-                        state: None,
-                    }))
+                    KnownCommit::Metadata(Arc::new(IdentityMutationFacts::budgeted(
+                        view.identity(member),
+                        None,
+                        budget,
+                    )?))
                 }
                 Some(KnownCommit::Metadata(_)) => {
                     anyhow::bail!("child original related observation invalid")
@@ -269,6 +276,11 @@ pub(super) fn prepare_known_tx(
                     )
                 }),
         );
+        let event_roles = reservation.current_event_roles(
+            member,
+            budget,
+            (input.byte_limit, input.record_limit),
+        )?;
         let current = reader.read_primary_input_domains(
             tx,
             &state,
@@ -278,6 +290,7 @@ pub(super) fn prepare_known_tx(
             &task,
             live.iter()
                 .find_map(|queries| queries.selection_for(member, reservation.owner_epoch())),
+            event_roles.as_ref(),
         )?;
         let work = current
             .work
@@ -358,11 +371,13 @@ pub(super) fn prepare_known_tx(
             view.identity(member).cloned(),
             cache,
         )?
+        .with_current_read_facts(current.current_reads.clone())?
         .with_task_stop_queue_metadata(queue_guard);
         if witness.input_storage_replayed() {
             runtime.suppress_observed_input_replay_publication();
         }
         known.push(KnownCommit::State {
+            current_reads: Some(current.current_reads.clone()),
             state,
             episodes: Some(episodes),
             input_evidence: Some(inputs),

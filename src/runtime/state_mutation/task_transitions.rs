@@ -69,6 +69,56 @@ impl RuntimeMutation {
                 + 'a,
         >,
     > {
+        self.commit_task_transition_inner(
+            operation_id,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            None,
+        )
+    }
+
+    #[inline(never)]
+    pub(in crate::runtime) fn commit_task_transition_with_original_workspace_request<'a>(
+        &'a mut self,
+        operation_id: String,
+        command: TaskTransitionCommand,
+        execution_protocol: ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        material: Arc<super::super::OriginalWorkspaceRequestMaterial>,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<
+                    Output = Result<(TransitionCommit, Option<InputTaskDeletionResult>)>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.commit_task_transition_inner(
+            operation_id,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            Some(material),
+        )
+    }
+
+    #[inline(never)]
+    fn commit_task_transition_inner<'a>(
+        &'a mut self,
+        operation_id: String,
+        command: TaskTransitionCommand,
+        execution_protocol: ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        original_workspace_material: Option<Arc<super::super::OriginalWorkspaceRequestMaterial>>,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<
+                    Output = Result<(TransitionCommit, Option<InputTaskDeletionResult>)>,
+                > + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             let task_id = command.task.id.clone();
             let expected_child = command
@@ -79,7 +129,7 @@ impl RuntimeMutation {
             let deletion_id = expected_child
                 .as_ref()
                 .map(|_| crate::ids::agent_deletion_id());
-            let prepared = PreparedInputTransition::task(
+            let mut prepared = PreparedInputTransition::task(
                 self.input_evidence_scope(),
                 operation_id,
                 Utc::now(),
@@ -91,6 +141,13 @@ impl RuntimeMutation {
                     deletion_id,
                 )?,
             )?;
+            if let Some(material) = original_workspace_material {
+                prepared = prepared.with_original_task_workspace_request_material(
+                    material,
+                    self.reservations[self.primary_index].owner_epoch(),
+                    &self.runtime.inner.input_evidence_budget,
+                )?;
+            }
             let (commit, result) = self.commit_prepared_input_with_result(prepared).await?;
             let InputMutationResult::Task {
                 task_id: original_task_id,
@@ -112,3 +169,7 @@ impl RuntimeMutation {
 #[cfg(test)]
 #[path = "task_transition_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "physical_worktree_task_loan_tests.rs"]
+mod physical_worktree_task_loan_tests;

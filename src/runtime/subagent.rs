@@ -12,8 +12,21 @@ impl RuntimeHandle {
         &self,
         task_id: &str,
     ) -> Result<ManagedWorktreeSeed> {
-        self.prepare_managed_worktree_for_task_inner(task_id, None)
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&task_id)?;
+        let task_id = task_id.to_owned();
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime
+                .prepare_managed_worktree_for_task_inner(&task_id, None, material)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
             .await
+            .context("original parent worktree worker ended before its ACK")?
     }
 
     pub(crate) async fn prepare_managed_worktree_for_original_child_spawn(
@@ -28,7 +41,8 @@ impl RuntimeHandle {
                 && source.original_child_spawn_registered(),
             "original worktree spawn differs from its admitted source"
         );
-        self.prepare_managed_worktree_for_task_inner(task_id, Some(source))
+        let material = self.prepare_original_workspace_request_material(&task_id)?;
+        self.prepare_managed_worktree_for_task_inner(task_id, Some(source), material)
             .await
     }
 
@@ -36,6 +50,7 @@ impl RuntimeHandle {
         &self,
         task_id: &str,
         original_spawn: Option<&super::OriginalChildTaskProducer>,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
     ) -> Result<ManagedWorktreeSeed> {
         let state = self.agent_state().await?;
         if !state.execution_profile.supports_managed_worktrees {
@@ -154,16 +169,16 @@ impl RuntimeHandle {
         if let Some(source) = original_spawn {
             source.original_spawn_worktree_created(&worktree_path, &worktree_branch)?;
         }
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "worktree_created_for_task",
-            serde_json::json!({
-                "task_id": task_id,
-                "worktree_path": worktree_path,
-                "worktree_branch": worktree_branch,
-                "original_cwd": original_cwd,
-                "original_branch": original_branch,
-            }),
-        ))?;
+        let audit = self.prepare_original_task_worktree_created_observation(
+            material.clone(),
+            task_id,
+            &original_cwd,
+            &original_branch,
+            &worktree_path,
+            &worktree_branch,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
 
         let seed = ManagedWorktreeSeed {
             original_cwd,
@@ -171,7 +186,7 @@ impl RuntimeHandle {
             worktree_path,
             worktree_branch,
         };
-        self.record_task_owned_worktree_metadata(task_id, &seed)
+        self.record_task_owned_worktree_metadata(task_id, &seed, material)
             .await?;
         Ok(seed)
     }
@@ -207,7 +222,10 @@ impl RuntimeHandle {
         authority_class: &AuthorityClass,
         task_id: &str,
     ) -> Result<WorktreeSubagentResult> {
-        let seed = self.prepare_managed_worktree_for_task(task_id).await?;
+        let material = self.prepare_original_workspace_request_material(&task_id)?;
+        let seed = self
+            .prepare_managed_worktree_for_task_inner(task_id, None, material)
+            .await?;
         self.emit_worktree_child_task_running_status(agent_id, task_id, authority_class)
             .await?;
 
@@ -365,9 +383,20 @@ impl RuntimeHandle {
         prompt_metadata: serde_json::Value,
         assistant_metadata: Option<serde_json::Value>,
     ) -> Result<String> {
-        let effective_prompt = self
-            .build_subagent_prompt_for_workspace(agent_id, prompt, authority_class, execution)
+        let (resources, skills) = self
+            .prepare_subagent_resource_observation(execution)
             .await?;
+        let effective_prompt = self
+            .build_subagent_prompt_for_workspace(
+                agent_id,
+                prompt,
+                authority_class,
+                execution,
+                resources,
+                &skills,
+            )
+            .await?;
+        let _resource_pins = effective_prompt.resource_pins.clone();
         self.persist_transcript_evidence(&TranscriptEntry::new(
             agent_id.to_string(),
             TranscriptEntryKind::SubagentPrompt,

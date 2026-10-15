@@ -30,8 +30,7 @@ use crate::{
         },
         task_result_settlement::{self, TaskResultSettlementRecord},
         transitions::{
-            execution_protocol_repository, trigger_wait_and_enqueue_at_tx, AgentStateMutation,
-            PostCommitEffects, TransitionCommit,
+            execution_protocol_repository, AgentStateMutation, PostCommitEffects, TransitionCommit,
         },
         RuntimeDb, RuntimeIndexChange, RuntimeIndexOperation, RuntimeStateTransitionConflict,
     },
@@ -46,6 +45,8 @@ use crate::{
     },
 };
 
+mod current_reads;
+pub(in crate::runtime_db) use current_reads::OriginalControlCurrentReadRecovery;
 mod scheduling_writes;
 mod task_writes;
 
@@ -365,6 +366,8 @@ pub(crate) struct ControlRecoveryFacts {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ControlRecoveryDomains {
+    pub identity_publication: Arc<crate::runtime::mutation_owner::IdentityMutationFacts>,
+    pub current_reads: Option<Arc<crate::runtime::current_read_facts::ResidentCurrentReadFacts>>,
     pub scheduling: Arc<crate::runtime::resident_scheduling::ResidentSchedulingDomain>,
     pub inputs: Arc<crate::runtime::resident_input_evidence::ResidentInputEvidence>,
     pub work: Arc<crate::runtime::resident_work::ResidentWorkDomain>,
@@ -976,7 +979,7 @@ impl RuntimeDb {
             invocation,
             command_digest,
             recent_episode_limit,
-            Some((input_request, work_request, budget, None)),
+            Some((input_request, work_request, budget, None, None)),
         )
     }
 
@@ -990,13 +993,14 @@ impl RuntimeDb {
         work_request: &crate::runtime::resident_work::WorkCaptureRequest,
         budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+        event_roles: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
     ) -> Result<ControlRecoveryObservation> {
         self.load_control_recovery_inner(
             key,
             invocation,
             command_digest,
             recent_episode_limit,
-            Some((input_request, work_request, budget, query)),
+            Some((input_request, work_request, budget, query, event_roles)),
         )
     }
 
@@ -1011,6 +1015,7 @@ impl RuntimeDb {
             &crate::runtime::resident_work::WorkCaptureRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
             Option<&crate::runtime::task_queries::TaskQuerySelection>,
+            Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
         )>,
     ) -> Result<ControlRecoveryObservation> {
         validate_key(key)?;
@@ -1043,7 +1048,7 @@ impl RuntimeDb {
         }) {
             let snapshot = load_snapshot_in_with_original_scope(&tx, key, true)?;
             let (episodes, domains, pending) =
-                if let (Some(receipt), Some((input, capture, budget, query))) =
+                if let (Some(receipt), Some((input, capture, budget, query, event_roles))) =
                     (receipt.as_ref(), preparation)
                 {
                     use crate::runtime::resident_work::{WorkFamily, WorkKey};
@@ -1110,6 +1115,7 @@ impl RuntimeDb {
                             )
                         }),
                     );
+                    let current_recovery = current_reads::original_recovery(&tx, receipt);
                     let prepared =
                         super::input_preparation::prepare_control_recovery_with_queries_tx(
                             &tx,
@@ -1121,6 +1127,8 @@ impl RuntimeDb {
                             &capture,
                             &task_request,
                             query,
+                            &current_recovery,
+                            event_roles,
                         )?;
                     ensure!(
                         prepared.facts.state.as_ref() == Some(&snapshot.state)
@@ -1134,6 +1142,14 @@ impl RuntimeDb {
                     (
                         Arc::new(prepared.episodes),
                         Some(ControlRecoveryDomains {
+                            identity_publication: Arc::new(
+                                crate::runtime::mutation_owner::IdentityMutationFacts::budgeted(
+                                    prepared.facts.identity.as_ref(),
+                                    None,
+                                    budget,
+                                )?,
+                            ),
+                            current_reads: prepared.current_reads,
                             scheduling: prepared.scheduling,
                             inputs: Arc::new(prepared.inputs.with_budget(budget.clone())?),
                             work,
@@ -1195,7 +1211,7 @@ impl RuntimeDb {
 
     #[cfg(test)]
     pub(crate) fn commit_control(&self, command: &PreparedControl) -> Result<ControlCommit> {
-        self.commit_control_inner(command, None, None, None)
+        self.commit_control_inner(command, None, None, None, None, None)
     }
 
     #[cfg(test)]
@@ -1204,7 +1220,7 @@ impl RuntimeDb {
         command: &PreparedControl,
         request: &super::work_snapshot::WorkDomainLoadRequest,
     ) -> Result<ControlCommit> {
-        self.commit_control_inner(command, Some(request), None, None)
+        self.commit_control_inner(command, Some(request), None, None, None, None)
     }
 
     pub(crate) fn commit_control_with_domain_requests(
@@ -1213,6 +1229,35 @@ impl RuntimeDb {
         work_request: &super::work_snapshot::WorkDomainLoadRequest,
         task_request: &super::task_snapshot::TaskDomainLoadRequest,
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<ControlCommit> {
+        self.commit_control_with_domain_requests_and_event_roles(
+            command,
+            work_request,
+            task_request,
+            ledger,
+            None,
+        )
+    }
+    pub(crate) fn commit_control_with_domain_requests_and_event_roles(
+        &self,
+        command: &PreparedControl,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        event_roles: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
+    ) -> Result<ControlCommit> {
+        self.commit_control_with_domain_requests_and_input_source(
+            command, work_request, task_request, ledger, event_roles, None,
+        )
+    }
+    pub(crate) fn commit_control_with_domain_requests_and_input_source(
+        &self,
+        command: &PreparedControl,
+        work_request: &super::work_snapshot::WorkDomainLoadRequest,
+        task_request: &super::task_snapshot::TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        event_roles: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
+        input_source: Option<&std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>>,
     ) -> Result<ControlCommit> {
         let scheduling_request = super::scheduling_snapshot::SchedulingDomainLoadRequest {
             capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
@@ -1224,6 +1269,8 @@ impl RuntimeDb {
             Some(work_request),
             Some((task_request, ledger)),
             Some((&scheduling_request, ledger)),
+            event_roles,
+            input_source,
         )
     }
 
@@ -1235,7 +1282,14 @@ impl RuntimeDb {
         request: &super::scheduling_snapshot::SchedulingDomainLoadRequest,
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     ) -> Result<ControlCommit> {
-        self.commit_control_inner(command, Some(work_request), None, Some((request, ledger)))
+        self.commit_control_inner(
+            command,
+            Some(work_request),
+            None,
+            Some((request, ledger)),
+            None,
+            None,
+        )
     }
 
     fn commit_control_inner(
@@ -1250,6 +1304,8 @@ impl RuntimeDb {
             &super::scheduling_snapshot::SchedulingDomainLoadRequest,
             &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         )>,
+        event_roles: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
+        input_source: Option<&std::sync::Arc<crate::runtime::mutation_owner::OriginalInputQuerySource>>,
     ) -> Result<ControlCommit> {
         let result = self.transaction(|tx| {
             // Authentication of an old namespace is performed by the caller.
@@ -1265,6 +1321,9 @@ impl RuntimeDb {
             let mut task_writes = task_request.map(|(request, ledger)|
                 task_writes::prepare_control_task_writes_tx(tx, command, request, ledger)
             ).transpose()?;
+            let mut current_reads = task_request.map(|(_, ledger)| ledger)
+                .or_else(|| scheduling_request.map(|(_, ledger)| ledger))
+                .map(|ledger| current_reads::prepare_tx(tx, command, ledger, event_roles)).transpose()?;
             let actual = load_snapshot_in(tx, &command.key)?;
             if actual != *command.expected {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation("control_targets", &command.key.agent_id).into());
@@ -1286,6 +1345,33 @@ impl RuntimeDb {
             let input_scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
                 agent_id: command.key.agent_id.clone(), identity_incarnation: command.key.identity_incarnation,
             };
+            // Observe original addresses before the first business write. The
+            // final actual D3 ACK, rather than a command's claimed ID, mints birth.
+            let native_input = task_request.map(|(_, ledger)| ledger)
+                .or_else(|| scheduling_request.map(|(_, ledger)| ledger))
+                .map(|ledger| {
+                    let request = work_request.context("Control native Input requires its original Work request")?;
+                    super::input_evidence_snapshot::native_birth::NativeInputWriteProof::prepare_with_query_source_tx(
+                        tx, &input_scope, |visit| {
+                            use crate::runtime::resident_input_evidence::InputEvidenceFamily as Family;
+                            for result in &command.task_results {
+                                visit(Family::Message, &result.message.id)?;
+                            }
+                            for turn in &command.interrupted_turns {
+                                visit(Family::Turn, &turn.turn_id)?;
+                            }
+                            // PreparedControl freezes only original Interrupt
+                            // commands; their existing Attempt is an update.
+                            for execution in &command.execution_commands {
+                                let ExecutionProtocolCommand::Interrupt(interrupt) = execution else {
+                                    anyhow::bail!("Control native footprint has another execution operation");
+                                };
+                                visit(Family::Outcome, &interrupt.outcome_id)?;
+                            }
+                            Ok(())
+                        }, ledger, (request.byte_limit, request.record_limit), input_source,
+                    )
+                }).transpose()?.flatten();
             let is_stop = command.invocation.action == ControlAction::Stop;
             let work_proof = if is_stop {
                 work_request.map(|request| {
@@ -1306,7 +1392,10 @@ impl RuntimeDb {
                     status: QueueEntryStatus::Queued, created_at: result.message.created_at,
                     updated_at: command.prepared_at };
                 // Keep exact wake/rejoin admission and result evidence together.
-                let admission = trigger_wait_and_enqueue_at_tx(tx, &result.message, &queued, command.prepared_at)?;
+                let admission = super::transitions::trigger_wait_and_enqueue_with_current_read_tx(
+                    tx, &result.message, &queued, Some(command.prepared_at),
+                    current_reads.as_mut().map(|writes| writes.business_mut()),
+                )?;
                 ensure!(admission.message_inserted && admission.queue_applied,
                     "Stop TaskResult admission was not exact/new");
                 message_index_changes.push(RuntimeIndexChange::for_message(&admission.message));
@@ -1360,14 +1449,20 @@ impl RuntimeDb {
                     record.status = if command.outcome.dropped_timer_queue_message_ids.contains(&record.message_id) {
                         QueueEntryStatus::Dropped
                     } else { QueueEntryStatus::Aborted };
-                    ensure!(compare_and_set_queue_entry_tx(tx, expected, &record)?, "Stop queue CAS failed");
+                    ensure!(match &mut current_reads {
+                        Some(writes) => writes.compare_queue_tx(tx, expected, &record)?,
+                        None => compare_and_set_queue_entry_tx(tx, expected, &record)?,
+                    }, "Stop queue CAS failed");
                     final_queue.push(record);
                 }
                 for message in &result_messages {
                     let mut record: QueueEntryRecord = payload_optional(tx,
                         "SELECT payload_json FROM queue_entries WHERE message_id = ?1", &message.id)?.context("Stop result queue missing")?;
                     record.status = QueueEntryStatus::Aborted; record.updated_at = command.prepared_at;
-                    upsert_queue_entry_tx(tx, &record)?;
+                    match &mut current_reads {
+                        Some(writes) => { writes.business_mut().upsert_queue_tx(tx, &record)?; }
+                        None => { upsert_queue_entry_tx(tx, &record)?; }
+                    }
                     final_queue.push(record);
                 }
                 for trigger in &command.expected.external_triggers {
@@ -1410,6 +1505,9 @@ impl RuntimeDb {
             input_facts.extend(command.interrupted_turns.iter().cloned().map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn));
             let evidence_delta = super::input_evidence_snapshot::register_committed_input_evidence_tx(tx, &input_scope, &input_facts)?;
             super::input_evidence_writes::merge_input_evidence_delta(&mut input_delta,evidence_delta)?;
+            if let Some(native) = native_input {
+                native.finish_delta_tx(tx, &mut input_delta)?;
+            }
             let task_facts = task_writes.map(|writes|
                 writes.finish(tx, &persisted, task_request.expect("Task request retained").1)
             ).transpose()?;
@@ -1417,7 +1515,10 @@ impl RuntimeDb {
             let mut audit_bindings = Vec::new();
             let mut audit_events = Vec::new();
             for event in &command.audit_events {
-                let (event, inserted) = append_audit_event_tx(tx, Some(&command.key.agent_id), event)?;
+                let (event, inserted) = match &mut current_reads {
+                    Some(writes) => writes.business_mut().append_event_tx(tx, Some(&command.key.agent_id), event)?,
+                    None => append_audit_event_tx(tx, Some(&command.key.agent_id), event)?,
+                };
                 audit_bindings.push(ControlAuditBinding { audit_event_id: event.id.clone(), event_seq: event.event_seq,
                     event_log_epoch: event.event_log_epoch.clone() });
                 if inserted { audit_events.push(event); }
@@ -1443,6 +1544,7 @@ impl RuntimeDb {
                 index_bindings.push(ControlIndexBinding { change_seq, source_ref: change.source_ref.clone() });
             }
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterIndexWrites)?;
+            let current_facts = current_reads.map(|writes| writes.finish(&persisted)).transpose()?;
             let revision: i64 = tx.query_row("SELECT control_revision FROM agent_states WHERE agent_id = ?1",
                 [&command.key.agent_id], |row| row.get(0))?;
             let receipt = ControlReceipt { family_version: CONTROL_FAMILY_VERSION, key: command.key.clone(),
@@ -1510,7 +1612,7 @@ impl RuntimeDb {
                 removed_queue_message_ids: final_queue.iter().map(|entry| entry.message_id.clone()).collect(),
                 timers: timers.clone(), tasks: tasks.clone(), external_triggers: external_triggers.clone(),
                 messages: result_messages.clone(), turns: turns.clone(), execution_protocol: execution_protocol.clone(), input_evidence_delta: input_delta,
-                audit_events, notify_memory_index: !changes.is_empty(), notify_scheduler: true, ..Default::default()
+                audit_events, current_read_maintenance: current_facts.map(Arc::new), notify_memory_index: !changes.is_empty(), notify_scheduler: true, ..Default::default()
             }), ..Default::default() };
             if let Some(mut scheduling) = scheduling_facts {
                 transition.effects.scheduling_material_budget_views = scheduling.facts.take_budget_views();

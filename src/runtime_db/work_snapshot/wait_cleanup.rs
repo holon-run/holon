@@ -362,6 +362,7 @@ pub(crate) fn register_optional_state_work_wait_cleanup_tx(
     loader::persist_coverage(tx, &proof.scope, &coverage)?;
     Ok(Some(CommittedWorkFacts {
         delta: CommittedWorkDelta {
+            _material_views: None,
             scope: proof.scope.clone(),
             base_revision: proof.base_revision,
             revision: coverage.revision,
@@ -370,6 +371,7 @@ pub(crate) fn register_optional_state_work_wait_cleanup_tx(
             coverage,
         },
         owning_input_roots: owning_roots,
+        material_usage: None,
     }))
 }
 

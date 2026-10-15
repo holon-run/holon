@@ -119,7 +119,19 @@ pub(super) fn completion_head_refs_tx(
     scope: &InputEvidenceScope,
     id: &str,
 ) -> Result<WorkCompletionRef> {
+    completion_head_refs_with_material_tx(tx, scope, id, None)
+}
+
+pub(super) fn completion_head_refs_with_material_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    id: &str,
+    mut material: Option<&mut read_preparation::WorkReadMaterial<'_>>,
+) -> Result<WorkCompletionRef> {
     let key = InputEvidenceKey::new(InputEvidenceFamily::Brief, id);
+    if let Some(m) = material.as_deref_mut() {
+        m.input_key_tx(tx, &key)?;
+    }
     let payload = proven_payload(tx, scope, &key)?;
     let brief: BriefRecord = serde_json::from_str(&payload)?;
     ensure!(
@@ -136,6 +148,9 @@ pub(super) fn completion_head_refs_tx(
     };
     if let Some(id) = brief.content_source.transcript_entry_id() {
         let key = InputEvidenceKey::new(InputEvidenceFamily::Transcript, id);
+        if let Some(m) = material.as_deref_mut() {
+            m.input_key_tx(tx, &key)?;
+        }
         if source_absence(tx, scope, &key)?.is_none() {
             let payload = proven_payload(tx, scope, &key)?;
             let transcript: TranscriptEntry = serde_json::from_str(&payload)?;
@@ -147,6 +162,9 @@ pub(super) fn completion_head_refs_tx(
             if transcript.kind == TranscriptEntryKind::IncomingMessage {
                 if let Some(id) = transcript.related_message_id {
                     let key = InputEvidenceKey::new(InputEvidenceFamily::Message, &id);
+                    if let Some(m) = material.as_deref_mut() {
+                        m.input_key_tx(tx, &key)?;
+                    }
                     if source_absence(tx, scope, &key)?.is_none() {
                         result.source_message_id = Some(id);
                     }

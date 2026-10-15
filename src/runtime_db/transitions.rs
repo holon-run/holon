@@ -23,6 +23,7 @@ pub(crate) use prepared_task_result::{
     TaskResultOperation,
 };
 
+use super::current_read_snapshot::CurrentReadBusinessTransaction;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -143,12 +144,26 @@ pub(crate) enum QueueOperation {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
+    /// Original Host request allocation; accounting only, never scoped admission.
+    pub _original_workspace_material:
+        Option<std::sync::Arc<crate::runtime::OriginalWorkspaceRequestMaterial>>,
+    pub _original_sleep_override_material:
+        Option<std::sync::Arc<crate::runtime::OriginalSleepOverrideMaterial>>,
+    pub _original_task_input_child_material:
+        Option<std::sync::Arc<crate::runtime::OriginalTaskInputChildMaterial>>,
+    pub current_read_facts:
+        Option<std::sync::Arc<super::current_read_snapshot::CommittedCurrentReadFacts>>,
+    pub current_read_maintenance:
+        Option<std::sync::Arc<super::current_read_snapshot::CommittedCurrentReadMaintenance>>,
     pub scheduling_delta:
         Option<Box<crate::runtime::resident_scheduling::CommittedSchedulingDelta>>,
     pub scheduling_delta_requires_prepared_domain: bool,
     pub scheduling_write_keys: BTreeSet<crate::runtime::resident_scheduling::SchedulingKey>,
     pub scheduling_material_budget_views:
         Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub work_material_budget_views: Option<
+        std::sync::Arc<Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>>,
+    >,
     pub task_material_budget_views:
         Vec<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub task_delta: Option<crate::runtime::resident_task::CommittedTaskDelta>,
@@ -168,6 +183,11 @@ pub(crate) struct PostCommitEffects {
     /// Finite new dependencies. Existing unrelated Input coverage remains valid;
     /// a combined request must prepare any uncovered owning/head dependency.
     pub work_input_preparation: Option<WorkInputPreparation>,
+    /// Original owner had an Input domain; this complete same-TX closure may
+    /// replace only that domain. Hydration is separate from actual D3 writes.
+    pub original_work_report: Option<std::sync::Arc<crate::runtime::OriginalWorkReportHandoff>>,
+    pub prepared_work_inputs:
+        Option<std::sync::Arc<crate::runtime::resident_input_evidence::ResidentInputEvidence>>,
     pub input_evidence_delta: CommittedInputEvidenceDelta,
     // Actual Wait rows and Turn revision bookkeeping touched by the whole transaction.
     pub wait_condition_writes: WaitConditionWrites,
@@ -272,9 +292,62 @@ pub(crate) struct WaitTaskResultAdmission {
     pub record: QueueEntryRecord,
 }
 
-fn admit_wait_task_result_tx(
+pub(super) fn upsert_queue_entry_tx_with_current_reads(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+    current: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+) -> Result<bool> {
+    match current {
+        Some(current) => current.upsert_queue_tx(tx, record),
+        None => upsert_queue_entry_tx(tx, record),
+    }
+}
+fn compare_and_set_queue_entry_tx_with_current_reads(
+    tx: &Transaction<'_>,
+    expected: &QueueEntryRecord,
+    record: &QueueEntryRecord,
+    current: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+) -> Result<bool> {
+    match current {
+        Some(current) => current.compare_and_set_queue_tx(tx, expected, record),
+        None => compare_and_set_queue_entry_tx(tx, expected, record),
+    }
+}
+fn try_claim_queued_message_tx_with_current_reads(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+    current: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+) -> Result<bool> {
+    match current {
+        Some(current) => current.claim_queue_tx(tx, record),
+        None => try_claim_queued_message_tx(tx, record),
+    }
+}
+fn try_interject_queued_message_tx_with_current_reads(
+    tx: &Transaction<'_>,
+    record: &QueueEntryRecord,
+    current: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+) -> Result<bool> {
+    match current {
+        Some(current) => current.interject_queue_tx(tx, record),
+        None => try_interject_queued_message_tx(tx, record),
+    }
+}
+fn append_audit_event_with_current_reads(
+    tx: &Transaction<'_>,
+    agent: Option<&str>,
+    event: &AuditEvent,
+    current: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+) -> Result<(AuditEvent, bool)> {
+    match current {
+        Some(current) => current.append_event_tx(tx, agent, event),
+        None => append_audit_event_tx(tx, agent, event),
+    }
+}
+fn admit_wait_task_result_with_current_read_tx(
     tx: &Transaction<'_>,
     admission: Option<&WaitTaskResultAdmission>,
+    mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
 ) -> Result<bool> {
     let Some(admission) = admission else {
         return Ok(false);
@@ -296,7 +369,7 @@ fn admit_wait_task_result_tx(
         .into());
     }
     validate_queue_mutation_tx(tx, &QueueMutation::Upsert(admission.record.clone()))?;
-    upsert_queue_entry_tx(tx, &admission.record)
+    upsert_queue_entry_tx_with_current_reads(tx, &admission.record, current_reads.as_deref_mut())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -487,6 +560,8 @@ pub(crate) struct RuntimeTransitionRepository<'a> {
     db: &'a RuntimeDb,
     input_scope: Option<InputEvidenceScope>,
     cleanup_input: Option<&'a super::input_evidence_snapshot::ExistingAdmissionInputProof>,
+    input_tool_writer:
+        Option<&'a dyn super::input_evidence_snapshot::tool_writer::OriginalToolInputWriter>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -540,6 +615,7 @@ impl RuntimeDb {
             db: self,
             input_scope: None,
             cleanup_input: None,
+            input_tool_writer: None,
         }
     }
 
@@ -551,6 +627,7 @@ impl RuntimeDb {
             db: self,
             input_scope: Some(scope.clone()),
             cleanup_input: None,
+            input_tool_writer: None,
         }
     }
 
@@ -1553,6 +1630,9 @@ fn startup_input_recovery_targets_tx(
 
 impl RuntimeTransitionRepository<'_> {
     fn validate_input_scope_tx(&self, tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+        if let (Some(scope), Some(writer)) = (self.input_scope.as_ref(), self.input_tool_writer) {
+            return writer.validate_scope(tx, scope, agent_id, self.cleanup_input);
+        }
         if let Some(scope) = self.input_scope.as_ref() {
             if let Some(proof) = self.cleanup_input {
                 anyhow::ensure!(
@@ -1576,6 +1656,12 @@ impl RuntimeTransitionRepository<'_> {
         id: &str,
     ) -> Result<()> {
         if let Some(scope) = self.input_scope.as_ref() {
+            if family == crate::runtime::resident_input_evidence::InputEvidenceFamily::ToolExecution
+            {
+                if let Some(writer) = self.input_tool_writer {
+                    return writer.validate_original_tool_key(tx, scope, id, self.cleanup_input);
+                }
+            }
             let key = crate::runtime::resident_input_evidence::InputEvidenceKey::new(family, id);
             if let Some(proof) = self.cleanup_input {
                 proof.validate_key_tx(tx, &key)?;
@@ -1656,6 +1742,16 @@ impl RuntimeTransitionRepository<'_> {
         command: &AgentPostureTransitionCommand,
         started_turn: Option<&TurnRecord>,
     ) -> Result<TransitionCommit> {
+        self.commit_agent_posture_with_current_read_tx(tx, command, started_turn, None)
+    }
+
+    fn commit_agent_posture_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &AgentPostureTransitionCommand,
+        started_turn: Option<&TurnRecord>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
         if let Some(expected) = command.expected_incarnation {
             let identity = tx
@@ -1690,7 +1786,7 @@ impl RuntimeTransitionRepository<'_> {
         }
         inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
-        finish_transition_with_cleanup_tx(
+        finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -1704,6 +1800,8 @@ impl RuntimeTransitionRepository<'_> {
                 turns: started_turn.into_iter().cloned().collect(),
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )
     }
 
@@ -1725,6 +1823,23 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueHeadNoProgressCommand,
         now: chrono::DateTime<Utc>,
         audit_event_id: &str,
+    ) -> Result<Option<QueueHeadNoProgressCommit>> {
+        self.commit_queue_head_no_progress_with_current_read_tx(
+            tx,
+            command,
+            now,
+            audit_event_id,
+            None,
+        )
+    }
+
+    fn commit_queue_head_no_progress_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &QueueHeadNoProgressCommand,
+        now: chrono::DateTime<Utc>,
+        audit_event_id: &str,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<Option<QueueHeadNoProgressCommit>> {
         if command.max_attempts == 0 {
             bail!("queue-head no-progress budget must be non-zero");
@@ -1804,7 +1919,12 @@ impl RuntimeTransitionRepository<'_> {
 
         validate_agent_state_mutation_tx(tx, quarantined.then_some(&command.agent_state))?;
         if quarantined
-            && !compare_and_set_queue_entry_tx(tx, &command.expected, &command.quarantined)?
+            && !compare_and_set_queue_entry_tx_with_current_reads(
+                tx,
+                &command.expected,
+                &command.quarantined,
+                current_reads.as_deref_mut(),
+            )?
         {
             return Ok(None);
         }
@@ -1854,9 +1974,10 @@ impl RuntimeTransitionRepository<'_> {
         );
         event.id = audit_event_id.to_owned();
         event.created_at = now;
-        let commit = finish_transition_tx(
+        let commit = finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
+            None,
             true,
             &command.agent_id,
             &[event],
@@ -1871,6 +1992,8 @@ impl RuntimeTransitionRepository<'_> {
                 notify_scheduler: quarantined,
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )?;
         let outcome = if quarantined {
             QueueHeadNoProgressOutcome::Quarantined {
@@ -1891,6 +2014,15 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         tx: &Transaction<'_>,
         command: &TurnTerminalTransitionCommand,
+    ) -> Result<TransitionCommit> {
+        self.commit_turn_terminal_with_current_read_tx(tx, command, None)
+    }
+
+    fn commit_turn_terminal_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TurnTerminalTransitionCommand,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
         self.validate_terminal_input_keys_tx(tx, &command.turn_record)?;
@@ -1948,7 +2080,7 @@ impl RuntimeTransitionRepository<'_> {
         }
         inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
-        finish_transition_with_cleanup_tx(
+        finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -1968,6 +2100,8 @@ impl RuntimeTransitionRepository<'_> {
                     .collect(),
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )
     }
 
@@ -2010,6 +2144,25 @@ impl RuntimeTransitionRepository<'_> {
         execution_protocol: &ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
         completion_tool_execution: Option<&ToolExecutionRecord>,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_focus_with_current_read_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            completion_tool_execution,
+            None,
+        )
+    }
+
+    pub(super) fn commit_work_item_focus_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WorkItemFocusTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        completion_tool_execution: Option<&ToolExecutionRecord>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
         for record in &command.brief_evidence {
@@ -2102,7 +2255,8 @@ impl RuntimeTransitionRepository<'_> {
             applied |= upsert_work_item_continuation_tx(tx, continuation)?;
         }
         if let Some(tool_execution) = completion_tool_execution {
-            applied |= upsert_completion_tool_execution_tx(tx, tool_execution)?;
+            applied |=
+                upsert_completion_tool_execution_tx(tx, tool_execution, self.input_tool_writer)?;
         }
         applied |= execution_protocol
             .as_ref()
@@ -2122,7 +2276,7 @@ impl RuntimeTransitionRepository<'_> {
         }
         inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
-        let commit = finish_transition_with_cleanup_tx(
+        let commit = finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -2142,6 +2296,8 @@ impl RuntimeTransitionRepository<'_> {
                 notify_scheduler: command.notify_scheduler,
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )?;
         Ok(commit)
     }
@@ -2175,6 +2331,23 @@ impl RuntimeTransitionRepository<'_> {
         command: &WorkItemTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_with_current_read_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            None,
+        )
+    }
+
+    pub(super) fn commit_work_item_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WorkItemTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<TransitionCommit> {
         let record = command.mutation.record().clone();
         self.validate_input_scope_tx(tx, &command.agent_id)?;
@@ -2229,7 +2402,7 @@ impl RuntimeTransitionRepository<'_> {
             insert_brief_evidence_tx(tx, brief)?;
         }
         inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-        let commit = finish_transition_with_cleanup_tx(
+        let commit = finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -2247,6 +2420,8 @@ impl RuntimeTransitionRepository<'_> {
                 notify_scheduler: command.notify_scheduler,
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )?;
         Ok(commit)
     }
@@ -2287,6 +2462,23 @@ impl RuntimeTransitionRepository<'_> {
         command: &WaitTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         task_expectation: Option<&TaskExpectation>,
+    ) -> Result<TransitionCommit> {
+        self.commit_wait_with_current_read_tx(
+            tx,
+            command,
+            execution_protocol,
+            task_expectation,
+            None,
+        )
+    }
+
+    pub(super) fn commit_wait_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &WaitTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        task_expectation: Option<&TaskExpectation>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
         for work_item in &command.work_items {
@@ -2334,7 +2526,11 @@ impl RuntimeTransitionRepository<'_> {
         )?;
         inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
-        let mut applied = admit_wait_task_result_tx(tx, command.task_result_admission.as_ref())?;
+        let mut applied = admit_wait_task_result_with_current_read_tx(
+            tx,
+            command.task_result_admission.as_ref(),
+            current_reads.as_deref_mut(),
+        )?;
         let mut work_items = Vec::new();
         for work_item in &command.work_items {
             let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
@@ -2366,7 +2562,7 @@ impl RuntimeTransitionRepository<'_> {
             )?;
         inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
-        finish_transition_with_cleanup_tx(
+        finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -2389,6 +2585,8 @@ impl RuntimeTransitionRepository<'_> {
                 notify_scheduler: command.notify_scheduler,
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )
     }
 
@@ -2698,6 +2896,47 @@ impl RuntimeTransitionRepository<'_> {
             super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
         >,
     ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_full_with_task_results_with_current_read_tx(
+            tx,
+            command,
+            execution_protocol_transition,
+            wait_transition,
+            task_expectation,
+            completion,
+            wait_registration,
+            terminal_tool_executions,
+            extra_wait_conditions,
+            delivery,
+            delivery_synchronization,
+            timer_wake_claim,
+            task_result_settlement,
+            prepared_task_results,
+            None,
+        )
+    }
+
+    fn commit_queue_transaction_full_with_task_results_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &QueueTransitionCommand,
+        execution_protocol_transition: &ExecutionProtocolTransition,
+        wait_transition: Option<&QueueWaitTransition>,
+        task_expectation: Option<&TaskExpectation>,
+        completion: Option<&CompletionTransition>,
+        wait_registration: Option<&WaitTransitionCommand>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        delivery: Option<&AgentMessageDeliveryRecord>,
+        delivery_synchronization: DeliverySynchronization,
+        timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
         for record in &command.message_evidence {
             self.validate_input_key_tx(
@@ -2932,7 +3171,13 @@ impl RuntimeTransitionRepository<'_> {
                     record.message_id
                 );
             };
-            Some(trigger_wait_and_enqueue_tx(tx, message, record)?)
+            Some(trigger_wait_and_enqueue_with_current_read_tx(
+                tx,
+                message,
+                record,
+                None,
+                current_reads.as_deref_mut(),
+            )?)
         } else {
             None
         };
@@ -2941,8 +3186,18 @@ impl RuntimeTransitionRepository<'_> {
         } else {
             match &command.mutation {
                 QueueMutation::Consume(record) => match command.operation {
-                    QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
-                    QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
+                    QueueOperation::Claim => try_claim_queued_message_tx_with_current_reads(
+                        tx,
+                        record,
+                        current_reads.as_deref_mut(),
+                    )?,
+                    QueueOperation::Interject => {
+                        try_interject_queued_message_tx_with_current_reads(
+                            tx,
+                            record,
+                            current_reads.as_deref_mut(),
+                        )?
+                    }
                     QueueOperation::Admit
                     | QueueOperation::Discard
                     | QueueOperation::Requeue
@@ -2951,9 +3206,18 @@ impl RuntimeTransitionRepository<'_> {
                         unreachable!("queue operation validation rejects this combination")
                     }
                 },
-                QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
+                QueueMutation::Upsert(record) => upsert_queue_entry_tx_with_current_reads(
+                    tx,
+                    record,
+                    current_reads.as_deref_mut(),
+                )?,
                 QueueMutation::CompareAndSet { expected, record } => {
-                    compare_and_set_queue_entry_tx(tx, expected, record)?
+                    compare_and_set_queue_entry_tx_with_current_reads(
+                        tx,
+                        expected,
+                        record,
+                        current_reads.as_deref_mut(),
+                    )?
                 }
             }
         };
@@ -3011,8 +3275,11 @@ impl RuntimeTransitionRepository<'_> {
         };
         let mut wait_registration_work_items = Vec::new();
         let wait_registration_applied = if let Some(wait_registration) = wait_registration {
-            let mut applied =
-                admit_wait_task_result_tx(tx, wait_registration.task_result_admission.as_ref())?;
+            let mut applied = admit_wait_task_result_with_current_read_tx(
+                tx,
+                wait_registration.task_result_admission.as_ref(),
+                current_reads.as_deref_mut(),
+            )?;
             for work_item in &wait_registration.work_items {
                 if apply_work_item_mutation_tx(tx, work_item)? {
                     wait_registration_work_items.push(work_item.record().clone());
@@ -3202,7 +3469,7 @@ impl RuntimeTransitionRepository<'_> {
             .or_else(|| completion.map(|completion| completion.index_changes.clone()))
             .unwrap_or_default();
         index_changes.extend(message_index_changes);
-        let mut commit = finish_transition_with_cleanup_tx(
+        let mut commit = finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -3257,6 +3524,8 @@ impl RuntimeTransitionRepository<'_> {
                 notify_scheduler: command.notify_scheduler,
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )?;
         if let Some(result) = trigger_wait_and_enqueue {
             let mut events = result.audit_events;
@@ -3343,11 +3612,47 @@ impl RuntimeTransitionRepository<'_> {
         TransitionCommit,
         Option<super::input_mutation_receipts::InputTaskDeletionResult>,
     )> {
+        self.commit_task_at_with_task_results_with_current_read_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            prepared_at,
+            deletion_id,
+            prepared_task_results,
+            original_task_cleanup,
+            original_stop,
+            original_binding,
+            None,
+        )
+    }
+
+    pub(super) fn commit_task_at_with_task_results_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        prepared_at: chrono::DateTime<Utc>,
+        deletion_id: Option<&str>,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        original_task_cleanup: Option<
+            &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
+        original_binding: Option<&ExistingOriginalChildBindingWriteProof<'_, '_, '_>>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    ) -> Result<(
+        TransitionCommit,
+        Option<super::input_mutation_receipts::InputTaskDeletionResult>,
+    )> {
         anyhow::ensure!(
             command.agent_deletion.is_some() == deletion_id.is_some(),
             "prepared Task deletion metadata is incomplete"
         );
-        self.commit_task_metadata_tx(
+        self.commit_task_metadata_with_current_read_tx(
             tx,
             command,
             execution_protocol,
@@ -3358,6 +3663,7 @@ impl RuntimeTransitionRepository<'_> {
             original_task_cleanup,
             original_stop,
             original_binding,
+            current_reads.as_deref_mut(),
         )
     }
 
@@ -3377,6 +3683,42 @@ impl RuntimeTransitionRepository<'_> {
         >,
         original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
         original_binding: Option<&ExistingOriginalChildBindingWriteProof<'_, '_, '_>>,
+    ) -> Result<(
+        TransitionCommit,
+        Option<super::input_mutation_receipts::InputTaskDeletionResult>,
+    )> {
+        self.commit_task_metadata_with_current_read_tx(
+            tx,
+            command,
+            execution_protocol,
+            synchronize_execution_protocol,
+            prepared_at,
+            deletion_id,
+            prepared_task_results,
+            original_task_cleanup,
+            original_stop,
+            original_binding,
+            None,
+        )
+    }
+
+    fn commit_task_metadata_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TaskTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        synchronize_execution_protocol: bool,
+        prepared_at: Option<chrono::DateTime<Utc>>,
+        deletion_id: Option<&str>,
+        prepared_task_results: Option<
+            super::task_result_settlement::PreparedTaskResultMutation<'_, '_>,
+        >,
+        original_task_cleanup: Option<
+            &super::task_snapshot::OriginalTaskResultCleanupProof<'_, '_, '_>,
+        >,
+        original_stop: Option<&super::task_stop::TaskStopWriteProof<'_, '_>>,
+        original_binding: Option<&ExistingOriginalChildBindingWriteProof<'_, '_, '_>>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<(
         TransitionCommit,
         Option<super::input_mutation_receipts::InputTaskDeletionResult>,
@@ -3439,8 +3781,20 @@ impl RuntimeTransitionRepository<'_> {
                         );
             };
             Some(match prepared_at {
-                Some(at) => trigger_wait_and_enqueue_at_tx(tx, message, queue_entry, at)?,
-                None => trigger_wait_and_enqueue_tx(tx, message, queue_entry)?,
+                Some(at) => trigger_wait_and_enqueue_with_current_read_tx(
+                    tx,
+                    message,
+                    queue_entry,
+                    Some(at),
+                    current_reads.as_deref_mut(),
+                )?,
+                None => trigger_wait_and_enqueue_with_current_read_tx(
+                    tx,
+                    message,
+                    queue_entry,
+                    None,
+                    current_reads.as_deref_mut(),
+                )?,
             })
         } else {
             None
@@ -3584,7 +3938,7 @@ impl RuntimeTransitionRepository<'_> {
 
         let mut index_changes = command.index_changes.clone();
         index_changes.extend(message_index_changes);
-        let mut value = finish_transition_with_cleanup_tx(
+        let mut value = finish_transition_with_current_read_tx(
             tx,
             self.input_scope.as_ref(),
             self.cleanup_input,
@@ -3623,6 +3977,8 @@ impl RuntimeTransitionRepository<'_> {
                 notify_scheduler: command.notify_scheduler,
                 ..PostCommitEffects::default()
             },
+            current_reads.as_deref_mut(),
+            self.input_tool_writer,
         )?;
         if let Some(result) = trigger_wait_and_enqueue {
             let mut events = result.audit_events;
@@ -3633,6 +3989,22 @@ impl RuntimeTransitionRepository<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum WaitTriggerAuditKind {
+    Triggered,
+    Stale,
+}
+impl WaitTriggerAuditKind {
+    pub(super) fn prefix(self) -> &'static str {
+        match self {
+            Self::Triggered => "audit:wait-triggered:",
+            Self::Stale => "audit:wait-trigger-stale:",
+        }
+    }
+}
+pub(super) fn wait_trigger_audit_id(message: &str, kind: WaitTriggerAuditKind) -> String {
+    format!("{}{}", kind.prefix(), message)
+}
 pub(super) fn trigger_wait_and_enqueue_tx(
     tx: &Transaction<'_>,
     message: &MessageEnvelope,
@@ -3655,6 +4027,67 @@ fn trigger_wait_and_enqueue_with_audit_time_tx(
     message: &MessageEnvelope,
     queue_entry: &QueueEntryRecord,
     audit_created_at: Option<chrono::DateTime<Utc>>,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    trigger_wait_and_enqueue_with_current_read_tx(tx, message, queue_entry, audit_created_at, None)
+}
+
+pub(super) fn trigger_wait_and_enqueue_with_current_read_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+    audit_created_at: Option<chrono::DateTime<Utc>>,
+    current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    trigger_wait_and_enqueue_current_inner_tx(
+        tx,
+        message,
+        queue_entry,
+        audit_created_at,
+        current_reads,
+        None,
+    )
+}
+pub(super) fn trigger_wait_and_enqueue_original_stop_tx(
+    tx: &Transaction<'_>,
+    source: &super::task_stop::OriginalTaskStopResultView<'_>,
+    message: &MessageEnvelope,
+    queue: &QueueEntryRecord,
+    at: chrono::DateTime<Utc>,
+    current: &mut CurrentReadBusinessTransaction<'_, '_>,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    source.validate_current_read_message_tx(tx, &source.descriptor().scopes()[0], message)?;
+    trigger_wait_and_enqueue_current_inner_tx(
+        tx,
+        message,
+        queue,
+        Some(at),
+        Some(current),
+        Some(source),
+    )
+}
+fn upsert_trigger_wait_queue_tx(
+    tx: &Transaction<'_>,
+    queue: &QueueEntryRecord,
+    current: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    original_stop: Option<&super::task_stop::OriginalTaskStopResultView<'_>>,
+) -> Result<bool> {
+    match (current, original_stop) {
+        (Some(current), Some(source)) => {
+            current.upsert_queue_from_original_stop_tx(tx, source, queue)
+        }
+        (current, None) => upsert_queue_entry_tx_with_current_reads(tx, queue, current),
+        (None, Some(_)) => {
+            anyhow::bail!("original Stop Queue omitted its CurrentRead actual writer")
+        }
+    }
+}
+fn trigger_wait_and_enqueue_current_inner_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+    audit_created_at: Option<chrono::DateTime<Utc>>,
+    mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    original_stop: Option<&super::task_stop::OriginalTaskStopResultView<'_>>,
 ) -> Result<TriggerWaitAndEnqueueResult> {
     if message.id != queue_entry.message_id
         || message.agent_id != queue_entry.agent_id
@@ -3712,7 +4145,12 @@ fn trigger_wait_and_enqueue_with_audit_time_tx(
                     params![message.agent_id, trigger_id, condition.id], |row| row.get::<_, bool>(0))?;
                 if already_claimed {
                     let (message, message_inserted) = append_message_tx(tx, message)?;
-                    let queue_applied = upsert_queue_entry_tx(tx, queue_entry)?;
+                    let queue_applied = upsert_trigger_wait_queue_tx(
+                        tx,
+                        queue_entry,
+                        current_reads.as_deref_mut(),
+                        original_stop,
+                    )?;
                     return Ok(TriggerWaitAndEnqueueResult {
                         message,
                         message_inserted,
@@ -3746,7 +4184,8 @@ fn trigger_wait_and_enqueue_with_audit_time_tx(
     };
 
     let (message, message_inserted) = append_message_tx(tx, message)?;
-    let queue_applied = upsert_queue_entry_tx(tx, queue_entry)?;
+    let queue_applied =
+        upsert_trigger_wait_queue_tx(tx, queue_entry, current_reads.as_deref_mut(), original_stop)?;
     let mut wait_writes = WaitConditionWrites::default();
     let mut audit_events = Vec::new();
     for (index, (triggered, wake)) in triggered_waits.iter().enumerate() {
@@ -3765,14 +4204,19 @@ fn trigger_wait_and_enqueue_with_audit_time_tx(
         // Keep the single-wait audit identity stable; extra task waiters
         // triggered by the same result get a per-wait suffix (#3124).
         event.id = if index == 0 {
-            format!("audit:wait-triggered:{}", message.id)
+            wait_trigger_audit_id(&message.id, WaitTriggerAuditKind::Triggered)
         } else {
             format!("audit:wait-triggered:{}:{}", message.id, triggered.id)
         };
         if let Some(created_at) = audit_created_at {
             event.created_at = created_at;
         }
-        let (event, inserted) = append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+        let (event, inserted) = append_audit_event_with_current_reads(
+            tx,
+            Some(&message.agent_id),
+            &event,
+            current_reads.as_deref_mut(),
+        )?;
         if inserted {
             audit_events.push(event);
         }
@@ -3788,11 +4232,16 @@ fn trigger_wait_and_enqueue_with_audit_time_tx(
                 "work_item_id": message.work_item_id,
             }),
         );
-        event.id = format!("audit:wait-trigger-stale:{}", message.id);
+        event.id = wait_trigger_audit_id(&message.id, WaitTriggerAuditKind::Stale);
         if let Some(created_at) = audit_created_at {
             event.created_at = created_at;
         }
-        let (event, inserted) = append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+        let (event, inserted) = append_audit_event_with_current_reads(
+            tx,
+            Some(&message.agent_id),
+            &event,
+            current_reads.as_deref_mut(),
+        )?;
         if inserted {
             audit_events.push(event);
         }
@@ -3982,7 +4431,37 @@ fn finish_transition_with_cleanup_tx(
     audit_events: &[AuditEvent],
     index_changes: &[RuntimeIndexChange],
     fault: Option<TransitionFaultPoint>,
+    effects: PostCommitEffects,
+) -> Result<TransitionCommit> {
+    finish_transition_with_current_read_tx(
+        tx,
+        input_scope,
+        cleanup,
+        applied,
+        agent_id,
+        audit_events,
+        index_changes,
+        fault,
+        effects,
+        None,
+        None,
+    )
+}
+
+fn finish_transition_with_current_read_tx(
+    tx: &Transaction<'_>,
+    input_scope: Option<&InputEvidenceScope>,
+    cleanup: Option<&super::input_evidence_snapshot::ExistingAdmissionInputProof>,
+    applied: bool,
+    agent_id: &str,
+    audit_events: &[AuditEvent],
+    index_changes: &[RuntimeIndexChange],
+    fault: Option<TransitionFaultPoint>,
     mut effects: PostCommitEffects,
+    mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
+    input_tool_writer: Option<
+        &dyn super::input_evidence_snapshot::tool_writer::OriginalToolInputWriter,
+    >,
 ) -> Result<TransitionCommit> {
     if !applied {
         return Ok(TransitionCommit::default());
@@ -3990,7 +4469,12 @@ fn finish_transition_with_cleanup_tx(
 
     let mut committed_events = Vec::with_capacity(audit_events.len());
     for event in audit_events {
-        let (event, inserted) = append_audit_event_tx(tx, Some(agent_id), event)?;
+        let (event, inserted) = append_audit_event_with_current_reads(
+            tx,
+            Some(agent_id),
+            event,
+            current_reads.as_deref_mut(),
+        )?;
         if inserted {
             committed_events.push(event);
         }
@@ -3998,7 +4482,20 @@ fn finish_transition_with_cleanup_tx(
     inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
     insert_runtime_index_changes_tx(tx, index_changes)?;
     link_transition_brief_created_events_tx(tx, &effects.briefs, &committed_events)?;
-    materialize_committed_input_facts_tx(tx, agent_id, &mut effects)?;
+    if let Some(writer) = input_tool_writer {
+        let current = current_reads
+            .as_deref()
+            .map(|current| current.input_writer_material(tx))
+            .transpose()?;
+        writer.before_facts(
+            tx,
+            agent_id,
+            &effects.tool_executions,
+            effects.tool_executions.capacity(),
+            current.as_ref(),
+        )?;
+    }
+    materialize_committed_input_facts_tx(tx, agent_id, &mut effects, input_tool_writer.is_some())?;
     if !effects.messages.is_empty() || effects.agent_state.is_some() {
         if let Some(actual) =
             super::input_evidence_writes::synchronize_message_count_tx(tx, agent_id)?
@@ -4036,7 +4533,11 @@ fn finish_transition_with_cleanup_tx(
                 .into_iter()
                 .map(Fact::ToolExecution),
         );
-        let delta = if let Some(proof) = cleanup {
+        let delta = if let Some(writer) = input_tool_writer {
+            super::input_evidence_snapshot::register_committed_input_evidence_with_tool_material_tx(
+                tx, scope, &facts, cleanup, writer,
+            )?
+        } else if let Some(proof) = cleanup {
             super::input_evidence_snapshot::register_committed_cleanup_input_evidence_tx(
                 tx, scope, &facts, proof,
             )?
@@ -4081,6 +4582,7 @@ fn materialize_committed_input_facts_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     effects: &mut PostCommitEffects,
+    original_tool_material: bool,
 ) -> Result<()> {
     if let Some(protocol) = effects.execution_protocol.as_ref() {
         anyhow::ensure!(
@@ -4113,20 +4615,28 @@ fn materialize_committed_input_facts_tx(
         })
         .collect::<Result<_>>()?;
     seen.clear();
-    effects.tool_executions = effects
-        .tool_executions
-        .iter()
-        .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
-        .map(|record| {
-            committed_input_payload_tx(
-                tx,
-                "tool_executions",
-                "evidence_id",
-                &record.id,
-                &record.agent_id,
-            )
-        })
-        .collect::<Result<_>>()?;
+    if original_tool_material {
+        // The same-TX Tool writer validates the full canonical bytes and
+        // original DTO before D3; no complete SQL stdout is decoded here.
+        effects
+            .tool_executions
+            .retain(|record| seen.insert((record.agent_id.clone(), record.id.clone())));
+    } else {
+        effects.tool_executions = effects
+            .tool_executions
+            .iter()
+            .filter(|record| seen.insert((record.agent_id.clone(), record.id.clone())))
+            .map(|record| {
+                committed_input_payload_tx(
+                    tx,
+                    "tool_executions",
+                    "evidence_id",
+                    &record.id,
+                    &record.agent_id,
+                )
+            })
+            .collect::<Result<_>>()?;
+    }
     seen.clear();
     effects.briefs = effects
         .briefs
@@ -4555,6 +5065,7 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
 fn upsert_completion_tool_execution_tx(
     tx: &Transaction<'_>,
     tool_execution: &ToolExecutionRecord,
+    writer: Option<&dyn super::input_evidence_snapshot::tool_writer::OriginalToolInputWriter>,
 ) -> Result<bool> {
     let existing = tx
         .query_row(
@@ -4567,6 +5078,9 @@ fn upsert_completion_tool_execution_tx(
         .transpose()?;
     if let Some(existing) = existing {
         if existing == *tool_execution {
+            if let Some(writer) = writer {
+                writer.mark_original_tool_noop(tx, &tool_execution.id)?;
+            }
             return Ok(false);
         }
         anyhow::ensure!(

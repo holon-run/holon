@@ -692,7 +692,34 @@ mod tests {
     fn downgrade_before_execution_protocol(db_path: &std::path::Path) -> Result<()> {
         let connection = open_connection(db_path)?;
         connection.execute_batch(
-            "DROP TABLE scheduling_import_inventory;
+            "DROP TABLE current_event_native_births;
+             DROP TABLE current_event_birth_cursors;
+             DROP TABLE input_query_birth_members;
+             DROP TABLE input_query_birth_cursors;
+             DROP TABLE legacy_episode_wait_members;
+             DROP TABLE legacy_episode_wait_captures;
+             DROP TABLE legacy_episode_import_members;
+             DROP TABLE legacy_episode_import_captures;
+             DROP TABLE input_legacy_delivery_fixed_members;
+             DROP TABLE input_legacy_delivery_captures;
+             DROP TRIGGER current_read_queue_insert;
+             DROP TRIGGER current_read_queue_update;
+             DROP TRIGGER current_read_queue_delete;
+             DROP TRIGGER current_read_event_insert;
+             DROP TRIGGER current_read_event_update;
+             DROP TRIGGER current_read_event_delete;
+             DROP TRIGGER current_read_state_insert;
+             DROP TRIGGER current_read_state_update;
+             DROP TRIGGER current_read_state_delete;
+             DROP TRIGGER current_read_identity_insert;
+             DROP TRIGGER current_read_identity_update;
+             DROP TRIGGER current_read_identity_delete;
+             DROP TABLE current_read_import_inventory;
+             DROP TABLE current_read_members;
+             DROP TABLE current_read_current;
+             DROP TABLE current_read_fixed_members;
+             DROP TABLE current_read_fixed_captures;
+             DROP TABLE scheduling_import_inventory;
              DROP TABLE scheduling_domain_captures;
              DROP TABLE scheduling_domain_records;
              DROP TABLE scheduling_domain_current;

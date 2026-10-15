@@ -78,7 +78,7 @@ pub fn load_skills_runtime_view(
     discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
     discoverable_skills.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
     let attached_skills = discoverable_skills.clone();
-    let active_skills = retain_active_skills_for_catalog(&discoverable_skills, active_skills);
+    let active_skills = active_skills_from_observed_catalog(&discoverable_skills, active_skills);
 
     Ok(SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
@@ -211,6 +211,7 @@ pub(crate) fn load_catalog_for_root(
         let description = parsed
             .description
             .unwrap_or_else(|| first_body_paragraph(&content));
+        crate::diagnostics::resource_io::charge_owned_metadata(1024, 12)?;
         entries.push(SkillCatalogEntry {
             skill_id: format!("{root_id}:{skill_name}"),
             root_id: root_id.clone(),
@@ -269,7 +270,7 @@ pub fn skills_runtime_view_from_catalog(
             .then_with(|| left.skill_id.cmp(&right.skill_id))
             .then_with(|| left.path.cmp(&right.path))
     });
-    let active_skills = retain_active_skills_for_catalog(&catalog, active_skills);
+    let active_skills = active_skills_from_observed_catalog(&catalog, active_skills);
     SkillsRuntimeView {
         agent_templates_catalog: Vec::new(),
         discovered_roots: collect_discovered_roots_from_registrations(roots),
@@ -362,7 +363,7 @@ fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<Skill
     selected_by_name.into_values().collect()
 }
 
-fn retain_active_skills_for_catalog(
+pub(crate) fn active_skills_from_observed_catalog(
     catalog: &[SkillCatalogEntry],
     active_skills: &[ActiveSkillRecord],
 ) -> Vec<ActiveSkillRecord> {

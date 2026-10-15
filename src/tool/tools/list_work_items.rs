@@ -12,8 +12,8 @@ use crate::{
 use super::{
     serialize_success,
     work_item_query::{
-        latest_delivery_summaries_by_work_item, lifecycle_view, query_context_from_work_items,
-        view_for_record, WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
+        lifecycle_view, query_context_from_work_items, view_for_record_in_snapshot,
+        WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -79,36 +79,31 @@ pub(crate) async fn execute(
     let args: ListWorkItemsArgs = parse_tool_args(NAME, input)?;
     let filter = args.filter.unwrap_or(ListWorkItemsFilter::All);
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let mut snapshot = runtime.capture_work_query_snapshot().await?;
+    let mut snapshot = runtime.capture_work_query_snapshot_with_resources().await?;
     let context = query_context_from_work_items(&snapshot.state, &snapshot.items);
+    let _result_slots = runtime.reserve_work_item_query_slots(&snapshot, snapshot.items.len())?;
     let matching = std::mem::take(&mut snapshot.items)
         .into_iter()
         .filter(|projection| matches_filter(projection, &filter))
         .collect::<Vec<_>>();
     let total_matching = matching.len();
     let selected = matching.into_iter().take(limit).collect::<Vec<_>>();
-    let delivery_summaries = if selected
-        .iter()
-        .any(|projection| projection.work_item.state == WorkItemState::Completed)
-    {
-        Some(latest_delivery_summaries_by_work_item(runtime)?)
-    } else {
-        None
-    };
+    let mut _plan_materials = Vec::with_capacity(selected.len());
     let mut work_items = Vec::with_capacity(selected.len());
     for projection in selected {
+        let plan_read = runtime.capture_work_item_plan_query(&snapshot, &projection.work_item)?;
         let record = projection.work_item.clone();
-        work_items.push(
-            view_for_record(
-                runtime,
-                &context,
-                record,
-                args.include_todo_list,
-                delivery_summaries.as_ref(),
-                Some(projection),
-            )
-            .await?,
-        );
+        let (view, material) = view_for_record_in_snapshot(
+            runtime,
+            &snapshot,
+            record,
+            args.include_todo_list,
+            true,
+            projection,
+            plan_read,
+        )?;
+        work_items.push(view);
+        _plan_materials.push(material);
     }
     let summary = format!(
         "Returned {} of {total_matching} matching work items.",
@@ -126,6 +121,7 @@ pub(crate) async fn execute(
         },
     )?;
     result.envelope.summary_text = Some(summary);
+    drop(_plan_materials);
     Ok(result)
 }
 

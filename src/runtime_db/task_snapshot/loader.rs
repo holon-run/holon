@@ -231,7 +231,7 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     result: Option<&crate::runtime_db::task_stop::TaskStopResultObservation<'_, '_>>,
     mut material: &mut read_preparation::TaskReadMaterial<'_>,
 ) -> Result<TaskBootstrapSnapshot> {
-    let Some(facts) = scope_facts(tx, scope, original_recovery)? else {
+    let Some(facts) = material.scope_facts_tx(tx, scope, original_recovery)? else {
         return Ok(TaskBootstrapSnapshot::Retired {
             scope: scope.clone(),
         });
@@ -245,7 +245,7 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     query_sources::initialize_fresh_source_inventory_tx(tx, scope)?;
     material.charge_checkpoint_metadata(tx, seed.as_deref())?;
     let fixed = manifests(tx, seed.as_deref())?;
-    let previous = material.read_current_metadata(tx)?;
+    let previous = material.original_current_metadata_tx(tx)?;
     let revision = previous.as_ref().map_or(1, |c| c.revision);
     let active = namespace_ids(
         tx,
@@ -292,6 +292,7 @@ pub(in crate::runtime_db) fn load_selected_using_material(
         query_relations::initialize_tx(tx, scope, &fixed)?;
     }
     let query_coverage = query_relations::observe_tx(tx, scope, &request.query, &mut material)?;
+    material.admit_loader_required(&request.capture.required_keys)?;
     let mut keys = request.capture.required_keys.clone();
     keys.extend(
         query_coverage
@@ -314,18 +315,18 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     let mut observations = BTreeMap::new();
     let mut result_dependencies = BTreeMap::new();
     let mut body_bytes = keys.iter().map(|k| k.id.len() + 128).sum::<usize>();
+    material.admit_loader_key_copies(&keys)?;
     let mut pending: Vec<_> = keys.iter().cloned().collect();
     while let Some(key) = pending.pop() {
         if observations.contains_key(&key) {
             continue;
         }
-        let size = checkpoint_material_size_on(tx, &key)?;
-        body_bytes = body_bytes
-            .checked_add(size.unwrap_or_default())
-            .context("Task material bytes overflow")?;
-        bound(keys.len(), body_bytes, Some(request))?;
-        material.charge_record(&key, size.unwrap_or_default())?;
-        let item = stored_on(tx, &scope.agent_id, &key)?;
+        let item = material.original_stored_row_tx(tx, &scope.agent_id, &key, |size| {
+            body_bytes = body_bytes
+                .checked_add(size.unwrap_or_default())
+                .context("Task material bytes overflow")?;
+            bound(keys.len(), body_bytes, Some(request))
+        })?;
         match item {
             Some(item) => {
                 validate_member(tx, scope, seed.as_deref(), &key, &item)?;
@@ -441,6 +442,7 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     let mut input_roots = BTreeSet::new();
     let mut work_roots = BTreeSet::new();
     for item in stored.values() {
+        material.admit_loader_metadata(item)?;
         match &item.fact {
             CanonicalTaskFact::Task(task) => {
                 coverage
@@ -514,7 +516,7 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     let mut records = Vec::new();
     for (key, item) in &stored {
         let r = validate_member(tx, scope, seed.as_deref(), key, item)?;
-        records.push(item.qualified(scope, r)?);
+        records.push(material.original_qualified_row(item, scope, r)?);
         if prepare {
             upsert_alias(
                 tx,
@@ -562,13 +564,15 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     coverage.status = observe_task_status_headers_tx(tx, scope, &records, |bytes, count| {
         material.charge_ids(bytes, count)
     })?;
-    if let Some(previous) = &previous {
+    if let Some(previous) = previous.as_ref() {
         if !prepare && !preflight && previous != &coverage {
             // A changed selector/metadata view at the same revision needs
             // named preparation; it is not the concurrent-revision retry case.
             anyhow::bail!("Task coverage needs explicit preparation at unchanged revision");
         }
     }
+    // The comparison consumed this independently decoded old coverage.
+    previous.retire(material)?;
     // Explicit absence is acquired only after global canonical + every-scope membership checks.
     if prepare {
         for (key, availability) in &coverage.observations {
@@ -597,20 +601,11 @@ pub(in crate::runtime_db) fn load_selected_using_material(
     if prepare {
         sync_child_observers_tx(tx, scope, &records)?;
     }
-    let resident = ResidentTaskDomain::bootstrap_with_stops(
-        scope.clone(),
-        coverage.clone(),
-        records,
-        stop_records,
-        request.record_limit,
-        request.byte_limit,
+    let resident = material.with_original_resident_ctor(
+        scope.clone(), coverage, records, stop_records, budget,
     )?;
-    let resident = match budget {
-        Some(budget) => resident.with_budget(budget.clone())?,
-        None => resident,
-    };
     if prepare {
-        persist_coverage(tx, scope, &coverage)?;
+        persist_coverage(tx, scope, resident.coverage())?;
     }
     Ok(TaskBootstrapSnapshot::Current(Box::new(
         TaskCurrentSnapshot {

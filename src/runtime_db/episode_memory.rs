@@ -328,10 +328,27 @@ pub(crate) fn prepare_existing_dispatch_episode_memory_tx<'tx, 'connection>(
 
 /// Finish after business writes and the final count/State epilogue. The caller
 /// must not write State again after this receipt captures its control revision.
+#[cfg(test)]
 pub(crate) fn write_embedded_episode_memory_tx(
     validated: ValidatedEpisodeMemory<'_, '_>,
     command: &EpisodeMemoryTransitionCommand,
     final_business_state: &AgentState,
+) -> Result<EpisodeMemoryCommit> {
+    write_embedded_episode_memory_with_current_read_tx(
+        validated,
+        command,
+        final_business_state,
+        None,
+    )
+}
+
+pub(crate) fn write_embedded_episode_memory_with_current_read_tx(
+    validated: ValidatedEpisodeMemory<'_, '_>,
+    command: &EpisodeMemoryTransitionCommand,
+    final_business_state: &AgentState,
+    current_reads: Option<
+        &mut super::current_read_snapshot::CurrentReadBusinessTransaction<'_, '_>,
+    >,
 ) -> Result<EpisodeMemoryCommit> {
     ensure!(
         command.key == *validated.key
@@ -379,7 +396,13 @@ pub(crate) fn write_embedded_episode_memory_tx(
     #[cfg(test)]
     inject_fault(command, EpisodeMemoryFaultPoint::AfterValidation)?;
     let persist_state = candidate != actual;
-    write_validated_episode_memory_tx(validated.tx, command, &candidate, persist_state)
+    write_validated_episode_memory_with_current_read_tx(
+        validated.tx,
+        command,
+        &candidate,
+        persist_state,
+        current_reads,
+    )
 }
 
 fn write_validated_episode_memory_tx(
@@ -387,6 +410,18 @@ fn write_validated_episode_memory_tx(
     command: &EpisodeMemoryTransitionCommand,
     candidate: &AgentState,
     persist_state: bool,
+) -> Result<EpisodeMemoryCommit> {
+    write_validated_episode_memory_with_current_read_tx(tx, command, candidate, persist_state, None)
+}
+
+fn write_validated_episode_memory_with_current_read_tx(
+    tx: &Transaction<'_>,
+    command: &EpisodeMemoryTransitionCommand,
+    candidate: &AgentState,
+    persist_state: bool,
+    mut current_reads: Option<
+        &mut super::current_read_snapshot::CurrentReadBusinessTransaction<'_, '_>,
+    >,
 ) -> Result<EpisodeMemoryCommit> {
     if let Some(episode) = command.plan.finalized_episode.as_ref() {
         insert_immutable_episode(tx, episode)?;
@@ -413,7 +448,10 @@ fn write_validated_episode_memory_tx(
     let mut audit_events = Vec::new();
     let mut audit_bindings = Vec::new();
     for event in &command.plan.audit_events {
-        let (event, inserted) = append_audit_event_tx(tx, Some(&command.key.agent_id), event)?;
+        let (event, inserted) = match current_reads.as_deref_mut() {
+            Some(current) => current.append_event_tx(tx, Some(&command.key.agent_id), event)?,
+            None => append_audit_event_tx(tx, Some(&command.key.agent_id), event)?,
+        };
         audit_bindings.push(EpisodeMemoryAuditBinding {
             audit_event_id: event.id.clone(),
             event_seq: event.event_seq,

@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::input_evidence_budget::{
@@ -21,6 +21,8 @@ use crate::types::{
     WorkItemContinuationFrame, WorkItemContinuationState, WorkItemRecord, WorkItemState,
 };
 
+#[path = "resident_work/material.rs"]
+mod material;
 pub(crate) const WORK_NONOPEN_WINDOW: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -67,6 +69,127 @@ impl CanonicalWorkRecord {
             Self::Frame(x) => &x.agent_id,
         }
     }
+
+    /// Conservative native footprint of this immutable typed allocation.
+    /// It is deterministic across decode/clone and does not allocate a JSON DTO.
+    pub(crate) fn resident_material_estimate(&self) -> Result<(usize, usize)> {
+        fn value_nodes(value: &serde_json::Value, depth: usize) -> Result<usize> {
+            ensure!(
+                depth < 128,
+                "Work native JSON depth exceeds its decoder bound"
+            );
+            let children = match value {
+                serde_json::Value::Array(values) => {
+                    values.iter().try_fold(0usize, |n, value| {
+                        n.checked_add(value_nodes(value, depth + 1)?)
+                            .ok_or_else(|| anyhow::anyhow!("Work native nodes overflow"))
+                    })?
+                }
+                serde_json::Value::Object(values) => {
+                    values.values().try_fold(values.len(), |n, value| {
+                        n.checked_add(value_nodes(value, depth + 1)?)
+                            .ok_or_else(|| anyhow::anyhow!("Work native nodes overflow"))
+                    })?
+                }
+                _ => 0,
+            };
+            children
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Work native nodes overflow"))
+        }
+        let overflow = || anyhow::anyhow!("Work resident material overflow");
+        let (slots, nodes, collection_entries) = match self {
+            Self::Work(work) => {
+                let slots = std::mem::size_of_val(work.todo_list.as_slice())
+                    .checked_add(std::mem::size_of_val(work.work_refs.as_slice()))
+                    .ok_or_else(overflow)?;
+                let nodes = work.work_refs.iter().try_fold(0usize, |n, reference| {
+                    reference.metadata.values().try_fold(
+                        n.checked_add(reference.metadata.len())
+                            .ok_or_else(overflow)?,
+                        |n, value| n.checked_add(value_nodes(value, 0)?).ok_or_else(overflow),
+                    )
+                })?;
+                let entries = work
+                    .todo_list
+                    .len()
+                    .checked_add(work.work_refs.len())
+                    .ok_or_else(overflow)?;
+                (slots, nodes, entries)
+            }
+            Self::Wait(wait) => (
+                std::mem::size_of_val(wait.wake_sources.as_slice()),
+                wait.continuation
+                    .as_ref()
+                    .map(|value| value_nodes(value, 0))
+                    .transpose()?
+                    .unwrap_or_default(),
+                wait.wake_sources.len(),
+            ),
+            Self::Frame(_) => (0, 0, 0),
+        };
+        // Serde Vec decode/clone capacity is bounded by two live element slots;
+        // native JSON object/array nodes get their own container allowance.
+        let address_bytes = self
+            .agent_id()
+            .len()
+            .checked_add(self.record_id().len())
+            .and_then(|n| n.checked_add(64))
+            .ok_or_else(overflow)?;
+        let native = slots
+            .checked_mul(2)
+            .and_then(|n| {
+                nodes
+                    .checked_mul(256)
+                    .and_then(|nodes| n.checked_add(nodes))
+            })
+            .and_then(|n| n.checked_add(std::mem::size_of::<QualifiedWorkRecord>()))
+            .and_then(|n| n.checked_add(address_bytes))
+            .ok_or_else(overflow)?;
+        let bytes = usize::try_from(serialized_bytes(self)?)?
+            .checked_add(native)
+            .ok_or_else(overflow)?;
+        let records = nodes
+            .checked_add(collection_entries)
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(overflow)?;
+        Ok((bytes, records))
+    }
+    pub(crate) fn borrowed_references(&self) -> [Option<(WorkFamily, &str)>; 2] {
+        match self {
+            Self::Work(work) => [
+                work.blocked_by_wait_id
+                    .as_deref()
+                    .map(|id| (WorkFamily::Wait, id)),
+                None,
+            ],
+            Self::Wait(wait) => [
+                wait.work_item_id
+                    .as_deref()
+                    .map(|id| (WorkFamily::Work, id)),
+                None,
+            ],
+            Self::Frame(frame) => [
+                Some((WorkFamily::Work, &frame.suspended_work_item_id)),
+                Some((WorkFamily::Work, &frame.active_work_item_id)),
+            ],
+        }
+    }
+    fn family(&self) -> WorkFamily {
+        match self {
+            Self::Work(_) => WorkFamily::Work,
+            Self::Wait(_) => WorkFamily::Wait,
+            Self::Frame(_) => WorkFamily::Frame,
+        }
+    }
+    fn record_id(&self) -> &str {
+        match self {
+            Self::Work(x) => &x.id,
+            Self::Wait(x) => &x.id,
+            Self::Frame(x) => &x.id,
+        }
+    }
+
     /// Domain owning edges only. D3 evidence dependencies are prepared separately.
     pub(crate) fn references(&self) -> BTreeSet<WorkKey> {
         let mut keys = BTreeSet::new();
@@ -106,7 +229,8 @@ impl QualifiedWorkRecord {
         ensure!(
             self.scope == *scope
                 && self.record.agent_id() == scope.agent_id
-                && self.record.key() == self.key,
+                && self.record.family() == self.key.family
+                && self.record.record_id() == self.key.id,
             "qualified Work record scope/key mismatch"
         );
         ensure!(
@@ -119,7 +243,7 @@ impl QualifiedWorkRecord {
             "qualified Work record revision/digest invalid"
         );
         ensure!(
-            self.resident_bytes >= serde_json::to_vec(&self.record)?.len(),
+            self.resident_bytes >= usize::try_from(serialized_bytes(&self.record)?)?,
             "qualified Work body estimate is incomplete"
         );
         Ok(())
@@ -165,6 +289,90 @@ pub(crate) struct WorkHistoryCoverage {
     pub is_exhaustive: bool,
 }
 
+/// A selected Work inherits the capture's exact scope; these metadata refs
+/// carry no body authority and preserve two independent legacy selectors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "presence", rename_all = "snake_case")]
+pub(crate) enum WorkDeliveryHead {
+    Present {
+        record_id: String,
+        content_digest: String,
+        source_revision: u64,
+        availability: super::resident_input_evidence::LegacyDeliverySourceAvailability,
+    },
+    Absent,
+    Unavailable,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkDeliveryHeads {
+    pub latest_any: WorkDeliveryHead,
+    pub latest_nonempty: WorkDeliveryHead,
+}
+impl WorkDeliveryHead {
+    pub(crate) fn body_id(&self) -> Option<&str> {
+        match self {
+            Self::Present {
+                record_id,
+                availability:
+                    super::resident_input_evidence::LegacyDeliverySourceAvailability::Present,
+                ..
+            } => Some(record_id),
+            _ => None,
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        if let Self::Present { content_digest, .. } = self {
+            ensure!(
+                content_digest.len() == 64
+                    && content_digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "Work Delivery head address/digest is invalid"
+            );
+        }
+        Ok(())
+    }
+    pub(crate) fn metadata_records(&self) -> usize {
+        if matches!(self, Self::Present { .. }) {
+            16
+        } else {
+            1
+        }
+    }
+    pub(crate) fn from_observation(
+        scope: &InputEvidenceScope,
+        observation: super::resident_input_evidence::LegacyDeliveryHeadObservation,
+    ) -> Result<Self> {
+        use super::resident_input_evidence::{InputEvidenceFamily, LegacyDeliveryHeadObservation};
+        Ok(match observation {
+            LegacyDeliveryHeadObservation::Present { source } => {
+                ensure!(
+                    &source.scope == scope
+                        && source.key.family == InputEvidenceFamily::LegacyDelivery,
+                    "Work Delivery head Source crossed its actual scope/family"
+                );
+                Self::Present {
+                    record_id: source.key.id,
+                    content_digest: source.content_digest,
+                    source_revision: source.source_revision,
+                    availability: source.availability,
+                }
+            }
+            LegacyDeliveryHeadObservation::Absent => Self::Absent,
+            LegacyDeliveryHeadObservation::Unavailable => Self::Unavailable,
+        })
+    }
+}
+impl WorkDeliveryHeads {
+    pub(crate) fn metadata_records(&self) -> Result<usize> {
+        self.latest_any
+            .metadata_records()
+            .checked_add(self.latest_nonempty.metadata_records())
+            .and_then(|n| n.checked_add(1))
+            .context("Work Delivery head metadata overflow")
+    }
+}
+
 /// Completeness is an explicit same-read-view observation, never inferred from
 /// whichever bodies happen to be resident. Every focused absence is named.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +397,9 @@ pub(crate) struct WorkCoverage {
     pub nonopen: WorkHistoryCoverage,
     /// Missing map entry is unprepared. Some(None) is observed no result.
     pub latest_results: BTreeMap<String, Option<WorkCompletionRef>>,
+    /// Missing entry is unprepared; Absent is a positive original Source fact.
+    #[serde(default)]
+    pub legacy_delivery_heads: BTreeMap<String, WorkDeliveryHeads>,
 }
 impl WorkCoverage {
     fn roots(&self) -> BTreeSet<WorkKey> {
@@ -231,6 +442,8 @@ pub(crate) struct CommittedWorkDelta {
     pub records: Vec<Arc<QualifiedWorkRecord>>,
     pub removals: BTreeMap<WorkKey, WorkAvailability>,
     pub coverage: WorkCoverage,
+    /// Temporary actual readback facts survive original Known/Unknown clones.
+    pub(crate) _material_views: Option<Arc<Vec<Arc<BudgetViewGuard>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -307,6 +520,7 @@ pub(crate) struct CapturedWork {
     pub trigger_wait_keys: BTreeMap<String, BTreeSet<String>>,
     pub nonopen: WorkHistoryCoverage,
     pub latest_results: BTreeMap<String, Option<WorkCompletionRef>>,
+    pub legacy_delivery_heads: BTreeMap<String, WorkDeliveryHeads>,
     pub observations: BTreeMap<WorkKey, WorkAvailability>,
     pub records: Vec<Arc<QualifiedWorkRecord>>,
     pub budget: Option<InputEvidenceBudgetLedger>,
@@ -342,28 +556,24 @@ impl ResidentWorkDomain {
     }
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
-        self.refresh_budget_views()?;
+        self.refresh_budget_views(None)?;
         if let Some(budget) = &self.budget {
             budget.check_history_budget()?;
         }
         Ok(self)
     }
-    fn metadata_bytes(
-        scope: &InputEvidenceScope,
-        coverage: &WorkCoverage,
-        record_count: usize,
-    ) -> Result<u64> {
-        let nodes = record_count
-            .checked_mul(std::mem::size_of::<(WorkKey, Arc<QualifiedWorkRecord>)>())
-            .ok_or_else(|| anyhow::anyhow!("Work metadata estimate overflow"))?;
-        serialized_bytes(&(scope, coverage))?
-            .checked_add(nodes as u64)
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
-            .ok_or_else(|| anyhow::anyhow!("Work metadata estimate overflow"))
-    }
-    fn refresh_budget_views(&mut self) -> Result<()> {
+    fn refresh_budget_views(&mut self, prepaid: Option<Arc<BudgetViewGuard>>) -> Result<()> {
         let Some(budget) = &self.budget else {
             return Ok(());
+        };
+        let metadata = match prepaid {
+            Some(guard) => Some(guard),
+            None => material::coverage_preflight(
+                self,
+                &self.coverage,
+                self.records.len(),
+                InputMemoryCategory::Current,
+            )?,
         };
         let mut roots = BTreeSet::new();
         roots.extend(self.coverage.mandatory_roots.iter().cloned());
@@ -413,34 +623,70 @@ impl ResidentWorkDomain {
                     .filter(|(key, _)| history.contains(*key))
                     .map(|(_, record)| record),
             )?,
-            budget.register_owned_bytes(
-                &self.scope,
-                InputMemoryCategory::Current,
-                OwnedBytesEstimate {
-                    payload_bytes: 0,
-                    metadata_estimate_bytes: Self::metadata_bytes(
-                        &self.scope,
-                        &self.coverage,
-                        self.records.len(),
-                    )?,
-                },
-            )?,
+            metadata.expect("budgeted Work metadata has its original owned guard"),
         ];
         self.budget_views = views;
         Ok(())
     }
-    pub(crate) fn candidate_budget_view(&self) -> Result<Option<Arc<BudgetViewGuard>>> {
-        self.budget
-            .as_ref()
-            .map(|budget| {
-                budget.register_work_view(
-                    &self.scope,
-                    InputMemoryCategory::Candidate,
-                    self.records.values(),
-                )
-            })
-            .transpose()
-            .map_err(Into::into)
+    pub(crate) fn candidate_budget_views(&self) -> Result<Vec<Arc<BudgetViewGuard>>> {
+        let Some(budget) = self.budget.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let metadata = material::candidate_preflight(self)?
+            .expect("budgeted Work candidate has its original owned guard");
+        let body = budget.register_work_view(
+            &self.scope,
+            InputMemoryCategory::Candidate,
+            self.records.values(),
+        )?;
+        Ok(vec![body, metadata])
+    }
+    /// Borrow only an already-qualified current observation; no selectors or SQL.
+    pub(crate) fn qualified_context_plan_source(
+        &self,
+        id: &str,
+    ) -> Option<&Arc<QualifiedWorkRecord>> {
+        self.records.iter().find_map(|(key, qualified)| {
+            (key.family == WorkFamily::Work
+                && key.id == id
+                && self.coverage.observations.get(key) == Some(&WorkAvailability::Present)
+                && matches!(&qualified.record, CanonicalWorkRecord::Work(_)))
+            .then_some(qualified)
+        })
+    }
+    /// Borrow only original qualified Present members; no history acquisition.
+    pub(crate) fn context_plan_sources(&self) -> impl Iterator<Item = &WorkItemRecord> {
+        self.records.iter().filter_map(move |(key, qualified)| {
+            if self.coverage.observations.get(key) != Some(&WorkAvailability::Present) {
+                return None;
+            }
+            match &qualified.record {
+                CanonicalWorkRecord::Work(item) => Some(item),
+                _ => None,
+            }
+        })
+    }
+    pub(crate) fn borrowed_records(&self) -> impl Iterator<Item = &Arc<QualifiedWorkRecord>> {
+        self.records.values()
+    }
+    pub(in crate::runtime) fn validate_capture_material_binding(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.budget
+                .as_ref()
+                .is_some_and(|actual| actual.same_ledger(ledger))
+                && !self.budget_views.is_empty(),
+            "scheduler Work material ledger differs"
+        );
+        for guard in &self.budget_views {
+            guard.validate_owned_material_binding(&self.scope, ledger, 0)?;
+        }
+        Ok(())
+    }
+    pub(in crate::runtime) fn acquisition_registration_count(&self) -> Result<usize> {
+        Ok(self.records.len())
     }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         &self.scope
@@ -472,41 +718,31 @@ impl ResidentWorkDomain {
                 "Work no-op delta changed facts"
             );
         }
-        // Observe the new map/coverage allocation before cloning it. These
-        // temporary guards never own the bodies and transfer to final views.
-        let _candidate_views = self
+        let count = self
+            .records
+            .len()
+            .checked_add(delta.records.len())
+            .ok_or_else(|| anyhow::anyhow!("Work candidate metadata overflow"))?;
+        let metadata = material::coverage_preflight(
+            self,
+            &delta.coverage,
+            count,
+            InputMemoryCategory::Current,
+        )?;
+        let _candidate_body_view = self
             .budget
             .as_ref()
-            .map(|budget| -> Result<_> {
-                let count = self
-                    .records
-                    .len()
-                    .checked_add(delta.records.len())
-                    .ok_or_else(|| anyhow::anyhow!("Work candidate metadata overflow"))?;
-                Ok(vec![
-                    budget.register_work_view(
-                        &self.scope,
-                        InputMemoryCategory::Candidate,
-                        self.records.values().chain(delta.records.iter()),
-                    )?,
-                    budget.register_owned_bytes(
-                        &self.scope,
-                        InputMemoryCategory::Candidate,
-                        OwnedBytesEstimate {
-                            payload_bytes: 0,
-                            metadata_estimate_bytes: Self::metadata_bytes(
-                                &self.scope,
-                                &delta.coverage,
-                                count,
-                            )?,
-                        },
-                    )?,
-                ])
+            .map(|budget| {
+                budget.register_work_view(
+                    &self.scope,
+                    InputMemoryCategory::Candidate,
+                    self.records.values().chain(delta.records.iter()),
+                )
             })
             .transpose()?;
         let mut next = Self {
             scope: self.scope.clone(),
-            coverage: self.coverage.clone(),
+            coverage: delta.coverage.clone(),
             records: self.records.clone(),
             record_limit: self.record_limit,
             byte_limit: self.byte_limit,
@@ -528,15 +764,19 @@ impl ResidentWorkDomain {
             );
             next.insert(record.clone())?;
         }
-        next.coverage = delta.coverage.clone();
         next.trim_and_validate()?;
-        next.refresh_budget_views()?;
+        next.refresh_budget_views(metadata)?;
         if let Some(budget) = &next.budget {
             budget.check_history_budget()?;
         }
         Ok(next)
     }
     pub(crate) fn capture(&self, request: &WorkCaptureRequest) -> Result<CapturedWork> {
+        self.capture_accounted(request, self.budget.as_ref(), None)
+    }
+    // All allocations below have already been admitted by selected-only
+    // borrowed preflight; this keeps the original business projection intact.
+    fn capture_prepaid(&self, request: &WorkCaptureRequest) -> Result<CapturedWork> {
         if request.include_live && !self.coverage.live_complete {
             return Err(WorkReadError::IncompleteLive.into());
         }
@@ -651,7 +891,16 @@ impl ResidentWorkDomain {
                     })
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        let mut captured = CapturedWork {
+        let legacy_delivery_heads = work_ids
+            .iter()
+            .filter_map(|id| {
+                self.coverage
+                    .legacy_delivery_heads
+                    .get(id)
+                    .map(|heads| (id.clone(), heads.clone()))
+            })
+            .collect();
+        let captured = CapturedWork {
             scope: self.scope.clone(),
             revision: self.coverage.revision,
             live_complete: request.include_live && self.coverage.live_complete,
@@ -684,6 +933,7 @@ impl ResidentWorkDomain {
                     && self.coverage.nonopen.keys.len() <= request.nonopen_limit,
             },
             latest_results,
+            legacy_delivery_heads,
             turn_wait_keys,
             task_wait_keys,
             trigger_wait_keys,
@@ -698,23 +948,6 @@ impl ResidentWorkDomain {
             budget: self.budget.clone(),
             budget_views: Vec::new(),
         };
-        if let Some(budget) = &captured.budget {
-            captured.budget_views = vec![
-                budget.register_work_view(
-                    &self.scope,
-                    InputMemoryCategory::Pins,
-                    &captured.records,
-                )?,
-                budget.register_owned_bytes(
-                    &self.scope,
-                    InputMemoryCategory::Pins,
-                    OwnedBytesEstimate {
-                        payload_bytes: 0,
-                        metadata_estimate_bytes: captured.selected_metadata_estimate_bytes()?,
-                    },
-                )?,
-            ];
-        }
         Ok(captured)
     }
     fn insert(&mut self, record: Arc<QualifiedWorkRecord>) -> Result<()> {
@@ -745,7 +978,9 @@ impl ResidentWorkDomain {
                         .records
                         .get(&key)
                         .ok_or_else(|| WorkReadError::NeedsPreparation(key.clone()))?;
-                    pending.extend(record.record.references());
+                    for (family, id) in record.record.borrowed_references().into_iter().flatten() {
+                        pending.insert(WorkKey::new(family, id));
+                    }
                 }
                 Some(WorkAvailability::Absent | WorkAvailability::Pruned) => {}
                 None => return Err(WorkReadError::NeedsPreparation(key).into()),
@@ -802,7 +1037,8 @@ impl ResidentWorkDomain {
                         agrees,
                         "Work complete membership omits an actual live record"
                     );
-                    for dependency in record.record.references() {
+                    for (family, id) in record.record.borrowed_references().into_iter().flatten() {
+                        let dependency = WorkKey::new(family, id);
                         ensure!(
                             self.coverage.observations.get(&dependency)
                                 == Some(&WorkAvailability::Present),
@@ -981,6 +1217,17 @@ impl ResidentWorkDomain {
                 );
             }
         }
+        for (id, heads) in &self.coverage.legacy_delivery_heads {
+            ensure!(
+                self.coverage
+                    .observations
+                    .get(&WorkKey::new(WorkFamily::Work, id))
+                    == Some(&WorkAvailability::Present),
+                "Work Delivery head has no selected Present Work"
+            );
+            heads.latest_any.validate()?;
+            heads.latest_nonempty.validate()?;
+        }
         for pair in history.keys.windows(2) {
             let work = |key: &WorkKey| match &self.records[key].record {
                 CanonicalWorkRecord::Work(record) => record,
@@ -1011,8 +1258,11 @@ impl ResidentWorkDomain {
         self.coverage
             .latest_results
             .retain(|id, _| selected.contains(&WorkKey::new(WorkFamily::Work, id)));
+        self.coverage
+            .legacy_delivery_heads
+            .retain(|id, _| selected.contains(&WorkKey::new(WorkFamily::Work, id)));
         let bytes = self.records.values().try_fold(
-            serde_json::to_vec(&self.coverage)?.len(),
+            usize::try_from(serialized_bytes(&self.coverage)?)?,
             |total, x| {
                 total
                     .checked_add(x.resident_bytes)
@@ -1027,8 +1277,14 @@ impl ResidentWorkDomain {
 }
 
 impl CapturedWork {
-    pub(crate) fn selected_metadata_estimate_bytes(&self) -> Result<u64> {
-        let metadata = serialized_bytes(&(
+    pub(crate) fn delivery_heads(&self, id: &str) -> Result<&WorkDeliveryHeads> {
+        self.legacy_delivery_heads.get(id).ok_or_else(|| {
+            WorkReadError::NeedsPreparation(WorkKey::new(WorkFamily::Work, id)).into()
+        })
+    }
+    /// Exact encoded metadata footprint through borrowed observations.
+    pub(crate) fn encoded_selected_metadata_bytes(&self) -> Result<u64> {
+        Ok(serialized_bytes(&(
             &self.scope,
             self.revision,
             self.live_complete,
@@ -1040,8 +1296,80 @@ impl CapturedWork {
             &self.trigger_wait_keys,
             &self.nonopen,
             &self.latest_results,
-            self.observations.iter().collect::<Vec<_>>(),
-        ))?;
+            &self.legacy_delivery_heads,
+            work_observations::Entries(&self.observations),
+        ))?)
+    }
+    /// Native metadata entries copied by this selected carrier, without bodies.
+    pub(crate) fn selected_metadata_record_count(&self) -> Result<usize> {
+        let mut count = 1usize;
+        for size in [
+            self.records.len(),
+            self.live_work_ids.len(),
+            self.unresolved_wait_ids.len(),
+            self.active_frame_ids.len(),
+            self.nonopen.keys.len(),
+            self.observations.len(),
+            self.latest_results.len(),
+            self.legacy_delivery_heads.len(),
+            self.turn_wait_keys.len(),
+            self.task_wait_keys.len(),
+            self.trigger_wait_keys.len(),
+        ] {
+            count = count
+                .checked_add(size)
+                .ok_or_else(|| anyhow::anyhow!("selected Work metadata count overflow"))?;
+        }
+        for ids in self
+            .turn_wait_keys
+            .values()
+            .chain(self.task_wait_keys.values())
+            .chain(self.trigger_wait_keys.values())
+        {
+            count = count
+                .checked_add(ids.len())
+                .ok_or_else(|| anyhow::anyhow!("selected Work relation count overflow"))?;
+        }
+        for heads in self.legacy_delivery_heads.values() {
+            count = count
+                .checked_add(heads.metadata_records()?)
+                .context("selected Work Delivery metadata overflow")?;
+        }
+        count
+            .checked_add(
+                self.latest_results
+                    .values()
+                    .filter(|value| value.is_some())
+                    .count(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("selected Work result metadata count overflow"))
+    }
+    /// No lookup, copying, ledger registration or new membership authority.
+    pub(crate) fn selected_material_estimate(&self) -> Result<(u64, usize)> {
+        let metadata = self.selected_metadata_record_count()?;
+        let mut bytes = self
+            .encoded_selected_metadata_bytes()?
+            .checked_add(
+                u64::try_from(metadata)?
+                    .checked_mul(128)
+                    .ok_or_else(|| anyhow::anyhow!("selected Work metadata overflow"))?,
+            )
+            .and_then(|n| n.checked_add(std::mem::size_of::<Self>() as u64))
+            .ok_or_else(|| anyhow::anyhow!("selected Work material overflow"))?;
+        let mut records = metadata;
+        for record in &self.records {
+            let (body, count) = record.record.resident_material_estimate()?;
+            bytes = bytes
+                .checked_add(u64::try_from(body)?)
+                .ok_or_else(|| anyhow::anyhow!("selected Work bodies overflow"))?;
+            records = records
+                .checked_add(count)
+                .ok_or_else(|| anyhow::anyhow!("selected Work records overflow"))?;
+        }
+        Ok((bytes, records))
+    }
+    pub(crate) fn selected_metadata_estimate_bytes(&self) -> Result<u64> {
+        let metadata = self.encoded_selected_metadata_bytes()?;
         let nodes = self
             .records
             .len()
@@ -1136,6 +1464,17 @@ impl CapturedWork {
         state: &AgentState,
         triggers: Vec<ExternalTriggerRecord>,
     ) -> Result<crate::work_item_scheduling::WorkQueueReadModel> {
+        self.work_queue_observed(state, triggers, &mut None)
+    }
+    pub(in crate::runtime) fn work_queue_observed(
+        &self,
+        state: &AgentState,
+        triggers: Vec<ExternalTriggerRecord>,
+        observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+    ) -> Result<crate::work_item_scheduling::WorkQueueReadModel> {
+        use crate::work_item_scheduling::{
+            observe_scheduling_clone as observe, observe_scheduling_slots as slots,
+        };
         ensure!(
             state.id == self.scope.agent_id,
             "Work projection State scope mismatch"
@@ -1159,6 +1498,16 @@ impl CapturedWork {
                 .all(|record| record.target_agent_id == self.scope.agent_id),
             "Work trigger adapter scope mismatch"
         );
+        for evidence in &self.records {
+            if let CanonicalWorkRecord::Work(work) = &evidence.record {
+                if work.state == WorkItemState::Open {
+                    observe(&work.id, observer)?;
+                }
+            }
+        }
+        for key in &self.nonopen.keys {
+            observe(&key.id, observer)?;
+        }
         let displayed_work_ids = self
             .records
             .iter()
@@ -1176,15 +1525,20 @@ impl CapturedWork {
         for evidence in &self.records {
             match &evidence.record {
                 CanonicalWorkRecord::Work(x) if displayed_work_ids.contains(&x.id) => {
+                    observe(&x.id, observer)?;
+                    observe(x, observer)?;
+                    slots(2, observer)?;
                     works.insert(x.id.clone(), x.clone());
                 }
                 CanonicalWorkRecord::Wait(x)
                     if self.unresolved_wait_ids.contains(&x.id)
                         && x.status == WaitConditionStatus::Active =>
                 {
+                    observe(x, observer)?;
                     waits.push(x.clone())
                 }
                 CanonicalWorkRecord::Frame(x) if self.active_frame_ids.contains(&x.id) => {
+                    observe(x, observer)?;
                     frames.push(x.clone())
                 }
                 _ => {}
@@ -1192,15 +1546,25 @@ impl CapturedWork {
         }
         // Triggered waits remain resident obligations, but the existing queue
         // reader projects only Active waits owned by an Open WorkItem.
-        let waits =
-            crate::storage::filter_context_active_waits(waits, works.values().cloned().collect());
-        Ok(crate::storage::derive_context_work_queue(
+        let waits = waits
+            .into_iter()
+            .filter(|record| {
+                record.work_item_id.as_ref().is_none_or(|id| {
+                    works
+                        .get(id)
+                        .is_some_and(|work| work.state == WorkItemState::Open)
+                })
+            })
+            .collect();
+        observe(&state.current_work_item_id, observer)?;
+        crate::storage::derive_context_work_queue_observed(
             state.current_work_item_id.clone(),
             works,
             triggers,
             waits,
             frames,
-        ))
+            observer,
+        )
     }
 }
 
@@ -1210,11 +1574,18 @@ mod work_observations {
     use super::{BTreeMap, WorkAvailability, WorkKey};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    pub(super) struct Entries<'a>(pub &'a BTreeMap<WorkKey, WorkAvailability>);
+    impl Serialize for Entries<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serialize(self.0, serializer)
+        }
+    }
+
     pub(super) fn serialize<S: Serializer>(
         values: &BTreeMap<WorkKey, WorkAvailability>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        values.iter().collect::<Vec<_>>().serialize(serializer)
+        serializer.collect_seq(values.iter())
     }
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
@@ -1233,6 +1604,25 @@ mod work_observations {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_work_observations_preserve_the_original_durable_pair_shape() -> Result<()> {
+        let observations = BTreeMap::from([
+            (
+                WorkKey::new(WorkFamily::Work, "work-first"),
+                WorkAvailability::Present,
+            ),
+            (
+                WorkKey::new(WorkFamily::Wait, "wait-second"),
+                WorkAvailability::Pruned,
+            ),
+        ]);
+        let original = serde_json::to_vec(&observations.iter().collect::<Vec<_>>())?;
+        let borrowed = work_observations::Entries(&observations);
+        assert_eq!(serde_json::to_vec(&borrowed)?, original);
+        assert_eq!(serialized_bytes(&borrowed)?, u64::try_from(original.len())?);
+        Ok(())
+    }
 
     fn scope() -> InputEvidenceScope {
         InputEvidenceScope {
@@ -1273,6 +1663,7 @@ mod tests {
                 is_exhaustive: true,
             },
             latest_results: BTreeMap::new(),
+            legacy_delivery_heads: BTreeMap::new(),
         };
         for evidence in records {
             value
@@ -1310,7 +1701,7 @@ mod tests {
         records: Vec<Arc<QualifiedWorkRecord>>,
         coverage: WorkCoverage,
     ) -> ResidentWorkDomain {
-        ResidentWorkDomain::bootstrap(scope(), coverage, records, 1_000, 4 * 1024 * 1024).unwrap()
+        ResidentWorkDomain::bootstrap(scope(), coverage, records, 65_536, 4 * 1024 * 1024).unwrap()
     }
 
     #[test]
@@ -1411,6 +1802,7 @@ mod tests {
         let captured = resident.capture(&WorkCaptureRequest::current()).unwrap();
         let new = qualified("work", WorkItemState::Completed, 2);
         let delta = CommittedWorkDelta {
+            _material_views: None,
             scope: scope(),
             base_revision: 1,
             revision: 2,
@@ -1495,6 +1887,7 @@ mod tests {
                 None => domain(records, final_coverage),
                 Some(previous) => previous
                     .with_committed(&CommittedWorkDelta {
+                        _material_views: None,
                         scope: scope(),
                         base_revision: revision - 1,
                         revision,
@@ -1666,6 +2059,171 @@ mod tests {
         assert_eq!(report.categories[&InputMemoryCategory::Pins].allocations, 2);
         drop(captured);
         assert_eq!(budget.report().unwrap().observed_bytes, 0);
+    }
+
+    #[test]
+    fn selected_material_rejects_before_record_arc_clone_and_restores_ledger() -> Result<()> {
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let record = qualified("bounded", WorkItemState::Open, 1);
+        let mut resident = domain(vec![record.clone()], coverage(&[record.clone()], 1))
+            .with_budget(ledger.clone())?;
+        let baseline = ledger.report()?.observed_bytes;
+        let strong = Arc::strong_count(&record);
+        resident.byte_limit = 4096;
+        let error = resident
+            .capture(&WorkCaptureRequest::current())
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<WorkReadError>(),
+            Some(WorkReadError::ResourceExhausted(_))
+        ));
+        assert_eq!(Arc::strong_count(&record), strong);
+        assert_eq!(ledger.report()?.observed_bytes, baseline);
+        drop(resident);
+        drop(record);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+    #[test]
+    fn narrow_capture_does_not_charge_unselected_large_completion_metadata() -> Result<()> {
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let a = qualified("a", WorkItemState::Completed, 1);
+        let b = qualified("b", WorkItemState::Completed, 1);
+        let mut prepared = coverage(&[a.clone(), b.clone()], 1);
+        prepared.latest_results.insert(
+            "b".into(),
+            Some(WorkCompletionRef {
+                brief_id: "unselected".repeat(8192),
+                transcript_entry_id: None,
+                source_message_id: None,
+            }),
+        );
+        let mut resident = domain(vec![a, b], prepared).with_budget(ledger.clone())?;
+        resident.byte_limit = 32 * 1024;
+        let request = WorkCaptureRequest {
+            include_live: false,
+            nonopen_limit: 1,
+            mandatory_roots: Default::default(),
+            latest_result_work_ids: Default::default(),
+            required_turn_ids: Default::default(),
+            required_task_ids: Default::default(),
+            required_trigger_message_ids: Default::default(),
+        };
+        let selected = resident.capture(&request)?;
+        assert_eq!(selected.records.len(), 1);
+        assert_eq!(selected.records[0].key.id, "a");
+        assert!(!selected.latest_results.contains_key("b"));
+        assert!(resident.capture(&WorkCaptureRequest::current()).is_err());
+        drop(resident);
+        drop(selected);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+    #[test]
+    fn actual_observer_runs_before_any_selected_body_arc_is_cloned() -> Result<()> {
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let record = qualified("actual-observer", WorkItemState::Open, 1);
+        let resident = domain(vec![record.clone()], coverage(&[record.clone()], 1));
+        let strong = Arc::strong_count(&record);
+        let mut calls = 0;
+        let mut observer = |owned: &Arc<BudgetViewGuard>, bytes: usize, _: usize| {
+            assert!(owned.matches_resource_ledger(&ledger));
+            assert!(owned.owned_material_bytes()? >= u64::try_from(bytes)?);
+            assert_eq!(Arc::strong_count(&record), strong);
+            if calls == 0 {
+                assert!(
+                    ledger.report()?.host_owned.metadata_estimate_bytes >= u64::try_from(bytes)?
+                );
+            }
+            calls += 1;
+            Ok(())
+        };
+        let selected = resident.capture_with_material(
+            &WorkCaptureRequest::current(),
+            &ledger,
+            &mut observer,
+        )?;
+        assert!(calls > 1);
+        assert_eq!(Arc::strong_count(&record), strong + 1);
+        let body = Arc::downgrade(&record);
+        let guard = Arc::downgrade(&selected.budget_views[1]);
+        drop(resident);
+        drop(record);
+        assert!(body.upgrade().is_some() && guard.upgrade().is_some());
+        drop(selected);
+        assert!(body.upgrade().is_none() && guard.upgrade().is_none());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+    #[test]
+    fn candidate_view_accounts_its_owned_membership_without_copying_work_bodies() -> Result<()> {
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let record = qualified("candidate-membership", WorkItemState::Open, 1);
+        let resident = domain(vec![record.clone()], coverage(&[record.clone()], 1))
+            .with_budget(ledger.clone())?;
+        let baseline = ledger.report()?.observed_bytes;
+        let strong = Arc::strong_count(&record);
+        let views = resident.candidate_budget_views()?;
+        assert_eq!(views.len(), 2);
+        assert_eq!(Arc::strong_count(&record), strong);
+        let report = ledger.report()?;
+        assert_eq!(report.physical_records.allocations, 1);
+        assert!(report.observed_bytes > baseline);
+        let owned = Arc::downgrade(&views[1]);
+        let body = Arc::downgrade(&record);
+        drop(resident);
+        drop(record);
+        assert!(body.upgrade().is_none(), "candidate membership is weak");
+        assert!(owned.upgrade().is_some());
+        drop(views);
+        assert!(owned.upgrade().is_none());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_preflights_old_long_map_keys_after_focused_role_is_released() -> Result<()> {
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let a = qualified("a", WorkItemState::Completed, 1);
+        let b = qualified(&"long".repeat(8192), WorkItemState::Completed, 1);
+        let mut initial = coverage(&[a.clone(), b.clone()], 1);
+        initial.nonopen.keys.truncate(1);
+        initial.nonopen.limit = 1;
+        initial.nonopen.is_exhaustive = false;
+        initial.mandatory_roots.insert(b.key.clone());
+        let mut resident =
+            domain(vec![a.clone(), b.clone()], initial).with_budget(ledger.clone())?;
+        let baseline = ledger.report()?.observed_bytes;
+        resident.byte_limit = 16 * 1024;
+        let mut final_coverage = coverage(&[a.clone()], 2);
+        final_coverage.nonopen.limit = 1;
+        final_coverage.nonopen.is_exhaustive = false;
+        let delta = CommittedWorkDelta {
+            scope: scope(),
+            base_revision: 1,
+            revision: 2,
+            records: vec![],
+            removals: Default::default(),
+            coverage: final_coverage,
+            _material_views: None,
+        };
+        // B is still qualified durable history; only its focused role is gone.
+        // Final coverage has no B string, but cloning the old map would copy it.
+        assert!(!delta.coverage.observations.contains_key(&b.key));
+        let strong = Arc::strong_count(&b);
+        let error = resident.with_committed(&delta).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<WorkReadError>(),
+            Some(WorkReadError::ResourceExhausted(_))
+        ));
+        assert_eq!(Arc::strong_count(&b), strong);
+        assert_eq!(ledger.report()?.observed_bytes, baseline);
+        drop(delta);
+        drop(resident);
+        drop(a);
+        drop(b);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        Ok(())
     }
 }
 

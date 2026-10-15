@@ -91,6 +91,7 @@ macro_rules! stages {
 }
 
 stages! {
+    RESOURCE_REFRESH => "resources.explicit_refresh",
     CONTEXT_ACQUIRE => "context.snapshot.storage_acquisition",
     CONTEXT_RENDER => "context.snapshot.render",
     CONTEXT_HISTORY_PREPARE => "context.snapshot.scoped_history_acquisition",

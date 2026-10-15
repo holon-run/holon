@@ -3,8 +3,7 @@ use anyhow::Result;
 use super::RuntimeHandle;
 use crate::observability::TraceContext;
 use crate::types::{
-    AuthorityClass, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandResult,
-    TaskInputResult, TaskRecord,
+    AuthorityClass, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandResult, TaskRecord,
 };
 
 pub(crate) struct ManagedTaskSupervisor<'a> {
@@ -77,7 +76,7 @@ impl ManagedTaskSupervisor<'_> {
         task_id: &str,
         input: &str,
         authority_class: &AuthorityClass,
-    ) -> Result<TaskInputResult> {
+    ) -> Result<super::OwnedTaskInputResult> {
         self.runtime
             .task_input_with_trust(task_id, input, authority_class)
             .await

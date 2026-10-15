@@ -209,7 +209,7 @@ impl RuntimeHandle {
                 mutation.state.current_run_id.clone(),
             );
             drop(mutation);
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_owned_runtime_audit_event(AuditEvent::legacy(
                 "recovery_turn_started",
                 serde_json::json!({
                     "agent_id": message.agent_id,
@@ -225,12 +225,12 @@ impl RuntimeHandle {
                     "source_terminal_kind": recovery.source_terminal_kind,
                     "source_round": recovery.source_round,
                 }),
-            ))?;
+            ))
+            .await?;
         }
         self.record_incoming_transcript_entry(message).await?;
-        self.inner
-            .storage
-            .append_event(&brief::make_acknowledgement_event(message))?;
+        self.append_owned_runtime_audit_event(brief::make_acknowledgement_event(message))
+            .await?;
         let context_build_started = std::time::Instant::now();
         let _context_preparation =
             crate::diagnostics::io_probe::context_preparation(&message.agent_id);
@@ -250,7 +250,7 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             (guard.state.turn_index, guard.state.current_run_id.clone())
         };
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "turn_context_built",
             serde_json::json!({
                 "agent_id": message.agent_id.clone(),
@@ -262,7 +262,8 @@ impl RuntimeHandle {
                 "rendered_context_chars": built.rendered_context_attachment.chars().count(),
                 "rendered_system_chars": built.rendered_system_prompt.chars().count(),
             }),
-        ))?;
+        ))
+        .await?;
         record_operator_span(
             trace_context.as_ref(),
             "holon.turn.context_build",
@@ -524,6 +525,8 @@ impl RuntimeHandle {
         prompt: &str,
         authority_class: &AuthorityClass,
         execution: &EffectiveExecution,
+        resources: Arc<super::resource_observation::CapturedResourceObservations>,
+        skills: &SkillsRuntimeView,
     ) -> Result<EffectivePrompt> {
         let message = MessageEnvelope::new(
             agent_id.to_string(),
@@ -541,20 +544,6 @@ impl RuntimeHandle {
             MessageDeliverySurface::RuntimeSystem,
             AdmissionContext::RuntimeOwned,
         );
-        let loaded_agents_md = load_agents_md(
-            self.user_home().as_deref(),
-            self.agent_home().as_path(),
-            execution
-                .workspace
-                .workspace_id()
-                .map(|_| execution.workspace.workspace_anchor()),
-        )?;
-        let loaded_agent_memory = load_agent_memory(self.agent_home().as_path())?;
-        let state = self
-            .inner
-            .storage
-            .read_agent()?
-            .unwrap_or_else(|| AgentState::new(agent_id.to_string()));
         let name = match self.inner.host_bridge.as_ref() {
             Some(bridge) => bridge
                 .identity_for_agent(agent_id)
@@ -577,9 +566,6 @@ impl RuntimeHandle {
             lineage_parent_agent_id: None,
             delegated_from_task_id: None,
         };
-        let skills = self
-            .skills_runtime_view_for_state(&state, &identity)
-            .await?;
         let continuation = ContinuationTrigger::from_message(&message, None).map(|trigger| {
             resolve_continuation(
                 &ClosureDecision {
@@ -593,7 +579,7 @@ impl RuntimeHandle {
             )
         });
         let context_config = self.current_context_config().await;
-        build_effective_prompt_with_apply_patch_surface(
+        let mut result = crate::prompt::build_effective_prompt_with_observed_resources(
             &self.inner.storage,
             &AgentState::new(agent_id.to_string()),
             &execution.snapshot(),
@@ -602,13 +588,12 @@ impl RuntimeHandle {
             execution.workspace.execution_root(),
             self.agent_home().as_path(),
             &identity,
-            loaded_agents_md,
-            loaded_agent_memory,
-            &skills,
-            &[],
-            ApplyPatchSurface::UnifiedDiffJson,
+            skills,
+            resources.clone(),
             continuation.as_ref(),
-        )
+        )?;
+        result.resource_pins = Some(resources);
+        Ok(result)
     }
 
     #[cfg(test)]

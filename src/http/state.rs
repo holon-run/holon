@@ -336,6 +336,9 @@ async fn agent_summary(
             .local_agent_lightweight_projection(&agent_id)
             .await
             .map_err(agent_access_error)?;
+        if projection._ordinary_material.is_some() {
+            return traced_compact_json(route, started_at, projection);
+        }
         let response = traced_json(
             route,
             started_at,
@@ -349,7 +352,7 @@ async fn agent_summary(
         .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    traced_json(route, started_at, agent)
+    traced_summary_json(route, started_at, agent)
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {

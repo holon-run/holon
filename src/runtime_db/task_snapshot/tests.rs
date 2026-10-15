@@ -579,3 +579,6 @@ mod startup_metadata_tests;
 
 #[path = "deletion_maintenance_tests.rs"]
 mod deletion_maintenance_tests;
+
+#[path = "read_body_material_tests.rs"]
+mod read_body_material_tests;

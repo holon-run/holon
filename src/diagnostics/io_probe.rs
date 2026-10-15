@@ -220,12 +220,14 @@ unsafe extern "C" fn sql_statement(
 }
 
 pub(crate) fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
+    super::resource_io::check_reader_capability()?;
     let measured = enabled();
     if measured {
         FILE_OPENS.fetch_add(1, Ordering::Relaxed);
         FILE_READS.fetch_add(1, Ordering::Relaxed);
     }
-    let result = std::fs::read_to_string(path);
+    let result = super::resource_io::read_to_string(path.as_ref())
+        .unwrap_or_else(|| std::fs::read_to_string(path));
     if measured {
         match &result {
             Ok(body) => {
@@ -240,6 +242,7 @@ pub(crate) fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
 }
 
 pub(crate) fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    super::resource_io::check_reader_capability()?;
     let measured = enabled();
     if measured {
         FILE_OPENS.fetch_add(1, Ordering::Relaxed);
@@ -259,12 +262,17 @@ pub(crate) fn read(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
     result
 }
 
-pub(crate) fn read_dir(path: impl AsRef<Path>) -> io::Result<std::fs::ReadDir> {
+pub(crate) fn read_dir(path: impl AsRef<Path>) -> io::Result<super::resource_io::ResourceReadDir> {
+    super::resource_io::check_reader_capability()?;
     let measured = enabled();
     if measured {
         DIRECTORY_READS.fetch_add(1, Ordering::Relaxed);
     }
-    let result = std::fs::read_dir(path);
+    let path = path.as_ref();
+    let result = std::fs::read_dir(path).map(super::resource_io::ResourceReadDir::new);
+    if let Err(error) = &result {
+        super::resource_io::observe_read_error(path, error)?;
+    }
     if measured && result.is_err() {
         FILE_ERRORS.fetch_add(1, Ordering::Relaxed);
     }
@@ -276,6 +284,7 @@ pub(crate) fn start_timer() -> Option<Instant> {
 }
 
 pub(crate) fn open_file(path: impl AsRef<Path>) -> io::Result<File> {
+    super::resource_io::check_reader_capability()?;
     let measured = enabled();
     if measured {
         FILE_OPENS.fetch_add(1, Ordering::Relaxed);
@@ -288,12 +297,16 @@ pub(crate) fn open_file(path: impl AsRef<Path>) -> io::Result<File> {
 }
 
 pub(crate) fn read_to_end(reader: &mut impl Read, buffer: &mut Vec<u8>) -> io::Result<usize> {
+    super::resource_io::check_reader_capability()?;
     let measured = enabled();
     if measured {
         FILE_READS.fetch_add(1, Ordering::Relaxed);
     }
     let before = buffer.len();
-    let result = reader.read_to_end(buffer);
+    let result = match super::resource_io::read_to_end(reader, buffer) {
+        Some(result) => result,
+        None => reader.read_to_end(buffer),
+    };
     if measured {
         FILE_BYTES.fetch_add(
             buffer.len().saturating_sub(before) as u64,

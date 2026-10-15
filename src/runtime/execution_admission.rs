@@ -137,6 +137,7 @@ impl super::RuntimeHandle {
         // The registry retains the JoinHandle regardless of map removal.
     }
     pub(crate) async fn join_idle_owned_tasks(&self) -> Result<()> {
+        self.stop_context_resource_observer().await?;
         self.join_owned_mutations().await?;
         self.inner.control_cancellations.cancel_local_timer_loops();
         self.inner
@@ -159,6 +160,7 @@ impl super::RuntimeHandle {
         self.inner.identity_incarnation
     }
     pub(crate) fn close_execution_admission(&self) {
+        self.close_context_resource_observer();
         self.close_mutation_admission();
         self.inner.execution_admission.force_close();
         self.inner.shutdown_requested.store(true, Ordering::Release);

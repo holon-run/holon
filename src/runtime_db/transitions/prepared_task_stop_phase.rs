@@ -48,6 +48,11 @@ impl PreparedTaskStopProgressCommand {
     pub(super) fn scope(&self) -> &InputEvidenceScope {
         self.address.scope()
     }
+    pub(super) fn has_current_read_events(&self) -> bool {
+        self.authorization
+            .worktree_observation()
+            .is_some_and(|proof| !proof.audit_events().is_empty())
+    }
 }
 
 impl PreparedInputTransition {
@@ -337,6 +342,48 @@ pub(super) fn commit_progress_tx(
     } else {
         None
     };
+    let current_source = if ready && !command.has_current_read_events() {
+        prepared
+            .current_read_source
+            .as_ref()
+            .map(|source| {
+                let (mut current_request, prior) = prepared.current_event_request(ledger)?;
+                // This closed State-only helper has no prior parameter; debit
+                // still-live role material once, without registering it again.
+                current_request.byte_limit = current_request
+                    .byte_limit
+                    .min(crate::runtime::current_read_facts::CURRENT_READ_MAX_BYTES)
+                    .checked_sub(prior.0)
+                    .context("Stop Event role byte allowance exhausted")?;
+                current_request.record_limit = current_request
+                    .record_limit
+                    .min(crate::runtime::current_read_facts::CURRENT_READ_MAX_RECORDS)
+                    .checked_sub(prior.1)
+                    .context("Stop Event role node allowance exhausted")?;
+                CurrentReadBusinessTransaction::prepare_actual_unchanged_state_source_tx(
+                    tx,
+                    scope,
+                    &current_request,
+                    ledger,
+                    source.clone(),
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let mut current_events = selected
+        .original_worktree_audit_view(&command.action, &command.authorization)?
+        .map(|source| {
+            crate::runtime_db::current_read_snapshot::OriginalStopCurrentEvents::prepare_tx(
+                tx,
+                source,
+                mode,
+                ledger,
+                prepared.current_event_roles.as_ref(),
+            )
+        })
+        .transpose()?;
     let at = command
         .authorization
         .worktree_observation()
@@ -351,14 +398,26 @@ pub(super) fn commit_progress_tx(
     guards.push(actual.budget_view());
     let mut effects = PostCommitEffects::default();
     let invalidation = if let Some(proof) = proof {
-        let state =
-            agent_state_tx(tx, &scope.agent_id)?.context("Stop phase current State disappeared")?;
+        let (current, source_state) = match current_source {
+            Some((current, state)) => (Some(current), Some(state)),
+            None => (None, None),
+        };
+        let fallback_state;
+        let state = if let Some(state) = source_state.as_ref() {
+            state
+        } else if let Some(state) = current_events.as_ref().and_then(|events| events.state()) {
+            state
+        } else {
+            fallback_state = agent_state_tx(tx, &scope.agent_id)?
+                .context("Stop phase current State disappeared")?;
+            &fallback_state
+        };
         anyhow::ensure!(state.id == scope.agent_id, "Stop phase State owner differs");
         let facts = tasks::register_task_writes_with_budget_tx(
             tx,
             &proof,
             &BTreeSet::<TaskKey>::new(),
-            &state,
+            state,
             request,
             ledger,
         )?;
@@ -382,20 +441,25 @@ pub(super) fn commit_progress_tx(
         )?);
         effects.task_delta = Some(facts.delta);
         effects.task_delta_requires_prepared_domain = true;
+        if let Some(current) = current {
+            effects.current_read_facts = Some(Arc::new(current.finish(state)?));
+        }
         None
     } else {
         tasks::invalidate_task_scope_for_stop_progress_tx(tx, &actual)?
     };
+    if let Some(events) = current_events.as_mut() {
+        effects.audit_events = events.append_actual_tx(&actual)?;
+    }
     if actual.changed() {
         if let Some(observation) = command.authorization.worktree_observation() {
-            for event in observation.audit_events() {
-                let (event, _) = append_audit_event_tx(tx, Some(&scope.agent_id), event)?;
-                effects.audit_events.push(event);
-            }
             effects
                 .task_material_budget_views
                 .extend(observation.budget_views());
         }
+    }
+    if let Some(events) = current_events {
+        effects.current_read_maintenance = Some(Arc::new(events.finish()?));
     }
     effects.notify_scheduler = !effects.audit_events.is_empty();
     effects.task_material_budget_views.extend(guards);

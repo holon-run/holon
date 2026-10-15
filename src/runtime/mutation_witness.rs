@@ -30,6 +30,9 @@ pub(crate) struct MutationWitness {
     input_runtime: Vec<Arc<super::state_mutation::RuntimeMutationFacts>>,
     input_stop_readonly: Vec<Arc<super::state_mutation::InitialTaskStopReadonlyMember>>,
     input_stop_parent: Option<super::mutation_owner::KnownCommit>,
+    input_work_report: Option<Arc<super::OriginalWorkReportContinuation>>,
+    // Host request allocation is never relabeled as an agent guard.
+    input_task_input_child_material: Option<(Arc<super::OriginalTaskInputChildMaterial>, u64)>,
     input_status_parent: Option<super::mutation_owner::KnownCommit>,
     input_command_producer: Option<std::sync::Weak<super::OriginalCommandTaskProducer>>,
     input_child_producer: Option<std::sync::Weak<super::OriginalChildTaskProducer>>,
@@ -108,6 +111,8 @@ impl MutationWitness {
             input_runtime: Vec::new(),
             input_stop_readonly: Vec::new(),
             input_stop_parent: None,
+            input_work_report: None,
+            input_task_input_child_material: None,
             input_status_parent: None,
             input_command_producer: None,
             input_child_producer: None,
@@ -170,6 +175,7 @@ impl MutationWitness {
                 self.input_child_observations.push((
                     scope.clone(),
                     super::mutation_owner::KnownCommit::State {
+                        current_reads: root.current_reads.clone(),
                         state: root.state.clone(),
                         episodes: root.episodes.clone(),
                         input_evidence: root.input_evidence.clone(),
@@ -207,6 +213,7 @@ impl MutationWitness {
         if let Some(root) = reservation.capture_ready_snapshot()? {
             self.input_child_binding_observation =
                 Some(super::mutation_owner::KnownCommit::State {
+                    current_reads: root.current_reads.clone(),
                     state: root.state.clone(),
                     episodes: root.episodes.clone(),
                     input_evidence: root.input_evidence.clone(),
@@ -299,6 +306,7 @@ impl MutationWitness {
             );
             if root.tasks.is_none() {
                 self.input_stop_parent = Some(super::mutation_owner::KnownCommit::State {
+                    current_reads: root.current_reads.clone(),
                     state: root.state.clone(),
                     episodes: root.episodes.clone(),
                     input_evidence: root.input_evidence.clone(),
@@ -340,6 +348,7 @@ impl MutationWitness {
                 "Status observation epoch differs"
             );
             self.input_status_parent = Some(super::mutation_owner::KnownCommit::State {
+                current_reads: root.current_reads.clone(),
                 state: root.state.clone(),
                 episodes: root.episodes.clone(),
                 input_evidence: root.input_evidence.clone(),
@@ -355,6 +364,112 @@ impl MutationWitness {
         &self,
     ) -> Option<&super::mutation_owner::KnownCommit> {
         self.input_status_parent.as_ref()
+    }
+    pub(crate) fn with_original_work_report(
+        mut self,
+        result: Option<&Arc<super::WorkItemMutationMaterial>>,
+        limits: (usize, usize),
+        prior: (usize, usize),
+    ) -> Result<Self> {
+        if let Some(result) = result.filter(|result| result.expects_completed_report()) {
+            self.input_work_report = result.retain_original_report_attempt(
+                self.input_attempt()
+                    .context("report witness lacks original attempt")?,
+                limits,
+                prior,
+            )?;
+        }
+        Ok(self)
+    }
+    pub(crate) fn with_original_task_input_child_material(
+        mut self,
+        prepared: &crate::runtime_db::transitions::PreparedInputTransition,
+        reservation: &super::mutation_owner::MutationReservation,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        let Some(material) = prepared.original_task_input_child_material() else {
+            return Ok(self);
+        };
+        let scope = prepared
+            .descriptor()
+            .scopes()
+            .first()
+            .context("child input witness scope absent")?;
+        ensure!(
+            !self.original_attempt_finished()
+                && self
+                    .input_attempt()
+                    .is_some_and(|attempt| attempt.prepared() == prepared.descriptor())
+                && prepared.descriptor().scopes().len() == 1
+                && self.input_task_input_child_material.is_none()
+                && reservation.agent_id() == scope.agent_id
+                && reservation.identity_incarnation() == scope.identity_incarnation,
+            "child input witness differs from its original attempt/owner"
+        );
+        material.validate_binding(scope, reservation.owner_epoch(), ledger)?;
+        self.input_task_input_child_material = Some((material.clone(), reservation.owner_epoch()));
+        Ok(self)
+    }
+    /// Only actual still-live original allocations enter the first fresh gate.
+    /// The exact receipt retains its old authority after a later identity change.
+    pub(crate) fn original_input_material_prior(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        let work = self.original_work_report_material_prior(scope, ledger)?;
+        let child = self
+            .input_task_input_child_material
+            .as_ref()
+            .map(|(material, epoch)| {
+                material.validate_binding(scope, *epoch, ledger)?;
+                material.material_estimate()
+            })
+            .transpose()?
+            .unwrap_or((0, 0));
+        Ok((
+            work.0
+                .checked_add(child.0)
+                .context("original Input prior bytes overflow")?,
+            work.1
+                .checked_add(child.1)
+                .context("original Input prior nodes overflow")?,
+        ))
+    }
+    /// Borrow actual retained allocations before a fresh reader's first gate.
+    /// This does not read SQL, clone bodies or register the same guard again.
+    pub(crate) fn original_work_report_material_prior(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        self.input_work_report
+            .as_ref()
+            .map(|source| source.original_material_prior(scope, ledger))
+            .transpose()
+            .map(|cost| cost.unwrap_or((0, 0)))
+    }
+    pub(crate) fn confirm_original_work_report(
+        &self,
+        receipt: &crate::runtime_db::input_mutation_receipts::InputMutationReceipt,
+    ) -> Result<()> {
+        if let Some(report) = &self.input_work_report {
+            report.confirm_receipt(
+                self.input_attempt()
+                    .context("report receipt lacks original attempt")?,
+                receipt,
+            )?;
+        }
+        Ok(())
+    }
+    pub(crate) fn release_original_work_report(&self) -> Result<()> {
+        if let Some(report) = &self.input_work_report {
+            report.definitely_not_committed(
+                self.input_attempt()
+                    .context("report absence lacks original attempt")?,
+            )?;
+        }
+        Ok(())
     }
     pub(crate) fn with_input_runtime(
         mut self,
@@ -551,6 +666,7 @@ impl MutationWitness {
         Ok(())
     }
     pub(crate) fn release_pending_not_committed(&self, fresh_proof: bool) -> Result<()> {
+        self.release_original_work_report()?;
         self.resolve_pending(if fresh_proof {
             super::input_evidence_budget::PendingTicketResolution::FreshNotCommitted
         } else {
@@ -593,6 +709,8 @@ impl MutationWitness {
             input_runtime: Vec::new(),
             input_stop_readonly: Vec::new(),
             input_stop_parent: None,
+            input_work_report: None,
+            input_task_input_child_material: None,
             input_status_parent: None,
             input_command_producer: None,
             input_child_producer: None,
@@ -629,6 +747,8 @@ impl MutationWitness {
             input_runtime: Vec::new(),
             input_stop_readonly: Vec::new(),
             input_stop_parent: None,
+            input_work_report: None,
+            input_task_input_child_material: None,
             input_status_parent: None,
             input_command_producer: None,
             input_child_producer: None,
@@ -738,6 +858,8 @@ mod tests {
             input_runtime: Vec::new(),
             input_stop_readonly: Vec::new(),
             input_stop_parent: None,
+            input_work_report: None,
+            input_task_input_child_material: None,
             input_status_parent: None,
             input_command_producer: None,
             input_child_producer: None,

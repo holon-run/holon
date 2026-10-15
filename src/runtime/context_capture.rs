@@ -9,7 +9,6 @@ use crate::{
             ContextInputs, ResidentContextInputs,
         },
         observe_context_resources, ContextConfig, ContextHistoryPreparation,
-        FilesystemContextResources,
     },
     domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding},
     prompt::{build_effective_prompt_from_context_snapshot, ToolPromptContext},
@@ -77,6 +76,7 @@ impl RuntimeHandle {
         fallback_model: Option<&ModelRouteRef>,
         require_execution: bool,
     ) -> Result<EffectivePrompt> {
+        self.start_context_resource_observer()?;
         for attempt in 0..3 {
             match self
                 .build_loaded_context_prompt_once(
@@ -97,6 +97,12 @@ impl RuntimeHandle {
                     tracing::debug!(agent_id = %message.agent_id, attempt = attempt + 1,
                         "retrying context acquisition after a frozen dependency changed");
                     tokio::task::yield_now().await;
+                }
+                Err(error) if matches!(error.downcast_ref::<super::resource_observation::ResourceObservationError>(),
+                    Some(super::resource_observation::ResourceObservationError::SourceChanged | super::resource_observation::ResourceObservationError::ObsoleteRefresh | super::resource_observation::ResourceObservationError::NotReady(super::resource_observation::ResourceFreshness::Dirty(_) | super::resource_observation::ResourceFreshness::Unobserved))) => {
+                    // The owner in the failed attempt has been released. Wait
+                    // only for the independent observer; never read files here.
+                    self.wait_for_context_resources().await?;
                 }
                 Err(error) => return Err(error),
             }
@@ -271,7 +277,28 @@ impl RuntimeHandle {
             .provider_tool_selection_for_turn(&identity, fallback_model)
             .await?;
         let prompt_tools = provider.prompt_tool_specs(&tools);
-        let skills = self.skills_runtime_view_for_state(state, &identity).await?;
+        // Preserve acquisition-attempt diagnostics; this is not the resource
+        // observation epoch or its invalidation generation.
+        self.inner
+            .context_resource_observation
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| anyhow!("context acquisition counter exhausted"))?;
+        let resource_root = mutation.capture_published_root()?;
+        anyhow::ensure!(
+            Arc::ptr_eq(&resource_root.state, &captured.state),
+            "resource context publication differs"
+        );
+        let resource_observations = Arc::new(self.capture_context_resources_for_snapshot(
+            state,
+            resource_root.work.as_deref(),
+            Some(work),
+        )?);
+        drop(resource_root);
+        let skills = resource_observations.skills(&state.active_skills);
+        let (resource_copy_bytes, resource_copy_records) =
+            resource_observations.material_estimate();
 
         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
         let (durable, execution, control_revision) = {
@@ -354,25 +381,15 @@ impl RuntimeHandle {
             (durable, execution, control_revision)
         };
 
-        // D1 observes resources afresh. This id labels the immutable observation;
-        // it is not the later resource cache's invalidation generation.
-        let observation = self
-            .inner
-            .context_resource_observation
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| anyhow!("context resource observation generation exhausted"))?
-            + 1;
+        // External bytes were observed outside acquisition. No reader or file
+        // creation capability is passed into this loaded capture/render path.
         let agent_home = self.agent_home();
         let snapshot = observe_context_resources(
             durable,
-            &FilesystemContextResources {
-                data_dir: self.inner.storage.data_dir(),
-                agent_home: &agent_home,
-            },
-            observation,
-        )?;
+            resource_observations.as_ref(),
+            resource_observations.observation.epoch,
+        )?
+        .with_resource_observations(resource_observations.clone());
         drop(acquisition_timer);
         #[cfg(test)]
         if self
@@ -388,8 +405,8 @@ impl RuntimeHandle {
                 .notified()
                 .await;
         }
-        let loaded_agents_md = self.loaded_agents_md_for_state(state)?;
-        let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
+        let loaded_agents_md = resource_observations.guidance();
+        let loaded_agent_memory = resource_observations.memory();
         anyhow::ensure!(
             mutation
                 .capture_context(config.recent_episode_candidates)?
@@ -407,6 +424,8 @@ impl RuntimeHandle {
             control_revision,
             resource_observation = snapshot.resources().generation,
             resource_digest = %snapshot.resources().digest,
+            resource_copy_bytes,
+            resource_copy_records,
             "prepared context from resident input evidence and explicit remaining domain adapters"
         );
         drop(mutation);
@@ -727,6 +746,7 @@ mod tests {
                 is_exhaustive: true,
             },
             latest_results: BTreeMap::new(),
+            legacy_delivery_heads: Default::default(),
             observations: BTreeMap::new(),
             records: Vec::new(),
             budget: None,

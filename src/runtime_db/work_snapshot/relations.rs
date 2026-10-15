@@ -64,6 +64,7 @@ pub(super) fn load_wait_relations_tx(
     facts: &ContextScopeFacts,
     request: &WorkDomainLoadRequest,
     required: &mut BTreeSet<WorkKey>,
+    mut material: Option<&mut read_preparation::WorkReadMaterial<'_>>,
 ) -> Result<(WaitRelations, WaitRelations, WaitRelations)> {
     let mut turns = request.capture.required_turn_ids.clone();
     if let Some(state) = &facts.state {
@@ -75,8 +76,22 @@ pub(super) fn load_wait_relations_tx(
                 .map(|binding| binding.turn_id.clone()),
         );
     }
-    let seed = binding(tx, scope)?;
-    let fixed = qualification::manifests(tx, seed.as_deref())?;
+    let seed = match material.as_deref_mut() {
+        Some(m) => m.binding_tx(tx)?,
+        None => binding(tx, scope)?,
+    };
+    let fixed = match material.as_deref_mut() {
+        Some(m) => m.manifests_tx(tx, seed.as_deref())?,
+        None => qualification::manifests(tx, seed.as_deref())?,
+    };
+    if !turns.is_empty()
+        || !request.capture.required_task_ids.is_empty()
+        || !request.capture.required_trigger_message_ids.is_empty()
+    {
+        if let Some(m) = material.as_deref_mut() {
+            m.wait_pool_tx(tx)?;
+        }
+    }
     let mut relation_count = 0usize;
     let mut relation_bytes = 0usize;
     let mut collect = |kind: &str,
@@ -99,7 +114,11 @@ pub(super) fn load_wait_relations_tx(
                 };
                 for id in source.get(key).into_iter().flatten() {
                     let wait = WorkKey::new(WorkFamily::Wait, id);
-                    if alias(tx, scope, &wait)?.is_none() {
+                    let current = match material.as_deref_mut() {
+                        Some(m) => m.alias_tx(tx, &wait)?,
+                        None => alias(tx, scope, &wait)?,
+                    };
+                    if current.is_none() {
                         let present:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE wait_condition_id=?1)",[id],|row|row.get(0))?;
                         if !present {
                             return Err(WorkSnapshotError::NeedsPreparation(wait).into());
@@ -108,7 +127,19 @@ pub(super) fn load_wait_relations_tx(
                     }
                 }
             }
-            let mut query=tx.prepare(&format!("SELECT wait_condition_id FROM wait_conditions WHERE agent_id=?1 AND ({predicate}) ORDER BY wait_condition_id LIMIT ?3"))?;
+            let sql=format!("SELECT wait_condition_id AS id FROM wait_conditions WHERE agent_id=?1 AND ({predicate}) ORDER BY wait_condition_id LIMIT ?3");
+            if let Some(m) = material.as_deref_mut() {
+                m.ids_query(
+                    tx,
+                    &sql,
+                    params![
+                        scope.agent_id,
+                        key,
+                        i64::try_from(MAX_METADATA_RECORDS + 1)?
+                    ],
+                )?;
+            }
+            let mut query = tx.prepare(&sql)?;
             let mut ids = BTreeSet::new();
             for row in query.query_map(
                 params![
@@ -124,6 +155,9 @@ pub(super) fn load_wait_relations_tx(
                 bound_metadata(relation_count, relation_bytes)?;
                 required.insert(WorkKey::new(WorkFamily::Wait, &id));
                 ids.insert(id);
+            }
+            if let Some(m) = material.as_deref_mut() {
+                m.edge_query(tx, kind, key)?;
             }
             let mut edges=tx.prepare("SELECT wait_id,availability,revision FROM work_domain_wait_edges WHERE agent_id=?1 AND identity_incarnation=?2 AND edge_kind=?3 AND source_id=?4 ORDER BY wait_id LIMIT ?5")?;
             for row in edges.query_map(
@@ -147,8 +181,11 @@ pub(super) fn load_wait_relations_tx(
                 relation_bytes = relation_bytes.saturating_add(id.len());
                 bound_metadata(relation_count, relation_bytes)?;
                 let wait = WorkKey::new(WorkFamily::Wait, &id);
-                let current = alias(tx, scope, &wait)?
-                    .context("qualified Wait relation has no original alias")?;
+                let current = match material.as_deref_mut() {
+                    Some(m) => m.alias_tx(tx, &wait)?,
+                    None => alias(tx, scope, &wait)?,
+                }
+                .context("qualified Wait relation has no original alias")?;
                 if availability == "pruned" || current.availability == WorkAvailability::Pruned {
                     return Err(WorkSnapshotError::NeedsPreparation(wait).into());
                 }

@@ -43,6 +43,9 @@ pub(crate) struct OriginalChildMonitorBindingReadView<'a, 'conn, 'material> {
     material: &'a mut tasks::read_preparation::TaskReadMaterial<'material>,
 }
 impl OriginalChildMonitorBindingReadView<'_, '_, '_> {
+    pub(crate) fn ledger(&self) -> &InputEvidenceBudgetLedger {
+        self.ledger
+    }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         self.scope
     }

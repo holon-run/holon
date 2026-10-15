@@ -88,7 +88,7 @@ impl RuntimeHandle {
         if !created {
             return capability_from_record(&self.inner.callback_base_url, &descriptor);
         }
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_runtime_audit_event(AuditEvent::legacy(
             "external_trigger_created",
             serde_json::json!({
                 "external_trigger_id": &descriptor.external_trigger_id,
@@ -96,7 +96,8 @@ impl RuntimeHandle {
                 "scope": &descriptor.scope,
                 "delivery_mode": &descriptor.delivery_mode,
             }),
-        ))?;
+        ))
+        .await?;
 
         capability_from_record(&self.inner.callback_base_url, &descriptor)
     }
@@ -205,7 +206,7 @@ impl RuntimeHandle {
         let descriptor_delivery_mode = updated_descriptor.delivery_mode.clone();
         let deprecated_enqueue_message_mapped_to_wake_hint =
             descriptor_delivery_mode == CallbackDeliveryMode::EnqueueMessage;
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_runtime_audit_event(AuditEvent::legacy(
             "callback_delivered",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -222,7 +223,7 @@ impl RuntimeHandle {
                 "admission_context": crate::types::AdmissionContext::ExternalTriggerCapability,
                 "authority_class": crate::types::AuthorityClass::IntegrationSignal,
             }),
-        ))?;
+        )).await?;
 
         Ok(CallbackDeliveryResult {
             agent_id,
@@ -273,14 +274,15 @@ impl RuntimeHandle {
         if !changed {
             return Ok(revoked);
         }
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_runtime_audit_event(AuditEvent::legacy(
             "external_trigger_revoked",
             serde_json::json!({
                 "external_trigger_id": revoked.external_trigger_id,
                 "agent_id": revoked.target_agent_id,
                 "delivery_mode": revoked.delivery_mode,
             }),
-        ))?;
+        ))
+        .await?;
         Ok(revoked)
     }
 
@@ -332,7 +334,7 @@ impl RuntimeHandle {
         };
 
         if let Some(revoked) = revoked {
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_runtime_audit_event(AuditEvent::legacy(
                 "external_trigger_revoked",
                 serde_json::json!({
                     "external_trigger_id": revoked.external_trigger_id,
@@ -340,10 +342,11 @@ impl RuntimeHandle {
                     "delivery_mode": revoked.delivery_mode,
                     "reason": "reset_callback",
                 }),
-            ))?;
+            ))
+            .await?;
         }
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_runtime_audit_event(AuditEvent::legacy(
             "external_trigger_created",
             serde_json::json!({
                 "external_trigger_id": &descriptor.external_trigger_id,
@@ -352,7 +355,8 @@ impl RuntimeHandle {
                 "delivery_mode": &delivery_mode,
                 "reason": "reset_callback",
             }),
-        ))?;
+        ))
+        .await?;
 
         capability_from_record(&self.inner.callback_base_url, &descriptor)
     }

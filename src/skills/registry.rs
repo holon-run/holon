@@ -250,6 +250,7 @@ impl SkillsRegistry {
             } else {
                 None
             };
+            crate::diagnostics::resource_io::charge_owned_metadata(512, 8).ok()?;
             children.push(RootChildFingerprint {
                 path: child_path,
                 kind,

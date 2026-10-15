@@ -40,6 +40,7 @@ fn inputs(agent_id: &str, incarnation: u64) -> Arc<ResidentInputEvidence> {
             scope(agent_id, incarnation),
             Vec::new(),
             InputEvidenceCoverage {
+                query: Default::default(),
                 selected_completion_brief_ids: Default::default(),
                 completion_source_observations: Default::default(),
                 recovery_source_absences: Default::default(),
@@ -60,6 +61,7 @@ fn inputs(agent_id: &str, incarnation: u64) -> Arc<ResidentInputEvidence> {
 
 fn ready_facts(agent_id: &str, incarnation: u64, pending: usize) -> KnownCommit {
     KnownCommit::State {
+        current_reads: None,
         work: None,
 
         tasks: None,
@@ -224,6 +226,7 @@ async fn input_presence_validates_every_domain_before_promoting_any_group_member
     for invalid_b in [
         state_facts(scoped_state("agent-b", 4)),
         KnownCommit::State {
+            current_reads: None,
             work: None,
 
             tasks: None,
@@ -234,6 +237,7 @@ async fn input_presence_validates_every_domain_before_promoting_any_group_member
             runtime: None,
         },
         KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity: None,
             state: Some(scoped_state("agent-b", 4)),
         })),
@@ -535,6 +539,7 @@ fn cold_current_metadata(agent_id: &str, incarnation: u64) -> KnownCommit {
         .clone();
     identity.agent_id = agent_id.to_owned();
     KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+        _identity_budget: None,
         identity: Some(Arc::new(identity)),
         state: None,
     }))
@@ -645,6 +650,7 @@ async fn input_cold_metadata_cannot_install_state_or_a_foreign_identity() {
     for invalid in [
         cold_current_metadata("foreign", 3),
         KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity: match cold_current_metadata("agent-a", 3) {
                 KnownCommit::Metadata(facts) => facts.identity.clone(),
                 _ => unreachable!(),

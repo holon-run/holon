@@ -709,3 +709,147 @@ fn legacy_control_whole_receipt_replay_never_redecorates_or_reads_a_current_task
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
+
+fn native_members(f: &Fixture) -> Result<std::collections::BTreeMap<(String, String), u64>> {
+    let connection = f.db.connection()?;
+    let mut statement = connection.prepare(
+        "SELECT family,record_id,birth_seq FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2 ORDER BY family,record_id",
+    )?;
+    let rows = statement.query_map(params![f.key.agent_id, f.key.identity_incarnation], |row| {
+        Ok((
+            (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+            row.get::<_, u64>(2)?,
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+#[test]
+fn control_native_result_uses_actual_ack_and_exact_old_receipt_without_source_tables() -> Result<()>
+{
+    let f = Fixture::new();
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let old = seed_task(&f, &running(&f, "native-control-task"), true, &ledger)?;
+    let command = f.command(ControlAction::Stop);
+    let (receipt, delta) = applied(&f, &command, &ledger)?;
+    let message = &delta.result_messages[0];
+    assert_eq!(message.id, "result:native-control-task");
+    let members = native_members(&f)?;
+    assert_eq!(
+        members.get(&("message".into(), message.id.clone())),
+        Some(&1)
+    );
+    assert_eq!(members.len(), 1);
+    assert!(delta
+        .transition
+        .effects
+        .input_evidence_delta
+        .records
+        .iter()
+        .any(|row| row.locator.key.id == message.id && row.locator.scope == scope(&f)));
+    let cursor: u64 = f.db.connection()?.query_row(
+        "SELECT high_water FROM input_query_birth_cursors WHERE agent_id=?1 AND identity_incarnation=?2",
+        params![f.key.agent_id,f.key.identity_incarnation], |row| row.get(0),
+    )?;
+    assert_eq!(cursor, 1);
+    f.db.connection()?.execute_batch(
+        "ALTER TABLE input_query_birth_members RENAME TO original_native_members_unavailable; ALTER TABLE input_query_birth_cursors RENAME TO original_native_cursors_unavailable;",
+    )?;
+    let replay = f.db.commit_control_with_domain_requests(
+        &command,
+        &work_request(),
+        &task_request(),
+        &ledger,
+    );
+    f.db.connection()?.execute_batch(
+        "ALTER TABLE original_native_cursors_unavailable RENAME TO input_query_birth_cursors; ALTER TABLE original_native_members_unavailable RENAME TO input_query_birth_members;",
+    )?;
+    assert!(matches!(replay?, ControlCommit::Replayed {receipt: actual} if actual == receipt));
+    assert_eq!(native_members(&f)?, members);
+    drop((delta, old));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+#[test]
+fn control_native_outcome_is_insert_while_original_attempt_and_turn_remain_baseline() -> Result<()>
+{
+    let f = Fixture::new();
+    f.seed_command_claim(true, false);
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let command = f.command(ControlAction::Stop);
+    assert_eq!(command.execution_commands.len(), 1);
+    let ExecutionProtocolCommand::Interrupt(interrupt) = &command.execution_commands[0] else {
+        anyhow::bail!("original Control omitted its Interrupt")
+    };
+    let (receipt, delta) = applied(&f, &command, &ledger)?;
+    assert_eq!(receipt.outcome.interrupted_attempt_ids, vec!["attempt-1"]);
+    assert_eq!(receipt.outcome.interrupted_turn_ids, vec!["started-turn"]);
+    let members = native_members(&f)?;
+    assert_eq!(
+        members.get(&("outcome".into(), interrupt.outcome_id.clone())),
+        Some(&1)
+    );
+    assert_eq!(
+        members.get(&("turn".into(), "started-turn".into())),
+        Some(&0)
+    );
+    assert_eq!(
+        members.get(&("attempt".into(), "attempt-1".into())),
+        Some(&0)
+    );
+    assert_eq!(members.values().filter(|value| **value > 0).count(), 1);
+    assert_eq!(
+        delta.execution_protocol.as_ref().unwrap().attempts["attempt-1"].state,
+        ExecutionAttemptState::Interrupted
+    );
+    let replay = f.db.commit_control_with_domain_requests(
+        &command,
+        &work_request(),
+        &task_request(),
+        &ledger,
+    )?;
+    assert!(matches!(replay, ControlCommit::Replayed {receipt: actual} if actual == receipt));
+    assert_eq!(native_members(&f)?, members);
+    drop(delta);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+#[test]
+fn control_native_source_rolls_back_with_last_original_receipt_and_retries_once() -> Result<()> {
+    let f = Fixture::new();
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let old = seed_task(&f, &running(&f, "native-control-rollback"), true, &ledger)?;
+    let command = f.command(ControlAction::Stop);
+    let before = f.fingerprint();
+    let baseline = ledger.report()?.observed_bytes;
+    let error =
+        f.db.commit_control_with_domain_requests(
+            &command
+                .clone()
+                .with_fault(ControlFaultPoint::AfterReceiptWrite),
+            &work_request(),
+            &task_request(),
+            &ledger,
+        )
+        .err()
+        .context("original Control receipt fault must roll back birth")?;
+    assert!(format!("{error:#}").contains("AfterReceiptWrite"));
+    assert_eq!(f.fingerprint(), before);
+    assert!(native_members(&f)?.is_empty());
+    assert_eq!(
+        f.db.connection()?.query_row(
+            "SELECT COUNT(*) FROM input_query_birth_cursors",
+            [],
+            |r| r.get::<_, usize>(0)
+        )?,
+        0
+    );
+    assert_eq!(ledger.report()?.observed_bytes, baseline);
+    let (_, delta) = applied(&f, &command, &ledger)?;
+    assert_eq!(
+        native_members(&f)?.get(&("message".into(), "result:native-control-rollback".into())),
+        Some(&1)
+    );
+    drop((delta, old));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}

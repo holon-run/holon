@@ -235,6 +235,69 @@ pub(crate) struct SelectedTaskStopPhase<'tx, 'connection> {
     tx: &'tx Transaction<'connection>,
     selected: PreparedTaskStops,
 }
+/// Frozen Audit source from the original whole Stop and physical observation.
+/// It pins existing charged allocations, without a Root/Host/storage back edge.
+pub(crate) struct OriginalTaskStopAuditView<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    record: Arc<TaskStopRecord>,
+    observation: Arc<crate::host::TaskStopWorktreeCleanupObserved>,
+    _material: Arc<BudgetViewGuard>,
+}
+impl<'tx, 'connection> SelectedTaskStopPhase<'tx, 'connection> {
+    pub(in crate::runtime_db) fn original_worktree_audit_view(
+        &self,
+        action: &TaskStopProgressAction,
+        authorization: &TaskStopProgressAuthorization,
+    ) -> Result<Option<OriginalTaskStopAuditView<'tx, 'connection>>> {
+        let Some(observation) = authorization.worktree_observation() else {
+            return Ok(None);
+        };
+        authorization.validate(action, &self.selected.records[0])?;
+        if observation.audit_events().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(OriginalTaskStopAuditView {
+            tx: self.tx,
+            record: self.selected.records[0].clone(),
+            observation: observation.clone(),
+            _material: self.selected._budget.clone(),
+        }))
+    }
+}
+impl OriginalTaskStopAuditView<'_, '_> {
+    pub(in crate::runtime_db) fn scope(&self) -> &InputEvidenceScope {
+        &self.record.intent.task.scope
+    }
+    pub(in crate::runtime_db) fn events(&self) -> &[crate::types::AuditEvent] {
+        self.observation.audit_events()
+    }
+    pub(in crate::runtime_db) fn validate_tx(&self, tx: &Transaction<'_>) -> Result<()> {
+        ensure!(
+            std::ptr::eq(tx, self.tx) && self.observation.matches(&self.record),
+            "Stop Audit source crossed its original transaction/observation"
+        );
+        Ok(())
+    }
+    pub(in crate::runtime_db) fn validate_actual_tx(
+        &self,
+        tx: &Transaction<'_>,
+        actual: &ActualTaskStopProgress<'_, '_>,
+    ) -> Result<()> {
+        self.validate_tx(tx)?;
+        actual.validate_presence_tx(tx)?;
+        let after = actual.record();
+        ensure!(
+            self.record.prepared == after.prepared
+                && self.record.effect_seq == after.effect_seq
+                && self.record.intent_digest == after.intent_digest
+                && self.record.generation_digest == after.generation_digest
+                && self.record.ack_task_digest == after.ack_task_digest
+                && self.scope() == &after.intent.task.scope,
+            "Stop Audit ACK is not the original immutable Stop"
+        );
+        Ok(())
+    }
+}
 pub(crate) fn prepare_task_stop_phase_tx<'tx, 'connection>(
     tx: &'tx Transaction<'connection>,
     address: &TaskStopPhaseAddress,

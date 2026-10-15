@@ -342,6 +342,7 @@ impl OriginalChildTerminalRecoveryMaterial<'_, '_, '_> {
         work: &crate::runtime::resident_work::WorkCaptureRequest,
         tasks: &crate::runtime::resident_task::TaskCaptureRequest,
         query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+        event_roles: Option<&crate::runtime::current_event_queries::CurrentEventRoleSnapshot>,
     ) -> Result<super::super::input_preparation::PreparedInputRead> {
         super::super::input_preparation::prepare_child_terminal_input_recovery_tx(
             tx,
@@ -354,6 +355,7 @@ impl OriginalChildTerminalRecoveryMaterial<'_, '_, '_> {
             tasks,
             query,
             &mut self.material,
+            event_roles,
         )
     }
     pub(crate) fn read_related_status(

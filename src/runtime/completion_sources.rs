@@ -181,6 +181,7 @@ mod tests {
             owner: None,
             resident_bytes: 128,
             attempt_turn_keys: None,
+            tool_run_report: None,
         }
     }
     fn head(id: &str, transcript_id: &str) -> QualifiedInputEvidence {

@@ -1794,9 +1794,19 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .capture_work_read(&crate::runtime::work_reads::live_work_request())
         .await
         .unwrap();
+    let target = harness
+        .runtime()
+        .wait_resolution_plan_target(&message, &observed_work.work)
+        .unwrap()
+        .unwrap();
+    let observed_plan = harness
+        .runtime()
+        .prepare_observed_work_plan(&target.id, target.revision)
+        .await
+        .unwrap();
     let wait_transition = harness
         .runtime()
-        .wait_resolution_transition_for_message(&message, &observed_work.work)
+        .wait_resolution_transition_for_message(&message, &observed_work.work, Some(&observed_plan))
         .unwrap()
         .expect("replayed TaskResult should plan exact wait settlement");
     assert_eq!(wait_transition.record.status, WaitConditionStatus::Resolved);
@@ -1804,11 +1814,12 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         wait_transition.work_item.is_some(),
         "exact wait settlement should clear the matching WorkItem blocker"
     );
-    let poll =
+    let poll = crate::diagnostics::resource_io::deny_readers(
         super::super::super::scheduler_executor::SchedulerDecisionExecutor::new(harness.runtime())
-            .poll()
-            .await
-            .unwrap();
+            .poll(),
+    )
+    .await
+    .unwrap();
     let super::super::super::scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
         panic!("replayed task result should be claimed after restart");
     };

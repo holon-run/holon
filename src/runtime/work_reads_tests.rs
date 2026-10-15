@@ -44,6 +44,7 @@ fn captured(records: Vec<CanonicalWorkRecord>) -> CapturedWork {
     // This is a pure reader parity fixture over repository readbacks, not a
     // production qualification grant or a bootstrap adoption path.
     let coverage = WorkCoverage {
+        legacy_delivery_heads: std::collections::BTreeMap::new(),
         revision: 1,
         live_complete: true,
         live_work_ids: records

@@ -252,7 +252,16 @@ pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, Runtime
         r#"{"model":{"default":"openai/gpt-5.4"}}"#,
     )
     .unwrap();
-    let config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let mut config =
+        crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    // The fixture's Holon home does not override the operator's user home or
+    // process cwd. Keep guidance, skills and default workspace reads in here.
+    let user_home = home.path().join("fixture-user-home");
+    let workspace = home.path().join("fixture-default-workspace");
+    std::fs::create_dir_all(&user_home).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    config.user_home_dir = Some(user_home);
+    config.workspace_dir = workspace;
     let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
     let runtime = host.default_runtime().await.unwrap();
     (home, host, runtime)
@@ -278,6 +287,7 @@ pub(crate) fn private_child_identity(agent_id: &str) -> AgentIdentityView {
 
 pub(crate) fn test_effective_prompt() -> EffectivePrompt {
     EffectivePrompt {
+        resource_pins: None,
         identity: AgentIdentityView {
             agent_id: "default".into(),
             name: None,

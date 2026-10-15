@@ -32,6 +32,17 @@ pub(crate) use state_mutation::{
 };
 pub(crate) mod completion_sources;
 mod context_capture;
+pub(crate) mod resource_observation;
+#[cfg(test)]
+mod resource_observation_tests;
+mod resource_refresh;
+pub(crate) use resource_refresh::WorkItemPlanQueryRead;
+pub(crate) use resource_refresh::{
+    OwnedCreatedWorkItemRead, OwnedWorkItemMutationRead, WorkItemMutationMaterial,
+};
+#[cfg(test)]
+mod resource_runtime_tests;
+
 mod continuation;
 mod control;
 mod task_status_metadata;
@@ -45,6 +56,13 @@ mod control_task_generation_tests;
 pub(crate) mod task_generation;
 pub(crate) use control_cancellation::RetiredProducerExit;
 mod agent_summary_read;
+mod child_summary_read;
+#[cfg(test)]
+#[path = "runtime/cold_child_domains_tests.rs"]
+mod cold_child_domains_tests;
+mod compact_agent_read;
+mod selected_model_read;
+pub(crate) use child_summary_read::{ChildAgentSummaryReadMaterial, OwnedChildAgentSummaryRead};
 mod control_entry;
 pub(crate) mod control_reconcile;
 pub(crate) mod control_recovery;
@@ -62,6 +80,9 @@ pub(crate) mod input_recovery;
 mod lifecycle;
 pub(crate) use agent_summary_read::active_trigger_summaries;
 pub use agent_summary_read::OwnedAgentSummaryRead;
+pub(crate) use state_mutation::{OriginalLifecycleNoopAuditSource, OriginalLifecycleNoopKind};
+pub(crate) mod current_event_queries;
+pub(crate) mod current_read_facts;
 mod message_dispatch;
 pub(crate) mod mutation_owner;
 pub(crate) mod mutation_witness;
@@ -96,6 +117,8 @@ mod subagent;
 mod task_monitor_read;
 pub(crate) mod task_reads;
 pub(crate) use task_monitor_read::{ChildMonitorRead, TaskParentTurnRead, TaskParentTurnSession};
+pub(crate) mod input_queries;
+pub(crate) mod run_birth_sessions;
 pub(crate) mod task_queries;
 mod task_result_recovery;
 mod task_result_routing;
@@ -116,6 +139,7 @@ mod task_stop_cold;
 mod task_stop_current;
 mod task_stop_worker;
 pub(crate) use task_stop_cold::continue_original_task_stop_metadata;
+pub(crate) mod run_report_projection;
 mod task_stop_intent;
 pub(crate) mod task_stop_join;
 mod task_supervisor;
@@ -127,8 +151,26 @@ mod unsettled_claim;
 mod waiting;
 mod wake_matching;
 mod work_reads;
+mod work_report_sources;
+pub(crate) use resource_refresh::{OriginalWorkReportContinuation, OriginalWorkReportHandoff};
+pub(crate) use work_reads::WorkQuerySnapshot;
+pub(crate) use work_report_sources::OriginalWorkReportKind;
+mod work_owned_preparation;
+mod work_resource_material;
+pub(crate) use work_resource_material::WorkResourceMaterialLoan;
 pub(crate) mod workspace;
+mod workspace_audits;
 pub(crate) mod workspace_control;
+pub(crate) use workspace_audits::OriginalWorkspaceRequestMaterial;
+mod mutation_acquisition_material;
+pub(crate) use mutation_acquisition_material::OriginalMutationAcquisitionMaterial;
+mod task_input_child_material;
+pub(crate) use task_input_child_material::{
+    OriginalTaskInputChildBinding, OriginalTaskInputChildMaterial,
+};
+
+mod sleep_override_audits;
+pub(crate) use sleep_override_audits::OriginalSleepOverrideMaterial;
 mod worktree;
 #[cfg(test)]
 pub(crate) use worktree::cleanup_completion_worktree_for_test;
@@ -153,7 +195,9 @@ pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
     SchedulerRepairResult,
 };
-pub(crate) use scheduler::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection};
+pub(crate) use scheduler::{
+    SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection, SCHEDULER_BRIEF_LIMIT,
+};
 pub use scheduler_acceptance::{
     seed_scheduler_restart_fixture, seed_scheduler_terminal_recovery_fixture,
     SchedulerIngressAdmissionRestartFixture, SchedulerTerminalRecoveryFixture,
@@ -175,7 +219,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -199,16 +243,14 @@ use crate::provider::{ConversationMessage, ProviderTurnRequest};
 #[cfg(test)]
 use crate::runtime_error::{RuntimeError, RuntimeErrorDomain};
 use crate::{
-    agent_memory::load_agent_memory,
     agent_template::discover_agent_templates_catalog,
-    agents_md::load_agents_md,
     brief,
     config::{ModelRouteRef, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
     memory::refresh_working_memory,
-    prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
+    prompt::EffectivePrompt,
     provider::{
         provider_attempt_timeline, AgentProvider, ModelBlock, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest,
@@ -222,10 +264,7 @@ use crate::{
     },
     runtime_error::describe_runtime_error,
     runtime_event::RuntimeEventKind,
-    skills::{
-        effective_skill_root_registrations, find_skill_by_entrypoint, find_skill_by_script_path,
-        skills_runtime_view_from_catalog, SkillVisibility,
-    },
+    skills::{find_skill_by_entrypoint, find_skill_by_script_path, SkillVisibility},
     storage::{to_json_value, AppStorage, PollActivityMarker},
     system::{
         EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot, LocalSystem,
@@ -298,7 +337,10 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
+    _work_source_material: Option<Arc<work_owned_preparation::WorkItemSourceMaterial>>,
     _work_read_budget: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
+    _resource_plan: Option<Arc<resource_refresh::ObservedWorkPlanRead>>,
+    _result_view_material: Option<Arc<resource_refresh::WorkItemMutationMaterial>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,18 +516,58 @@ pub(crate) fn agent_model_state_for_catalog(
     base_context_config: &ContextConfig,
     state: &AgentState,
 ) -> AgentModelState {
-    let effective_model = model_catalog.effective_model(state.model_override.as_ref());
+    agent_model_state_for_catalog_observed(
+        model_catalog,
+        base_context_config,
+        state,
+        &mut crate::model_catalog::UnobservedSelectedModel,
+    )
+    .expect("unobserved agent model state cannot fail")
+}
+pub(crate) fn agent_model_state_for_catalog_observed(
+    model_catalog: &RuntimeModelCatalog,
+    base_context_config: &ContextConfig,
+    state: &AgentState,
+    observer: &mut impl crate::model_catalog::SelectedModelObserver,
+) -> Result<AgentModelState> {
+    let effective_model =
+        model_catalog.effective_model_observed(state.model_override.as_ref(), observer)?;
     let active_model = state
         .last_requested_model
         .as_ref()
         .filter(|requested| *requested == &effective_model)
-        .and_then(|_| state.last_active_model.clone())
-        .unwrap_or_else(|| effective_model.clone());
+        .and_then(|_| state.last_active_model.as_ref())
+        .unwrap_or(&effective_model);
+    observer.observe(active_model, 1)?;
+    let active_model = active_model.clone();
     let fallback_active = active_model != effective_model;
-    let effective_chain = model_catalog.provider_chain(state.model_override.as_ref());
-    let resolved_policy =
-        model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref());
-    AgentModelState {
+    let effective_chain =
+        model_catalog.provider_chain_observed(state.model_override.as_ref(), observer)?;
+    let resolved_policy = model_catalog.resolved_model_policy_observed(
+        base_context_config,
+        state.model_override.as_ref(),
+        observer,
+    )?;
+    let effective_service_tier = if fallback_active {
+        model_catalog.route_service_tier_observed(&active_model, observer)?
+    } else {
+        match state.model_override_service_tier {
+            Some(tier) => Some(tier),
+            None => model_catalog.route_service_tier_observed(&effective_model, observer)?,
+        }
+    };
+    observer.observe(&model_catalog.default_model, 1)?;
+    observer.observe(&effective_model, 2)?;
+    observer.observe(&active_model, 1)?;
+    observer.observe(
+        &(
+            &state.model_override,
+            &state.model_override_reasoning_effort,
+        ),
+        1,
+    )?;
+    observer.observe(&[(); 24], 1)?;
+    Ok(AgentModelState {
         source: if state.model_override.is_some() {
             AgentModelSource::AgentOverride
         } else {
@@ -500,15 +582,9 @@ pub(crate) fn agent_model_state_for_catalog(
         override_model: state.model_override.clone(),
         override_reasoning_effort: state.model_override_reasoning_effort.clone(),
         override_service_tier: state.model_override_service_tier,
-        effective_service_tier: if fallback_active {
-            model_catalog.route_service_tier(&active_model)
-        } else {
-            state
-                .model_override_service_tier
-                .or_else(|| model_catalog.route_service_tier(&effective_model))
-        },
+        effective_service_tier,
         resolved_policy,
-    }
+    })
 }
 
 pub(crate) fn lightweight_agent_list_waiting_reason(agent: &AgentState) -> Option<WaitingReason> {
@@ -542,6 +618,10 @@ struct RuntimeInner {
     turn_fallback_model: RwLock<Option<ModelRouteRef>>,
     context_config: RwLock<ContextConfig>,
     context_resource_observation: std::sync::atomic::AtomicU64,
+    context_resources: Arc<resource_observation::ContextResourceRegistry>,
+    context_resource_observer: resource_refresh::ContextResourceObserver,
+    resource_config_generation: AtomicU64,
+    resource_default_skill_visibility: bool,
     #[cfg(test)]
     context_capture_checkpoint: context_capture::ContextCaptureCheckpoint,
     config_snapshot: ArcSwap<ConfigSnapshot>,
@@ -3102,6 +3182,7 @@ impl RuntimeHandle {
             .lock()
             .expect("transition warning lock poisoned")
             .extend(result.warnings.iter().cloned());
+        self.refresh_dirty_context_resources_after_write().await;
         result
     }
 
@@ -3230,50 +3311,15 @@ impl RuntimeHandle {
         &self,
         request: CurrentRunAbortRequest,
     ) -> Result<CurrentRunAbortOutcome> {
-        let mut guard = self.begin_mutation().await?;
-        let agent_id = guard.state.id.clone();
-        let Some(handle) = guard.current_run_abort.as_ref().cloned() else {
-            return Err(CurrentRunAbortError::NoCurrentRun { agent_id }.into());
-        };
-        if let Some(expected_run_id) = request.run_id.as_deref() {
-            if expected_run_id != handle.run_id {
-                return Err(CurrentRunAbortError::StaleRunId {
-                    requested_run_id: expected_run_id.to_string(),
-                    current_run_id: handle.run_id.clone(),
-                }
-                .into());
-            }
-        }
-
-        match request.mode {
-            CurrentRunAbortMode::StopAfterAbort => {
-                scheduler::apply_stop_projection(&mut guard.state);
-            }
-            // Turn-scoped interrupt: the agent stays awake so the operator can
-            // immediately submit the next prompt without a lifecycle start.
-            CurrentRunAbortMode::IdleAfterAbort => {
-                scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
-            }
-        }
-        guard.defer_abort_current_run("operator_aborted");
-        guard.persist_state(&self.inner.storage).await?;
-        drop(guard);
-
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "current_run_aborted",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "run_id": handle.run_id,
-                "mode": request.mode.as_str(),
-                "reason": "operator_aborted",
-            }),
-        ))?;
-        self.inner.notify.notify_waiters();
-        Ok(CurrentRunAbortOutcome {
-            agent_id,
-            run_id: handle.run_id,
-            mode: request.mode,
-        })
+        let runtime = self.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let result = runtime.abort_current_run_owned(request).await;
+            let _ = sender.send(result);
+        })?;
+        receiver
+            .await
+            .context("original operator abort worker stopped without its outcome")?
     }
 
     pub(crate) async fn current_run_abort_token(&self) -> Option<CurrentRunAbortSnapshot> {
@@ -3702,88 +3748,58 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn loaded_agents_md(&self) -> Result<LoadedAgentsMd> {
-        let guard = self.inner.agent.lock().await;
-        self.loaded_agents_md_for_state(&guard.state)
-    }
-
-    fn loaded_agents_md_for_state(&self, state: &AgentState) -> Result<LoadedAgentsMd> {
-        load_agents_md(
-            self.user_home().as_deref(),
-            self.agent_home().as_path(),
-            self.workspace_anchor_for_state_ref(state),
-        )
-    }
-
-    fn loaded_agent_memory_for_state(&self) -> Result<LoadedAgentMemory> {
-        load_agent_memory(self.agent_home().as_path())
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("resource root is unpublished")?;
+        Ok(self
+            .capture_context_resources_for_snapshot(&root.state, root.work.as_deref(), None)?
+            .guidance())
     }
 
     pub(crate) async fn skills_runtime_view(
         &self,
         identity: &AgentIdentityView,
     ) -> Result<SkillsRuntimeView> {
-        let guard = self.inner.agent.lock().await;
-        self.skills_runtime_view_for_state(&guard.state, identity)
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("resource root is unpublished")?;
+        self.skills_runtime_view_for_snapshot(&root.state, root.work.as_deref(), identity)
             .await
     }
-
-    async fn skills_runtime_view_for_state(
+    async fn skills_runtime_view_for_snapshot(
         &self,
         state: &AgentState,
+        work: Option<&resident_work::ResidentWorkDomain>,
         identity: &AgentIdentityView,
     ) -> Result<SkillsRuntimeView> {
-        let skill_roots = effective_skill_root_registrations(
-            self.skill_visibility(identity),
-            self.user_home().as_deref(),
-            &state.id,
-            self.agent_home().as_path(),
-            state
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.execution_root.as_path()),
+        // Convenience DTO only. Wire callers retain the capture instead.
+        anyhow::ensure!(
+            identity.agent_id == state.id
+                && identity.incarnation == self.inner.identity_incarnation,
+            "resource identity differs from State"
         );
-        let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            let registry = bridge.skills_registry()?;
-            let mut registry = registry.write().await;
-            registry.sync_effective_roots(skill_roots.clone())?;
-            skills_runtime_view_from_catalog(
-                registry.catalog_for_roots(&skill_roots, None),
-                &skill_roots,
-                &state.active_skills,
-            )
-        } else {
-            let mut registry = crate::skills::SkillsRegistry::new();
-            registry.replace_roots(skill_roots.clone())?;
-            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
-        };
-        view.agent_templates_catalog = discover_agent_templates_catalog(
-            self.user_home().as_deref(),
-            self.agent_home().as_path(),
-        );
-        Ok(view)
+        let resources = self.capture_context_resources_for_snapshot(state, work, None)?;
+        Ok(resources.skills_with_visibility(
+            &state.active_skills,
+            matches!(
+                self.skill_visibility(identity),
+                SkillVisibility::DefaultAgent
+            ),
+        ))
     }
 
     pub(crate) async fn sync_effective_skill_roots_for_state(
         &self,
-        state: &AgentState,
+        _state: &AgentState,
     ) -> Result<()> {
-        let Some(bridge) = self.inner.host_bridge.as_ref() else {
-            return Ok(());
-        };
-        let identity = self.agent_identity_view().await?;
-        let skill_roots = effective_skill_root_registrations(
-            self.skill_visibility(&identity),
-            self.user_home().as_deref(),
-            &state.id,
-            self.agent_home().as_path(),
-            state
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.execution_root.as_path()),
-        );
-        let registry = bridge.skills_registry()?;
-        registry.write().await.sync_effective_roots(skill_roots)?;
-        Ok(())
+        self.invalidate_context_resources(
+            resource_observation::ResourceInvalidation::WorkspaceChange,
+        )?;
+        self.refresh_context_resources().await
     }
 
     #[inline(never)]
@@ -4162,6 +4178,13 @@ impl RuntimeHandle {
             }
             // The posture, actual input assignment and started Turn publish as
             // one acknowledged candidate, so no reader sees a dangling binding.
+            let dispatch_audits = self.prepare_original_dispatch_audits(
+                &guard.state,
+                message,
+                replay_source
+                    .as_ref()
+                    .map(|(id, turn)| (id.as_str(), turn.as_ref())),
+            )?;
             if let Some(prior_closure) = dispatch_prior_closure {
                 use crate::runtime_db::{
                     dispatch_memory::DispatchMemoryStart,
@@ -4183,10 +4206,12 @@ impl RuntimeHandle {
                     guard.last_persisted_state.working_memory.clone(),
                 )?;
                 guard
-                    .persist_started_dispatch(started_turn, start, original_claim)
+                    .persist_started_dispatch(started_turn, start, original_claim, dispatch_audits)
                     .await?;
             } else {
-                guard.persist_state_with_started_turn(started_turn).await?;
+                guard
+                    .persist_state_with_started_turn(started_turn, dispatch_audits)
+                    .await?;
             }
             guard.state.clone()
         };
@@ -4208,36 +4233,6 @@ impl RuntimeHandle {
             guard.prepare_owner_work_request(&request).await?;
         }
         drop(guard);
-        self.append_state_changed_events(&state)?;
-        if let Some(message) = message {
-            self.inner.storage.append_event(&AuditEvent::legacy(
-                "turn_started",
-                serde_json::json!({
-                    "agent_id": message.agent_id.clone(),
-                    "message_id": message.id.clone(),
-                    "turn_id": state.current_turn_id.clone(),
-                    "message_kind": message.kind.clone(),
-                    "run_id": state.current_run_id,
-                    "turn_index": state.turn_index,
-                }),
-            ))?;
-            if let Some((source_turn_id, source_turn)) = replay_source {
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "turn_replay_started",
-                    serde_json::json!({
-                        "agent_id": message.agent_id,
-                        "message_id": message.id,
-                        "source_turn_id": source_turn_id,
-                        "replay_turn_id": state.current_turn_id,
-                        "reason": "interrupted_queue_claim_reentry",
-                        "source_work_item_id": source_turn
-                            .as_ref()
-                            .and_then(|turn| turn.current_work_item_id.clone()),
-                        "prior_terminal": source_turn.and_then(|turn| turn.terminal),
-                    }),
-                ))?;
-            }
-        }
         Ok((
             state.current_turn_id.expect("started turn identity"),
             state.turn_index,
@@ -4368,14 +4363,25 @@ impl RuntimeHandle {
             .effective_execution(ExecutionScopeKind::AgentTurn)
             .await?;
         let resolved_path = execution.workspace.resolve_read_path(file_path)?;
-        let state_snapshot = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.clone()
-        };
+        let resource_root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("skill activation root is unpublished")?;
         let identity = self.agent_identity_view().await?;
-        let skills = self
-            .skills_runtime_view_for_state(&state_snapshot, &identity)
-            .await?;
+        let resources = self.capture_context_resources_for_snapshot(
+            &resource_root.state,
+            resource_root.work.as_deref(),
+            None,
+        )?;
+        let skills = resources.skills_with_visibility(
+            &resource_root.state.active_skills,
+            matches!(
+                self.skill_visibility(&identity),
+                SkillVisibility::DefaultAgent
+            ),
+        );
+        drop(resource_root);
         let Some(skill) = skill_for_activation_path(&skills.discoverable_skills, &resolved_path)
         else {
             return Ok(());
@@ -4412,23 +4418,42 @@ impl RuntimeHandle {
             false
         };
         guard.persist_state(&self.inner.storage).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "skill_activated",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "skill_id": skill.skill_id,
-                "skill_name": skill.name,
-                "path": resolved_path,
-                "entrypoint_path": skill.path,
-                "scope": skill.scope,
-                "activation_source": SkillActivationSource::ImplicitFromCatalog,
-                "activation_state": SkillActivationState::TurnActive,
-                "load_reason": load_reason,
-                "turn_index": turn_index,
-                "run_id": run_id,
-                "repeated": repeated,
-            }),
-        ))?;
+        let observation = self.prepare_original_runtime_observation_material(
+            OriginalLifecycleNoopKind::SkillReadActivated,
+            &(
+                &agent_id,
+                &skill.skill_id,
+                &skill.name,
+                &resolved_path,
+                &skill.path,
+                &skill.scope,
+                &load_reason,
+                turn_index,
+                &run_id,
+                repeated,
+            ),
+        )?;
+        let audit = observation.freeze(
+            self,
+            AuditEvent::legacy(
+                "skill_activated",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "skill_id": skill.skill_id,
+                    "skill_name": skill.name,
+                    "path": resolved_path,
+                    "entrypoint_path": skill.path,
+                    "scope": skill.scope,
+                    "activation_source": SkillActivationSource::ImplicitFromCatalog,
+                    "activation_state": SkillActivationState::TurnActive,
+                    "load_reason": load_reason,
+                    "turn_index": turn_index,
+                    "run_id": run_id,
+                    "repeated": repeated,
+                }),
+            ),
+        )?;
+        guard.append_held_runtime_observation_audit(audit).await?;
         Ok(())
     }
 
@@ -4436,14 +4461,25 @@ impl RuntimeHandle {
         let execution = self
             .effective_execution(ExecutionScopeKind::AgentTurn)
             .await?;
-        let state_snapshot = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.clone()
-        };
+        let resource_root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("skill activation root is unpublished")?;
         let identity = self.agent_identity_view().await?;
-        let skills = self
-            .skills_runtime_view_for_state(&state_snapshot, &identity)
-            .await?;
+        let resources = self.capture_context_resources_for_snapshot(
+            &resource_root.state,
+            resource_root.work.as_deref(),
+            None,
+        )?;
+        let skills = resources.skills_with_visibility(
+            &resource_root.state.active_skills,
+            matches!(
+                self.skill_visibility(&identity),
+                SkillVisibility::DefaultAgent
+            ),
+        );
+        drop(resource_root);
 
         for skill in skills.discoverable_skills {
             if let Some((activation_path, load_reason)) =
@@ -4484,9 +4520,52 @@ impl RuntimeHandle {
 
     async fn enqueue_internal(
         &self,
+        message: MessageEnvelope,
+        delivery: Option<&AgentMessageDeliveryRecord>,
+        original_fault: Option<TransitionFaultPoint>,
+    ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
+        self.enqueue_internal_with_original_child_input(message, delivery, original_fault, None)
+            .await
+    }
+    pub(crate) async fn enqueue_original_task_input_child(
+        &self,
+        message: MessageEnvelope,
+        material: Arc<OriginalTaskInputChildMaterial>,
+    ) -> Result<MessageEnvelope> {
+        material.validate_message(&message)?;
+        self.enqueue_internal_with_original_child_input(message, None, None, Some(material))
+            .await
+            .map(|value| value.0)
+    }
+    #[inline(never)]
+    fn enqueue_internal_with_original_child_input<'a>(
+        &'a self,
+        message: MessageEnvelope,
+        delivery: Option<&'a AgentMessageDeliveryRecord>,
+        original_fault: Option<TransitionFaultPoint>,
+        task_input: Option<Arc<OriginalTaskInputChildMaterial>>,
+    ) -> std::pin::Pin<
+        Box<
+            impl std::future::Future<
+                    Output = Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(self.enqueue_internal_with_original_child_input_inner(
+            message,
+            delivery,
+            original_fault,
+            task_input,
+        ))
+    }
+
+    async fn enqueue_internal_with_original_child_input_inner(
+        &self,
         mut message: MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
         mut original_fault: Option<TransitionFaultPoint>,
+        task_input: Option<Arc<OriginalTaskInputChildMaterial>>,
     ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
         let _admission = self.execution_admission_lease()?;
         message.normalize_admission_fields();
@@ -4500,7 +4579,12 @@ impl RuntimeHandle {
         let enqueue_started_at = chrono::Utc::now();
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             match self
-                .enqueue_attempt(&message, delivery, original_fault.take())
+                .enqueue_attempt(
+                    &message,
+                    delivery,
+                    original_fault.take(),
+                    task_input.clone(),
+                )
                 .await
             {
                 Ok(mut commit) => {
@@ -4575,19 +4659,36 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
         original_fault: Option<TransitionFaultPoint>,
+        task_input: Option<Arc<OriginalTaskInputChildMaterial>>,
     ) -> Result<TransitionCommit> {
-        let existing_queue_entry = self.inner.runtime_db.queue_entries().latest(&message.id)?;
-        if existing_queue_entry.as_ref().is_some_and(|entry| {
-            matches!(
-                entry.status,
-                QueueEntryStatus::Dequeued
-                    | QueueEntryStatus::Interjected
-                    | QueueEntryStatus::Processed
-                    | QueueEntryStatus::Aborted
-                    | QueueEntryStatus::Dropped
-                    | QueueEntryStatus::Quarantined
-            )
-        }) {
+        let (existing_is_terminal, existing_created_at) =
+            if let Some(material) = task_input.as_deref() {
+                self.inner
+                    .runtime_db
+                    .original_task_input_queue_observation(
+                        &message.id,
+                        material,
+                        self.instance_owner_epoch(),
+                        &self.inner.input_evidence_budget,
+                    )?
+            } else {
+                let existing = self.inner.runtime_db.queue_entries().latest(&message.id)?;
+                let terminal = existing.as_ref().is_some_and(|entry| {
+                    matches!(
+                        entry.status,
+                        QueueEntryStatus::Dequeued
+                            | QueueEntryStatus::Interjected
+                            | QueueEntryStatus::Processed
+                            | QueueEntryStatus::Aborted
+                            | QueueEntryStatus::Dropped
+                            | QueueEntryStatus::Quarantined
+                    )
+                });
+                let created_at = existing.as_ref().map(|entry| entry.created_at);
+                drop(existing);
+                (terminal, created_at)
+            };
+        if existing_is_terminal {
             return Ok(TransitionCommit::default());
         }
         let mut audit_events = vec![AuditEvent::legacy(
@@ -4717,9 +4818,7 @@ impl RuntimeHandle {
                     agent_id: message.agent_id.clone(),
                     priority: message.priority.clone(),
                     status: queue_status.clone(),
-                    created_at: existing_queue_entry
-                        .as_ref()
-                        .map_or(message.created_at, |entry| entry.created_at),
+                    created_at: existing_created_at.unwrap_or(message.created_at),
                     updated_at: self.now(),
                 }),
                 scheduler_claim_work_item: None,
@@ -4738,9 +4837,22 @@ impl RuntimeHandle {
             let mut prepared =
                 crate::runtime_db::transitions::PreparedQueueTransition::new(command);
             prepared.delivery = delivery.cloned();
-            guard
-                .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
-                .await?
+            match task_input {
+                Some(material) => {
+                    guard
+                        .commit_prepared_queue_with_original_task_input_child_material(
+                            crate::ids::audit_event_id(),
+                            prepared,
+                            material,
+                        )
+                        .await?
+                }
+                None => {
+                    guard
+                        .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
+                        .await?
+                }
+            }
         };
         Ok(commit)
     }
@@ -4891,7 +5003,7 @@ impl RuntimeHandle {
         notify_scheduler: bool,
         terminal_transition: Option<&'a turn::TurnTerminalTransition>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
-        self.commit_queue_terminal_settlement_with_evidence(
+        Box::pin(self.commit_queue_terminal_settlement_with_evidence_inner(
             record,
             audit_events,
             notify_scheduler,
@@ -4899,7 +5011,8 @@ impl RuntimeHandle {
             None,
             Vec::new(),
             Vec::new(),
-        )
+            false,
+        ))
     }
 
     fn validate_terminal_brief_settlement(
@@ -5114,6 +5227,7 @@ impl RuntimeHandle {
             agent_update,
             transcript_entries,
             brief_evidence,
+            true,
         ))
     }
 
@@ -5126,6 +5240,7 @@ impl RuntimeHandle {
         agent_update: Option<TerminalAgentStateUpdate>,
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
+        original_state_notification: bool,
     ) -> Result<bool> {
         let normalized_terminal_transition = terminal_transition.cloned().map(|mut transition| {
             transition.normalize_brief_settlement();
@@ -5261,6 +5376,24 @@ impl RuntimeHandle {
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             // Rebuild guard-dependent fields from the current baseline.
             let mut mutation = self.begin_mutation().await?;
+            let resource_material = if let Some(prepared) = prepared_completion {
+                if let Some(material) = &prepared._result_view_material {
+                    Some(WorkResourceMaterialLoan::result(material.clone()))
+                } else {
+                    prepared
+                        ._resource_plan
+                        .as_ref()
+                        .map(|read| WorkResourceMaterialLoan::plan(read.clone()))
+                }
+            } else {
+                prepared_wait
+                    .as_deref()
+                    .and_then(|wait| wait.work_resource_material_loan())
+            };
+            if let Some(loan) = resource_material {
+                mutation.retain_work_resource_material(loan)?;
+            }
+
             let agent_state = {
                 let guard = &mutation;
                 let mut state = if let Some(prepared) = prepared_completion {
@@ -5383,8 +5516,28 @@ impl RuntimeHandle {
                     })
                 })
                 .transpose()?;
+            // Only the original processing-finish caller emitted this wire
+            // notification; legacy terminal fixture helpers keep their shape.
+            let state_audit = if original_state_notification && terminal_transition.is_some() {
+                Some(
+                    self.prepare_original_state_changed_audit(
+                        command
+                            .agent_state
+                            .as_ref()
+                            .context("original terminal State missing")?
+                            .record
+                            .as_ref(),
+                        &command.audit_events,
+                    )?,
+                )
+            } else {
+                None
+            };
             let mut prepared =
                 crate::runtime_db::transitions::PreparedQueueTransition::new(command.clone());
+            if let Some(audit) = state_audit.as_ref() {
+                prepared = prepared.with_original_terminal_state_audit(audit.event().clone())?;
+            }
             prepared.execution_protocol = execution_protocol.clone();
             prepared.task_result_settlement = task_result_settlement.clone();
             if let Some(completion) = completion {
@@ -5410,7 +5563,7 @@ impl RuntimeHandle {
             let commit = mutation
                 .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
                 .await;
-            drop(mutation);
+            drop((mutation, state_audit));
             match commit {
                 Ok(commit) => {
                     return Ok(self.apply_transition_commit(commit).await.applied);
@@ -5921,6 +6074,7 @@ impl RuntimeHandle {
         if let Some(bridge) = self.inner.host_bridge.as_ref() {
             bridge.wait_for_bootstrap_ready().await?;
         }
+        self.start_context_resource_observer()?;
         let bootstrap = async {
             // Restore known pilot commits before legacy bootstrap force writes.
             self.reconcile_posture_observation().await?;
@@ -5930,6 +6084,7 @@ impl RuntimeHandle {
                 .bootstrap_recovered()
                 .await?;
             self.recover_scheduler_bootstrap_claims().await?;
+            self.refresh_context_resources_at_bootstrap().await?;
             Ok(())
         }
         .await;
@@ -5963,11 +6118,7 @@ impl RuntimeHandle {
                     .boundary(scheduler::SchedulerBoundary::RunLoop.as_str())
                     .liveness_only(true)
                     .evidence(format!("status={:?}", state.status));
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &self.inner.default_agent_id,
-                        &decision,
-                    )?;
+                    self.append_owned_scheduler_decision(&decision).await?;
                     return Ok(());
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
@@ -5998,11 +6149,7 @@ impl RuntimeHandle {
                         scheduler::SchedulerDecisionKind::Sleep
                             | scheduler::SchedulerDecisionKind::StayIdle
                     ) {
-                        scheduler::append_scheduler_decision(
-                            &self.inner.storage,
-                            &self.inner.default_agent_id,
-                            &decision,
-                        )?;
+                        self.append_owned_scheduler_decision(&decision).await?;
                     }
                     let next_recheck_at = [
                         idle_read.work.next_work_recheck_at()?,
@@ -6024,12 +6171,9 @@ impl RuntimeHandle {
                     let idle_transition = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                         .transition_run_loop_idle_to_sleep(next_recheck_at)
                         .await?;
-                    let Some(idle_transition) = idle_transition else {
+                    let Some(_idle_transition) = idle_transition else {
                         continue;
                     };
-                    if idle_transition.posture_changed {
-                        self.append_state_changed_events(&idle_transition.state)?;
-                    }
                     if let Some(next_recheck_at) = next_recheck_at {
                         if next_recheck_at > self.now() {
                             tokio::select! {
@@ -6075,7 +6219,6 @@ impl RuntimeHandle {
                     "injected non-retryable agent runtime loop failure after queue claim",
                 )));
             }
-            self.append_state_changed_events(&scheduled.running_state)?;
 
             let queue_wait = self
                 .now()
@@ -6324,7 +6467,7 @@ impl RuntimeHandle {
                     }
                     return Err(error);
                 }
-                let failed_state = {
+                {
                     let mut guard = self.begin_mutation().await?;
                     if guard
                         .current_run_abort
@@ -6334,9 +6477,7 @@ impl RuntimeHandle {
                         guard.current_run_abort = None;
                     }
                     guard.install_transient().await?;
-                    guard.state.clone()
-                };
-                self.append_state_changed_events(&failed_state)?;
+                }
                 if !self.accepts_execution_admission() {
                     return Ok(());
                 }
@@ -6375,7 +6516,7 @@ impl RuntimeHandle {
             match settlement {
                 Ok(TerminalSettlementDisposition::Intended) => {}
                 Ok(TerminalSettlementDisposition::AbortedFallback) => {
-                    let failed_state = {
+                    {
                         let mut guard = self.begin_mutation().await?;
                         if guard
                             .current_run_abort
@@ -6385,9 +6526,7 @@ impl RuntimeHandle {
                             guard.current_run_abort = None;
                         }
                         guard.install_transient().await?;
-                        guard.state.clone()
-                    };
-                    self.append_state_changed_events(&failed_state)?;
+                    }
                     if !self.accepts_execution_admission() {
                         return Ok(());
                     }
@@ -6409,7 +6548,7 @@ impl RuntimeHandle {
                     return Err(error);
                 }
             }
-            let processed_state = {
+            {
                 let mut guard = self.begin_mutation().await?;
                 if guard
                     .current_run_abort
@@ -6419,9 +6558,7 @@ impl RuntimeHandle {
                     guard.current_run_abort = None;
                 }
                 guard.install_transient().await?;
-                guard.state.clone()
-            };
-            self.append_state_changed_events(&processed_state)?;
+            }
             if !self.accepts_execution_admission() {
                 return Ok(());
             }
@@ -6484,21 +6621,17 @@ impl RuntimeHandle {
             error = %error,
             "agent runtime loop failed"
         );
-        if let Err(persist_error) = self.inner.storage.append_event(&AuditEvent::legacy(
-            "agent_runtime_loop_failed",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "error": summary,
-                "domain": descriptor.domain,
-                "code": descriptor.code,
-                "retryable": descriptor.retryable,
-                "recovery_hint": descriptor.recovery_hint,
-                "safe_context": descriptor.safe_context,
-                "source_chain": descriptor.source_chain,
-                "recovery": "bounded_restart",
-                "released_claims": released_claims,
-            }),
-        )) {
+        let audit = self.prepare_original_runtime_loop_failure_audit(
+            &agent_id,
+            &summary,
+            &descriptor,
+            released_claims,
+        );
+        let audit_result = match audit {
+            Ok(audit) => self.finish_owned_runtime_loop_failure_audit(audit).await,
+            Err(error) => Err(error),
+        };
+        if let Err(persist_error) = audit_result {
             tracing::error!(
                 agent_id = %agent_id,
                 error = %persist_error,
@@ -7049,7 +7182,15 @@ impl RuntimeHandle {
         Ok(recovered)
     }
 
-    async fn bootstrap_recovery(&self) -> Result<()> {
+    #[inline(never)]
+    fn bootstrap_recovery(
+        &self,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + '_>> {
+        // Keep the original bootstrap continuations off every caller's frame.
+        Box::pin(self.bootstrap_recovery_inner())
+    }
+
+    async fn bootstrap_recovery_inner(&self) -> Result<()> {
         if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
             let (tasks, _original_task_material) =
                 tasks.into_records(&self.inner.input_evidence_budget)?;
@@ -7061,13 +7202,13 @@ impl RuntimeHandle {
                     self.recover_supervised_child_tasks(tasks).await?;
                 let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
                 if !reattached.is_empty() {
-                    self.inner.storage.append_event(&AuditEvent::legacy(
+                    self.append_owned_runtime_audit_event(AuditEvent::legacy(
                         "supervised_child_task_monitor_reattached",
                         serde_json::json!({
                             "agent_id": self.agent_id().await?,
                             "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
                         }),
-                    ))?;
+                    )).await?;
                 }
                 drop(interrupted);
             }
@@ -7262,3 +7403,13 @@ mod begin_turn_input_tests;
 #[cfg(test)]
 #[path = "runtime/dispatch_run_projection_tests.rs"]
 mod dispatch_run_projection_tests;
+
+#[cfg(test)]
+#[path = "runtime/workspace_input_phase_tests.rs"]
+mod workspace_input_phase_tests;
+
+#[cfg(test)]
+#[path = "runtime/nomemory_input_phase_tests.rs"]
+mod nomemory_input_phase_tests;
+
+pub use tasks::OwnedTaskInputResult;

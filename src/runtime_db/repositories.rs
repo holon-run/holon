@@ -15,9 +15,12 @@ use crate::runtime_db::conversation::{
     assign_input_to_turn_tx, assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx,
     ensure_turn_revision_tx, settle_turn_result_tx, SOURCE_OPERATOR, SOURCE_WAIT,
 };
+use crate::runtime_db::current_read_snapshot::CurrentReadBusinessTransaction;
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
-use crate::runtime_db::transitions::{inject_fault, trigger_wait_and_enqueue_tx};
+use crate::runtime_db::transitions::{
+    inject_fault, trigger_wait_and_enqueue_tx, trigger_wait_and_enqueue_with_current_read_tx,
+};
 use crate::runtime_db::types::*;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
@@ -2979,6 +2982,13 @@ impl QueueEntryRepository<'_> {
                 for record in records {
                     imported_ids.insert(record.message_id.clone(), ());
                     let _ = upsert_queue_entry_tx(tx, &record)?;
+                    super::current_read_snapshot::record_current_read_import_tx(
+                        tx,
+                        &record.agent_id,
+                        crate::runtime::current_read_facts::CurrentReadFamily::Queue,
+                        &record.message_id,
+                        &super::current_read_snapshot::typed_digest(&record)?,
+                    )?;
                 }
                 Ok(serde_json::json!({ "imported_records": imported_ids.len() }))
             })
@@ -3679,7 +3689,37 @@ impl TimerRepository<'_> {
         defer_work: bool,
         actual_wait_writes: &mut WaitConditionWrites,
         actual_audits: &mut Vec<AuditEvent>,
+        memory: Option<&mut super::dispatch_memory::DispatchMemoryTransactionBudget>,
+    ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
+        self.fire_with_wait_with_current_read_tx(
+            tx,
+            command,
+            fault,
+            scoped_work,
+            defer_work,
+            actual_wait_writes,
+            actual_audits,
+            memory,
+            None,
+        )
+    }
+
+    pub(crate) fn fire_with_wait_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TimerFire,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+        scoped_work: Option<(
+            &crate::runtime::resident_input_evidence::InputEvidenceScope,
+            &super::work_snapshot::WorkDomainLoadRequest,
+            &super::task_snapshot::TaskDomainLoadRequest,
+            &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        )>,
+        defer_work: bool,
+        actual_wait_writes: &mut WaitConditionWrites,
+        actual_audits: &mut Vec<AuditEvent>,
         mut memory: Option<&mut super::dispatch_memory::DispatchMemoryTransactionBudget>,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<super::input_evidence_writes::InputEvidenceCommit<TimerFireResult>> {
         if let Some((scope, _, _, _)) = scoped_work {
             super::input_evidence_writes::validate_input_evidence_scope_tx(
@@ -3694,6 +3734,7 @@ impl TimerRepository<'_> {
             return Ok(super::input_evidence_writes::InputEvidenceCommit {
                 work_delta: None,
                 task_delta: None,
+                work_material_budget_views: None,
                 task_material_budget_views: Vec::new(),
                 record: TimerFireResult {
                     advanced: false,
@@ -3720,6 +3761,7 @@ impl TimerRepository<'_> {
             return Ok(super::input_evidence_writes::InputEvidenceCommit {
                 work_delta: None,
                 task_delta: None,
+                work_material_budget_views: None,
                 task_material_budget_views: Vec::new(),
                 record: TimerFireResult {
                     advanced: true,
@@ -3777,7 +3819,7 @@ impl TimerRepository<'_> {
                     memory.as_deref_mut(),
                 )?
             } else {
-                (None, None)
+                (None, Vec::new())
             };
         // A no-match still materializes the original reducer's pool below.
         let _projection_guard = projection_guard;
@@ -3795,7 +3837,13 @@ impl TimerRepository<'_> {
             fault,
             crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
         )?;
-        let wake = trigger_wait_and_enqueue_tx(tx, &command.message, &command.queue_entry)?;
+        let wake = trigger_wait_and_enqueue_with_current_read_tx(
+            tx,
+            &command.message,
+            &command.queue_entry,
+            None,
+            current_reads.as_deref_mut(),
+        )?;
         if wake.message_inserted {
             insert_runtime_index_changes_tx(tx, &[RuntimeIndexChange::for_message(&wake.message)])?;
         }
@@ -3892,6 +3940,7 @@ impl TimerRepository<'_> {
             super::input_evidence_writes::InputEvidenceCommit {
                 work_delta: None,
                 task_delta: None,
+                work_material_budget_views: None,
                 task_material_budget_views: Vec::new(),
                 record: result,
                 input_delta: Default::default(),
@@ -3913,6 +3962,15 @@ impl TimerRepository<'_> {
         &self,
         tx: &Transaction<'_>,
         command: &TimerCancel,
+    ) -> Result<TimerCancelResult> {
+        self.cancel_with_current_read_tx(tx, command, None)
+    }
+
+    pub(crate) fn cancel_with_current_read_tx(
+        &self,
+        tx: &Transaction<'_>,
+        command: &TimerCancel,
+        mut current_reads: Option<&mut CurrentReadBusinessTransaction<'_, '_>>,
     ) -> Result<TimerCancelResult> {
         if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
             || command.expected.status != TimerStatus::Active
@@ -3974,7 +4032,11 @@ impl TimerRepository<'_> {
                 let mut entry = decode_queue_entry_payload(&payload)?;
                 entry.status = QueueEntryStatus::Dropped;
                 entry.updated_at = timer_updated_at(&command.record);
-                upsert_queue_entry_tx(tx, &entry)?;
+                crate::runtime_db::transitions::upsert_queue_entry_tx_with_current_reads(
+                    tx,
+                    &entry,
+                    current_reads.as_deref_mut(),
+                )?;
             }
         }
         if let Some((_, record)) = command.agent_state.as_ref() {
@@ -4097,25 +4159,70 @@ impl TurnRecordRepository<'_> {
         if self.db.storage_domain_is_complete("turn_records", "db")? {
             return Ok(());
         }
-        self.db
-            .run_storage_domain_import("turn_records", "jsonl-derived", "db", |tx| {
-                let records = derive_turn_records_from_legacy_evidence(
-                    messages,
-                    tool_executions,
-                    briefs,
-                    delivery_summaries,
-                    wait_conditions,
-                )?;
-                for record in &records {
-                    let record = merge_legacy_turn_evidence_tx(tx, record)?;
-                    upsert_turn_record_tx(tx, &record)?;
-                }
-                Ok(serde_json::json!({
-                    "imported_records": records.len(),
-                    "source": "legacy evidence jsonl",
-                    "ignored": "turns.jsonl"
-                }))
-            })
+        // One original pre-Host actor, not an Input scope or a second source
+        // provider. The fixed header guard survives the complete/failed marker.
+        let scratch = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            Default::default(),
+        )?;
+        let _checkpoint_material = scratch.register_host_owned_bytes(
+            crate::runtime::input_evidence_budget::InputMemoryCategory::Candidate,
+            crate::runtime::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: 4096,
+            },
+        )?;
+        let mut failed_material = None;
+        let mut failed_row = None;
+        let result =
+            self.db
+                .run_storage_domain_import("turn_records", "jsonl-derived", "db", |tx| {
+                    let mut material =
+                        super::input_evidence_snapshot::legacy_delivery::original_episode::received_turns::ReceivedTurnMaterial::new(
+                            &scratch,
+                            &messages,
+                            &tool_executions,
+                            &briefs,
+                            &delivery_summaries,
+                            &wait_conditions,
+                        )?;
+                    let imported = (|| {
+                        let records = derive_turn_records_from_legacy_evidence_observed(
+                            messages,
+                            tool_executions,
+                            briefs,
+                            delivery_summaries,
+                            wait_conditions,
+                            Some(&mut |bytes, nodes| material.observe_derived(bytes, nodes)),
+                        )?;
+                        material.source_consumed();
+                        for record in &records {
+                            let mut row_material =
+                                material.existing_turn_tx(tx, &record.turn_id)?;
+                            let written = (|| {
+                                let record = merge_legacy_turn_evidence_tx(tx, record)?;
+                                material.assignment_material_tx(tx, &record, &mut row_material)?;
+                                upsert_turn_record_tx(tx, &record)
+                            })();
+                            if let Err(error) = written {
+                                failed_row = Some(row_material);
+                                return Err(error);
+                            }
+                        }
+                        Ok(serde_json::json!({
+                            "imported_records": records.len(),
+                            "source": "legacy evidence jsonl",
+                            "ignored": "turns.jsonl"
+                        }))
+                    })();
+                    if imported.is_err() {
+                        // The original failed-marker actor formats the real error
+                        // after rollback; retain its original allocation estimates.
+                        failed_material = Some(material);
+                    }
+                    imported
+                });
+        drop((failed_row, failed_material));
+        result
     }
 
     pub fn upsert(&self, record: &TurnRecord) -> Result<()> {
@@ -4585,7 +4692,27 @@ impl EvidenceRepository<'_> {
         if self.db.storage_domain_is_complete("evidence", "db")? {
             return Ok(());
         }
-        self.db
+        // One actual pre-Host Evidence import owns the shared scratch ledger.
+        // It is never a runtime identity scope or publication authority.
+        let input_import_scratch =
+            crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                Default::default(),
+            )?;
+        let _input_import_header = input_import_scratch.register_host_owned_bytes(
+            crate::runtime::input_evidence_budget::InputMemoryCategory::Candidate,
+            crate::runtime::input_evidence_budget::OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: 4096,
+            },
+        )?;
+        // The received adapter still owns every input collection through the
+        // original transaction. Admit that complete borrowed source first.
+        let received = super::input_evidence_snapshot::legacy_delivery::original_episode::received_evidence_material(
+            &messages, &transcript_entries, &tool_executions, &briefs, &delivery_summaries,
+        )?;
+        let _received_guard = super::input_evidence_snapshot::legacy_delivery::imports::observe_existing_import_metadata(&input_import_scratch, received)?;
+        let mut input_import_checkpoint_guard = None;
+        let result = self.db
             .run_storage_domain_import("evidence", "jsonl", "db", |tx| {
                 let mut imported_messages = 0_u64;
                 let mut dropped_messages = 0_u64;
@@ -4616,9 +4743,23 @@ impl EvidenceRepository<'_> {
                         super::episode_snapshot::work_checkpoint::imports::ImportOrigin::LegacyImportEqual
                     } else { super::episode_snapshot::work_checkpoint::imports::ImportOrigin::ActualWrite })?;
                 }
+                let work_prior = work_writes.input_import_material_estimate()?;
+                let prior_records = super::input_evidence_snapshot::legacy_delivery::original_episode::received_joint_records(received.1, work_prior.1)?;
+                let work_prior_guard = super::input_evidence_snapshot::legacy_delivery::imports::observe_existing_import_metadata(&input_import_scratch, work_prior)?;
+                let delivery_import = super::input_evidence_snapshot::legacy_delivery::imports::LegacyDeliveryImport::begin_if_installed(tx, &input_import_scratch, prior_records)?;
                 for summary in &delivery_summaries {
-                    insert_delivery_summary_evidence_tx(tx, summary)?;
+                    if let Some(original) = delivery_import.as_ref() {
+                        original.append_original(summary)?;
+                    } else {
+                        insert_delivery_summary_evidence_tx(tx, summary)?;
+                    }
                 }
+                let legacy_delivery_source = delivery_import.map(|original| original.finish()).transpose()?;
+                let work_checkpoint = work_writes.finish(tx)?;
+                drop(work_prior_guard);
+                let checkpoint_cost = super::input_evidence_snapshot::legacy_delivery::imports::checkpoint_material(&work_checkpoint)?;
+                super::input_evidence_snapshot::legacy_delivery::original_episode::received_joint_records(received.1, checkpoint_cost.1)?;
+                input_import_checkpoint_guard = Some(super::input_evidence_snapshot::legacy_delivery::imports::observe_existing_import_metadata(&input_import_scratch, checkpoint_cost)?);
                 Ok(serde_json::json!({
                     "imported_messages": imported_messages,
                     "dropped_messages": dropped_messages,
@@ -4626,9 +4767,14 @@ impl EvidenceRepository<'_> {
                     "imported_tool_executions": tool_executions.len(),
                     "imported_briefs": briefs.len(),
                     "imported_delivery_summaries": delivery_summaries.len(),
-                    "work_domain_actual_writes": work_writes.finish(tx)?,
+                    "work_domain_actual_writes": work_checkpoint,
+                    "legacy_delivery_source": legacy_delivery_source,
                 }))
-            })
+            });
+        // The actual complete checkpoint serialization and SQL commit have
+        // finished before this final owned checkpoint observation is released.
+        drop(input_import_checkpoint_guard);
+        result
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
@@ -7183,6 +7329,20 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
     )?;
     let stored = decode_turn_record_payload(&stored_payload)?;
     let changed = existing_payload.as_deref() != Some(stored_payload.as_str());
+    finish_original_turn_revisions_tx(tx, &stored, changed)?;
+    for message_id in &stored.input_message_ids {
+        assign_original_turn_input_tx(tx, &stored, message_id)?;
+    }
+    Ok(())
+}
+
+/// Shared bookkeeping only; callers must already have persisted the complete
+/// validated Turn row in this same transaction.
+pub(in crate::runtime_db) fn finish_original_turn_revisions_tx(
+    tx: &Transaction<'_>,
+    stored: &TurnRecord,
+    changed: bool,
+) -> Result<()> {
     if changed {
         let _ = bump_turn_revision_tx(
             tx,
@@ -7210,64 +7370,71 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
             .map_or(stored.created_at, |terminal| terminal.completed_at);
         let _ = settle_turn_result_tx(tx, &stored.agent_id, &stored.turn_id, updated_at)?;
     }
-    for message_id in &stored.input_message_ids {
-        let existing_assignment = assigned_turn_id_tx(tx, &stored.agent_id, message_id)?;
-        let assignment_turn_id = if let Some(existing_turn_id) = existing_assignment.as_deref() {
-            existing_turn_id
-        } else if let Some(replay) = stored
-            .replay
-            .as_ref()
-            .filter(|replay| replay.source_message_id == *message_id)
-        {
-            let source_owns_input = tx.query_row(
-                "SELECT EXISTS(
-                    SELECT 1
-                    FROM turn_records AS source
-                    WHERE source.agent_id = ?1
-                      AND source.turn_id = ?2
-                      AND EXISTS (
-                        SELECT 1
-                        FROM json_each(source.payload_json, '$.input_message_ids') AS input
-                        WHERE input.type = 'text' AND input.value = ?3
-                      )
-                 )",
-                params![stored.agent_id, replay.source_turn_id, message_id],
-                |row| row.get::<_, i64>(0),
-            )? != 0;
-            if source_owns_input {
-                replay.source_turn_id.as_str()
-            } else {
-                stored.turn_id.as_str()
-            }
-        } else {
-            stored.turn_id.as_str()
-        };
-        let assignment_target_exists = tx.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM turn_records
-                WHERE agent_id = ?1 AND turn_id = ?2
-             )",
-            params![stored.agent_id, assignment_turn_id],
-            |row| row.get::<_, i64>(0),
-        )? != 0;
-        anyhow::ensure!(
-            assignment_target_exists,
-            "conversation input assignment target is not persisted: agent_id={}, message_id={}, turn_id={}",
-            stored.agent_id,
-            message_id,
-            assignment_turn_id
-        );
-        let _ = assign_input_to_turn_tx(
-            tx,
-            &stored.agent_id,
-            message_id,
-            assignment_turn_id,
-            stored.created_at,
-        )?;
-    }
     Ok(())
 }
 
+pub(in crate::runtime_db) fn assign_original_turn_input_tx(
+    tx: &Transaction<'_>,
+    stored: &TurnRecord,
+    message_id: &str,
+) -> Result<()> {
+    let existing_assignment = assigned_turn_id_tx(tx, &stored.agent_id, message_id)?;
+    let assignment_turn_id = if let Some(existing_turn_id) = existing_assignment.as_deref() {
+        existing_turn_id
+    } else if let Some(replay) = stored
+        .replay
+        .as_ref()
+        .filter(|replay| replay.source_message_id == message_id)
+    {
+        let source_owns_input = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM turn_records AS source
+                WHERE source.agent_id = ?1
+                  AND source.turn_id = ?2
+                  AND EXISTS (
+                    SELECT 1
+                    FROM json_each(source.payload_json, '$.input_message_ids') AS input
+                    WHERE input.type = 'text' AND input.value = ?3
+                  )
+             )",
+            params![stored.agent_id, replay.source_turn_id, message_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0;
+        if source_owns_input {
+            replay.source_turn_id.as_str()
+        } else {
+            stored.turn_id.as_str()
+        }
+    } else {
+        stored.turn_id.as_str()
+    };
+    let assignment_target_exists = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM turn_records
+            WHERE agent_id = ?1 AND turn_id = ?2
+         )",
+        params![stored.agent_id, assignment_turn_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    anyhow::ensure!(
+        assignment_target_exists,
+        "conversation input assignment target is not persisted: agent_id={}, message_id={}, turn_id={}",
+        stored.agent_id,
+        message_id,
+        assignment_turn_id
+    );
+    let _ = assign_input_to_turn_tx(
+        tx,
+        &stored.agent_id,
+        message_id,
+        assignment_turn_id,
+        stored.created_at,
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) fn derive_turn_records_from_legacy_evidence(
     messages: Vec<serde_json::Value>,
     tool_executions: Vec<ToolExecutionRecord>,
@@ -7275,10 +7442,68 @@ pub(crate) fn derive_turn_records_from_legacy_evidence(
     delivery_summaries: Vec<DeliverySummaryRecord>,
     wait_conditions: Vec<WaitConditionRecord>,
 ) -> Result<Vec<TurnRecord>> {
+    derive_turn_records_from_legacy_evidence_observed(
+        messages,
+        tool_executions,
+        briefs,
+        delivery_summaries,
+        wait_conditions,
+        None,
+    )
+}
+
+fn observe_turn_derivation(
+    observe: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+    value: &impl serde::Serialize,
+    new_turn: bool,
+) -> Result<()> {
+    if let Some(observe) = observe.as_deref_mut() {
+        let (bytes, nodes) =
+            super::input_evidence_snapshot::legacy_delivery::original_episode::received_turns::derivation_material(value, new_turn)?;
+        observe(bytes, nodes)?;
+    }
+    Ok(())
+}
+
+pub(super) fn derive_turn_records_from_legacy_evidence_observed(
+    messages: Vec<serde_json::Value>,
+    tool_executions: Vec<ToolExecutionRecord>,
+    briefs: Vec<BriefRecord>,
+    delivery_summaries: Vec<DeliverySummaryRecord>,
+    wait_conditions: Vec<WaitConditionRecord>,
+    mut observe: Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<Vec<TurnRecord>> {
     let mut records = BTreeMap::<String, TurnRecord>::new();
     for raw_message in messages {
         if let Some(message) = normalize_legacy_message_value(raw_message)? {
             let turn_key = turn_key_from_message(&message);
+            let existing = records.get(&turn_key.turn_id);
+            observe_turn_derivation(
+                &mut observe,
+                &(
+                    existing.is_none().then_some((
+                        &message.agent_id,
+                        &turn_key.turn_id,
+                        turn_key.turn_index,
+                    )),
+                    &message.id,
+                    existing
+                        .is_none_or(|record| record.current_work_item_id.is_none())
+                        .then_some(&message.work_item_id),
+                    existing
+                        .is_none_or(|record| record.trigger.is_none())
+                        .then_some((
+                            &message.id,
+                            &message.kind,
+                            &message.origin,
+                            &message.authority_class,
+                            &message.priority,
+                            &message.trigger_kind,
+                            &message.task_id,
+                        )),
+                ),
+                existing.is_none(),
+            )?;
             let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
                 TurnRecord::new(&message.agent_id, &turn_key.turn_id, turn_key.turn_index)
             });
@@ -7298,6 +7523,22 @@ pub(crate) fn derive_turn_records_from_legacy_evidence(
         else {
             continue;
         };
+        let existing = records.get(&turn_key.turn_id);
+        observe_turn_derivation(
+            &mut observe,
+            &(
+                existing.is_none().then_some((
+                    &tool.agent_id,
+                    &turn_key.turn_id,
+                    turn_key.turn_index,
+                )),
+                &tool.id,
+                existing
+                    .is_none_or(|record| record.current_work_item_id.is_none())
+                    .then_some(&tool.work_item_id),
+            ),
+            existing.is_none(),
+        )?;
         let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
             TurnRecord::new(&tool.agent_id, &turn_key.turn_id, turn_key.turn_index)
         });
@@ -7315,6 +7556,22 @@ pub(crate) fn derive_turn_records_from_legacy_evidence(
         ) else {
             continue;
         };
+        let existing = records.get(&turn_key.turn_id);
+        observe_turn_derivation(
+            &mut observe,
+            &(
+                existing.is_none().then_some((
+                    &brief.agent_id,
+                    &turn_key.turn_id,
+                    turn_key.turn_index,
+                )),
+                &brief.id,
+                existing
+                    .is_none_or(|record| record.current_work_item_id.is_none())
+                    .then_some(&brief.work_item_id),
+            ),
+            existing.is_none(),
+        )?;
         let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
             TurnRecord::new(&brief.agent_id, &turn_key.turn_id, turn_key.turn_index)
         });
@@ -7332,6 +7589,23 @@ pub(crate) fn derive_turn_records_from_legacy_evidence(
         ) else {
             continue;
         };
+        let existing = records.get(&turn_key.turn_id);
+        observe_turn_derivation(
+            &mut observe,
+            &(
+                existing.is_none().then_some((
+                    &summary.agent_id,
+                    &turn_key.turn_id,
+                    turn_key.turn_index,
+                )),
+                &summary.id,
+                &summary.work_item_id,
+                existing
+                    .is_none_or(|record| record.current_work_item_id.is_none())
+                    .then_some(&summary.work_item_id),
+            ),
+            existing.is_none(),
+        )?;
         let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
             TurnRecord::new(&summary.agent_id, &turn_key.turn_id, turn_key.turn_index)
         });
@@ -7353,6 +7627,20 @@ pub(crate) fn derive_turn_records_from_legacy_evidence(
         else {
             continue;
         };
+        let existing = records.get(turn_id.trim());
+        observe_turn_derivation(
+            &mut observe,
+            &(
+                existing
+                    .is_none()
+                    .then_some((&condition.agent_id, turn_id.trim(), 0u64)),
+                &condition.id,
+                existing
+                    .is_none_or(|record| record.current_work_item_id.is_none())
+                    .then_some(&condition.work_item_id),
+            ),
+            existing.is_none(),
+        )?;
         let record = records
             .entry(turn_id.trim().to_string())
             .or_insert_with(|| TurnRecord::new(&condition.agent_id, turn_id.trim(), 0));
@@ -7382,6 +7670,12 @@ pub(crate) fn derive_turn_records_from_legacy_evidence(
 pub(crate) struct DerivedTurnKey {
     turn_id: String,
     turn_index: u64,
+}
+
+impl DerivedTurnKey {
+    pub(in crate::runtime_db) fn parts(&self) -> (&str, u64) {
+        (&self.turn_id, self.turn_index)
+    }
 }
 
 pub(crate) fn reinforce_turn_index(record: &mut TurnRecord, turn_key: &DerivedTurnKey) {

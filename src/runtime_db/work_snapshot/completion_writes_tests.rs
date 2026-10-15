@@ -324,3 +324,271 @@ fn standalone_result_head_and_qualification_roll_back_with_whole_receipt_failure
     }
     Ok(())
 }
+
+fn completion_budget_request() -> WorkDomainLoadRequest {
+    WorkDomainLoadRequest {
+        capture: WorkCaptureRequest::current(),
+        record_limit: 65_536,
+        byte_limit: 64 * 1024 * 1024,
+    }
+}
+fn completion_task_budget_request() -> crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+    crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+        query: Default::default(),
+        record_limit: 65_536,
+        byte_limit: 64 * 1024 * 1024,
+    }
+}
+
+#[test]
+fn standalone_completion_metadata_nodes_backpressure_before_original_brief_sql() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    let (_dir, db) = fresh()?;
+    db.transaction(|tx| {
+        for index in 0..130 {
+            insert_qualified_work(
+                tx,
+                &work(&format!("complete-live-{index}"), WorkItemState::Open),
+            )?;
+        }
+        Ok(())
+    })?;
+    let original = db.transaction(|tx| loader::current_coverage(tx, &scope()))?;
+    let (raw, nodes): (usize, usize) = db.connection()?.query_row(
+        "SELECT length(CAST(coverage_json AS BLOB)),(SELECT COUNT(*) FROM json_tree(coverage_json)) FROM work_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",
+        params![scope().agent_id, scope().identity_incarnation], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let mut request = completion_budget_request();
+    // All 130 live members fit the runtime policy, while their complete
+    // metadata must exceed this deliberately smaller native-only allowance.
+    request.record_limit = 4096;
+    assert!(raw * 8 < request.byte_limit);
+    assert!(nodes * 8 > request.record_limit);
+    let record = brief("budgeted-completion-before-write", "complete-live-0");
+    let event = crate::types::brief_created_event_for(&record)?;
+    let nonce = event.id.clone();
+    let prepared = PreparedInputEvidence::brief_created(
+        scope(),
+        nonce.clone(),
+        record.created_at,
+        record.clone(),
+        event,
+        Vec::new(),
+    )?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let error = db
+        .evidence()
+        .commit_prepared_input_evidence_with_task_budget(
+            &prepared,
+            &request,
+            &completion_task_budget_request(),
+            &ledger,
+        )
+        .err()
+        .context("complete current metadata must debit native nodes before decoder/business")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<WorkSnapshotError>(),
+            Some(WorkSnapshotError::ResourceExhausted(_))
+        ),
+        "{error:#}"
+    );
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    let (briefs, receipts): (usize, usize) = db.connection()?.query_row(
+        "SELECT (SELECT COUNT(*) FROM briefs WHERE evidence_id=?1),(SELECT COUNT(*) FROM input_mutation_receipts WHERE command_nonce=?2)",
+        params![record.id, nonce], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!((briefs, receipts), (0, 0));
+    assert_eq!(
+        db.transaction(|tx| loader::current_coverage(tx, &scope()))?,
+        original
+    );
+    Ok(())
+}
+
+#[test]
+fn standalone_completion_guards_follow_delta_or_original_sparse_ack_until_last_clone() -> Result<()>
+{
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    for current in [false, true] {
+        let (_dir, db) = if current {
+            let fixture = fresh()?;
+            fixture.1.transaction(|tx| {
+                insert_qualified_work(tx, &work("guard-owner", WorkItemState::Completed))
+                    .map(|_| ())
+            })?;
+            fixture
+        } else {
+            legacy(|tx| raw_legacy_work(tx, &work("guard-owner", WorkItemState::Completed)))?
+        };
+        let original = db.transaction(|tx| loader::current_coverage(tx, &scope()))?;
+        assert_eq!(original.is_some(), current);
+        let record = brief("guarded-standalone-actual-ack", "guard-owner");
+        let event = crate::types::brief_created_event_for(&record)?;
+        let prepared = PreparedInputEvidence::brief_created(
+            scope(),
+            event.id.clone(),
+            record.created_at,
+            record,
+            event,
+            Vec::new(),
+        )?;
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let InputMutationExecution::Committed {
+            value: ack,
+            receipt,
+        } = db
+            .evidence()
+            .commit_prepared_input_evidence_with_task_budget(
+                &prepared,
+                &completion_budget_request(),
+                &completion_task_budget_request(),
+                &ledger,
+            )?
+        else {
+            panic!("original completion ACK expected")
+        };
+        assert_eq!(ack.work_delta.is_some(), current);
+        let views = if current {
+            assert!(ack.work_material_budget_views.is_none());
+            ack.work_delta
+                .as_ref()
+                .unwrap()
+                ._material_views
+                .as_ref()
+                .context("actual delta material missing")?
+        } else {
+            assert!(db
+                .transaction(|tx| loader::current_coverage(tx, &scope()))?
+                .is_none());
+            ack.work_material_budget_views
+                .as_ref()
+                .context("sparse original ACK lost Work material")?
+        };
+        let weak = Arc::downgrade(&views[0]);
+        let held = views.clone();
+        assert!(ledger.report()?.observed_bytes > 0);
+        let InputMutationExecution::Replayed {
+            receipt: replay,
+            _material_budget_views,
+        } = db
+            .evidence()
+            .commit_prepared_input_evidence_with_task_budget(
+                &prepared,
+                &completion_budget_request(),
+                &completion_task_budget_request(),
+                &ledger,
+            )?
+        else {
+            panic!("exact receipt replay expected")
+        };
+        assert_eq!(receipt, replay);
+        assert!(_material_budget_views.is_empty());
+        drop(ack);
+        assert!(weak.upgrade().is_some());
+        drop(held);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        assert_eq!(
+            db.transaction(|tx| loader::current_coverage(tx, &scope()))?
+                .is_some(),
+            current
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn retention_original_sparse_ack_carries_work_material_without_installing_a_domain() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    use crate::runtime_db::prepared_input_evidence::{
+        PreparedExternalInputEvidence, PreparedExternalInputValue, PreparedInputRetention,
+    };
+    let (_dir, db) = legacy(|_| Ok(()))?;
+    for (id, at) in [
+        ("old-sparse-retention", time()),
+        ("new-sparse-retention", time() + chrono::Duration::days(4)),
+    ] {
+        let mut record = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::AssistantRound,
+            None,
+            None,
+            serde_json::json!({"text":id}),
+        );
+        record.id = id.into();
+        record.created_at = at;
+        db.evidence()
+            .commit_prepared_input_evidence(&PreparedInputEvidence::transcript(
+                scope(),
+                format!("retention-source:{id}"),
+                at,
+                record,
+            )?)?;
+    }
+    assert!(db
+        .transaction(|tx| loader::current_coverage(tx, &scope()))?
+        .is_none());
+    let policy = crate::runtime_db::RuntimeDbRetentionPolicy {
+        enabled: true,
+        transcript_entries_days: 1,
+        transcript_entries_min_rows: 1,
+        ..Default::default()
+    };
+    let now = time() + chrono::Duration::days(4);
+    let scopes = db.retention_input_scopes(policy.clone(), now)?;
+    assert_eq!(scopes, vec![scope()]);
+    let prepared = PreparedExternalInputEvidence::Retention(PreparedInputRetention::new(
+        scopes,
+        "guarded-sparse-retention".into(),
+        now,
+        policy,
+        now,
+    )?);
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let InputMutationExecution::Committed {
+        value: PreparedExternalInputValue::Retention(ack),
+        receipt,
+    } = db.commit_prepared_external_input_evidence_with_task_budget(
+        &prepared,
+        &completion_budget_request(),
+        &completion_task_budget_request(),
+        &ledger,
+    )?
+    else {
+        panic!("original retention ACK expected")
+    };
+    assert!(ack.work_deltas.is_empty());
+    assert_eq!(ack.work_material_budget_views.len(), 1);
+    assert_eq!(ack.work_material_budget_views[0].0, scope());
+    let held = ack.work_material_budget_views[0].1.clone();
+    let weak = Arc::downgrade(&held[0]);
+    assert_eq!(ack.committed.removed_transcript_entries.len(), 1);
+    assert_eq!(
+        ack.committed.removed_transcript_entries[0].evidence_id,
+        "old-sparse-retention"
+    );
+    assert!(ledger.report()?.observed_bytes > 0);
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } = db.commit_prepared_external_input_evidence_with_task_budget(
+        &prepared,
+        &completion_budget_request(),
+        &completion_task_budget_request(),
+        &ledger,
+    )?
+    else {
+        panic!("exact retention replay expected")
+    };
+    assert_eq!(receipt, replay);
+    drop(ack);
+    assert!(weak.upgrade().is_some());
+    drop(held);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    assert!(db
+        .transaction(|tx| loader::current_coverage(tx, &scope()))?
+        .is_none());
+    Ok(())
+}

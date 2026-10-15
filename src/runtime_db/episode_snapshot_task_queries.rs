@@ -230,9 +230,9 @@ pub(super) fn capture(
             }
         }
         if let Some(import) = import {
-            for (source, digest) in import.task_query_message_imports() {
-                capture_message(connection, &id, agent, source, Some(digest))?;
-            }
+            import.visit_task_query_message_imports(connection, |source, digest| {
+                capture_message(connection, &id, agent, source, Some(digest))
+            })?;
         }
     }
     super::super::super::input_evidence_snapshot::capture_fixed_task_output_inputs_on(

@@ -197,6 +197,7 @@ mod semantic_selection;
 
 #[cfg(test)]
 pub(crate) use diagnostics::append_scheduling_advisories;
+pub(in crate::runtime) use diagnostics::scheduling_advisories_for_facts_observed;
 pub(crate) use diagnostics::{
     append_ambiguous_wait_advisory, append_prepared_scheduling_advisories,
     scheduling_advisories_for_facts,
@@ -622,6 +623,7 @@ pub(crate) fn scheduler_decision_events(
     ])
 }
 
+#[cfg(test)]
 pub(crate) fn append_scheduler_decision(
     storage: &AppStorage,
     agent_id: &str,
@@ -637,8 +639,16 @@ pub(crate) fn append_scheduler_decision(
     Ok(true)
 }
 
+#[cfg(test)]
 fn recent_scheduler_decision_is_duplicate(
     recent_events: &[AuditEvent],
+    legacy_event: &AuditEvent,
+) -> bool {
+    recent_scheduler_decision_is_duplicate_iter(recent_events.iter(), legacy_event)
+}
+
+pub(crate) fn recent_scheduler_decision_is_duplicate_iter<'a>(
+    recent_events: impl Iterator<Item = &'a AuditEvent>,
     legacy_event: &AuditEvent,
 ) -> bool {
     let signature = scheduler_decision_signature(&legacy_event.data);

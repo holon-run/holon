@@ -683,6 +683,22 @@ pub(crate) struct TaskBirthSession {
     cursor: u64,
     lease: TaskQueryLease,
 }
+impl TaskBirthSession {
+    /// Borrow existing guards before a joint caller allocates any selected field.
+    pub(in crate::runtime) fn validate_held_material(
+        &self,
+        runtime: &super::RuntimeHandle,
+        root: &Arc<super::mutation_owner::PostureObservation>,
+    ) -> Result<()> {
+        validate_captured_task_birth_lease(&self.lease.0, self.cursor, runtime, root)
+    }
+    pub(in crate::runtime) fn cursor(&self) -> u64 {
+        self.cursor
+    }
+    pub(in crate::runtime) fn material_estimate(&self) -> (u64, usize) {
+        self.lease.material_estimate()
+    }
+}
 impl std::fmt::Debug for TaskBirthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskBirthSession")
@@ -690,6 +706,242 @@ impl std::fmt::Debug for TaskBirthSession {
             .finish()
     }
 }
+
+fn validate_captured_task_birth_lease(
+    lease: &Arc<QueryLeaseInner>,
+    cursor: u64,
+    runtime: &super::RuntimeHandle,
+    root: &Arc<super::mutation_owner::PostureObservation>,
+) -> Result<()> {
+    runtime.inner.mutation_owner.input_queries()?;
+    let tasks = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
+    let scope = tasks.scope();
+    let ledger = &runtime.inner.input_evidence_budget;
+    anyhow::ensure!(
+        root.state.id == runtime.inner.mutation_owner.agent_id()
+            && scope.agent_id == root.state.id
+            && scope.identity_incarnation == root.token.identity_incarnation
+            && root.token.identity_incarnation == runtime.inner.identity_incarnation
+            && root.token.owner_epoch == runtime.inner.mutation_owner.owner_epoch()
+            && tasks.shares_budget(ledger),
+        "Task birth held scope or ledger differs"
+    );
+    anyhow::ensure!(
+        lease.scope == *scope
+            && lease.owner_epoch == root.token.owner_epoch
+            && Weak::ptr_eq(
+                &lease.registry,
+                &Arc::downgrade(&runtime.inner.task_queries.0)
+            ),
+        "Task query lease belongs to another runtime scope or owner"
+    );
+    anyhow::ensure!(
+        lease.selection.birth_after == Some(cursor),
+        TaskReadError::IncompleteQuery
+    );
+    lease
+        ._budget
+        .validate_owned_material_binding(scope, ledger, lease.material.0)?;
+    // Task's actual slot deliberately shares this same guard. Validate it,
+    // without adding the allocation to the prior a second time.
+    let slots = runtime
+        .inner
+        .task_queries
+        .0
+        .slots
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Task query registry poisoned"))?;
+    let slot = slots
+        .get(&lease.id)
+        .context("Task birth original slot absent")?;
+    anyhow::ensure!(
+        Weak::ptr_eq(&slot.lease, &Arc::downgrade(lease))
+            && Arc::ptr_eq(&slot._budget, &lease._budget),
+        "Task birth original slot differs"
+    );
+    slot._budget
+        .validate_owned_material_binding(scope, ledger, lease.material.0)?;
+    Ok(())
+}
+
+/// The exact lease and one selected capture phase, never a Root back edge.
+pub(crate) struct TaskBirthCaptureMaterial {
+    material: (u64, usize),
+    _lease: Arc<QueryLeaseInner>,
+}
+
+#[cfg(test)]
+mod held_material_tests {
+    use super::*;
+    use crate::runtime::tests::support::LifecycleHarness;
+
+    #[tokio::test]
+    async fn captured_task_material_validates_original_slot_and_selected_pins_without_allocation(
+    ) -> Result<()> {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime
+            .quiesce_context_resource_observer_task_for_test()
+            .await?;
+        let (_, session) = runtime.begin_task_birth_session().await?;
+        let at = runtime.now();
+        runtime
+            .persist_task_transition(
+                &crate::types::TaskRecord {
+                    id: "actual-captured-task-loan".into(),
+                    agent_id: runtime.instance_agent_id().into(),
+                    kind: crate::types::TaskKind::CommandTask,
+                    status: crate::types::TaskStatus::Queued,
+                    created_at: at,
+                    updated_at: at,
+                    parent_message_id: None,
+                    work_item_id: None,
+                    summary: None,
+                    detail: None,
+                    recovery: None,
+                },
+                "task_queued",
+            )
+            .await?;
+        let root = runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("actual Task Root absent")?;
+        let ledger = &runtime.inner.input_evidence_budget;
+        let before = ledger.report()?.observed_bytes;
+        let (selected, material) = runtime.capture_task_birth_session_from_snapshot_with_prior(
+            &session,
+            &root,
+            (64 * 1024 * 1024, 65536),
+            (0, 0),
+        )?;
+        assert!(selected
+            .records
+            .iter()
+            .any(|record| record.locator.key.id == "actual-captured-task-loan"));
+        let strong = Arc::strong_count(&root);
+        let held = ledger.report()?.observed_bytes;
+        runtime.runtime_db().connection()?.execute_batch(
+            "ALTER TABLE tasks RENAME TO captured_task_forbidden_tasks;
+             ALTER TABLE agent_states RENAME TO captured_task_forbidden_states;",
+        )?;
+        material.validate_material_binding(runtime, &root, &selected)?;
+        assert_eq!(Arc::strong_count(&root), strong);
+        assert_eq!(ledger.report()?.observed_bytes, held);
+        let foreign = InputEvidenceBudgetLedger::new(Default::default())?;
+        let guard = foreign.register_owned_bytes(
+            &selected.scope,
+            InputMemoryCategory::Pins,
+            OwnedBytesEstimate {
+                payload_bytes: session.material_estimate().0,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        let original = {
+            let mut slots = runtime.inner.task_queries.0.slots.lock().unwrap();
+            std::mem::replace(
+                &mut slots.get_mut(&session.lease.0.id).unwrap()._budget,
+                guard,
+            )
+        };
+        assert!(material
+            .validate_material_binding(runtime, &root, &selected)
+            .is_err());
+        assert_eq!(ledger.report()?.observed_bytes, held);
+        let foreign_guard = {
+            let mut slots = runtime.inner.task_queries.0.slots.lock().unwrap();
+            std::mem::replace(
+                &mut slots.get_mut(&session.lease.0.id).unwrap()._budget,
+                original,
+            )
+        };
+        drop(foreign_guard);
+        assert_eq!(foreign.report()?.observed_bytes, 0);
+        material.validate_material_binding(runtime, &root, &selected)?;
+        drop((selected, material));
+        assert_eq!(ledger.report()?.observed_bytes, before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_held_validation_is_pure_and_rejects_a_foreign_actual_slot() -> Result<()> {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let _pause = runtime.pause_resource_observer_for_test().await;
+        let (_, session) = runtime.begin_task_birth_session().await?;
+        let root = runtime.inner.mutation_owner.capture()?.unwrap();
+        let ledger = &runtime.inner.input_evidence_budget;
+        let before = ledger.report()?.observed_bytes;
+        let strong = Arc::strong_count(&root);
+        runtime.runtime_db().connection()?.execute_batch(
+            "ALTER TABLE tasks RENAME TO held_task_forbidden_tasks;
+             ALTER TABLE agent_states RENAME TO held_task_forbidden_states;",
+        )?;
+        session.validate_held_material(runtime, &root)?;
+        assert_eq!(Arc::strong_count(&root), strong);
+        assert_eq!(ledger.report()?.observed_bytes, before);
+        let foreign = InputEvidenceBudgetLedger::new(Default::default())?;
+        let actual = foreign.register_owned_bytes(
+            root.tasks.as_ref().unwrap().scope(),
+            InputMemoryCategory::Pins,
+            OwnedBytesEstimate {
+                payload_bytes: session.material_estimate().0,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        // A private adversarial slot, restored before dropping the real lease.
+        // It never changes a publication or grants another Task body.
+        let original = {
+            let mut slots = runtime.inner.task_queries.0.slots.lock().unwrap();
+            std::mem::replace(
+                &mut slots.get_mut(&session.lease.0.id).unwrap()._budget,
+                actual,
+            )
+        };
+        assert!(session.validate_held_material(runtime, &root).is_err());
+        assert_eq!(ledger.report()?.observed_bytes, before);
+        let actual = {
+            let mut slots = runtime.inner.task_queries.0.slots.lock().unwrap();
+            std::mem::replace(
+                &mut slots.get_mut(&session.lease.0.id).unwrap()._budget,
+                original,
+            )
+        };
+        drop(actual);
+        assert_eq!(foreign.report()?.observed_bytes, 0);
+        session.validate_held_material(runtime, &root)?;
+        Ok(())
+    }
+}
+impl TaskBirthCaptureMaterial {
+    /// Borrow original lease/slot and selected body guards before using its cost.
+    pub(in crate::runtime) fn validate_material_binding(
+        &self,
+        runtime: &super::RuntimeHandle,
+        root: &Arc<super::mutation_owner::PostureObservation>,
+        selected: &super::resident_task::CapturedTasks,
+    ) -> Result<()> {
+        let cursor = self
+            ._lease
+            .selection
+            .birth_after
+            .ok_or(TaskReadError::IncompleteQuery)?;
+        validate_captured_task_birth_lease(&self._lease, cursor, runtime, root)?;
+        let domain = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
+        anyhow::ensure!(
+            selected.revision == domain.coverage().revision
+                && self.material.0 >= self._lease.material.0
+                && self.material.1 >= self._lease.material.1,
+            "captured Task material or publication differs"
+        );
+        domain.validate_scheduler_body_loan(selected, &runtime.inner.input_evidence_budget)
+    }
+    pub(crate) fn material_estimate(&self) -> Result<(u64, usize)> {
+        Ok(self.material)
+    }
+}
+
 pub(crate) struct TaskQueryOwnedRecords {
     _capture: super::resident_task::CapturedTasks,
     _owned: Arc<BudgetViewGuard>,
@@ -704,6 +956,40 @@ impl super::RuntimeHandle {
         let root = reservation
             .capture_ready_snapshot()?
             .context("Task birth session root is unpublished")?;
+        let session = self.register_task_birth_session_from_snapshot(&reservation, &root)?;
+        Ok((root.state.clone(), session))
+    }
+    /// The unified report actor registers all domains under this same owner and
+    /// exact publication. A stale caller capture cannot move its baseline back.
+    pub(in crate::runtime) fn register_task_birth_session_from_snapshot(
+        &self,
+        reservation: &super::mutation_owner::MutationReservation,
+        root: &Arc<super::mutation_owner::PostureObservation>,
+    ) -> Result<TaskBirthSession> {
+        self.register_task_birth_session_from_snapshot_with_prior(
+            reservation,
+            root,
+            (usize::MAX, usize::MAX),
+            (0, 0),
+        )
+    }
+    pub(in crate::runtime) fn register_task_birth_session_from_snapshot_with_prior(
+        &self,
+        reservation: &super::mutation_owner::MutationReservation,
+        root: &Arc<super::mutation_owner::PostureObservation>,
+        limits: (usize, usize),
+        prior: (u64, usize),
+    ) -> Result<TaskBirthSession> {
+        reservation.validate_owner(&self.inner.mutation_owner)?;
+        let current = reservation
+            .capture_ready_snapshot()?
+            .context("Task birth session root is unpublished")?;
+        anyhow::ensure!(
+            Arc::ptr_eq(&current, root)
+                && reservation.agent_id() == self.inner.mutation_owner.agent_id()
+                && reservation.identity_incarnation() == self.inner.identity_incarnation,
+            "Task birth session captured publication differs"
+        );
         let tasks = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
         anyhow::ensure!(
             root.state.id == self.inner.mutation_owner.agent_id()
@@ -718,11 +1004,11 @@ impl super::RuntimeHandle {
             .query
             .birth_cursor
             .ok_or(TaskReadError::IncompleteQuery)?;
-        let limits = self.inner.input_evidence_budget.limits();
-        let byte_limit = limits
-            .history_per_agent_bytes
-            .checked_add(limits.pending_per_agent_bytes)
-            .context("Task birth session limits overflow")?;
+        let remaining = super::run_birth_sessions::remaining_material(
+            &self.inner.input_evidence_budget,
+            limits,
+            prior,
+        )?;
         let lease = self.inner.task_queries.register(
             tasks.scope(),
             root.token.owner_epoch,
@@ -731,10 +1017,10 @@ impl super::RuntimeHandle {
                 ..Default::default()
             },
             &self.inner.input_evidence_budget,
-            usize::try_from(limits.record_limit)?,
-            usize::try_from(byte_limit)?,
+            remaining.1,
+            remaining.0,
         )?;
-        Ok((root.state.clone(), TaskBirthSession { cursor, lease }))
+        Ok(TaskBirthSession { cursor, lease })
     }
     pub(crate) fn capture_task_birth_session(
         &self,
@@ -745,20 +1031,84 @@ impl super::RuntimeHandle {
             .mutation_owner
             .capture()?
             .context("Task birth session root is unpublished")?;
-        let tasks = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
-        anyhow::ensure!(
-            root.state.id == self.inner.mutation_owner.agent_id()
-                && tasks.scope().agent_id == root.state.id
-                && tasks.scope().identity_incarnation == root.token.identity_incarnation
-                && root.token.identity_incarnation == self.inner.identity_incarnation,
-            "Task birth session scope differs"
-        );
-        self.inner.task_queries.validate_lease(
-            &session.lease,
-            tasks.scope(),
-            root.token.owner_epoch,
+        self.capture_task_birth_session_from_snapshot(session, &root)
+    }
+    /// A coherent report read captures its owner once, then selects every domain
+    /// from that immutable publication. Returned material retains no root.
+    pub(in crate::runtime) fn capture_task_birth_session_from_snapshot(
+        &self,
+        session: &TaskBirthSession,
+        root: &Arc<super::mutation_owner::PostureObservation>,
+    ) -> Result<super::resident_task::CapturedTasks> {
+        let limits = self.inner.input_evidence_budget.limits();
+        let bytes = usize::try_from(
+            limits
+                .history_per_agent_bytes
+                .checked_add(limits.pending_per_agent_bytes)
+                .context("Task birth capture limits overflow")?,
         )?;
-        tasks.capture_query(session.lease.selection())
+        self.capture_task_birth_session_from_snapshot_with_prior(
+            session,
+            root,
+            (bytes, usize::try_from(limits.record_limit)?),
+            (0, 0),
+        )
+        .map(|(selected, _)| selected)
+    }
+    pub(in crate::runtime) fn capture_task_birth_session_from_snapshot_with_prior(
+        &self,
+        session: &TaskBirthSession,
+        root: &Arc<super::mutation_owner::PostureObservation>,
+        limits: (usize, usize),
+        prior: (u64, usize),
+    ) -> Result<(
+        super::resident_task::CapturedTasks,
+        TaskBirthCaptureMaterial,
+    )> {
+        session.validate_held_material(self, root)?;
+        let tasks = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
+        let lease = session.lease.material_estimate();
+        let actual_limits = self.inner.input_evidence_budget.limits();
+        let actual_bytes = usize::try_from(
+            actual_limits
+                .history_per_agent_bytes
+                .checked_add(actual_limits.pending_per_agent_bytes)
+                .context("Task birth actual limits overflow")?,
+        )?;
+        let limits = (
+            limits.0.min(actual_bytes).min(64 * 1024 * 1024),
+            limits
+                .1
+                .min(usize::try_from(actual_limits.record_limit)?)
+                .min(65536),
+        );
+        let combined = (
+            prior
+                .0
+                .checked_add(lease.0)
+                .context("Task birth capture prior bytes overflow")?,
+            prior
+                .1
+                .checked_add(lease.1)
+                .context("Task birth capture prior nodes overflow")?,
+        );
+        let (selected, cost) =
+            tasks.capture_query_with_prior(session.lease.selection(), limits, combined)?;
+        let material = (
+            cost.0
+                .checked_add(lease.0)
+                .context("Task birth selected bytes overflow")?,
+            cost.1
+                .checked_add(lease.1)
+                .context("Task birth selected nodes overflow")?,
+        );
+        Ok((
+            selected,
+            TaskBirthCaptureMaterial {
+                material,
+                _lease: session.lease.0.clone(),
+            },
+        ))
     }
     pub(crate) fn task_birth_session_ids(
         &self,
@@ -956,6 +1306,67 @@ mod birth_session_tests {
         Ok(())
     }
     #[tokio::test]
+    async fn held_report_task_registration_uses_exact_root_and_capture_is_pure() -> Result<()> {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let reservation = runtime.inner.mutation_owner.reserve().await?;
+        let root = reservation
+            .capture_ready_snapshot()?
+            .context("Root missing")?;
+        let first = runtime.register_task_birth_session_from_snapshot(&reservation, &root)?;
+        let same = runtime.register_task_birth_session_from_snapshot(&reservation, &root)?;
+        assert_eq!(first.cursor, same.cursor);
+        let other = LifecycleHarness::new();
+        let other_reservation = other.runtime().inner.mutation_owner.reserve().await?;
+        let other_root = other_reservation
+            .capture_ready_snapshot()?
+            .context("Other root missing")?;
+        assert!(runtime
+            .register_task_birth_session_from_snapshot(&other_reservation, &other_root)
+            .is_err());
+        assert!(runtime
+            .capture_task_birth_session_from_snapshot(&first, &other_root)
+            .is_err());
+        drop(other_reservation);
+        assert!(runtime
+            .capture_task_birth_session_from_snapshot(&first, &root)?
+            .born_task_ids_after(first.cursor)?
+            .next()
+            .is_none());
+        drop(reservation);
+        runtime
+            .persist_task_transition(&task("held-report-new-task"), "task_queued")
+            .await?;
+        let reservation = runtime.inner.mutation_owner.reserve().await?;
+        let current = reservation
+            .capture_ready_snapshot()?
+            .context("Current root missing")?;
+        let error = runtime
+            .register_task_birth_session_from_snapshot(&reservation, &root)
+            .err()
+            .context("stale baseline must reject")?;
+        assert!(error.to_string().contains("captured publication differs"));
+        runtime.runtime_db().connection()?.execute_batch(
+            "ALTER TABLE tasks RENAME TO held_report_tasks_forbidden;
+             ALTER TABLE task_result_settlements RENAME TO held_report_results_forbidden;
+             ALTER TABLE agent_states RENAME TO held_report_states_forbidden;
+             ALTER TABLE agent_identities RENAME TO held_report_identities_forbidden;",
+        )?;
+        let selected = runtime.capture_task_birth_session_from_snapshot(&first, &current)?;
+        assert_eq!(
+            selected
+                .born_task_ids_after(first.cursor)?
+                .collect::<Vec<_>>(),
+            vec!["held-report-new-task"]
+        );
+        assert!(Arc::ptr_eq(
+            &current,
+            &reservation.capture_ready_snapshot()?.unwrap()
+        ));
+        drop((selected, same, first, reservation));
+        Ok(())
+    }
+    #[tokio::test]
     async fn birth_session_cannot_capture_a_different_runtime_with_the_same_scoped_identity(
     ) -> Result<()> {
         let first = LifecycleHarness::new();
@@ -1044,7 +1455,8 @@ mod birth_session_tests {
             }
             runtime
                 .persist_task_transition(&row, "task_completed")
-                .await?;
+                .await
+                .with_context(|| format!("actual completed reply owner Task seed {index}"))?;
         }
         let expected = runtime
             .runtime_db()
@@ -1055,10 +1467,12 @@ mod birth_session_tests {
             .find(|id| id == &first.id || id == &second.id);
         assert_eq!(expected.as_deref(), Some(second.id.as_str()));
         let mut owner = runtime.begin_mutation().await?;
-        owner.prepare_owner_task_query(&role).await?;
+        owner.prepare_owner_task_query(&role).await
+            .context("actual completed reply owner Task named preparation")?;
         owner
             .prepare_owner_work_request(&super::super::work_reads::live_work_request())
-            .await?;
+            .await
+            .context("actual completed reply owner Work named preparation")?;
         let (actual, _actual_budget) = owner.capture_reply_work_owner(&role, "reply-evidence")?;
         assert_eq!(actual, expected);
         assert!(owner
@@ -1091,3 +1505,180 @@ mod recovery;
 #[cfg(test)]
 #[path = "task_query_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+mod birth_capture_joint_tests {
+    use super::*;
+    use crate::runtime::tests::support::LifecycleHarness;
+    use crate::types::{TaskKind, TaskRecord, TaskStatus};
+    fn task(id: &str, detail: Option<serde_json::Value>) -> TaskRecord {
+        let at = chrono::Utc::now();
+        TaskRecord {
+            id: id.into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Queued,
+            created_at: at,
+            updated_at: at,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail,
+            recovery: None,
+        }
+    }
+    #[tokio::test]
+    async fn birth_task_capture_admits_held_lease_and_actual_caller_before_any_selected_clone(
+    ) -> Result<()> {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime
+            .persist_task_transition(
+                &task(
+                    "before-task-birth",
+                    Some(serde_json::json!({"large":"x".repeat(256 * 1024)})),
+                ),
+                "task_queued",
+            )
+            .await?;
+        let (_, session) = runtime.begin_task_birth_session().await?;
+        runtime
+            .persist_task_transition(&task("after-task-birth", None), "task_queued")
+            .await?;
+        // Hold the refresh lock only after foreground writes have finished.
+        let _pause = runtime.pause_resource_observer_for_test().await;
+        let root = runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("published root missing")?;
+        let ledger = &runtime.inner.input_evidence_budget;
+        let (selected, hold) = runtime.capture_task_birth_session_from_snapshot_with_prior(
+            &session,
+            &root,
+            (64 * 1024 * 1024, 65536),
+            (0, 0),
+        )?;
+        assert_eq!(selected.records.len(), 1);
+        assert_eq!(selected.records[0].locator.key.id, "after-task-birth");
+        let actual = hold.material_estimate()?;
+        let original_arc = selected.records[0].clone();
+        assert!(
+            actual.0 < 256 * 1024,
+            "unselected pre-birth body leaked into this phase"
+        );
+        drop((selected, hold));
+        let prior = (256 * 1024u64, 32usize);
+        let guard = ledger.register_owned_bytes(
+            &session.lease.0.scope,
+            InputMemoryCategory::Pins,
+            OwnedBytesEstimate {
+                payload_bytes: prior.0,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        let held = vec![7u8; prior.0 as usize];
+        let baseline = ledger.report()?.observed_bytes;
+        let total = (usize::try_from(actual.0 + prior.0)?, actual.1 + prior.1);
+        runtime.runtime_db().connection()?.execute_batch(
+            "ALTER TABLE tasks RENAME TO birth_joint_forbidden_tasks;
+             ALTER TABLE task_result_settlements RENAME TO birth_joint_forbidden_results;
+             ALTER TABLE agent_states RENAME TO birth_joint_forbidden_states;
+             ALTER TABLE agent_identities RENAME TO birth_joint_forbidden_identities;",
+        )?;
+        for limits in [(total.0 - 1, total.1), (total.0, total.1 - 1)] {
+            let error = runtime
+                .capture_task_birth_session_from_snapshot_with_prior(&session, &root, limits, prior)
+                .err()
+                .context("joint Task capture admitted too much material")?;
+            assert!(
+                matches!(
+                    error.downcast_ref::<TaskReadError>(),
+                    Some(TaskReadError::ResourceExhausted(_))
+                ),
+                "{error:#}"
+            );
+            assert_eq!(ledger.report()?.observed_bytes, baseline);
+        }
+        let (selected, material) = runtime
+            .capture_task_birth_session_from_snapshot_with_prior(&session, &root, total, prior)?;
+        assert_eq!(
+            material.material_estimate()?,
+            actual,
+            "caller prior must not enter returned own material"
+        );
+        assert!(Arc::ptr_eq(&selected.records[0], &original_arc));
+        let weak = Arc::downgrade(&session.lease.0);
+        drop(session);
+        assert!(
+            weak.upgrade().is_some(),
+            "capture material dropped the actual lease before wire"
+        );
+        drop((selected, material));
+        assert!(weak.upgrade().is_none());
+        drop((guard, held));
+        Ok(())
+    }
+    #[tokio::test]
+    async fn birth_task_capture_rejects_foreign_session_and_ledger_without_a_new_guard(
+    ) -> Result<()> {
+        let first = LifecycleHarness::new();
+        let other = LifecycleHarness::new();
+        let _pause_first = first.runtime().pause_resource_observer_for_test().await;
+        let _pause_other = other.runtime().pause_resource_observer_for_test().await;
+        let (_, session) = first.runtime().begin_task_birth_session().await?;
+        let root = first.runtime().inner.mutation_owner.capture()?.unwrap();
+        let foreign_root = other.runtime().inner.mutation_owner.capture()?.unwrap();
+        let baseline = first
+            .runtime()
+            .inner
+            .input_evidence_budget
+            .report()?
+            .observed_bytes;
+        assert!(first
+            .runtime()
+            .capture_task_birth_session_from_snapshot_with_prior(
+                &session,
+                &foreign_root,
+                (64 * 1024 * 1024, 65536),
+                (0, 0)
+            )
+            .is_err());
+        let foreign = InputEvidenceBudgetLedger::new(Default::default())?;
+        let forged = TaskBirthSession {
+            cursor: session.cursor,
+            lease: first.runtime().inner.task_queries.register(
+                &session.lease.0.scope,
+                root.token.owner_epoch,
+                TaskQuerySpec {
+                    birth_after: Some(session.cursor),
+                    ..Default::default()
+                },
+                &foreign,
+                65536,
+                64 * 1024 * 1024,
+            )?,
+        };
+        assert!(first
+            .runtime()
+            .capture_task_birth_session_from_snapshot_with_prior(
+                &forged,
+                &root,
+                (64 * 1024 * 1024, 65536),
+                (0, 0)
+            )
+            .is_err());
+        assert_eq!(
+            first
+                .runtime()
+                .inner
+                .input_evidence_budget
+                .report()?
+                .observed_bytes,
+            baseline
+        );
+        drop(forged);
+        assert_eq!(foreign.report()?.observed_bytes, 0);
+        Ok(())
+    }
+}

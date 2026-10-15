@@ -433,7 +433,7 @@ fn validate_active_builder(connection: &Connection, state: Option<&AgentState>) 
     Ok(())
 }
 
-fn load_continuity_binding(
+pub(super) fn load_continuity_binding(
     connection: &Connection,
     scope: &EpisodeMemoryLoadScope,
 ) -> Result<EpisodeContinuityBinding> {
@@ -899,6 +899,7 @@ pub(super) fn seal_imported_episode_continuity_tx(
             Some(&work_import),
             frozen_roots.task_domain_checkpoint.as_ref(),
         )?;
+        work_import.finish(tx)?;
         roots.scheduling_domain_checkpoint =
             Some(super::scheduling_snapshot::capture_fixed_checkpoint_on(
                 tx,
@@ -968,6 +969,11 @@ pub(super) fn seal_imported_episode_continuity_tx(
             tx,
             &seed.id,
             "first_import",
+        )?;
+        super::current_read_snapshot::capture_current_read_import_if_ready_tx(
+            tx,
+            &seed.id,
+            &seed.agent_id,
         )?;
     }
     Ok(())
@@ -1111,6 +1117,9 @@ fn insert_seed_with_candidates_tx(
             tx,
             &seed_id,
             "legacy_import",
+        )?;
+        super::current_read_snapshot::capture_current_read_legacy_seed_if_ready_tx(
+            tx, &seed_id, agent_id,
         )?;
     }
     Ok(ContinuitySeed {

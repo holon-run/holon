@@ -91,9 +91,41 @@ pub(crate) fn scheduling_advisories_for_facts(
     work_queue: &WorkQueueReadModel,
     wait_conditions: &[WaitConditionRecord],
 ) -> Vec<SchedulingAdvisory> {
+    scheduling_advisories_for_facts_observed(
+        agent,
+        projection,
+        posture,
+        work_queue,
+        wait_conditions,
+        &mut None,
+    )
+    .expect("unobserved scheduling advisories cannot fail")
+}
+pub(in crate::runtime) fn scheduling_advisories_for_facts_observed(
+    agent: &AgentState,
+    projection: &SchedulerProjection,
+    posture: &AgentPostureProjection,
+    work_queue: &WorkQueueReadModel,
+    wait_conditions: &[WaitConditionRecord],
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<Vec<SchedulingAdvisory>> {
+    use crate::work_item_scheduling::{
+        observe_scheduling_clone as observe, observe_scheduling_debug as debug,
+        observe_scheduling_slots as slots,
+    };
     let mut diagnostics = Vec::new();
 
     if posture.posture == AgentSchedulingPosture::Idle {
+        // Reactivation selects at most the current and the existing top-five
+        // runnable IDs. No unselected Work body is included in this bound.
+        observe(
+            &projection.current_work_item.as_ref().map(|item| &item.id),
+            observer,
+        )?;
+        for item in &projection.queued_runnable_work_items {
+            observe(&item.id, observer)?;
+        }
+        slots(32, observer)?;
         if let Some(signal) = projection.work_reactivation_signal() {
             diagnostics.push(
                 SchedulingAdvisory::warning(
@@ -121,6 +153,9 @@ pub(crate) fn scheduling_advisories_for_facts(
     }) {
         match condition.external_recoverability() {
             Some(ExternalWaitRecoverability::Weak) => {
+                observe(&(&condition.id, &condition.work_item_id), observer)?;
+                debug(&condition.wake_sources, observer)?;
+                slots(32, observer)?;
                 diagnostics.push(
                     SchedulingAdvisory::warning(
                         "external_wait_has_weak_recoverability",
@@ -133,6 +168,17 @@ pub(crate) fn scheduling_advisories_for_facts(
                 );
             }
             Some(ExternalWaitRecoverability::ExplicitNoFallback) => {
+                observe(
+                    &(
+                        &condition.id,
+                        &condition.work_item_id,
+                        condition.no_fallback_reason_ref(),
+                    ),
+                    observer,
+                )?;
+                debug(&condition.wake_sources, observer)?;
+                observe(&condition.no_fallback_reason_ref(), observer)?;
+                slots(32, observer)?;
                 let mut diagnostic = SchedulingAdvisory::warning(
                     "external_wait_has_no_fallback",
                     "active external wait explicitly has no fallback recovery path",
@@ -158,6 +204,8 @@ pub(crate) fn scheduling_advisories_for_facts(
             && !item.has_active_waits
             && !item.has_active_task_waits
     }) {
+        observe(&item.work_item.id, observer)?;
+        slots(32, observer)?;
         diagnostics.push(
             SchedulingAdvisory::warning(
                 "blocked_work_item_without_recheck_or_wait",
@@ -171,7 +219,7 @@ pub(crate) fn scheduling_advisories_for_facts(
         );
     }
 
-    diagnostics
+    Ok(diagnostics)
 }
 
 pub(crate) fn scheduling_advisory_event(diagnostic: &SchedulingAdvisory) -> AuditEvent {

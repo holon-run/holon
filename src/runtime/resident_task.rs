@@ -19,6 +19,11 @@ use std::{
     sync::Arc,
 };
 
+#[path = "task_capture_material.rs"]
+mod capture_material;
+pub(crate) use capture_material::TaskCaptureMaterial;
+use capture_material::TaskCapturePhase;
+
 #[path = "resident_task_stop.rs"]
 mod stop;
 use crate::runtime_db::task_stop::TaskStopRecord;
@@ -171,7 +176,14 @@ impl QualifiedTaskFact {
         ensure!(
             self.locator.scope == *scope
                 && self.fact.agent_id() == scope.agent_id
-                && self.locator.key == self.fact.key(),
+                && match &self.fact {
+                    CanonicalTaskFact::Task(task) =>
+                        self.locator.key.family == TaskFamily::Task
+                            && self.locator.key.id == task.id,
+                    CanonicalTaskFact::ResultSettlement(result) =>
+                        self.locator.key.family == TaskFamily::ResultSettlement
+                            && self.locator.key.id == result.result_identity,
+                },
             "Task fact scope/key mismatch"
         );
         ensure!(
@@ -181,7 +193,7 @@ impl QualifiedTaskFact {
             "Task fact locator invalid"
         );
         ensure!(
-            self.resident_bytes >= serde_json::to_vec(&self.fact)?.len(),
+            u64::try_from(self.resident_bytes)? >= serialized_bytes(&self.fact)?,
             "Task fact body estimate incomplete"
         );
         Ok(())
@@ -266,8 +278,34 @@ impl TaskCoverage {
     pub(crate) fn owned_metadata_record_count(&self) -> Result<usize> {
         coverage_record_count(self)
     }
-    fn clone_without_stops(&self) -> Self {
-        Self {
+    fn clone_without_stops(&self, phase: &mut TaskCapturePhase<'_>) -> Result<Self> {
+        // These are exactly the independently copied fields below, excluding
+        // the unselected Stop namespace. Observation streaming owns no Vec.
+        phase.json(
+            &(
+                (
+                    &self.output,
+                    &self.status,
+                    &self.query,
+                    &self.running,
+                    &self.active_task_ids,
+                    &self.unsettled_result_ids,
+                    &self.task_metadata,
+                    &self.result_metadata,
+                ),
+                (
+                    &self.result_dependencies,
+                    &self.task_result_ids,
+                    &self.activation_result_ids,
+                    &self.reply_result_ids,
+                    &self.required_keys,
+                    observations::Borrowed(&self.observations),
+                    &self.terminal,
+                ),
+            ),
+            1,
+        )?;
+        Ok(Self {
             revision: self.revision,
             stop: TaskStopCoverage::default(),
             output: self.output.clone(),
@@ -287,26 +325,35 @@ impl TaskCoverage {
             required_keys: self.required_keys.clone(),
             observations: self.observations.clone(),
             terminal: self.terminal.clone(),
-        }
+        })
     }
     fn references(&self, record: &QualifiedTaskFact) -> Result<BTreeSet<TaskKey>> {
+        self.references_observed(record, &mut TaskCapturePhase::unobserved())
+    }
+    fn references_observed(
+        &self,
+        record: &QualifiedTaskFact,
+        phase: &mut TaskCapturePhase<'_>,
+    ) -> Result<BTreeSet<TaskKey>> {
         let result = match &record.fact {
             CanonicalTaskFact::Task(task) => {
-                let ids = self
-                    .task_result_ids
-                    .get(&task.id)
-                    .ok_or_else(|| TaskReadError::NeedsPreparation(record.locator.key.clone()))?;
-                return Ok(ids
-                    .iter()
-                    .map(|id| TaskKey::new(TaskFamily::ResultSettlement, id))
-                    .collect());
+                let Some(ids) = self.task_result_ids.get(&task.id) else {
+                    phase.key(record.locator.key.family, &record.locator.key.id, 1)?;
+                    return Err(TaskReadError::NeedsPreparation(record.locator.key.clone()).into());
+                };
+                let mut keys = BTreeSet::new();
+                for id in ids {
+                    phase.key(TaskFamily::ResultSettlement, id, 1)?;
+                    keys.insert(TaskKey::new(TaskFamily::ResultSettlement, id));
+                }
+                return Ok(keys);
             }
             CanonicalTaskFact::ResultSettlement(result) => result,
         };
-        let observed = self
-            .result_dependencies
-            .get(&result.result_identity)
-            .ok_or_else(|| TaskReadError::NeedsPreparation(record.locator.key.clone()))?;
+        let Some(observed) = self.result_dependencies.get(&result.result_identity) else {
+            phase.key(record.locator.key.family, &record.locator.key.id, 1)?;
+            return Err(TaskReadError::NeedsPreparation(record.locator.key.clone()).into());
+        };
         ensure!(
             observed.result == record.locator,
             "Result relation locator mismatch"
@@ -315,9 +362,14 @@ impl TaskCoverage {
             TaskResultDependencyRelation::QualifiedCurrent { task } => {
                 ensure!(
                     task.scope == record.locator.scope
-                        && task.key == TaskKey::new(TaskFamily::Task, &result.task_id),
+                        && phase.with_temporary_key(
+                            TaskFamily::Task,
+                            &result.task_id,
+                            |key| task.key == *key
+                        )?,
                     "Result relation Task scope/key mismatch"
                 );
+                phase.key(task.key.family, &task.key.id, 1)?;
                 Ok(BTreeSet::from([task.key.clone()]))
             }
             TaskResultDependencyRelation::Invalid {
@@ -333,7 +385,11 @@ impl TaskCoverage {
             }
         }
     }
-    fn roots(&self, request: &TaskCaptureRequest) -> Result<BTreeSet<TaskKey>> {
+    fn roots_observed(
+        &self,
+        request: &TaskCaptureRequest,
+        phase: &mut TaskCapturePhase<'_>,
+    ) -> Result<BTreeSet<TaskKey>> {
         ensure!(
             request.terminal_limit <= TASK_TERMINAL_WINDOW,
             "Task terminal window exceeds fixed maximum"
@@ -347,28 +403,24 @@ impl TaskCoverage {
         if request.terminal_limit > self.terminal.limit && !self.terminal.is_exhaustive {
             return Err(TaskReadError::WindowExpansion.into());
         }
+        phase.json(&request.required_keys, 1)?;
         let mut keys = request.required_keys.clone();
         if request.include_active {
-            keys.extend(
-                self.active_task_ids
-                    .iter()
-                    .map(|id| TaskKey::new(TaskFamily::Task, id)),
-            );
+            for id in &self.active_task_ids {
+                phase.key(TaskFamily::Task, id, 1)?;
+                keys.insert(TaskKey::new(TaskFamily::Task, id));
+            }
         }
         if request.include_unsettled {
-            keys.extend(
-                self.unsettled_result_ids
-                    .iter()
-                    .map(|id| TaskKey::new(TaskFamily::ResultSettlement, id)),
-            );
+            for id in &self.unsettled_result_ids {
+                phase.key(TaskFamily::ResultSettlement, id, 1)?;
+                keys.insert(TaskKey::new(TaskFamily::ResultSettlement, id));
+            }
         }
-        keys.extend(
-            self.terminal
-                .keys
-                .iter()
-                .take(request.terminal_limit)
-                .cloned(),
-        );
+        for key in self.terminal.keys.iter().take(request.terminal_limit) {
+            phase.key(key.family, &key.id, 1)?;
+            keys.insert(key.clone());
+        }
         Ok(keys)
     }
     fn resident_roots(&self) -> BTreeSet<TaskKey> {
@@ -535,16 +587,76 @@ impl ResidentTaskDomain {
         domain.trim_and_validate()?;
         Ok(domain)
     }
+    pub(in crate::runtime) fn acquisition_registration_count(&self) -> Result<usize> {
+        self.records
+            .len()
+            .checked_add(self.stop_records.len())
+            .context("mutation Task registration count overflow")
+    }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         &self.scope
     }
     pub(crate) fn coverage(&self) -> &TaskCoverage {
         &self.coverage
     }
+    pub(in crate::runtime) fn validate_capture_material_binding(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.shares_budget(ledger) && !self.budget_views.is_empty(),
+            "scheduler domain material ledger differs"
+        );
+        for guard in &self.budget_views {
+            guard.validate_owned_material_binding(&self.scope, ledger, 0)?;
+        }
+        Ok(())
+    }
+    /// A selected physical loan grants no additional Task namespace.
+    pub(in crate::runtime) fn validate_scheduler_body_loan(
+        &self,
+        loan: &CapturedTasks,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.scope == loan.scope
+                && self.shares_budget(ledger)
+                && !loan._budget_views.is_empty(),
+            "scheduler Task loan scope or ledger differs"
+        );
+        for guard in &loan._budget_views {
+            guard.validate_owned_material_binding(&self.scope, ledger, 0)?;
+        }
+        for record in &loan.records {
+            ensure!(
+                self.records
+                    .get(&record.locator.key)
+                    .is_some_and(|current| Arc::ptr_eq(current, record)),
+                "scheduler Task loan is not this publication allocation"
+            );
+        }
+        for record in &loan.stop_records {
+            ensure!(
+                self.stop_records
+                    .get(&record.effect_seq)
+                    .is_some_and(|current| Arc::ptr_eq(current, record)),
+                "scheduler Stop loan is not this publication allocation"
+            );
+        }
+        Ok(())
+    }
     /// Final publication needs every prepared body, independent of prompt selection.
+    /// The original SQL finalizer consumes these already validated allocations.
+    pub(crate) fn into_original_install_parts(self) -> (
+        TaskCoverage, BTreeMap<TaskKey, Arc<QualifiedTaskFact>>, BTreeMap<u64, Arc<TaskStopRecord>>,
+    ) {
+        (self.coverage, self.records, self.stop_records)
+    }
+    #[cfg(test)]
     pub(crate) fn selected_install_records(&self) -> Vec<Arc<QualifiedTaskFact>> {
         self.records.values().cloned().collect()
     }
+    #[cfg(test)]
     pub(crate) fn selected_install_stop_records(&self) -> Vec<Arc<TaskStopRecord>> {
         self.stop_records.values().cloned().collect()
     }
@@ -574,6 +686,12 @@ impl ResidentTaskDomain {
             .transpose()
             .map_err(Into::into)
     }
+    pub(in crate::runtime) fn shares_budget(&self, budget: &InputEvidenceBudgetLedger) -> bool {
+        self.budget
+            .as_ref()
+            .is_some_and(|actual| actual.same_ledger(budget))
+    }
+
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_views()?;
@@ -676,7 +794,15 @@ impl ResidentTaskDomain {
             )?,
         ])
     }
-    fn closure(&self, mut keys: BTreeSet<TaskKey>) -> Result<BTreeSet<TaskKey>> {
+    fn closure(&self, keys: BTreeSet<TaskKey>) -> Result<BTreeSet<TaskKey>> {
+        self.closure_observed(keys, &mut TaskCapturePhase::unobserved())
+    }
+    fn closure_observed(
+        &self,
+        mut keys: BTreeSet<TaskKey>,
+        phase: &mut TaskCapturePhase<'_>,
+    ) -> Result<BTreeSet<TaskKey>> {
+        phase.json(&keys, 1)?;
         let mut pending: Vec<_> = keys.iter().cloned().collect();
         while let Some(key) = pending.pop() {
             match self.coverage.observations.get(&key) {
@@ -684,11 +810,13 @@ impl ResidentTaskDomain {
                 Some(TaskAvailability::Present) => {}
                 None => return Err(TaskReadError::NeedsPreparation(key).into()),
             }
-            let fact = self
-                .records
-                .get(&key)
-                .ok_or_else(|| TaskReadError::NeedsPreparation(key.clone()))?;
-            for related in self.coverage.references(fact)? {
+            let Some(fact) = self.records.get(&key) else {
+                phase.key(key.family, &key.id, 1)?;
+                return Err(TaskReadError::NeedsPreparation(key.clone()).into());
+            };
+            phase.body(fact)?;
+            for related in self.coverage.references_observed(fact, phase)? {
+                phase.key(related.family, &related.id, 1)?;
                 if keys.insert(related.clone()) {
                     pending.push(related);
                 }
@@ -858,15 +986,40 @@ impl ResidentTaskDomain {
             true,
         )
     }
+    /// Caller limits are actual material bytes/native nodes, separate from
+    /// the domain's original logical selected/closure row bound.
+    pub(crate) fn capture_with_material(
+        &self,
+        request: &TaskCaptureRequest,
+        ledger: &InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+        prior: (u64, usize),
+        body_loan: Option<&CapturedTasks>,
+    ) -> Result<(CapturedTasks, TaskCaptureMaterial)> {
+        let mut phase = TaskCapturePhase::new(self, ledger, limits, prior, body_loan)?;
+        let captured = self.capture_observed(request, false, &mut phase)?;
+        // All roots, pending, relation sets and selected sequence locals have
+        // exited before their reservation transfers to the retained capture.
+        phase.finish(captured)
+    }
     fn capture_with_stops(
         &self,
         request: &TaskCaptureRequest,
         pending: bool,
     ) -> Result<CapturedTasks> {
+        self.capture_observed(request, pending, &mut TaskCapturePhase::unobserved())
+    }
+    fn capture_observed(
+        &self,
+        request: &TaskCaptureRequest,
+        pending: bool,
+        phase: &mut TaskCapturePhase<'_>,
+    ) -> Result<CapturedTasks> {
         // Observe the independently owned coverage before allocating its maps.
         let metadata_guard = self
             .budget
             .as_ref()
+            .filter(|_| !phase.is_observed())
             .map(|b| {
                 b.register_owned_bytes(
                     &self.scope,
@@ -882,12 +1035,30 @@ impl ResidentTaskDomain {
                 .map_err(anyhow::Error::from)
             })
             .transpose()?;
-        let selected = self.closure(self.coverage.roots(request)?)?;
+        let roots = self.coverage.roots_observed(request, phase)?;
+        let selected = self.closure_observed(roots, phase)?;
+        phase.slots(selected.len(), 1)?;
+        for key in &selected {
+            if let Some(record) = self.records.get(key) {
+                phase.body(record)?;
+            }
+        }
         let records: Vec<_> = selected
             .iter()
             .filter_map(|key| self.records.get(key).cloned())
             .collect();
-        let selected_stops = self.coverage.stop.selected_sequences(&selected, pending)?;
+        let selected_stops = self
+            .coverage
+            .stop
+            .selected_sequences_observed(&selected, pending, phase)?;
+        phase.slots(selected_stops.len(), 1)?;
+        for seq in &selected_stops {
+            let record = self
+                .stop_records
+                .get(seq)
+                .ok_or(TaskReadError::IncompleteStops)?;
+            phase.stop_body(record)?;
+        }
         let stop_records: Vec<_> = selected_stops
             .iter()
             .map(|seq| {
@@ -897,25 +1068,40 @@ impl ResidentTaskDomain {
                     .ok_or_else(|| anyhow::Error::from(TaskReadError::IncompleteStops))
             })
             .collect::<Result<_>>()?;
-        let mut coverage = self.coverage.clone_without_stops();
-        coverage.stop = TaskStopCoverage {
-            pending_complete: pending && self.coverage.stop.pending_complete,
-            pending_effect_seqs: self
-                .coverage
+        let mut coverage = self.coverage.clone_without_stops(phase)?;
+        phase.slots(
+            self.coverage
                 .stop
                 .pending_effect_seqs
                 .iter()
                 .filter(|seq| selected_stops.contains(seq))
-                .copied()
-                .collect(),
-            heads: self
-                .coverage
-                .stop
-                .heads
-                .iter()
-                .filter(|(id, _)| selected.contains(&TaskKey::new(TaskFamily::Task, *id)))
-                .map(|(id, head)| (id.clone(), head.clone()))
-                .collect(),
+                .count(),
+            1,
+        )?;
+        let pending_effect_seqs = self
+            .coverage
+            .stop
+            .pending_effect_seqs
+            .iter()
+            .filter(|seq| selected_stops.contains(seq))
+            .copied()
+            .collect();
+        let mut heads = BTreeMap::new();
+        for (id, head) in &self.coverage.stop.heads {
+            if phase.with_temporary_key(TaskFamily::Task, id, |key| selected.contains(key))? {
+                phase.json(&(id, head), 1)?;
+                heads.insert(id.clone(), head.clone());
+            }
+        }
+        for (seq, meta) in &self.coverage.stop.records {
+            if selected_stops.contains(seq) {
+                phase.json(&(seq, meta), 1)?;
+            }
+        }
+        coverage.stop = TaskStopCoverage {
+            pending_complete: pending && self.coverage.stop.pending_complete,
+            pending_effect_seqs,
+            heads,
             records: self
                 .coverage
                 .stop
@@ -925,27 +1111,28 @@ impl ResidentTaskDomain {
                 .map(|(seq, meta)| (*seq, meta.clone()))
                 .collect(),
         };
-        coverage
-            .output
-            .heads
-            .retain(|id, _| selected.contains(&TaskKey::new(TaskFamily::Task, id)));
-        coverage
-            .status
-            .heads
-            .retain(|id, _| selected.contains(&TaskKey::new(TaskFamily::Task, id)));
+        phase.retain_task_heads(&mut coverage.output.heads, &selected)?;
+        phase.retain_task_heads(&mut coverage.status.heads, &selected)?;
+        phase.json(&request.required_keys, 1)?;
         coverage.required_keys = request.required_keys.clone();
         coverage
             .observations
             .retain(|key, _| selected.contains(key));
-        coverage
-            .result_dependencies
-            .retain(|id, _| selected.contains(&TaskKey::new(TaskFamily::ResultSettlement, id)));
+        phase.retain_result_heads(&mut coverage.result_dependencies, &selected)?;
         coverage.terminal.keys.truncate(request.terminal_limit);
         // A narrower capture never turns a truncated namespace into exhaustive.
         coverage.terminal.is_exhaustive &=
             self.coverage.terminal.keys.len() <= request.terminal_limit;
         coverage.terminal.limit = request.terminal_limit;
-        let budget_views = match &self.budget {
+        phase.json(&self.scope, 4)?;
+        phase.slots(
+            records
+                .len()
+                .checked_add(stop_records.len())
+                .context("Task selected pin slots overflow")?,
+            3,
+        )?;
+        let mut budget_views = match &self.budget {
             None => Vec::new(),
             Some(b) => vec![
                 b.register_task_view(&self.scope, InputMemoryCategory::Pins, records.iter())?,
@@ -954,9 +1141,9 @@ impl ResidentTaskDomain {
                     InputMemoryCategory::Pins,
                     stop_records.iter(),
                 )?,
-                metadata_guard.expect("budget metadata guard observed"),
             ],
         };
+        budget_views.extend(metadata_guard);
         Ok(CapturedTasks {
             scope: self.scope.clone(),
             revision: self.coverage.revision,
@@ -1316,11 +1503,25 @@ fn validate_coverage(
 }
 mod observations {
     use super::*;
+    pub(super) struct Borrowed<'a>(pub(super) &'a BTreeMap<TaskKey, TaskAvailability>);
+    impl Serialize for Borrowed<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            serialize(self.0, serializer)
+        }
+    }
     pub fn serialize<S: serde::Serializer>(
         map: &BTreeMap<TaskKey, TaskAvailability>,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        map.iter().collect::<Vec<_>>().serialize(serializer)
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(map.len()))?;
+        for pair in map {
+            seq.serialize_element(&pair)?;
+        }
+        seq.end()
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(
         deserializer: D,

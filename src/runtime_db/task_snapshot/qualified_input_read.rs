@@ -33,12 +33,17 @@ pub(super) fn prepare_task_input_read_base_tx<'a, 'tx, 'conn>(
     )?;
     let identity_bytes: usize = tx.query_row("SELECT COALESCE((SELECT length(CAST(agent_id AS BLOB))+length(CAST(status AS BLOB))+length(CAST(payload_json AS BLOB)) FROM agent_identities WHERE agent_id=?1),0)", [&scope.agent_id], |row| row.get(0))?;
     material.charge_record_address(0, identity_bytes)?;
+    let identity_nodes: usize = tx.query_row(
+        "SELECT COUNT(*)+COUNT(CASE WHEN typeof(j.key)='text' THEN 1 END) FROM agent_identities i,json_tree(i.payload_json) j WHERE i.agent_id=?1",
+        [&scope.agent_id], |row| row.get(0),
+    )?;
+    material.charge_ids(0, identity_nodes)?;
     // Retired identity never authorizes reading a successor State body.
     let current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_identities WHERE agent_id=?1 AND status='active' AND json_extract(payload_json,'$.agent_id')=agent_id AND json_extract(payload_json,'$.status')=status AND CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1 WHEN json_type(payload_json,'$.incarnation')='integer' AND json_extract(payload_json,'$.incarnation')>0 THEN json_extract(payload_json,'$.incarnation') END=?2)",params![scope.agent_id,scope.identity_incarnation],|row|row.get(0))?;
     ensure!(current, TaskSnapshotError::RetiredScope);
     let state_bytes: usize = tx.query_row("SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_states WHERE agent_id=?1),0)",[&scope.agent_id],|row|row.get(0))?;
     material.charge_record_address(0, state_bytes)?;
-    let state_nodes:usize=tx.query_row("SELECT COALESCE((SELECT COUNT(*) FROM agent_states s,json_tree(s.payload_json) WHERE s.agent_id=?1),0)",[&scope.agent_id],|row|row.get(0))?;
+    let state_nodes:usize=tx.query_row("SELECT COUNT(*)+COUNT(CASE WHEN typeof(j.key)='text' THEN 1 END) FROM agent_states s,json_tree(s.payload_json) j WHERE s.agent_id=?1",[&scope.agent_id],|row|row.get(0))?;
     material.charge_ids(0, state_nodes)?;
     let facts = scope_facts(tx, scope, false)?.ok_or(TaskSnapshotError::RetiredScope)?;
     ensure!(
@@ -63,7 +68,7 @@ pub(super) fn prepare_task_input_read_base_tx<'a, 'tx, 'conn>(
         for bytes in query.query_map([seed], |row| row.get::<_, usize>(0))? {
             material.charge_record_address(0, bytes?)?;
         }
-        let nodes: usize=tx.query_row("SELECT COALESCE(SUM((SELECT COUNT(*) FROM json_tree(CASE WHEN c.capture_phase='first_import' THEN i.roots_json ELSE s.roots_json END))),0) FROM task_domain_captures c JOIN episode_continuity_seeds s ON s.seed_id=c.seed_id LEFT JOIN episode_continuity_imports i ON i.seed_id=c.seed_id WHERE c.seed_id=?1",[seed],|row|row.get(0))?;
+        let nodes: usize=tx.query_row("SELECT COALESCE(SUM((SELECT COUNT(*)+COUNT(CASE WHEN typeof(j.key)='text' THEN 1 END) FROM json_tree(CASE WHEN c.capture_phase='first_import' THEN i.roots_json ELSE s.roots_json END) j)),0) FROM task_domain_captures c JOIN episode_continuity_seeds s ON s.seed_id=c.seed_id LEFT JOIN episode_continuity_imports i ON i.seed_id=c.seed_id WHERE c.seed_id=?1",[seed],|row|row.get(0))?;
         material.charge_ids(0, nodes)?;
     }
     let manifests = qualification::manifests(tx, seed.as_deref())?;
@@ -96,9 +101,9 @@ pub(super) fn prepare_task_input_read_base_tx<'a, 'tx, 'conn>(
         );
         let alias_bytes: usize = tx.query_row("SELECT COALESCE((SELECT length(CAST(availability AS BLOB))+COALESCE(length(CAST(content_digest AS BLOB)),0)+COALESCE(length(CAST(projection_digest AS BLOB)),0) FROM task_domain_records WHERE agent_id=?1 AND identity_incarnation=?2 AND family='task' AND record_id=?3),0)",params![scope.agent_id,scope.identity_incarnation,key.id],|row|row.get(0))?;
         material.charge_relation(alias_bytes)?;
-        let size =
-            checkpoint_material_size_on(tx, key)?.context("Task output canonical Task missing")?;
-        material.charge_record(key, size)?;
+        material
+            .admit_stored_tx(tx, &scope.agent_id, key)?
+            .context("Task output canonical Task missing")?;
         let stored =
             stored_on(tx, &scope.agent_id, key)?.context("Task output canonical Task missing")?;
         ensure!(
@@ -163,7 +168,24 @@ impl TaskInputReadAuthorization<'_, '_, '_> {
             records,
         )
     }
+    /// Borrow the original same-scope Task accounting phase; this is no read grant.
+    pub(in crate::runtime_db) fn with_input_material<T>(
+        &mut self,
+        action: impl FnOnce(
+            &mut crate::runtime_db::input_evidence_snapshot::read_material::InputReadMaterial<'_>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        self.material.with_input_material(action)
+    }
     pub(in crate::runtime_db) fn charge_body(&mut self, bytes: usize) -> Result<()> {
         self.material.charge_record_address(0, bytes)
     }
 }
+
+#[cfg(test)]
+#[path = "qualified_tool_read_tests.rs"]
+mod tool_read_tests;
+
+#[cfg(test)]
+#[path = "qualified_input_material_tests.rs"]
+mod scope_material_tests;

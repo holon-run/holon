@@ -72,6 +72,31 @@ pub(crate) fn refresh_plan_artifact_metadata(
     Ok(record.plan_artifact != previous)
 }
 
+/// Refresh-only observation; never creates a plan or mutates Work metadata.
+pub(crate) fn observe_plan_artifact(
+    agent_home: &Path,
+    agent_id: &str,
+    work_item_id: &str,
+    recorded: bool,
+) -> crate::runtime::resource_observation::ObservedPlan {
+    use crate::runtime::resource_observation::ObservedPlan;
+    let path = plan_path(agent_home, work_item_id);
+    match crate::diagnostics::io_probe::open_file(&path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            if recorded {
+                ObservedPlan::RecordedMissing
+            } else {
+                ObservedPlan::Absent
+            }
+        }
+        Err(error) => ObservedPlan::RefreshFailed(error.to_string()),
+        Ok(file) => match describe_open_plan_artifact(file, &path, agent_id, work_item_id) {
+            Ok(plan) => ObservedPlan::Present(plan),
+            Err(error) => ObservedPlan::RefreshFailed(error.to_string()),
+        },
+    }
+}
+
 pub(crate) fn query_plan_artifact(agent_home: &Path, record: &WorkItemRecord) -> PlanArtifactQuery {
     let path = plan_path(agent_home, &record.id);
     let file = match crate::diagnostics::io_probe::open_file(&path) {

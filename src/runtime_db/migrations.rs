@@ -3965,6 +3965,26 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "qualified_scheduling_domain",
         sql: super::scheduling_snapshot::SCHEDULING_SCHEMA,
     },
+    Migration {
+        version: 90,
+        name: "qualified_current_read_facts",
+        sql: super::current_read_snapshot::CURRENT_READ_SCHEMA,
+    },
+    Migration {
+        version: 91,
+        name: "fixed_legacy_delivery_sources",
+        sql: super::input_evidence_snapshot::legacy_delivery::LEGACY_DELIVERY_SCHEMA,
+    },
+    Migration {
+        version: 92,
+        name: "original_input_native_births",
+        sql: super::input_evidence_snapshot::native_birth::SCHEMA,
+    },
+    Migration {
+        version: 93,
+        name: "original_current_event_native_births",
+        sql: super::current_read_snapshot::CURRENT_EVENT_BIRTH_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4283,6 +4303,17 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.version == 89 {
         super::scheduling_snapshot::consume_scheduling_upgrade_tx(transaction)?;
+    }
+    if migration.version == 90 {
+        super::current_read_snapshot::capture_current_read_upgrade_tx(transaction)?;
+    }
+    if migration.version == 92 {
+        super::input_evidence_snapshot::native_birth::initialize_indexes_tx(transaction)?;
+    }
+    if migration.version == 91 {
+        super::input_evidence_snapshot::legacy_delivery::capture_legacy_delivery_upgrade_tx(
+            transaction,
+        )?;
     }
     if migration.name == "actual_dispatch_memory_responsibility" {
         super::dispatch_memory::capture_legacy_dispatches_at_upgrade_tx(transaction)?;

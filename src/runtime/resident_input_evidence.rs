@@ -9,8 +9,8 @@ use crate::{
         ExecutionAttempt, ExecutionOutcomeRecord, WorkItemExecutionRecord,
     },
     types::{
-        AuthorityClass, BriefRecord, MessageEnvelope, ToolExecutionRecord, ToolExecutionStatus,
-        TranscriptEntry, TurnOwner, TurnRecord,
+        AuthorityClass, BriefRecord, DeliverySummaryRecord, MessageEnvelope, ToolExecutionRecord,
+        ToolExecutionStatus, TranscriptEntry, TurnOwner, TurnRecord,
     },
 };
 use anyhow::{ensure, Context, Result};
@@ -21,8 +21,18 @@ use std::{
     sync::Arc,
 };
 
+#[path = "input_capture_material.rs"]
+mod capture_material;
 #[path = "input_evidence_output_recall.rs"]
 mod output_recall;
+#[path = "input_query_reads.rs"]
+mod query_reads;
+use capture_material::CapturePhase;
+pub(crate) use capture_material::{InputCaptureError, InputCaptureMaterial};
+
+#[path = "execution_command_reads.rs"]
+mod command_reads;
+pub(crate) use command_reads::{ExecutionCommandRead, ExecutionCommandReadSource};
 
 #[path = "input_evidence_execution.rs"]
 mod execution;
@@ -61,6 +71,7 @@ pub(crate) enum InputEvidenceFamily {
     Turn,
     ToolExecution,
     Brief,
+    LegacyDelivery,
     Transcript,
     Attempt,
     Outcome,
@@ -73,6 +84,7 @@ impl InputEvidenceFamily {
             Self::Turn => "turn",
             Self::ToolExecution => "tool_execution",
             Self::Brief => "brief",
+            Self::LegacyDelivery => "legacy_delivery",
             Self::Transcript => "transcript",
             Self::Attempt => "attempt",
             Self::Outcome => "outcome",
@@ -85,6 +97,7 @@ impl InputEvidenceFamily {
             "turn" => Self::Turn,
             "tool_execution" => Self::ToolExecution,
             "brief" => Self::Brief,
+            "legacy_delivery" => Self::LegacyDelivery,
             "transcript" => Self::Transcript,
             "attempt" => Self::Attempt,
             "outcome" => Self::Outcome,
@@ -105,6 +118,36 @@ impl InputEvidenceKey {
             id: id.into(),
         }
     }
+}
+
+/// Accepted LegacyDelivery metadata keeps the two existing report selectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LegacyDeliveryHeadSelector {
+    LatestAny,
+    LatestNonempty,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LegacyDeliverySourceAvailability {
+    Present,
+    Pruned,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LegacyDeliverySourceLocator {
+    pub scope: InputEvidenceScope,
+    pub key: InputEvidenceKey,
+    /// Zero names a sealed fixed source; it is not a fabricated Input alias.
+    pub source_revision: u64,
+    pub content_digest: String,
+    pub availability: LegacyDeliverySourceAvailability,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "presence", rename_all = "snake_case")]
+pub(crate) enum LegacyDeliveryHeadObservation {
+    Present { source: LegacyDeliverySourceLocator },
+    Absent,
+    Unavailable,
 }
 
 /// A durable locator describes canonical bytes; it does not retain those bytes.
@@ -277,6 +320,7 @@ pub(crate) enum PreparedInputEvidence {
     Turn(TurnRecord),
     ToolExecution(ToolContextProjection),
     Brief(BriefRecord),
+    LegacyDelivery(DeliverySummaryRecord),
     Transcript(TranscriptEntry),
     Attempt(ExecutionAttempt),
     Outcome(ExecutionOutcomeRecord),
@@ -294,6 +338,9 @@ impl PreparedInputEvidence {
                 InputEvidenceKey::new(InputEvidenceFamily::ToolExecution, &x.id)
             }
             Self::Brief(x) => InputEvidenceKey::new(InputEvidenceFamily::Brief, &x.id),
+            Self::LegacyDelivery(x) => {
+                InputEvidenceKey::new(InputEvidenceFamily::LegacyDelivery, &x.id)
+            }
             Self::Transcript(x) => InputEvidenceKey::new(InputEvidenceFamily::Transcript, &x.id),
             Self::Attempt(x) => InputEvidenceKey::new(InputEvidenceFamily::Attempt, &x.attempt_id),
             Self::Outcome(x) => InputEvidenceKey::new(InputEvidenceFamily::Outcome, &x.outcome_id),
@@ -304,9 +351,13 @@ impl PreparedInputEvidence {
     }
     pub(crate) fn references(&self) -> BTreeSet<InputEvidenceKey> {
         let mut refs = BTreeSet::new();
-        let mut add = |family, id: &str| {
+        self.visit_references(|family, id| {
             refs.insert(InputEvidenceKey::new(family, id));
-        };
+        });
+        refs
+    }
+    /// Borrow original owning IDs before allocating their selector containers.
+    pub(crate) fn visit_references(&self, mut add: impl FnMut(InputEvidenceFamily, &str)) {
         match self {
             Self::Message(x) => {
                 if let Some(id) = crate::wake_contract::agent_message_reply_reference(x) {
@@ -378,9 +429,23 @@ impl PreparedInputEvidence {
             }
             _ => {}
         }
-        refs
     }
 }
+/// Only the original named read actor constructs this from an exact D3 locator.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct QualifiedToolRunReport {
+    source: EvidenceLocator,
+    projection: super::run_report_projection::ToolRunReportProjection,
+}
+impl QualifiedToolRunReport {
+    pub(crate) fn from_qualified_source(
+        source: EvidenceLocator,
+        projection: super::run_report_projection::ToolRunReportProjection,
+    ) -> Self {
+        Self { source, projection }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct QualifiedInputEvidence {
     pub locator: EvidenceLocator,
@@ -393,8 +458,85 @@ pub(crate) struct QualifiedInputEvidence {
     /// Some(empty) is an exact qualified claim-only observation. An Attempt
     /// without this metadata is not a prepared closure.
     pub attempt_turn_keys: Option<BTreeSet<InputEvidenceKey>>,
+    /// Old projections remain incomplete for reports; the prompt cap is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_run_report: Option<Box<QualifiedToolRunReport>>,
 }
 impl QualifiedInputEvidence {
+    /// Actual immutable allocation floor, independent of caller/Serde estimates.
+    /// The encoded projection field retains its original policy semantics.
+    pub(crate) fn resident_material_estimate(&self) -> Result<(usize, usize)> {
+        let (encoded, nodes) = super::input_evidence_budget::borrowed_json_material(&(
+            &self.locator,
+            &self.record,
+            &self.created_at,
+            self.order_sequence,
+            self.turn_index,
+            &self.owner,
+            &self.attempt_turn_keys,
+            &self.tool_run_report,
+        ))?;
+        let encoded = usize::try_from(encoded)?.max(self.resident_bytes);
+        let bytes = nodes
+            .checked_mul(256)
+            .and_then(|n| n.checked_add(encoded))
+            .and_then(|n| n.checked_add(std::mem::size_of::<Self>()))
+            .context("Input native allocation estimate overflow")?;
+        let records = nodes
+            .checked_add(1)
+            .context("Input native record count overflow")?;
+        Ok((bytes, records))
+    }
+    pub(crate) fn tool_run_report(
+        &self,
+    ) -> Result<&super::run_report_projection::ToolRunReportProjection> {
+        let report = self.tool_run_report.as_ref().filter(|report| {
+            self.locator.key.family == InputEvidenceFamily::ToolExecution
+                && matches!(&self.record, PreparedInputEvidence::ToolExecution(tool) if tool.id == self.locator.key.id && tool.agent_id == self.locator.scope.agent_id
+                    && self.created_at.parse::<DateTime<Utc>>().ok() == Some(tool.created_at))
+                && report.source == self.locator
+        }).ok_or_else(|| InputEvidenceReadError::NeedsPreparation(self.locator.key.clone()))?;
+        Ok(&report.projection)
+    }
+    /// A named read may enrich one exact locator without changing its canonical facts.
+    fn same_revision_allocation(original: &Arc<Self>, incoming: &Arc<Self>) -> Result<Arc<Self>> {
+        ensure!(
+            original.locator == incoming.locator
+                && original.record == incoming.record
+                && original.created_at == incoming.created_at
+                && original.order_sequence == incoming.order_sequence
+                && original.turn_index == incoming.turn_index
+                && original.owner == incoming.owner
+                && original.resident_bytes == incoming.resident_bytes
+                && original.attempt_turn_keys == incoming.attempt_turn_keys,
+            "same qualified revision has different canonical evidence"
+        );
+        if original.tool_run_report.is_some() {
+            original.tool_run_report()?;
+        }
+        if incoming.tool_run_report.is_some() {
+            incoming.tool_run_report()?;
+        }
+        match (&original.tool_run_report, &incoming.tool_run_report) {
+            (Some(before), Some(after)) => {
+                ensure!(
+                    before == after,
+                    "same qualified Tool source has different reports"
+                );
+                Ok(original.clone())
+            }
+            (None, Some(_)) => Ok(incoming.clone()),
+            _ => Ok(original.clone()),
+        }
+    }
+    pub(crate) fn visit_references(&self, mut add: impl FnMut(InputEvidenceFamily, &str)) {
+        self.record.visit_references(&mut add);
+        if let Some(keys) = &self.attempt_turn_keys {
+            for key in keys {
+                add(key.family, &key.id);
+            }
+        }
+    }
     pub(crate) fn references(&self) -> BTreeSet<InputEvidenceKey> {
         let mut refs = self.record.references();
         if let Some(keys) = &self.attempt_turn_keys {
@@ -454,14 +596,15 @@ impl RecoverySourceAbsence {
             && self.terminal_kind == terminal
             && !self.absent.is_empty()
             && self.absent.iter().all(|key| {
-                key == &InputEvidenceKey::new(InputEvidenceFamily::Message, &source)
-                    || key == &InputEvidenceKey::new(InputEvidenceFamily::Turn, &turn)
+                (key.family == InputEvidenceFamily::Message && key.id == source)
+                    || (key.family == InputEvidenceFamily::Turn && key.id == turn)
             })
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct InputEvidenceCoverage {
+    pub query: super::input_queries::InputQueryCoverage,
     pub selected_completion_brief_ids: BTreeSet<String>,
     pub completion_source_observations:
         Vec<super::completion_sources::CompletionOptionalSourceObservation>,
@@ -488,6 +631,8 @@ pub(crate) struct CommittedEvidenceRemoval {
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CommittedInputEvidenceDelta {
+    pub query_advance:
+        Option<Arc<crate::runtime_db::input_evidence_snapshot::CommittedInputQueryAdvance>>,
     pub output_recall_invalidation:
         Option<crate::runtime_db::input_evidence_snapshot::OutputRecallInvalidation>,
     pub execution: ExecutionInputDelta,
@@ -498,6 +643,10 @@ pub(crate) struct CommittedInputEvidenceDelta {
     /// None is an actual same-view unassigned input, not a missing preparation.
     pub message_turn_keys: BTreeMap<String, Option<String>>,
 }
+
+#[path = "input_publication_material.rs"]
+mod publication_material;
+pub(in crate::runtime) use publication_material::OriginalInputPublicationMaterial;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResidentInputEvidence {
@@ -703,20 +852,40 @@ impl CapturedInputEvidence {
     pub(crate) fn protocol_state(
         &self,
     ) -> Result<crate::domain::execution_protocol::ExecutionProtocolState> {
+        self.protocol_state_observed(&mut None)
+    }
+    pub(in crate::runtime) fn protocol_state_observed(
+        &self,
+        observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+    ) -> Result<crate::domain::execution_protocol::ExecutionProtocolState> {
+        use crate::work_item_scheduling::{
+            observe_scheduling_clone as observe, observe_scheduling_slots as slots,
+        };
+        observe(&self.scope.agent_id, observer)?;
+        slots(16, observer)?;
         let mut state =
             crate::domain::execution_protocol::ExecutionProtocolState::empty(&self.scope.agent_id);
         for evidence in &self.records {
             match &evidence.record {
                 PreparedInputEvidence::Attempt(x) => {
+                    observe(&x.attempt_id, observer)?;
+                    observe(x, observer)?;
+                    slots(2, observer)?;
                     state.attempts.insert(x.attempt_id.clone(), x.clone());
                 }
                 PreparedInputEvidence::Outcome(x) => {
+                    observe(&x.outcome_id, observer)?;
+                    observe(x, observer)?;
+                    slots(2, observer)?;
                     state.outcomes.insert(x.outcome_id.clone(), x.clone());
                 }
                 PreparedInputEvidence::WorkExecution {
                     work_item_id,
                     record,
                 } => {
+                    observe(work_item_id, observer)?;
+                    observe(record, observer)?;
+                    slots(2, observer)?;
                     state
                         .work_items
                         .insert(work_item_id.clone(), record.clone());
@@ -734,6 +903,14 @@ impl ResidentInputEvidence {
         records: Vec<Arc<QualifiedInputEvidence>>,
         coverage: InputEvidenceCoverage,
     ) -> Result<Self> {
+        Self::bootstrap_observed(scope, records, coverage, &mut CapturePhase::unobserved())
+    }
+    fn bootstrap_observed(
+        scope: InputEvidenceScope,
+        records: Vec<Arc<QualifiedInputEvidence>>,
+        coverage: InputEvidenceCoverage,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<Self> {
         ensure!(
             scope.identity_incarnation > 0 && !scope.agent_id.is_empty(),
             "invalid input evidence scope"
@@ -744,6 +921,7 @@ impl ResidentInputEvidence {
                 record.locator.scope == scope,
                 "input evidence scope mismatch"
             );
+            phase.json(&record.locator.key, 1)?;
             let key = record.record.key();
             ensure!(key == record.locator.key, "input evidence key mismatch");
             if let Some(previous) = map.insert(key, record.clone()) {
@@ -762,7 +940,7 @@ impl ResidentInputEvidence {
             budget: None,
             budget_views: Vec::new(),
         };
-        result.trim_and_validate()?;
+        result.trim_and_validate_observed(phase)?;
         Ok(result)
     }
     /// Observation guards own no evidence. The real domain/capture owns the
@@ -809,6 +987,7 @@ impl ResidentInputEvidence {
                 .required_body_keys(&self.coverage.mandatory_roots),
         );
         let mut current_roots = strict_current.clone();
+        current_roots.extend(self.coverage.query.observation_keys().cloned());
         current_roots.extend(
             self.coverage
                 .selected_completion_brief_ids
@@ -868,8 +1047,64 @@ impl ResidentInputEvidence {
             .ok_or_else(|| anyhow::anyhow!("input metadata estimate overflow"))?)
     }
 
+    pub(in crate::runtime) fn query_coverage(&self) -> &super::input_queries::InputQueryCoverage {
+        &self.coverage.query
+    }
+    pub(in crate::runtime) fn shares_query_ledger(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> bool {
+        self.budget
+            .as_ref()
+            .is_some_and(|actual| actual.same_ledger(ledger))
+    }
+    pub(in crate::runtime) fn acquisition_registration_count(&self) -> Result<usize> {
+        Ok(self.records.len())
+    }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         &self.scope
+    }
+    pub(in crate::runtime) fn validate_capture_material_binding(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.shares_query_ledger(ledger) && !self.budget_views.is_empty(),
+            "scheduler domain material ledger differs"
+        );
+        for guard in &self.budget_views {
+            guard.validate_owned_material_binding(&self.scope, ledger, 0)?;
+        }
+        Ok(())
+    }
+    /// Check only original selected physical allocations, without a Root loan.
+    pub(in crate::runtime) fn validate_scheduler_body_loan(
+        &self,
+        loan: &CapturedInputEvidence,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.scope == loan.scope
+                && self.shares_query_ledger(ledger)
+                && loan
+                    .budget
+                    .as_ref()
+                    .is_some_and(|actual| actual.same_ledger(ledger))
+                && !loan.budget_views.is_empty(),
+            "scheduler Input loan scope or ledger differs"
+        );
+        for guard in &loan.budget_views {
+            guard.validate_owned_material_binding(&self.scope, ledger, 0)?;
+        }
+        for record in &loan.records {
+            ensure!(
+                self.records
+                    .get(&record.locator.key)
+                    .is_some_and(|current| Arc::ptr_eq(current, record)),
+                "scheduler Input loan is not this publication allocation"
+            );
+        }
+        Ok(())
     }
     pub(crate) fn belongs_to(&self, scope: &InputEvidenceScope) -> bool {
         &self.scope == scope
@@ -880,10 +1115,183 @@ impl ResidentInputEvidence {
     pub(crate) fn mandatory_roots(&self) -> &BTreeSet<InputEvidenceKey> {
         &self.coverage.mandatory_roots
     }
+    pub(in crate::runtime) fn borrowed_work_report_source(
+        &self,
+        family: InputEvidenceFamily,
+        id: &str,
+    ) -> Option<&Arc<QualifiedInputEvidence>> {
+        self.records
+            .values()
+            .find(|record| record.locator.key.family == family && record.locator.key.id == id)
+    }
+    pub(in crate::runtime) fn work_report_source_unavailable(
+        &self,
+        family: InputEvidenceFamily,
+        id: &str,
+    ) -> bool {
+        self.coverage
+            .unavailable
+            .iter()
+            .any(|key| key.family == family && key.id == id)
+    }
+    pub(in crate::runtime) fn work_report_optional_absence(
+        &self,
+        head: &QualifiedInputEvidence,
+        source: &QualifiedInputEvidence,
+        edge: super::completion_sources::CompletionSourceEdge,
+        family: InputEvidenceFamily,
+        id: &str,
+    ) -> bool {
+        self.coverage
+            .completion_source_observations
+            .iter()
+            .any(|proof| {
+                proof.head == head.locator
+                    && proof.source == source.locator
+                    && proof.edge == edge
+                    && proof.declared_target.family == family
+                    && proof.declared_target.id == id
+            })
+    }
+    /// Pure dependency check only; the Work owner validates the shared scope.
+    pub(crate) fn covers_work_input_sources(
+        &self,
+        coverage: &super::resident_work::WorkCoverage,
+        roots: &BTreeSet<InputEvidenceKey>,
+    ) -> bool {
+        if !roots.iter().all(|key| {
+            self.coverage.mandatory_roots.contains(key) && self.records.contains_key(key)
+        }) {
+            return false;
+        }
+        if !coverage.latest_results.values().flatten().all(|head| {
+            self.coverage
+                .selected_completion_brief_ids
+                .contains(&head.brief_id)
+        }) {
+            return false;
+        }
+        coverage.legacy_delivery_heads.iter().all(|(work_id, heads)|
+            [&heads.latest_any, &heads.latest_nonempty].into_iter().all(|head| match head {
+                super::resident_work::WorkDeliveryHead::Present {record_id,content_digest,source_revision,
+                    availability:LegacyDeliverySourceAvailability::Present} => self.coverage.mandatory_roots.iter().any(|key|
+                        key.family == InputEvidenceFamily::LegacyDelivery && key.id == *record_id)
+                        && self.records.values().any(|record|
+                    record.locator.key.family == InputEvidenceFamily::LegacyDelivery
+                    && record.locator.key.id == *record_id && record.locator.content_digest == *content_digest
+                    && (*source_revision == 0 || record.locator.revision == *source_revision)
+                    && matches!(&record.record, PreparedInputEvidence::LegacyDelivery(body) if body.work_item_id == *work_id)),
+                _ => true,
+            }))
+    }
+    /// Preserve already prepared selectors at a named Work owner boundary.
+    /// The callback admits these new containers before their first clone.
+    pub(crate) fn work_owner_preparation_request(
+        &self,
+        record_limit: usize,
+        byte_limit: usize,
+        mut observe: impl FnMut(u64, usize) -> Result<()>,
+    ) -> Result<crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest> {
+        let (bytes, nodes) = super::input_evidence_budget::borrowed_json_material(&self.coverage)?;
+        let records = nodes
+            .checked_add(32)
+            .and_then(|n| n.checked_mul(8))
+            .context("Work Input preserved selector count overflow")?;
+        let bytes = bytes
+            .checked_add(
+                (nodes as u64)
+                    .checked_mul(256)
+                    .context("Work Input selector slots overflow")?,
+            )
+            .and_then(|n| n.checked_mul(8))
+            .context("Work Input preserved selector bytes overflow")?;
+        observe(bytes, records)?;
+        Ok(
+            crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+                windows: self
+                    .coverage
+                    .windows
+                    .iter()
+                    .map(
+                        |window| crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
+                            selector: window.selector.clone(),
+                            limit: window.limit,
+                        },
+                    )
+                    .collect(),
+                mandatory_roots: self.coverage.mandatory_roots.clone(),
+                interrupted_sources: self.coverage.execution.sources.keys().cloned().collect(),
+                selected_completion_brief_ids: self.coverage.selected_completion_brief_ids.clone(),
+                record_limit,
+                byte_limit,
+            },
+        )
+    }
     pub(crate) fn capture(&self) -> Result<CapturedInputEvidence> {
-        self.validate()?;
-        let selected = self.required_keys()?;
-        let mut captured = CapturedInputEvidence {
+        let Some(ledger) = &self.budget else {
+            return self.capture_observed(&mut CapturePhase::unobserved());
+        };
+        let mut phase = CapturePhase::new(
+            self,
+            ledger,
+            // Coverage bytes bound selected bodies, not owned phase metadata.
+            // CapturePhase applies the actual ledger and hard phase limits.
+            (usize::MAX, usize::MAX),
+            (0, 0),
+        )?;
+        let captured = self.capture_observed(&mut phase)?;
+        phase
+            .finish_captured(captured)
+            .map(|(captured, _material)| captured)
+    }
+    /// Full current/mandatory observation, sharing the original algorithm.
+    /// Material limits are separate from logical coverage/body/window bounds.
+    pub(crate) fn capture_with_material(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+        prior: (u64, usize),
+        body_loan: Option<&CapturedInputEvidence>,
+    ) -> Result<(CapturedInputEvidence, InputCaptureMaterial)> {
+        let mut phase = CapturePhase::new_with_body_loan(self, ledger, limits, prior, body_loan)?;
+        let captured = self.capture_observed(&mut phase)?;
+        phase.finish_captured(captured)
+    }
+    fn capture_observed(&self, phase: &mut CapturePhase<'_>) -> Result<CapturedInputEvidence> {
+        self.validate_observed(phase)?;
+        let selected = self.required_keys_observed(phase)?;
+        phase.json(
+            &(
+                &self.scope,
+                &self.coverage.windows,
+                &self.coverage.unavailable,
+                &self.coverage.turn_transcript_keys,
+                &self.coverage.message_turn_keys,
+                &self.coverage.recovery_source_absences,
+                &self.coverage.execution,
+            ),
+            1,
+        )?;
+        #[cfg(test)]
+        phase.json(
+            &(
+                &self.coverage.selected_completion_brief_ids,
+                &self.coverage.completion_source_observations,
+            ),
+            1,
+        )?;
+        phase.charge(
+            u64::try_from(selected.len())?
+                .checked_mul(256)
+                .context(InputCaptureError::ResourceExhausted)?,
+            selected.len(),
+        )?;
+        for key in &selected {
+            if let Some(record) = self.records.get(key) {
+                phase.body(record)?;
+            }
+        }
+        let captured = CapturedInputEvidence {
             #[cfg(test)]
             selected_completion_brief_ids: self.coverage.selected_completion_brief_ids.clone(),
             #[cfg(test)]
@@ -902,22 +1310,17 @@ impl ResidentInputEvidence {
             turn_transcript_keys: self.coverage.turn_transcript_keys.clone(),
             message_turn_keys: self.coverage.message_turn_keys.clone(),
         };
-        captured.protocol_state()?;
-        if let Some(budget) = &self.budget {
-            captured.budget_views.push(budget.register_view(
-                &self.scope,
-                InputMemoryCategory::Pins,
-                &captured.records,
-            )?);
-            captured.budget_views.push(budget.register_owned_bytes(
-                &self.scope,
-                InputMemoryCategory::Pins,
-                OwnedBytesEstimate {
-                    payload_bytes: 0,
-                    metadata_estimate_bytes: self.metadata_estimate_bytes()?,
-                },
-            )?);
+        for evidence in &captured.records {
+            if matches!(
+                evidence.record,
+                PreparedInputEvidence::Attempt(_)
+                    | PreparedInputEvidence::Outcome(_)
+                    | PreparedInputEvidence::WorkExecution { .. }
+            ) {
+                phase.json(&evidence.record, 1)?;
+            }
         }
+        captured.protocol_state()?;
         Ok(captured)
     }
     /// A request owns only its selected closure. Resident mandatory roots also
@@ -926,6 +1329,61 @@ impl ResidentInputEvidence {
         &self,
         request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
     ) -> Result<CapturedInputEvidence> {
+        self.capture_for_request_inner(request, false)
+    }
+    pub(crate) fn capture_for_request_with_material(
+        &self,
+        request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
+        observation_only: bool,
+        limits: (usize, usize),
+        prior: (u64, usize),
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(CapturedInputEvidence, InputCaptureMaterial)> {
+        let mut phase = CapturePhase::new(self, ledger, limits, prior)?;
+        let captured = self.capture_request_observed(request, observation_only, &mut phase)?;
+        phase.finish_captured(captured)
+    }
+    /// Only a validated outer same-publication consumer may discount an
+    /// already-held physical body. This changes neither roots nor qualification.
+    pub(in crate::runtime) fn capture_for_request_with_body_loan(
+        &self,
+        request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
+        limits: (usize, usize),
+        prior: (u64, usize),
+        ledger: &InputEvidenceBudgetLedger,
+        loan: &CapturedInputEvidence,
+    ) -> Result<(CapturedInputEvidence, InputCaptureMaterial)> {
+        self.validate_scheduler_body_loan(loan, ledger)?;
+        let mut phase = CapturePhase::new_with_body_loan(self, ledger, limits, prior, Some(loan))?;
+        let captured = self.capture_request_observed(request, false, &mut phase)?;
+        phase.finish_captured(captured)
+    }
+    fn capture_for_request_inner(
+        &self,
+        request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
+        observation_only: bool,
+    ) -> Result<CapturedInputEvidence> {
+        if let Some(ledger) = &self.budget {
+            return self
+                .capture_for_request_with_material(
+                    request,
+                    observation_only,
+                    // Preserve the request's logical body/closure policy;
+                    // the original ledger bounds this implicit material phase.
+                    (usize::MAX, usize::MAX),
+                    (0, 0),
+                    ledger,
+                )
+                .map(|(captured, _material)| captured);
+        }
+        self.capture_request_observed(request, observation_only, &mut CapturePhase::unobserved())
+    }
+    fn capture_request_observed(
+        &self,
+        request: &crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest,
+        observation_only: bool,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<CapturedInputEvidence> {
         use InputEvidenceReadError::WindowNotPrepared;
         ensure!(
             request.record_limit > 0 && request.byte_limit > 0,
@@ -933,6 +1391,17 @@ impl ResidentInputEvidence {
         );
         // A writer may have supplied the incoming body without observing its
         // asserted lineage. Only an explicit request can require that SQL view.
+        phase.json(
+            &(
+                &request.mandatory_roots,
+                &request.interrupted_sources,
+                &request.selected_completion_brief_ids,
+            ),
+            4,
+        )?;
+        for window in &request.windows {
+            phase.json(&(&window.selector, window.limit), 2)?;
+        }
         let requested_messages = request
             .mandatory_roots
             .iter()
@@ -944,6 +1413,7 @@ impl ResidentInputEvidence {
             let key = InputEvidenceKey::new(InputEvidenceFamily::Message, &id);
             if let Some(record) = self.records.get(&key) {
                 if let PreparedInputEvidence::Message(message) = &record.record {
+                    phase.continuity(message)?;
                     if matches!(
                         super::provider_recovery::continuity_sources(message),
                         Ok(Some(_))
@@ -955,7 +1425,11 @@ impl ResidentInputEvidence {
             }
         }
         let mut windows = Vec::new();
-        let mut mandatory_roots = request.mandatory_roots.clone();
+        let mut mandatory_roots = if observation_only {
+            BTreeSet::new()
+        } else {
+            request.mandatory_roots.clone()
+        };
         for id in &request.selected_completion_brief_ids {
             let key = InputEvidenceKey::new(InputEvidenceFamily::Brief, id);
             if !self.coverage.selected_completion_brief_ids.contains(id) {
@@ -965,9 +1439,11 @@ impl ResidentInputEvidence {
         mandatory_roots.extend(
             self.coverage
                 .execution
-                .required_interrupted_body_keys(&request.interrupted_sources)?,
+                .required_interrupted_body_keys_observed(&request.interrupted_sources, phase)?,
         );
-        let mut selected = mandatory_roots.clone();
+        phase.json(&mandatory_roots, 1)?;
+        let mut selected = request.mandatory_roots.clone();
+        selected.extend(mandatory_roots.iter().cloned());
         selected.extend(
             request
                 .selected_completion_brief_ids
@@ -977,7 +1453,7 @@ impl ResidentInputEvidence {
         selected.extend(
             self.coverage
                 .execution
-                .required_body_keys(&request.mandatory_roots),
+                .required_body_keys_observed(&request.mandatory_roots, phase)?,
         );
         for wanted in &request.windows {
             let prepared = self
@@ -993,6 +1469,10 @@ impl ResidentInputEvidence {
                     .any(|window: &InputWindowCoverage| { window.selector == wanted.selector }),
                 "duplicate input request selector"
             );
+            for key in prepared.keys.iter().take(wanted.limit) {
+                phase.json(key, 2)?;
+            }
+            phase.json(&wanted.selector, 1)?;
             let keys = prepared
                 .keys
                 .iter()
@@ -1011,13 +1491,14 @@ impl ResidentInputEvidence {
             selected.len() <= request.record_limit,
             "input request closure record limit exceeded"
         );
+        phase.json(&(&mandatory_roots, &windows), 1)?;
         let strict_roots = mandatory_roots
             .iter()
             .cloned()
             .chain(
                 self.coverage
                     .execution
-                    .required_body_keys(&request.mandatory_roots),
+                    .required_body_keys_observed(&request.mandatory_roots, phase)?,
             )
             .chain(
                 windows
@@ -1025,15 +1506,32 @@ impl ResidentInputEvidence {
                     .flat_map(|window| window.keys.iter().cloned()),
             )
             .collect();
-        selected = self.completion_closure(
+        selected = self.completion_closure_observed(
             selected,
             strict_roots,
             &request.selected_completion_brief_ids,
             request.record_limit,
+            phase,
         )?;
         for key in &selected {
             if !self.records.contains_key(key) && !self.coverage.unavailable.contains(key) {
                 return Err(InputEvidenceReadError::NeedsPreparation(key.clone()).into());
+            }
+        }
+        for (id, keys) in &self.coverage.turn_transcript_keys {
+            if selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Turn && key.id == *id)
+            {
+                phase.json(&(id, keys), 1)?;
+            }
+        }
+        for (id, turn) in &self.coverage.message_turn_keys {
+            if selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Message && key.id == *id)
+            {
+                phase.json(&(id, turn), 1)?;
             }
         }
         let turns = self
@@ -1041,7 +1539,9 @@ impl ResidentInputEvidence {
             .turn_transcript_keys
             .iter()
             .filter(|(id, _)| {
-                selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Turn, *id))
+                selected
+                    .iter()
+                    .any(|key| key.family == InputEvidenceFamily::Turn && key.id == **id)
             })
             .map(|(id, keys)| (id.clone(), keys.clone()))
             .collect();
@@ -1050,17 +1550,62 @@ impl ResidentInputEvidence {
             .message_turn_keys
             .iter()
             .filter(|(id, _)| {
-                selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Message, *id))
+                selected
+                    .iter()
+                    .any(|key| key.family == InputEvidenceFamily::Message && key.id == **id)
             })
             .map(|(id, turn)| (id.clone(), turn.clone()))
             .collect();
+        for key in &selected {
+            phase.json(&key.id, 1)?;
+        }
+        phase.json(&request.interrupted_sources, 1)?;
         let mut source_ids = selected
             .iter()
             .filter(|key| key.family == InputEvidenceFamily::Message)
             .map(|key| key.id.clone())
             .collect::<BTreeSet<_>>();
         source_ids.extend(request.interrupted_sources.iter().cloned());
+        phase.json(&request.selected_completion_brief_ids, 1)?;
+        for proof in &self.coverage.completion_source_observations {
+            if request
+                .selected_completion_brief_ids
+                .contains(&proof.head.key.id)
+            {
+                phase.json(proof, 1)?;
+            }
+        }
+        for (id, proof) in &self.coverage.recovery_source_absences {
+            if selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Message && key.id == *id)
+            {
+                phase.json(&(id, proof), 1)?;
+            }
+        }
+        for id in &self.coverage.recovery_lineage_messages {
+            if selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Message && key.id == *id)
+            {
+                phase.json(&id, 1)?;
+            }
+        }
+        phase.json(&selected, 2)?;
+        for key in &selected {
+            if let Some(record) = self.records.get(key) {
+                capture_execution_work_ids_observed(record, phase)?;
+            }
+        }
         let coverage = InputEvidenceCoverage {
+            query: if observation_only {
+                super::input_queries::InputQueryCoverage {
+                    required_keys: request.mandatory_roots.clone(),
+                    ..Default::default()
+                }
+            } else {
+                Default::default()
+            },
             selected_completion_brief_ids: request.selected_completion_brief_ids.clone(),
             completion_source_observations: self
                 .coverage
@@ -1078,7 +1623,9 @@ impl ResidentInputEvidence {
                 .recovery_source_absences
                 .iter()
                 .filter(|(id, _)| {
-                    selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Message, *id))
+                    selected
+                        .iter()
+                        .any(|key| key.family == InputEvidenceFamily::Message && key.id == **id)
                 })
                 .map(|(id, proof)| (id.clone(), proof.clone()))
                 .collect(),
@@ -1087,11 +1634,13 @@ impl ResidentInputEvidence {
                 .recovery_lineage_messages
                 .iter()
                 .filter(|id| {
-                    selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Message, *id))
+                    selected
+                        .iter()
+                        .any(|key| key.family == InputEvidenceFamily::Message && key.id == **id)
                 })
                 .cloned()
                 .collect(),
-            execution: self.coverage.execution.for_sources(
+            execution: self.coverage.execution.for_sources_observed(
                 &source_ids,
                 &selected_execution_work_ids(
                     &selected
@@ -1100,7 +1649,8 @@ impl ResidentInputEvidence {
                         .collect::<Vec<_>>(),
                     &selected,
                 ),
-            ),
+                phase,
+            )?,
             windows,
             mandatory_roots,
             turn_transcript_keys: turns,
@@ -1114,17 +1664,33 @@ impl ResidentInputEvidence {
             record_limit: request.record_limit,
             byte_limit: request.byte_limit,
         };
-        let mut selected_domain = Self::bootstrap(
+        phase.json(&self.scope, 1)?;
+        for key in &selected {
+            phase.json(key, 1)?;
+            if let Some(record) = self.records.get(key) {
+                phase.body(record)?;
+            }
+        }
+        let mut selected_domain = Self::bootstrap_observed(
             self.scope.clone(),
             selected
                 .iter()
                 .filter_map(|key| self.records.get(key).cloned())
                 .collect(),
             coverage,
+            phase,
         )?;
         selected_domain.budget = self.budget.clone();
-        let captured = selected_domain.capture()?;
+        let captured = selected_domain.capture_observed(phase)?;
         for source in &request.interrupted_sources {
+            if let Some(coverage) = captured.execution.sources.get(source) {
+                phase.charge(
+                    u64::try_from(coverage.attempts.len())?
+                        .checked_mul(256)
+                        .context(InputCaptureError::ResourceExhausted)?,
+                    coverage.attempts.len(),
+                )?;
+            }
             captured.execution_interrupted_attempts_for_source(source)?;
         }
         Ok(captured)
@@ -1136,6 +1702,30 @@ impl ResidentInputEvidence {
         delta: &CommittedInputEvidenceDelta,
         mandatory_roots: BTreeSet<InputEvidenceKey>,
     ) -> Result<Option<Self>> {
+        self.with_committed_work_sources(delta, mandatory_roots, None)
+    }
+    /// Hydrated owning bodies remain distinct from D3's actual write footprint.
+    /// Preserve unrelated query/recall metadata on the original existing domain.
+    pub(crate) fn with_committed_work_sources(
+        &self,
+        delta: &CommittedInputEvidenceDelta,
+        mandatory_roots: BTreeSet<InputEvidenceKey>,
+        work_sources: Option<&Self>,
+    ) -> Result<Option<Self>> {
+        if let Some(advance) = &delta.query_advance {
+            advance.validate_delta(&self.scope, &delta.records)?;
+        }
+        if let Some(prepared) = work_sources {
+            ensure!(
+                prepared.scope == self.scope
+                    && prepared
+                        .budget
+                        .as_ref()
+                        .zip(self.budget.as_ref())
+                        .is_some_and(|(prepared, actual)| prepared.same_ledger(actual)),
+                "prepared Work Input belongs to another original domain/ledger"
+            );
+        }
         let _candidate_views = self
             .budget
             .as_ref()
@@ -1158,6 +1748,9 @@ impl ResidentInputEvidence {
             })
             .transpose()?;
         let mut next = self.clone();
+        if !delta.records.is_empty() || !delta.removals.is_empty() {
+            next.coverage.query = Default::default();
+        }
         // A real D3 write invalidates read-only recall. Old captures keep their
         // pinned bytes; the old locator cannot recreate durable qualification.
         if let Some(invalidation) = &delta.output_recall_invalidation {
@@ -1308,10 +1901,8 @@ impl ResidentInputEvidence {
             );
             if let Some(old) = next.records.get(&record.locator.key) {
                 if old.locator.revision == record.locator.revision {
-                    ensure!(
-                        old.as_ref() == record.as_ref(),
-                        "same revision has different evidence"
-                    );
+                    let selected = QualifiedInputEvidence::same_revision_allocation(old, record)?;
+                    next.records.insert(record.locator.key.clone(), selected);
                     continue;
                 }
                 ensure!(
@@ -1356,6 +1947,45 @@ impl ResidentInputEvidence {
                 }
             }
         }
+        if let Some(prepared) = work_sources {
+            for (key, record) in &prepared.records {
+                let selected = if let Some(actual) = next.records.get(key) {
+                    ensure!(
+                        actual.locator.revision <= record.locator.revision,
+                        "prepared Work Input is older than the actual ACK"
+                    );
+                    if actual.locator.revision == record.locator.revision {
+                        QualifiedInputEvidence::same_revision_allocation(actual, record)?
+                    } else {
+                        record.clone()
+                    }
+                } else {
+                    record.clone()
+                };
+                next.coverage.unavailable.remove(key);
+                next.records.insert(key.clone(), selected);
+            }
+            next.coverage.selected_completion_brief_ids =
+                prepared.coverage.selected_completion_brief_ids.clone();
+            next.coverage.completion_source_observations =
+                prepared.coverage.completion_source_observations.clone();
+            next.coverage
+                .recovery_source_absences
+                .extend(prepared.coverage.recovery_source_absences.clone());
+            next.coverage
+                .recovery_lineage_messages
+                .extend(prepared.coverage.recovery_lineage_messages.iter().cloned());
+            next.coverage.execution = prepared.coverage.execution.clone();
+            next.coverage
+                .turn_transcript_keys
+                .extend(prepared.coverage.turn_transcript_keys.clone());
+            next.coverage
+                .message_turn_keys
+                .extend(prepared.coverage.message_turn_keys.clone());
+            next.coverage
+                .unavailable
+                .extend(prepared.coverage.unavailable.iter().cloned());
+        }
         for window in &mut next.coverage.windows {
             let mut candidates = next
                 .records
@@ -1382,8 +2012,36 @@ impl ResidentInputEvidence {
         Ok(Some(next))
     }
     fn references(&self, record: &QualifiedInputEvidence) -> Result<BTreeSet<InputEvidenceKey>> {
+        self.references_observed(record, &mut CapturePhase::unobserved())
+    }
+    fn references_observed(
+        &self,
+        record: &QualifiedInputEvidence,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
+        let checkpoint = phase.checkpoint()?;
+        let result = self.references_observed_inner(record, phase)?;
+        phase.collapse(checkpoint, CapturePhase::selector_cost(&result)?)?;
+        Ok(result)
+    }
+    fn references_observed_inner(
+        &self,
+        record: &QualifiedInputEvidence,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
+        let mut failure = None;
+        record.visit_references(|family, id| {
+            if failure.is_none() {
+                failure = phase.key(family, id, 1).err();
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        phase.json(&(), 1)?;
         let mut refs = record.references();
         if let PreparedInputEvidence::Message(message) = &record.record {
+            phase.continuity(message)?;
             if let Some((turn, source, _)) = self
                 .coverage
                 .recovery_lineage_messages
@@ -1395,6 +2053,14 @@ impl ResidentInputEvidence {
                 })
                 .flatten()
             {
+                phase.json(&(&turn, &source), 4)?;
+                if self
+                    .coverage
+                    .recovery_source_absences
+                    .contains_key(&message.id)
+                {
+                    phase.continuity(message)?;
+                }
                 let absent = self
                     .coverage
                     .recovery_source_absences
@@ -1414,11 +2080,16 @@ impl ResidentInputEvidence {
                     // Every observed hop needs its complete candidate bodies,
                     // including after a request slices the prepared domain.
                     self.coverage.execution.source(&source)?;
-                    refs.extend(self.coverage.execution.required_body_keys(&lineage_roots));
+                    refs.extend(
+                        self.coverage
+                            .execution
+                            .required_body_keys_observed(&lineage_roots, phase)?,
+                    );
                     if let Some(source_record) = self.records.get(&source_key) {
                         if let PreparedInputEvidence::Message(source_message) =
                             &source_record.record
                         {
+                            phase.continuity(source_message)?;
                             if matches!(
                                 super::provider_recovery::continuity_sources(source_message),
                                 Ok(Some(_))
@@ -1433,6 +2104,7 @@ impl ResidentInputEvidence {
                 }
             }
             if let Some(id) = &message.work_item_id {
+                phase.key(InputEvidenceFamily::WorkExecution, id, 1)?;
                 let key = InputEvidenceKey::new(InputEvidenceFamily::WorkExecution, id);
                 if self
                     .coverage
@@ -1446,11 +2118,13 @@ impl ResidentInputEvidence {
                 }
             }
             if let Some(Some(turn_id)) = self.coverage.message_turn_keys.get(&message.id) {
+                phase.key(InputEvidenceFamily::Turn, turn_id, 1)?;
                 refs.insert(InputEvidenceKey::new(InputEvidenceFamily::Turn, turn_id));
             }
         }
         if let PreparedInputEvidence::Turn(turn) = &record.record {
             if let Some(keys) = self.coverage.turn_transcript_keys.get(&turn.turn_id) {
+                phase.json(keys, 1)?;
                 refs.extend(keys.iter().cloned());
             }
         }
@@ -1463,7 +2137,45 @@ impl ResidentInputEvidence {
         heads: &BTreeSet<String>,
         record_limit: usize,
     ) -> Result<BTreeSet<InputEvidenceKey>> {
+        self.completion_closure_observed(
+            roots,
+            strict_roots,
+            heads,
+            record_limit,
+            &mut CapturePhase::unobserved(),
+        )
+    }
+    fn completion_closure_observed(
+        &self,
+        roots: BTreeSet<InputEvidenceKey>,
+        strict_roots: BTreeSet<InputEvidenceKey>,
+        heads: &BTreeSet<String>,
+        record_limit: usize,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
+        let checkpoint = phase.checkpoint()?;
+        let result = self.completion_closure_observed_inner(
+            roots,
+            strict_roots,
+            heads,
+            record_limit,
+            phase,
+        )?;
+        phase.collapse(checkpoint, CapturePhase::selector_cost(&result)?)?;
+        Ok(result)
+    }
+    fn completion_closure_observed_inner(
+        &self,
+        roots: BTreeSet<InputEvidenceKey>,
+        strict_roots: BTreeSet<InputEvidenceKey>,
+        heads: &BTreeSet<String>,
+        record_limit: usize,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
         use super::completion_sources::{completion_references, CompletionInputPath};
+        phase.json(&roots, 2)?;
+        phase.json(&strict_roots, 1)?;
+        phase.json(heads, 1)?;
         let mut selected = roots.clone();
         let mut pending = VecDeque::from_iter(roots.into_iter().map(|key| {
             let path = if key.family == InputEvidenceFamily::Brief && heads.contains(&key.id) {
@@ -1480,6 +2192,13 @@ impl ResidentInputEvidence {
         );
         let mut expanded = BTreeSet::new();
         while let Some((key, path)) = pending.pop_front() {
+            phase.key(key.family, &key.id, 2)?;
+            match &path {
+                CompletionInputPath::Head(id) | CompletionInputPath::Transcript(id) => {
+                    phase.json(id, 3)?
+                }
+                CompletionInputPath::Strict => {}
+            }
             selected.insert(key.clone());
             ensure!(
                 selected.len() <= record_limit,
@@ -1504,23 +2223,57 @@ impl ResidentInputEvidence {
                     .get(&InputEvidenceKey::new(InputEvidenceFamily::Brief, id))
                     .map(Arc::as_ref),
             };
+            let references = self.references_observed(record, phase)?;
+            phase.json(&references, 1)?;
+            // Optional-path matching builds temporary target keys; it never
+            // owns or decodes another body.
+            if head.is_some() {
+                phase.json(&self.coverage.completion_source_observations, 1)?;
+                phase.completion_sources(head, record)?;
+            }
             pending.extend(completion_references(
                 record,
                 &path,
                 head,
                 &self.coverage.completion_source_observations,
-                self.references(record)?,
+                references,
             )?);
         }
         Ok(selected)
     }
     fn required_keys(&self) -> Result<BTreeSet<InputEvidenceKey>> {
+        self.required_keys_observed(&mut CapturePhase::unobserved())
+    }
+    fn required_keys_observed(
+        &self,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
+        let checkpoint = phase.checkpoint()?;
+        let result = self.required_keys_observed_inner(phase)?;
+        phase.collapse(checkpoint, CapturePhase::selector_cost(&result)?)?;
+        Ok(result)
+    }
+    fn required_keys_observed_inner(
+        &self,
+        phase: &mut CapturePhase<'_>,
+    ) -> Result<BTreeSet<InputEvidenceKey>> {
+        phase.json(
+            &(
+                &self.coverage.mandatory_roots,
+                &self.coverage.query,
+                &self.output_recall_roots,
+                &self.coverage.windows,
+                &self.coverage.selected_completion_brief_ids,
+            ),
+            2,
+        )?;
         let mut roots = self.coverage.mandatory_roots.clone();
+        roots.extend(self.coverage.query.observation_keys().cloned());
         roots.extend(self.output_recall_roots.iter().cloned());
         roots.extend(
             self.coverage
                 .execution
-                .required_body_keys(&self.coverage.mandatory_roots),
+                .required_body_keys_observed(&self.coverage.mandatory_roots, phase)?,
         );
         roots.extend(
             self.coverage
@@ -1536,7 +2289,7 @@ impl ResidentInputEvidence {
             .chain(
                 self.coverage
                     .execution
-                    .required_body_keys(&self.coverage.mandatory_roots),
+                    .required_body_keys_observed(&self.coverage.mandatory_roots, phase)?,
             )
             .chain(
                 self.coverage
@@ -1545,22 +2298,41 @@ impl ResidentInputEvidence {
                     .flat_map(|window| window.keys.iter().cloned()),
             )
             .collect::<BTreeSet<_>>();
+        phase.json(&strict, 1)?;
         roots.extend(strict.iter().cloned());
-        self.completion_closure(
+        self.completion_closure_observed(
             roots,
             strict,
             &self.coverage.selected_completion_brief_ids,
             self.coverage.record_limit,
+            phase,
         )
     }
     fn validate(&self) -> Result<()> {
-        let selected = self.required_keys()?;
+        self.validate_observed(&mut CapturePhase::unobserved())
+    }
+    fn validate_observed(&self, phase: &mut CapturePhase<'_>) -> Result<()> {
+        let checkpoint = phase.checkpoint()?;
+        let result = self.validate_observed_inner(phase)?;
+        phase.collapse(checkpoint, (0, 0))?;
+        Ok(result)
+    }
+    fn validate_observed_inner(&self, phase: &mut CapturePhase<'_>) -> Result<()> {
+        let selected = self.required_keys_observed(phase)?;
+        phase.json(
+            &(
+                &self.coverage.mandatory_roots,
+                &self.coverage.selected_completion_brief_ids,
+            ),
+            2,
+        )?;
         let mut mandatory = self.coverage.mandatory_roots.clone();
         mandatory.extend(
             self.coverage
                 .execution
-                .required_body_keys(&self.coverage.mandatory_roots),
+                .required_body_keys_observed(&self.coverage.mandatory_roots, phase)?,
         );
+        phase.json(&mandatory, 1)?;
         let strict_roots = mandatory.clone();
         mandatory.extend(
             self.coverage
@@ -1568,11 +2340,12 @@ impl ResidentInputEvidence {
                 .iter()
                 .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id)),
         );
-        let mandatory = self.completion_closure(
+        let mandatory = self.completion_closure_observed(
             mandatory,
             strict_roots,
             &self.coverage.selected_completion_brief_ids,
             self.coverage.record_limit,
+            phase,
         )?;
         for key in &mandatory {
             if !self.records.contains_key(key) {
@@ -1594,8 +2367,12 @@ impl ResidentInputEvidence {
             }
         }
         for proof in &self.coverage.completion_source_observations {
+            phase.json(proof, 1)?;
             let head = self.records.get(&proof.head.key);
             let source = self.records.get(&proof.source.key);
+            if let Some(source) = source {
+                phase.completion_sources(head.map(Arc::as_ref), source)?;
+            }
             ensure!(
                 self.coverage
                     .selected_completion_brief_ids
@@ -1609,6 +2386,15 @@ impl ResidentInputEvidence {
             );
         }
         for (id, proof) in &self.coverage.recovery_source_absences {
+            phase.key(InputEvidenceFamily::Message, id, 1)?;
+            if let Some(record) = self.records.values().find(|record| {
+                record.locator.key.family == InputEvidenceFamily::Message
+                    && record.locator.key.id == *id
+            }) {
+                if let PreparedInputEvidence::Message(message) = &record.record {
+                    phase.continuity(message)?;
+                }
+            }
             let key = InputEvidenceKey::new(InputEvidenceFamily::Message, id);
             ensure!(
                 self.records
@@ -1636,6 +2422,17 @@ impl ResidentInputEvidence {
                 <= self.coverage.record_limit,
             "input evidence and execution metadata record limit exceeded"
         );
+        phase.json(
+            &(
+                &self.coverage.turn_transcript_keys,
+                &self.coverage.message_turn_keys,
+                &self.coverage.recovery_source_absences,
+                &self.coverage.recovery_lineage_messages,
+                &self.coverage.completion_source_observations,
+                &self.coverage.selected_completion_brief_ids,
+            ),
+            1,
+        )?;
         let mut bytes = serde_json::to_vec(&self.coverage.turn_transcript_keys)?
             .len()
             .saturating_add(serde_json::to_vec(&self.coverage.message_turn_keys)?.len())
@@ -1703,12 +2500,23 @@ impl ResidentInputEvidence {
         Ok(())
     }
     fn trim_and_validate(&mut self) -> Result<()> {
-        self.validate()?;
-        let selected = self.required_keys()?;
+        self.trim_and_validate_observed(&mut CapturePhase::unobserved())
+    }
+    fn trim_and_validate_observed(&mut self, phase: &mut CapturePhase<'_>) -> Result<()> {
+        let checkpoint = phase.checkpoint()?;
+        let result = self.trim_and_validate_observed_inner(phase)?;
+        phase.collapse(checkpoint, (0, 0))?;
+        Ok(result)
+    }
+    fn trim_and_validate_observed_inner(&mut self, phase: &mut CapturePhase<'_>) -> Result<()> {
+        self.validate_observed(phase)?;
+        let selected = self.required_keys_observed(phase)?;
         self.records.retain(|key, _| selected.contains(key));
-        self.coverage
-            .selected_completion_brief_ids
-            .retain(|id| selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Brief, id)));
+        self.coverage.selected_completion_brief_ids.retain(|id| {
+            selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Brief && key.id == *id)
+        });
         self.coverage
             .completion_source_observations
             .retain(|proof| {
@@ -1717,11 +2525,25 @@ impl ResidentInputEvidence {
                     .contains(&proof.head.key.id)
             });
         self.coverage.recovery_lineage_messages.retain(|id| {
-            selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Message, id))
+            selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Message && key.id == *id)
         });
         self.coverage.recovery_source_absences.retain(|id, _| {
-            selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Message, id))
+            selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Message && key.id == *id)
         });
+        for record in self.records.values() {
+            match &record.record {
+                PreparedInputEvidence::Message(message) => phase.json(&message.id, 1)?,
+                PreparedInputEvidence::Attempt(attempt) => {
+                    phase.json(&attempt.source_message_id, 1)?
+                }
+                _ => {}
+            }
+        }
+        phase.json(&selected, 1)?;
         let source_ids = self
             .records
             .values()
@@ -1731,24 +2553,49 @@ impl ResidentInputEvidence {
                 _ => None,
             })
             .collect();
-        self.coverage.execution = self.coverage.execution.for_sources(
+        for record in self.records.values() {
+            capture_execution_work_ids_observed(record, phase)?;
+        }
+        self.coverage.execution = self.coverage.execution.for_sources_observed(
             &source_ids,
             &selected_execution_work_ids(&self.records.values().collect::<Vec<_>>(), &selected),
-        );
+            phase,
+        )?;
         self.coverage.turn_transcript_keys.retain(|turn_id, _| {
-            selected.contains(&InputEvidenceKey::new(InputEvidenceFamily::Turn, turn_id))
+            selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Turn && key.id == *turn_id)
         });
         self.coverage.message_turn_keys.retain(|message_id, _| {
-            selected.contains(&InputEvidenceKey::new(
-                InputEvidenceFamily::Message,
-                message_id,
-            ))
+            selected
+                .iter()
+                .any(|key| key.family == InputEvidenceFamily::Message && key.id == *message_id)
         });
         self.coverage
             .unavailable
             .retain(|key| selected.contains(key));
         Ok(())
     }
+}
+fn capture_execution_work_ids_observed(
+    record: &QualifiedInputEvidence,
+    phase: &mut CapturePhase<'_>,
+) -> Result<()> {
+    let id = match &record.record {
+        PreparedInputEvidence::Message(message) => message.work_item_id.as_deref(),
+        PreparedInputEvidence::Attempt(attempt) => match &attempt.binding {
+            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
+                Some(work_item_id.as_str())
+            }
+            _ => None,
+        },
+        PreparedInputEvidence::WorkExecution { work_item_id, .. } => Some(work_item_id.as_str()),
+        _ => None,
+    };
+    if let Some(id) = id {
+        phase.json(&id, 1)?;
+    }
+    Ok(())
 }
 fn selected_execution_work_ids(
     records: &[&Arc<QualifiedInputEvidence>],
@@ -1851,6 +2698,7 @@ mod tests {
             }),
             resident_bytes: 128,
             attempt_turn_keys: None,
+            tool_run_report: None,
         })
     }
     fn resident(exhaustive: bool) -> ResidentInputEvidence {
@@ -1860,6 +2708,7 @@ mod tests {
             scope(),
             vec![a.clone(), b.clone()],
             InputEvidenceCoverage {
+                query: Default::default(),
                 selected_completion_brief_ids: Default::default(),
                 completion_source_observations: Default::default(),
                 recovery_source_absences: Default::default(),
@@ -1972,6 +2821,7 @@ mod tests {
         let next = original
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    query_advance: None,
                     output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: vec![turn("c", 3)],
@@ -2060,6 +2910,7 @@ mod tests {
         assert!(original
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    query_advance: None,
                     output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: Vec::new(),
@@ -2075,6 +2926,7 @@ mod tests {
         let next = exhaustive
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    query_advance: None,
                     output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: Vec::new(),
@@ -2094,6 +2946,7 @@ mod tests {
         let grown = original
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    query_advance: None,
                     output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: vec![turn("c", 3)],
@@ -2112,6 +2965,7 @@ mod tests {
         let pruned = grown
             .with_committed(
                 &CommittedInputEvidenceDelta {
+                    query_advance: None,
                     output_recall_invalidation: None,
                     execution: ExecutionInputDelta::default(),
                     records: Vec::new(),
@@ -2143,6 +2997,7 @@ mod tests {
             scope(),
             vec![parent],
             InputEvidenceCoverage {
+                query: Default::default(),
                 selected_completion_brief_ids: Default::default(),
                 completion_source_observations: Default::default(),
                 recovery_source_absences: Default::default(),
@@ -2163,6 +3018,7 @@ mod tests {
     fn committed_history_growth_checks_agent_and_shared_host_limits() {
         fn delta() -> CommittedInputEvidenceDelta {
             CommittedInputEvidenceDelta {
+                query_advance: None,
                 output_recall_invalidation: None,
                 execution: ExecutionInputDelta::default(),
                 records: vec![turn("c", 3)],
@@ -2171,10 +3027,25 @@ mod tests {
                 message_turn_keys: BTreeMap::new(),
             }
         }
+        fn history_bytes(value: &ResidentInputEvidence) -> u64 {
+            value
+                .records
+                .values()
+                .map(|record| {
+                    u64::try_from(record.resident_material_estimate().unwrap().0).unwrap()
+                })
+                .sum()
+        }
+        let original = resident(true);
+        let base = history_bytes(&original);
+        let growth = u64::try_from(turn("c", 3).resident_material_estimate().unwrap().0).unwrap();
+        assert!(growth > 1);
         let mut limits = crate::config::StateMemoryLimits::default();
-        limits.history_per_agent_bytes = 300;
+        limits.history_per_agent_bytes = base + growth / 2;
+        assert!(base < limits.history_per_agent_bytes);
+        assert!(base + growth > limits.history_per_agent_bytes);
         let budget = InputEvidenceBudgetLedger::new(limits).unwrap();
-        let original = resident(true).with_budget(budget.clone()).unwrap();
+        let original = original.with_budget(budget.clone()).unwrap();
         let error = original
             .with_committed(&delta(), BTreeSet::new())
             .unwrap_err();
@@ -2192,11 +3063,7 @@ mod tests {
         drop(original);
         assert_eq!(budget.report().unwrap().observed_bytes, 0);
 
-        let mut limits = crate::config::StateMemoryLimits::default();
-        limits.history_per_agent_bytes = 400;
-        limits.history_host_bytes = 600;
-        let budget = InputEvidenceBudgetLedger::new(limits).unwrap();
-        let original = resident(true).with_budget(budget.clone()).unwrap();
+        let original = resident(true);
         let mut other = resident(true);
         other.scope.agent_id = "agent-b".into();
         other.records = other
@@ -2216,6 +3083,16 @@ mod tests {
                 (key, Arc::new(record))
             })
             .collect();
+        let base = history_bytes(&original);
+        let other_base = history_bytes(&other);
+        let mut limits = crate::config::StateMemoryLimits::default();
+        limits.history_per_agent_bytes = base.max(other_base) + growth;
+        limits.history_host_bytes = base + other_base + growth / 2;
+        assert!(base + growth <= limits.history_per_agent_bytes);
+        assert!(base + other_base < limits.history_host_bytes);
+        assert!(base + other_base + growth > limits.history_host_bytes);
+        let budget = InputEvidenceBudgetLedger::new(limits).unwrap();
+        let original = original.with_budget(budget.clone()).unwrap();
         let other = other.with_budget(budget.clone()).unwrap();
         let error = original
             .with_committed(&delta(), BTreeSet::new())

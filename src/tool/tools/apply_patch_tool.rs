@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,23 +77,35 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let surface = runtime.current_apply_patch_surface().await;
-    let patch_input = extract_patch_input(input, surface)?;
-    let contains_replacement_character = patch_input.contains('\u{FFFD}');
     let execution = runtime
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
-    let mut outcome =
-        apply_patch::apply_patch(execution.workspace.execution_root(), &patch_input, surface)
-            .await
-            .map_err(|error| {
-                if contains_replacement_character {
-                    anyhow::Error::new(add_replacement_character_recovery_hint(
-                        ToolError::from_anyhow(&error),
-                    ))
-                } else {
-                    error
-                }
-            })?;
+    let writer_material = runtime.retain_resource_writer_material(input, &execution)?;
+    let patch_input = extract_patch_input(input, surface)?;
+    let contains_replacement_character = patch_input.contains('\u{FFFD}');
+    let write_lease = runtime.begin_context_resource_write()?;
+    let worker_runtime = runtime.clone();
+    let (send, receive) = tokio::sync::oneshot::channel();
+    runtime.spawn_owned_mutation(async move {
+        let original=apply_patch::apply_patch(execution.workspace.execution_root(),&patch_input,surface).await;
+        drop(write_lease);
+        // A failed patch can have partial physical effects. Capture remains
+        // Dirty until its own observation succeeds; the original result wins.
+        if let Err(error)=worker_runtime.refresh_context_resources().await {tracing::warn!(%error,"ApplyPatch resource refresh failed; dependent capture remains fenced");}
+        let _=send.send((original,writer_material));
+    })?;
+    let (original, _writer_material) = receive
+        .await
+        .context("original ApplyPatch owned writer exited without its result")?;
+    let mut outcome = original.map_err(|error| {
+        if contains_replacement_character {
+            anyhow::Error::new(add_replacement_character_recovery_hint(
+                ToolError::from_anyhow(&error),
+            ))
+        } else {
+            error
+        }
+    })?;
     if contains_replacement_character {
         outcome.diagnostics.push(replacement_character_diagnostic());
     }

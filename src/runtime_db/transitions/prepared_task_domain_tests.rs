@@ -75,7 +75,7 @@ fn execute(
             p,
             &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
                 capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
-                record_limit: 4096,
+                record_limit: 65_536,
                 byte_limit: 4 * 1024 * 1024,
             },
             ledger,

@@ -66,12 +66,6 @@ impl ShutdownReason {
     }
 }
 
-pub(super) struct ShutdownPostureOutcome {
-    pub(super) status: AgentStatus,
-    pub(super) current_run_id: Option<String>,
-    pub(super) aborted_run_id: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SleepTransitionBoundary {
     LifecycleSleep,
@@ -92,6 +86,7 @@ pub(super) struct SleepTransition {
     // False when the agent was already asleep and at most the deadline moved:
     // logical posture is unchanged, so posture/state-changed audits stay
     // quiet and only the durable agent row is refreshed.
+    #[cfg(test)]
     pub(super) posture_changed: bool,
 }
 
@@ -282,7 +277,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         "handle_cancelled": handle.token.is_cancelled(),
                     }),
                 );
-                self.runtime.inner.storage.append_event(&event)?;
+                guard.append_held_runtime_audit_event(event).await?;
                 bail!(
                     "scheduler run projection mismatch for agent {} at {}: projected run {} but runtime owns {}",
                     guard.state.id,
@@ -303,7 +298,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         "handle_cancelled": handle.token.is_cancelled(),
                     }),
                 );
-                self.runtime.inner.storage.append_event(&event)?;
+                guard.append_held_runtime_audit_event(event).await?;
                 bail!(
                     "scheduler run projection mismatch for agent {} at {}: runtime owns {} without a projected run id",
                     guard.state.id,
@@ -341,15 +336,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             fault: self.runtime.take_transition_fault(),
         };
         let operation_id = command.audit_events[0].id.clone();
-        let commit = guard
-            .commit_transition(operation_id, |scope| {
-                self.runtime
-                    .inner
-                    .runtime_db
-                    .transitions_in_scope(scope)
-                    .commit_agent_posture(&command)
-            })
-            .await?;
+        let prepared = crate::runtime_db::transitions::PreparedInputTransition::posture(
+            guard.input_evidence_scope(),
+            operation_id,
+            command.audit_events[0].created_at,
+            command,
+            None,
+        )?;
+        let commit = guard.commit_prepared_input_transition(prepared).await?;
         drop(guard);
         self.runtime.apply_transition_commit(commit).await;
         Ok(StaleRunProjectionReconciliation::Recovered)
@@ -388,7 +382,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
 
-        self.append_posture_decision(
+        let decision = self.posture_decision(
             "lifecycle_control",
             match action {
                 ControlAction::Start => "start",
@@ -414,8 +408,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )?;
         if guard.state == guard.last_persisted_state {
             guard.install_transient().await?;
+            drop(guard);
+            self.runtime
+                .append_owned_runtime_audit_event(decision)
+                .await?;
         } else {
-            guard.persist_state(&self.runtime.inner.storage).await?;
+            guard
+                .persist_state_with_original_posture_audit(decision)
+                .await?;
         }
 
         Ok(())
@@ -424,13 +424,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     pub(super) async fn request_shutdown(
         &self,
         reason: ShutdownReason,
-    ) -> Result<ShutdownPostureOutcome> {
+    ) -> Result<super::state_mutation::OriginalRuntimeShutdownAudits> {
         let mut guard = self.runtime.begin_mutation().await?;
-        let mut aborted_run_id = None;
+        let had_abort_handle = guard.current_run_abort.is_some();
         let mut should_write = false;
 
-        if let Some(handle) = guard.current_run_abort.as_ref() {
-            aborted_run_id = Some(handle.run_id.clone());
+        if had_abort_handle {
             guard.defer_abort_current_run(reason.as_str());
             if matches!(guard.state.status, AgentStatus::AwakeRunning) {
                 scheduler::apply_idle_projection(&mut guard.state, &self.runtime.inner.storage)?;
@@ -451,11 +450,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
 
-        Ok(ShutdownPostureOutcome {
-            status: guard.state.status.clone(),
-            current_run_id: guard.state.current_run_id.clone(),
-            aborted_run_id,
-        })
+        guard.freeze_original_runtime_shutdown_audits(had_abort_handle)
     }
 
     pub(super) async fn bootstrap_recovered(&self) -> Result<AgentState> {
@@ -499,8 +494,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             guard.state.current_run_id = dispatch_run;
         }
         let posture_changed = previous_status != guard.state.status;
-        if posture_changed {
-            self.append_posture_decision(
+        let decision = if posture_changed {
+            Some(self.posture_decision(
                 boundary.as_str(),
                 "sleep",
                 &previous_status,
@@ -509,13 +504,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     format!("previous_run_id={previous_run_id:?}"),
                     format!("sleeping_until={:?}", guard.state.sleeping_until),
                 ],
-            )?;
-        }
+            )?)
+        } else {
+            None
+        };
         if posture_changed || previous_sleeping_until != guard.state.sleeping_until {
-            guard.persist_state(&self.runtime.inner.storage).await?;
+            if let Some(decision) = decision {
+                guard
+                    .persist_state_with_original_sleep_audits(decision)
+                    .await?;
+            } else {
+                guard.persist_state(&self.runtime.inner.storage).await?;
+            }
         }
         Ok(SleepTransition {
             state: guard.state.clone(),
+            #[cfg(test)]
             posture_changed,
         })
     }
@@ -543,8 +547,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         scheduler::apply_sleep_projection(&mut guard.state, next_sleeping_until);
         let posture_changed = previous_status != guard.state.status;
-        if posture_changed {
-            self.append_posture_decision(
+        let decision = if posture_changed {
+            Some(self.posture_decision(
                 SleepTransitionBoundary::RunLoopIdle.as_str(),
                 "sleep",
                 &previous_status,
@@ -553,13 +557,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     format!("previous_run_id={previous_run_id:?}"),
                     format!("sleeping_until={:?}", guard.state.sleeping_until),
                 ],
-            )?;
-        }
+            )?)
+        } else {
+            None
+        };
         if posture_changed || previous_sleeping_until != guard.state.sleeping_until {
-            guard.persist_state(&self.runtime.inner.storage).await?;
+            if let Some(decision) = decision {
+                guard
+                    .persist_state_with_original_sleep_audits(decision)
+                    .await?;
+            } else {
+                guard.persist_state(&self.runtime.inner.storage).await?;
+            }
         }
         Ok(Some(SleepTransition {
             state: guard.state.clone(),
+            #[cfg(test)]
             posture_changed,
         }))
     }
@@ -878,6 +891,51 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         let settle_reducer_only_wait =
             canonical_claim.is_none() && persisted_message.kind == MessageKind::TaskResult;
+        let observed_wait_plan = if canonical_claim.is_some() || settle_reducer_only_wait {
+            if let Some(target) = self
+                .runtime
+                .wait_resolution_plan_target(&persisted_message, &read.work)?
+            {
+                match self.runtime.capture_observed_work_plan_with_prior(
+                    &target.id, target.revision, Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(&read.state,&read.work,&read.resource_stamp,read.material_estimate()?)),
+                ) {
+                    Ok(plan) if !plan.requires_first_file() => Some(plan),
+                    Ok(_) => {
+                        drop(planning_guard.take());
+                        if let Err(error)=self.runtime.prepare_observed_work_plan_with_prior(
+                            &target.id, target.revision, Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(&read.state,&read.work,&read.resource_stamp,read.material_estimate()?)),
+                        ).await {
+                            if error.downcast_ref::<super::resource_refresh::WorkPlanReplanRequired>().is_none() {return Err(error);}
+                        }
+                        return Ok(PrepareMessageOutcome::Replan);
+                    }
+                    Err(error) if error.downcast_ref::<super::resource_refresh::WorkPlanFilePreparationRequired>().is_some()
+                        || matches!(error.downcast_ref::<super::resource_observation::ResourceObservationError>(),
+                            Some(super::resource_observation::ResourceObservationError::SourceChanged
+                                | super::resource_observation::ResourceObservationError::ObsoleteRefresh
+                                | super::resource_observation::ResourceObservationError::NotReady(
+                                    super::resource_observation::ResourceFreshness::Dirty(_)
+                                    | super::resource_observation::ResourceFreshness::Unobserved))) => {
+                        drop(planning_guard.take());
+                        if let Err(error)=self.runtime.prepare_observed_work_plan_with_prior(
+                            &target.id, target.revision, Some(crate::runtime::resource_refresh::WorkPlanReadPrior::new(&read.state,&read.work,&read.resource_stamp,read.material_estimate()?)),
+                        ).await {
+                            if error.downcast_ref::<super::resource_refresh::WorkPlanReplanRequired>().is_none() {return Err(error);}
+                        }
+                        return Ok(PrepareMessageOutcome::Replan);
+                    }
+                    Err(error) if error.downcast_ref::<super::resource_refresh::WorkPlanReplanRequired>().is_some() => {
+                        return Ok(PrepareMessageOutcome::Replan);
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
                 Some(ExecutionAdmissionProvenance::Canonical {
@@ -1026,8 +1084,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .unwrap_or_default();
                 let wait_transition = (canonical_claim.is_some() || settle_reducer_only_wait)
                     .then(|| {
-                        self.runtime
-                            .wait_resolution_transition_for_message(&persisted_message, &work)
+                        self.runtime.wait_resolution_transition_for_message(
+                            &persisted_message,
+                            &work,
+                            observed_wait_plan.as_deref(),
+                        )
                     })
                     .transpose()?
                     .flatten();
@@ -1065,6 +1126,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         }),
                     ));
                 }
+                let state_audit = self
+                    .runtime
+                    .prepare_original_state_changed_audit(&running_state, &attempt_audit_events)?;
+                attempt_audit_events.push(state_audit.event().clone());
                 let command = crate::runtime_db::transitions::QueueTransitionCommand {
                     agent_id: agent_id.clone(),
                     operation: crate::runtime_db::transitions::QueueOperation::Claim,
@@ -1121,6 +1186,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     prepared.timer_wake_claim = timer_wake_claim;
                     guard.commit_prepared_queue(run_id.clone(), prepared).await
                 };
+                drop(state_audit);
                 let commit = match commit_result {
                     Ok(commit) => commit,
                     Err(error) => {
@@ -1202,9 +1268,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             let admitted = admitted_read.records()?;
             if !admitted.is_empty() {
                 self.runtime
-                    .inner
-                    .storage
-                    .append_event(&AuditEvent::legacy(
+                    .append_owned_runtime_audit_event(AuditEvent::legacy(
                         "task_result_settlements_admitted",
                         serde_json::json!({
                             "agent_id": message.agent_id,
@@ -1215,7 +1279,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                 .map(|record| record.result_identity.as_str())
                                 .collect::<Vec<_>>(),
                         }),
-                    ))?;
+                    ))
+                    .await?;
             }
         }
 
@@ -2828,15 +2893,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         })
     }
 
-    fn append_posture_decision(
+    fn posture_decision(
         &self,
         boundary: &'static str,
         reason: &'static str,
         previous_status: &AgentStatus,
         next_status: &AgentStatus,
         evidence: Vec<String>,
-    ) -> Result<()> {
-        self.runtime.inner.storage.append_event(&AuditEvent::legacy(
+    ) -> Result<AuditEvent> {
+        Ok(AuditEvent::legacy(
             "scheduler_posture_decision",
             serde_json::json!({
                 "boundary": boundary,

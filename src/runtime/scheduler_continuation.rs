@@ -95,7 +95,7 @@ impl RuntimeHandle {
         trigger: &ContinuationTrigger,
         prior_closure: &ClosureDecision,
     ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "continuation_trigger_received",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
@@ -108,7 +108,8 @@ impl RuntimeHandle {
                 "prior_closure_outcome": prior_closure.outcome,
                 "prior_waiting_reason": prior_closure.waiting_reason
             }),
-        ))?;
+        ))
+        .await?;
         Ok(())
     }
 
@@ -117,14 +118,15 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         continuation_resolution: &ContinuationResolution,
     ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "continuation_resolved",
             serde_json::json!({
                 "agent_id": self.agent_id().await?,
                 "message_id": message.id,
                 "resolution": continuation_resolution
             }),
-        ))?;
+        ))
+        .await?;
         Ok(())
     }
 
@@ -161,7 +163,7 @@ impl RuntimeHandle {
             return Ok(false);
         }
         let mut read = mutation
-            .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
+            .prepare_scheduler_continuation_read(self.now())
             .await?;
         let mut pending_wake_hint = read.state.pending_wake_hint.clone();
         // The hook can invoke runtime APIs. Only selected owned observations,
@@ -169,8 +171,9 @@ impl RuntimeHandle {
         drop(mutation);
         let mut scheduler_projection = read.projection;
         let mut due_rechecks = read.due_rechecks;
-        let mut queued_retry_statuses =
-            self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
+        let mut queued_retry_statuses = self
+            .filter_suppressed_queued_available_work_items(&mut scheduler_projection, &read.current)
+            .await?;
         let async_hook = self
             .inner
             .autonomous_continuation_decision_hook
@@ -195,25 +198,30 @@ impl RuntimeHandle {
         if used_async_hook {
             let mut mutation = self.begin_mutation().await?;
             read = mutation
-                .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
+                .prepare_scheduler_continuation_read(self.now())
                 .await?;
             drop(mutation);
             pending_wake_hint = read.state.pending_wake_hint.clone();
             scheduler_projection = read.projection;
             due_rechecks = read.due_rechecks;
-            queued_retry_statuses =
-                self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
+            queued_retry_statuses = self
+                .filter_suppressed_queued_available_work_items(
+                    &mut scheduler_projection,
+                    &read.current,
+                )
+                .await?;
         }
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
-                self.inner.storage.append_event(&AuditEvent::legacy(
+                self.append_owned_runtime_audit_event(AuditEvent::legacy(
                     "autonomous_continuation_selection_fallback",
                     serde_json::json!({
                         "agent_id": self.agent_id().await?,
                         "reason": reason.as_str(),
                         "candidate_count": selection.candidate_count(),
                     }),
-                ))?;
+                ))
+                .await?;
             }
         }
         let work_reactivation = selection
@@ -247,6 +255,7 @@ impl RuntimeHandle {
                         &active,
                         generation,
                         &read.tasks,
+                        &read.current,
                     )?
                     .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief)
                 };
@@ -267,16 +276,12 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &self.inner.default_agent_id,
-                        &decision,
-                    )?;
+                    self.append_owned_scheduler_decision(&decision).await?;
                     if let Some(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief(
                         result_brief_id,
                     )) = duplicate
                     {
-                        self.inner.storage.append_event(&AuditEvent::legacy(
+                        self.append_owned_runtime_audit_event(AuditEvent::legacy(
                             "system_tick_suppressed",
                             serde_json::json!({
                                 "subsystem": "work_queue",
@@ -284,7 +289,8 @@ impl RuntimeHandle {
                                 "work_item_id": active.id,
                                 "result_brief_id": result_brief_id
                             }),
-                        ))?;
+                        ))
+                        .await?;
                     }
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
@@ -326,11 +332,7 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &self.inner.default_agent_id,
-                        &decision,
-                    )?;
+                    self.append_owned_scheduler_decision(&decision).await?;
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
@@ -362,11 +364,7 @@ impl RuntimeHandle {
                     decision.kind,
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &self.inner.default_agent_id,
-                        &decision,
-                    )?;
+                    self.append_owned_scheduler_decision(&decision).await?;
                     let mut guard = self.begin_mutation().await?;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;
@@ -376,11 +374,7 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                scheduler::append_scheduler_decision(
-                    &self.inner.storage,
-                    &self.inner.default_agent_id,
-                    &decision,
-                )?;
+                self.append_owned_scheduler_decision(&decision).await?;
                 self.emit_system_tick_from_wake_hint(&pending, decision.work_item_id.as_deref())
                     .await?;
 
@@ -411,11 +405,7 @@ impl RuntimeHandle {
                         decision.boundary(scheduler::SchedulerBoundary::IdleTick.as_str())
                     })
                 {
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &self.inner.default_agent_id,
-                        &decision,
-                    )?;
+                    self.append_owned_scheduler_decision(&decision).await?;
                 }
                 Ok(false)
             }
@@ -537,7 +527,7 @@ impl RuntimeHandle {
                 "waiting_for": condition.waiting_for,
             }
         }));
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "wait_condition_recheck_due",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -545,9 +535,10 @@ impl RuntimeHandle {
                 "message_id": message.id,
                 "recheck_at": recheck_at,
             }),
-        ))?;
+        ))
+        .await?;
         let _ = self.enqueue(message).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "wait_condition_recheck_enqueued",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -558,13 +549,15 @@ impl RuntimeHandle {
                 ),
                 "recheck_at": recheck_at,
             }),
-        ))?;
+        ))
+        .await?;
         Ok(true)
     }
 
-    fn filter_suppressed_queued_available_work_items(
+    async fn filter_suppressed_queued_available_work_items(
         &self,
         projection: &mut scheduler::SchedulerProjection,
+        events: &super::current_read_facts::CapturedCurrentReadFacts,
     ) -> Result<std::collections::HashMap<String, QueuedAvailableRetryStatus>> {
         let now = self.now();
         let recent_messages = if projection.queued_runnable_work_items.is_empty() {
@@ -584,36 +577,44 @@ impl RuntimeHandle {
                     retry_at,
                     episode_key,
                     message_id,
-                } => self.append_queued_available_retry_event(
-                    "work_queue_redispatch_backoff_scheduled",
-                    episode_key,
-                    Some(*attempts),
-                    serde_json::json!({
-                        "subsystem": "work_queue",
-                        "work_item_id": work_item.id,
-                        "work_item_revision": work_item.revision,
-                        "no_progress_attempts": attempts,
-                        "retry_at": retry_at.to_rfc3339(),
-                        "message_id": message_id
-                    }),
-                )?,
+                } => {
+                    self.append_queued_available_retry_event(
+                        events,
+                        "work_queue_redispatch_backoff_scheduled",
+                        episode_key,
+                        Some(*attempts),
+                        serde_json::json!({
+                            "subsystem": "work_queue",
+                            "work_item_id": work_item.id,
+                            "work_item_revision": work_item.revision,
+                            "no_progress_attempts": attempts,
+                            "retry_at": retry_at.to_rfc3339(),
+                            "message_id": message_id
+                        }),
+                    )
+                    .await?
+                }
                 QueuedAvailableRetryStatus::Exhausted {
                     attempts,
                     episode_key,
                     message_id,
-                } => self.append_queued_available_retry_event(
-                    "work_queue_redispatch_stalled",
-                    episode_key,
-                    None,
-                    serde_json::json!({
-                        "subsystem": "work_queue",
-                        "work_item_id": work_item.id,
-                        "work_item_revision": work_item.revision,
-                        "no_progress_attempts": attempts,
-                        "awaiting": "new_external_signal_or_work_item_update",
-                        "message_id": message_id
-                    }),
-                )?,
+                } => {
+                    self.append_queued_available_retry_event(
+                        events,
+                        "work_queue_redispatch_stalled",
+                        episode_key,
+                        None,
+                        serde_json::json!({
+                            "subsystem": "work_queue",
+                            "work_item_id": work_item.id,
+                            "work_item_revision": work_item.revision,
+                            "no_progress_attempts": attempts,
+                            "awaiting": "new_external_signal_or_work_item_update",
+                            "message_id": message_id
+                        }),
+                    )
+                    .await?
+                }
                 QueuedAvailableRetryStatus::Ready => {}
             }
             retry_statuses.insert(work_item.id.clone(), status);
@@ -703,18 +704,21 @@ impl RuntimeHandle {
         })
     }
 
-    fn append_queued_available_retry_event(
+    async fn append_queued_available_retry_event(
         &self,
+        events: &super::current_read_facts::CapturedCurrentReadFacts,
         kind: &str,
         episode_key: &str,
         attempt_count: Option<usize>,
         data: serde_json::Value,
     ) -> Result<()> {
-        let already_recorded = self
-            .inner
-            .storage
-            .read_recent_events(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
+        let already_recorded = events
+            .events
             .iter()
+            .filter_map(|record| match &record.fact {
+                super::current_read_facts::CurrentReadFact::Event(event) => Some(event),
+                _ => None,
+            })
             .any(|event| {
                 event.kind == kind
                     && event
@@ -735,9 +739,8 @@ impl RuntimeHandle {
         }
         let mut data = data;
         data["episode_key"] = serde_json::Value::String(episode_key.to_string());
-        self.inner
-            .storage
-            .append_event(&AuditEvent::legacy(kind, data))?;
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(kind, data))
+            .await?;
         Ok(())
     }
 
@@ -746,6 +749,7 @@ impl RuntimeHandle {
         work_item: &crate::types::WorkItemRecord,
         generation: Option<u64>,
         tasks: &super::resident_task::CapturedTasks,
+        events: &super::current_read_facts::CapturedCurrentReadFacts,
     ) -> Result<Option<String>> {
         if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
             &scheduler::work_queue_tick_idempotency_key(work_item, "continue_active", generation),
@@ -758,6 +762,7 @@ impl RuntimeHandle {
                 message_created_at,
                 "continue_active",
                 tasks,
+                events,
             )? {
                 return Ok(None);
             }
@@ -778,6 +783,7 @@ impl RuntimeHandle {
             result_brief.created_at,
             "continue_active",
             tasks,
+            events,
         )? {
             return Ok(None);
         }
@@ -862,11 +868,7 @@ impl RuntimeHandle {
                 duplicate,
             }),
         );
-        scheduler::append_scheduler_decision(
-            &self.inner.storage,
-            &self.inner.default_agent_id,
-            &decision,
-        )?;
+        self.append_owned_scheduler_decision(&decision).await?;
         if !matches!(
             decision.kind,
             scheduler::SchedulerDecisionKind::EmitSystemTick
@@ -884,6 +886,7 @@ impl RuntimeHandle {
         anchor: chrono::DateTime<chrono::Utc>,
         ignored_runtime_reason: &str,
         tasks: &super::resident_task::CapturedTasks,
+        events: &super::current_read_facts::CapturedCurrentReadFacts,
     ) -> Result<bool> {
         let work_item_id = work_item.id.as_str();
 
@@ -936,13 +939,11 @@ impl RuntimeHandle {
             return Ok(true);
         }
 
-        if self
-            .inner
-            .storage
-            .read_recent_events(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
-            .iter()
-            .any(|event| event.kind == "runtime_error" && event.created_at > anchor)
-        {
+        if events.events.iter().any(|record| {
+            matches!(&record.fact,
+            super::current_read_facts::CurrentReadFact::Event(event)
+                if event.kind == "runtime_error" && event.created_at > anchor)
+        }) {
             return Ok(true);
         }
 
@@ -1006,7 +1007,7 @@ impl RuntimeHandle {
         {
             message.source_refs.insert("wait_id".into(), wait_id);
         }
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "wake_hint",
@@ -1016,7 +1017,8 @@ impl RuntimeHandle {
                     .and_then(|value| value.get("wake_hint"))
                     .cloned()
             }),
-        ))?;
+        ))
+        .await?;
         let _ = self.enqueue(message).await?;
         Ok(())
     }
@@ -1027,6 +1029,45 @@ impl RuntimeHandle {
         work_item_generation: Option<u64>,
         reason: &str,
         decision: Option<&scheduler::SchedulerDecision>,
+    ) -> Result<()> {
+        self.emit_system_tick_from_work_queue_inner(
+            work_item,
+            work_item_generation,
+            reason,
+            decision,
+            None,
+        )
+        .await
+    }
+    pub(super) async fn emit_system_tick_from_original_sleep_override(
+        &self,
+        observation: &super::sleep_override_audits::OriginalSleepOverrideObservation,
+        decision: Option<&scheduler::SchedulerDecision>,
+    ) -> Result<()> {
+        observation.material.validate_binding(
+            &super::resident_input_evidence::InputEvidenceScope {
+                agent_id: self.instance_agent_id().into(),
+                identity_incarnation: self.instance_incarnation(),
+            },
+            self.instance_owner_epoch(),
+            &self.inner.input_evidence_budget,
+        )?;
+        self.emit_system_tick_from_work_queue_inner(
+            &observation.work_item,
+            observation.generation,
+            observation.reason,
+            decision,
+            Some(observation.material.clone()),
+        )
+        .await
+    }
+    async fn emit_system_tick_from_work_queue_inner(
+        &self,
+        work_item: &crate::types::WorkItemRecord,
+        work_item_generation: Option<u64>,
+        reason: &str,
+        decision: Option<&scheduler::SchedulerDecision>,
+        sleep_material: Option<Arc<super::OriginalSleepOverrideMaterial>>,
     ) -> Result<()> {
         let idempotency_key =
             scheduler::work_queue_tick_idempotency_key(work_item, reason, work_item_generation);
@@ -1172,11 +1213,12 @@ impl RuntimeHandle {
                 };
                 let operation_id = command.audit_events[0].id.clone();
                 let commit_result = guard
-                    .commit_prepared_queue(
+                    .commit_prepared_queue_with_original_sleep_material(
                         operation_id,
                         crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(
                             &command,
                         )),
+                        sleep_material.clone(),
                     )
                     .await;
                 let commit = match commit_result {
@@ -1291,7 +1333,7 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_owned_runtime_audit_event(AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "work_item_recheck",
@@ -1301,7 +1343,8 @@ impl RuntimeHandle {
                     .and_then(|value| value.get("work_item_recheck"))
                     .cloned()
             }),
-        ))?;
+        ))
+        .await?;
         let _ = self.enqueue(message).await?;
         Ok(())
     }
@@ -1366,6 +1409,9 @@ mod tests {
 
     struct TestRuntime {
         runtime: RuntimeHandle,
+        // Synchronous fixtures must keep the real observer executor alive
+        // across setup, continuation and original Work file preparation.
+        _observer_runtime: Option<tokio::runtime::Runtime>,
         _dir: TempDir,
         _workspace: TempDir,
     }
@@ -1373,7 +1419,11 @@ mod tests {
     fn test_runtime() -> TestRuntime {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
-        let runtime = RuntimeHandle::new(
+        let observer_runtime = tokio::runtime::Handle::try_current()
+            .is_err()
+            .then(|| tokio::runtime::Runtime::new().unwrap());
+        let entered = observer_runtime.as_ref().map(|runtime| runtime.enter());
+        let runtime = RuntimeHandle::new_without_user_home_for_test(
             "default",
             dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -1383,9 +1433,12 @@ mod tests {
             ContextConfig::default(),
         )
         .unwrap();
+        drop(entered);
+        assert!(runtime.inner.config_snapshot.load().user_home_dir.is_none());
 
         TestRuntime {
             runtime,
+            _observer_runtime: observer_runtime,
             _dir: dir,
             _workspace: workspace,
         }
@@ -1554,6 +1607,26 @@ mod tests {
             .is_some_and(|trigger| trigger.exact_wait_recheck));
     }
 
+    fn emit_pending_tick_with_resource_diagnostic(
+        test_runtime: &TestRuntime,
+        executor: &tokio::runtime::Runtime,
+    ) -> Result<bool> {
+        let result = executor.block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None));
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let diagnostic = executor.block_on(
+                    test_runtime
+                        .runtime
+                        .original_continuation_resource_failure_for_test(),
+                );
+                Err(error.context(format!(
+                    "original continuation resource failure: {diagnostic}"
+                )))
+            }
+        }
+    }
+
     fn fixture_block_on<T>(future: impl std::future::Future<Output = T>) -> T {
         tokio::runtime::Runtime::new().unwrap().block_on(future)
     }
@@ -1579,11 +1652,12 @@ mod tests {
     }
 
     fn clear_queue(test_runtime: &TestRuntime) {
-        // Complete each actual admission; dropping a private queue would leave
-        // its canonical pending responsibility and published root unchanged.
+        // Settle each original admission together with its pending State
+        // responsibility; the cfg terminal-less wrapper does not change State.
         fixture_block_on(async {
+            let runtime = &test_runtime.runtime;
             let messages = {
-                let agent = test_runtime.runtime.inner.agent.lock().await;
+                let agent = runtime.inner.agent.lock().await;
                 agent
                     .queue
                     .shared_messages()
@@ -1591,9 +1665,17 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             for message in messages {
-                assert!(test_runtime
-                    .runtime
-                    .commit_queue_settlement(
+                let mut owner = runtime.begin_mutation().await.unwrap();
+                assert!(owner
+                    .queue
+                    .peek_next_matching(|queued| queued.id == message.id)
+                    .is_some());
+                let mut after = owner.state.clone();
+                after.pending = owner.queue.len().checked_sub(1).unwrap();
+                let command = crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: message.agent_id.clone(),
+                    operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                    mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
                         QueueEntryRecord {
                             message_id: message.id,
                             agent_id: message.agent_id,
@@ -1602,12 +1684,53 @@ mod tests {
                             created_at: message.created_at,
                             updated_at: Utc::now(),
                         },
-                        Vec::new(),
-                        false,
+                    ),
+                    scheduler_claim_work_item: None,
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(owner.last_persisted_state.clone())),
+                        record: Box::new(after),
+                    }),
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: Vec::new(),
+                };
+                let commit = owner
+                    .commit_prepared_queue(
+                        crate::ids::audit_event_id(),
+                        crate::runtime_db::transitions::PreparedQueueTransition::new(command),
                     )
                     .await
-                    .unwrap());
+                    .unwrap();
+                assert!(commit.applied);
             }
+            let owner = runtime.begin_mutation().await.unwrap();
+            assert!(owner.queue.is_empty());
+            assert_eq!(owner.state.pending, 0);
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .agent_states()
+                    .latest(&owner.state.id)
+                    .unwrap()
+                    .unwrap()
+                    .pending,
+                0
+            );
+            assert!(runtime
+                .runtime_db()
+                .queue_entries()
+                .latest_all()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.agent_id != owner.state.id
+                    || !matches!(
+                        entry.status,
+                        QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+                    )));
         });
     }
 
@@ -2019,9 +2142,7 @@ mod tests {
         fixture_block_on(test_runtime.runtime.enqueue(message)).unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
+        let emitted = emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap();
 
         assert!(
             !emitted,
@@ -2048,9 +2169,7 @@ mod tests {
         block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
+        let emitted = emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap();
 
         assert!(!emitted, "running agent should not receive a recheck tick");
         assert!(get_emitted_system_ticks(&test_runtime).is_empty());
@@ -2120,9 +2239,7 @@ mod tests {
         block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
+        let emitted = emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap();
 
         assert!(emitted, "idle agent should still receive due recheck tick");
         let ticks = get_emitted_system_ticks(&test_runtime);
@@ -2141,9 +2258,7 @@ mod tests {
             block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        assert!(rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap());
+        assert!(emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap());
 
         let ticks = get_emitted_system_ticks(&test_runtime);
         assert_eq!(ticks.len(), 1);
@@ -2216,9 +2331,7 @@ mod tests {
         persist_test_work_item(&test_runtime, &earlier);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        assert!(rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap());
+        assert!(emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap());
 
         let ticks = get_emitted_system_ticks(&test_runtime);
         assert_eq!(ticks.len(), 1);
@@ -2304,9 +2417,7 @@ mod tests {
         block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for wake");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
+        let emitted = emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap();
 
         assert!(emitted, "wake hint should still emit a system tick");
         let ticks = get_emitted_system_ticks(&test_runtime);
@@ -2336,9 +2447,7 @@ mod tests {
         block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
+        let emitted = emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap();
 
         assert!(emitted, "current runnable work should emit a system tick");
         let ticks = get_emitted_system_ticks(&test_runtime);
@@ -2367,9 +2476,7 @@ mod tests {
         block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
+        let emitted = emit_pending_tick_with_resource_diagnostic(&test_runtime, &rt).unwrap();
 
         assert!(emitted, "queued runnable work should emit a system tick");
         let ticks = get_emitted_system_ticks(&test_runtime);
@@ -3097,17 +3204,56 @@ mod tests {
             }
         }));
         persist_fixture_message(&test_runtime, &existing_tick);
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_event(&AuditEvent::legacy(
-                "runtime_error",
-                serde_json::json!({"message_id": existing_tick.id}),
-            ))
-            .unwrap();
-
         let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(
+            test_runtime
+                .runtime
+                .append_runtime_audit_event(AuditEvent::legacy(
+                    "runtime_error",
+                    serde_json::json!({"message_id": existing_tick.id}),
+                )),
+        )
+        .unwrap();
+        // The accepted error is older than the normal 64 Event bodies. The
+        // continuation's original finite role must still observe it within 512.
+        rt.block_on(async {
+            let mut mutation = test_runtime.runtime.begin_mutation().await?;
+            let root = mutation.capture_published_root()?;
+            let at = test_runtime.runtime.now();
+            let mut after = root.state.as_ref().clone();
+            after.last_wake_reason = Some("continuation-error-window-padding".into());
+            let prepared = crate::runtime_db::transitions::PreparedInputTransition::posture(
+                mutation.input_evidence_scope(),
+                "continuation-error-window-padding".into(),
+                at,
+                crate::runtime_db::transitions::AgentPostureTransitionCommand {
+                    agent_id: root.state.id.clone(),
+                    expected_incarnation: Some(root.token.identity_incarnation),
+                    agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(root.state.as_ref().clone())),
+                        record: Box::new(after),
+                    },
+                    audit_events: (0..65)
+                        .map(|index| {
+                            let mut event =
+                                AuditEvent::legacy("continuation-padding", serde_json::Value::Null);
+                            event.id = format!("continuation-padding-{index:03}");
+                            event.created_at = at;
+                            event
+                        })
+                        .collect(),
+                    fault: None,
+                },
+                None,
+            )?;
+            let commit=mutation.commit_prepared_input_transition(prepared).await?;
+            assert!(commit.applied,"padding must be a real original State/Audit ACK");
+            assert_eq!(test_runtime.runtime.runtime_db().connection()?.query_row(
+                "SELECT COUNT(*) FROM current_read_members WHERE family='event' AND record_id LIKE 'continuation-padding-%'",[],|row|row.get::<_,usize>(0),
+            )?,65);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
         assert!(
             rt.block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
                 .unwrap(),
@@ -3521,17 +3667,16 @@ mod tests {
         }));
         persist_fixture_message(&test_runtime, &existing_tick);
         append_result_brief_for_work_item(&test_runtime, &active.id, "Failed progress.");
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_event(&AuditEvent::legacy(
-                "runtime_error",
-                serde_json::json!({"work_item_id": active.id}),
-            ))
-            .unwrap();
-
         let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(
+            test_runtime
+                .runtime
+                .append_runtime_audit_event(AuditEvent::legacy(
+                    "runtime_error",
+                    serde_json::json!({"work_item_id": active.id}),
+                )),
+        )
+        .unwrap();
         assert!(
             rt.block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
                 .unwrap(),

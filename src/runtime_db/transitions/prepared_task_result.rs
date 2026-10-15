@@ -102,6 +102,26 @@ impl PreparedTaskResultTransition {
         }
         Ok(())
     }
+    /// The same original selector is sized before its first owned address.
+    /// This callback only borrows the enclosing Task material, not admission.
+    pub(super) fn admit_selection_material_tx(
+        &self,
+        tx: &Transaction<'_>,
+        observe: &mut dyn FnMut(usize,usize,usize)->Result<()>,
+    ) -> Result<()> {
+        use results::TaskResultSelectionRead as Read;
+        let selection=match &self.operation {
+            TaskResultOperation::AdmitUnsettled {work_item_id,..}=>Read::Owner {agent:&self.agent_id,work:work_item_id.as_deref()},
+            TaskResultOperation::AdmitReply {work_item_id,message_id,..}=>Read::Reply {agent:&self.agent_id,work:work_item_id.as_deref(),message:message_id},
+            TaskResultOperation::AdmitMessage {message_id,..}
+                |TaskResultOperation::SettleOwnerUnavailable {message_id,..}
+                |TaskResultOperation::Defer {message_id,..}=>Read::Message {message:message_id},
+            TaskResultOperation::SettleInvalidOnly {message_id,..}=>Read::InvalidOnly {agent:&self.agent_id,message:message_id},
+            TaskResultOperation::Wake {work_item_id,..}=>Read::Wake {agent:&self.agent_id,work:work_item_id},
+            TaskResultOperation::EnsurePending {..}=>anyhow::bail!("ensurePending requires its original typed Task material"),
+        };
+        results::admit_original_selection_material_tx(tx,selection,observe)
+    }
     pub(super) fn selection_tx<'tx, 'connection>(
         &self,
         tx: &'tx Transaction<'connection>,

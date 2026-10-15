@@ -152,6 +152,7 @@ impl RuntimeHandle {
                     None
                 };
                 KnownCommit::State {
+                    current_reads: root.current_reads.clone(),
                     state: root.state.clone(),
                     episodes: root.episodes.clone(),
                     input_evidence: root.input_evidence.clone(),
@@ -161,16 +162,18 @@ impl RuntimeHandle {
                     runtime,
                 }
             } else {
-                KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                    identity: Some(observation.identity().clone()),
-                    state: None,
-                }))
+                KnownCommit::Metadata(Arc::new(IdentityMutationFacts::observed(
+                    observation.identity().clone(),
+                    None,
+                    observation.identity_material(),
+                )))
             }
         } else {
-            KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                identity: Some(observation.identity().clone()),
-                state: None,
-            }))
+            KnownCommit::Metadata(Arc::new(IdentityMutationFacts::observed(
+                observation.identity().clone(),
+                None,
+                observation.identity_material(),
+            )))
         };
         Ok(Arc::new(InitialTaskStopReadonlyMember {
             observation,
@@ -420,7 +423,7 @@ mod tests {
             OriginalInputMutationAttempt::new(prepared.descriptor().clone()),
             vec![],
         )?
-        .with_input_runtime(vec![Arc::new(mutation.facts(Default::default()))])?
+        .with_input_runtime(vec![Arc::new(mutation.facts(Default::default())?)])?
         .with_initial_task_stop_readonly(mutation.task_stop_readonly.clone())?;
         MutationReservation::begin_all_with_witness(
             &mut mutation.reservations,

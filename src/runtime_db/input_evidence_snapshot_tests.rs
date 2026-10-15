@@ -17,6 +17,9 @@ use crate::{
 };
 use rusqlite::Connection;
 
+#[path = "input_read_window_tests.rs"]
+mod window_material_tests;
+
 fn time() -> DateTime<Utc> {
     "2026-10-12T00:00:00Z".parse().unwrap()
 }
@@ -1307,6 +1310,7 @@ fn explicit_interrupted_source_request_keeps_all_candidates_and_rejects_missing_
             .cloned()
             .collect(),
         InputEvidenceCoverage {
+            query: Default::default(),
             selected_completion_brief_ids: Default::default(),
             completion_source_observations: Default::default(),
             recovery_source_absences: Default::default(),
@@ -2012,6 +2016,7 @@ fn asserted_missing_provider_source_is_focused_authority_evidence_not_lookup_abs
         scope(),
         accepted.records,
         InputEvidenceCoverage {
+            query: Default::default(),
             selected_completion_brief_ids: Default::default(),
             completion_source_observations: Default::default(),
             recovery_source_absences: Default::default(),
@@ -2398,5 +2403,361 @@ fn dispatch_briefs_follow_current_digest_and_pruning_and_never_successor_history
         assert!(qualified_dispatch_briefs_tx(tx, &scope(), 64, 1024 * 1024).is_err());
         Ok(())
     })?;
+    Ok(())
+}
+
+#[test]
+fn selected_attempt_reuses_its_same_tx_guarded_state_and_alias_prior() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    let (_directory, db) = fresh()?;
+    let attempt = claim_only_attempt(&db)?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let mut policy = request(InputWindowSelector::GlobalTurns, 1);
+    policy.record_limit = MAX_RECORDS;
+    policy.byte_limit = MAX_METADATA_BYTES;
+    let (proof, guards) = db.transaction(|tx| {
+        let actual_scope = scope();
+        let mut material = read_material::InputReadMaterial::new(&actual_scope, &policy, &ledger, (0,0))?;
+        let facts = material.scope_facts_tx(tx)?;
+        material.binding_metadata_tx(tx)?;
+        let binding = binding_on(tx, &actual_scope)?;
+        let key = Key::new(Family::Attempt, &attempt.attempt_id);
+        material.record_metadata_tx(tx, &binding, &key)?;
+        let alias = alias_on(tx, &actual_scope, &key)?.context("actual Attempt alias missing")?;
+        assert!(alias.attempt_turn_proof.as_ref().is_some_and(|p| p.turn_keys.is_empty()));
+        // The original observations remain valid; forbid second State/alias reads.
+        tx.execute_batch("ALTER TABLE agent_states RENAME TO attempt_state_read_forbidden; ALTER TABLE input_evidence_current RENAME TO attempt_alias_read_forbidden")?;
+        let proof = attempt_turn::for_current_from_observation(
+            tx,&actual_scope,&binding,&attempt,alias.attempt_turn_proof.as_ref(),facts.state.as_ref(),&mut material,
+        );
+        tx.execute_batch("ALTER TABLE attempt_alias_read_forbidden RENAME TO input_evidence_current; ALTER TABLE attempt_state_read_forbidden RENAME TO agent_states")?;
+        Ok((proof?,material.into_guards()))
+    })?;
+    assert!(proof.turn_keys.is_empty());
+    assert!(ledger.report()?.observed_bytes > 0);
+    let weak = guards.iter().map(Arc::downgrade).collect::<Vec<_>>();
+    let held = guards.clone();
+    drop(guards);
+    assert!(weak.iter().all(|guard| guard.upgrade().is_some()));
+    drop((proof, held));
+    assert!(weak.iter().all(|guard| guard.upgrade().is_none()));
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn selected_attempt_actual_turn_raw_and_native_gate_precedes_relation_decode() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    for native in [false, true] {
+        let (_directory, db) = fresh()?;
+        let attempt = claim_only_attempt(&db)?;
+        db.transaction(|tx| {
+            let mut turn = TurnRecord::new("agent-a", "claim-turn", 1);
+            turn.input_message_ids.push("claim-source".into());
+            turn.run_id = Some("claim-run".into());
+            upsert_turn_record_tx(tx, &turn)?;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope(),
+                &[CanonicalInputEvidence::Turn(turn)],
+            )?;
+            Ok(())
+        })?;
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let mut policy = request(InputWindowSelector::GlobalTurns, 1);
+        policy.windows.clear();
+        policy
+            .mandatory_roots
+            .insert(Key::new(Family::Attempt, &attempt.attempt_id));
+        policy.record_limit = MAX_RECORDS;
+        policy.byte_limit = MAX_METADATA_BYTES;
+        let observe = || -> Result<_> {
+            db.transaction(|tx| {
+                let actual_scope = scope();
+                let mut material =
+                    read_material::InputReadMaterial::new(&actual_scope, &policy, &ledger, (0, 0))?;
+                let read = prepare_input_evidence_snapshot_with_material_tx(
+                    tx,
+                    &actual_scope,
+                    &policy,
+                    false,
+                    &mut material,
+                )?;
+                Ok((read, material.into_guards()))
+            })
+        };
+        let positive = observe()?;
+        drop(positive);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        let original: String = db.connection()?.query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id='claim-turn'",
+            [],
+            |r| r.get(0),
+        )?;
+        let altered = if native {
+            let mut value: serde_json::Value = serde_json::from_str(&original)?;
+            value["waiting_condition_ids"] = serde_json::json!(vec![String::new(); 40000]);
+            serde_json::to_string(&value)?
+        } else {
+            "{".to_owned() + &"x".repeat(9 * 1024 * 1024)
+        };
+        if native {
+            assert!(altered.len() * 8 < policy.byte_limit);
+        }
+        let aliases: usize =
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| {
+                    r.get(0)
+                })?;
+        db.connection()?.execute(
+            "UPDATE turn_records SET payload_json=?1 WHERE turn_id='claim-turn'",
+            [&altered],
+        )?;
+        let error = observe()
+            .err()
+            .context("actual Attempt relation must budget before Turn decode")?;
+        assert!(
+            matches!(
+                error.downcast_ref::<InputEvidenceSnapshotError>(),
+                Some(InputEvidenceSnapshotError::ResourceExhausted(_))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        assert_eq!(
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| r
+                    .get::<_, usize>(
+                    0
+                ))?,
+            aliases
+        );
+        assert_eq!(
+            db.connection()?.query_row(
+                "SELECT payload_json FROM turn_records WHERE turn_id='claim-turn'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            altered
+        );
+        db.connection()?.execute(
+            "UPDATE turn_records SET payload_json=?1 WHERE turn_id='claim-turn'",
+            [original],
+        )?;
+        drop(observe()?);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_fixed_attempt_turn_proof_is_guarded_before_vec_and_json_decode() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    for native in [false, true] {
+        let (_directory, db) = legacy(|tx| {
+            // Reuse the canonical fixture through an explicit fixed-boundary setup:
+            // absence of a materialized Turn is qualified by the actual Open claim.
+            let mut source = message("legacy-claim");
+            source.turn_id = Some("legacy-hint".into());
+            let (source, _) = append_message_tx(tx, &source)?;
+            let mut state = AgentState::new("agent-a");
+            state.status = crate::types::AgentStatus::AwakeRunning;
+            state.current_run_id = Some("legacy-run".into());
+            upsert_agent_state_tx(tx, &state)?;
+            crate::runtime_db::repositories::upsert_queue_entry_tx(
+                tx,
+                &crate::types::QueueEntryRecord {
+                    message_id: source.id.clone(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: crate::types::QueueEntryStatus::Dequeued,
+                    created_at: time(),
+                    updated_at: time(),
+                },
+            )?;
+            use crate::domain::execution_protocol::*;
+            store_attempt(
+                tx,
+                &ExecutionAttempt {
+                    attempt_id: "legacy-attempt".into(),
+                    agent_id: "agent-a".into(),
+                    source_message_id: Some(source.id.clone()),
+                    source: ExecutionSource {
+                        identity: ExecutionSourceIdentity::QueueMessage {
+                            message_id: source.id.clone(),
+                        },
+                        generation: source.message_seq.unwrap(),
+                    },
+                    binding: ExecutionBinding::Conversation {
+                        interaction_id: source.id,
+                    },
+                    provenance: ExecutionProvenance {
+                        origin: ExecutionOrigin::Operator,
+                        trust: ExecutionTrust::OperatorInstruction,
+                        priority: ExecutionPriority::Normal,
+                        correlation_id: None,
+                        causation_id: None,
+                    },
+                    admitted_fences: AdmittedFences {
+                        source_revision: source.message_seq.unwrap(),
+                        work_item_source_revision: None,
+                        work_item_generation: None,
+                        rejoin: None,
+                        agent_control_revision: 1,
+                        host_registry_revision: 1,
+                    },
+                    state: ExecutionAttemptState::Open,
+                    run_id: None,
+                    turn_id: Some("legacy-hint".into()),
+                    recovery_of_attempt_id: None,
+                    terminal_outcome_id: None,
+                    admitted_at: time().to_rfc3339(),
+                    terminal_at: None,
+                },
+            )
+        })?;
+
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        let mut policy = request(InputWindowSelector::GlobalTurns, 1);
+        policy.record_limit = MAX_RECORDS;
+        policy.byte_limit = MAX_METADATA_BYTES;
+        let observe = || -> Result<_> {
+            db.transaction(|tx| {
+                let actual_scope = scope();
+                let mut material =
+                    read_material::InputReadMaterial::new(&actual_scope, &policy, &ledger, (0, 0))?;
+                let facts = material.scope_facts_tx(tx)?;
+                material.binding_metadata_tx(tx)?;
+                let binding = binding_on(tx, &actual_scope)?;
+                let key = Key::new(Family::Attempt, "legacy-attempt");
+                material.record_metadata_tx(tx, &binding, &key)?;
+                let fingerprint = fingerprint_on(tx, &actual_scope.agent_id, &key)?
+                    .context("fixed Attempt metadata missing")?;
+                require_eligible_metadata(tx, &binding, &key, &fingerprint)?;
+                assert!(alias_on(tx, &actual_scope, &key)?.is_none());
+                material.record_body_tx(tx, &key)?;
+                let payload = payload_on(tx, &actual_scope.agent_id, &key)?
+                    .context("fixed Attempt body missing")?;
+                let CanonicalInputEvidence::Attempt(attempt) = decode_canonical(&key, &payload)?
+                else {
+                    unreachable!()
+                };
+                let proof = attempt_turn::for_current_from_observation(
+                    tx,
+                    &actual_scope,
+                    &binding,
+                    &attempt,
+                    None,
+                    facts.state.as_ref(),
+                    &mut material,
+                )?;
+                Ok((proof, material.into_guards()))
+            })
+        };
+        let positive = observe()?;
+        assert!(positive.0.turn_keys.is_empty());
+        drop(positive);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        let (seed,phase,original):(String,String,String)=db.connection()?.query_row(
+            "SELECT seed_id,capture_phase,proof_json FROM input_evidence_seed_attempt_turns WHERE attempt_id='legacy-attempt' ORDER BY capture_phase LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+        )?;
+        let altered = if native {
+            let mut value: serde_json::Value = serde_json::from_str(&original)?;
+            value["turn_keys"] = serde_json::json!((0..4000)
+                .map(
+                    |index| serde_json::json!({"family":"turn","id":format!("unavailable-{index}")})
+                )
+                .collect::<Vec<_>>());
+            serde_json::to_string(&value)?
+        } else {
+            "{".to_owned() + &"x".repeat(9 * 1024 * 1024)
+        };
+        if native {
+            assert!(altered.len() * 8 < policy.byte_limit);
+        }
+        db.connection()?.execute("UPDATE input_evidence_seed_attempt_turns SET proof_json=?1 WHERE seed_id=?2 AND capture_phase=?3 AND attempt_id='legacy-attempt'",params![altered,seed,phase])?;
+        let error = observe()
+            .err()
+            .context("fixed proof must be guarded before Vec/String/Serde")?;
+        assert!(
+            matches!(
+                error.downcast_ref::<InputEvidenceSnapshotError>(),
+                Some(InputEvidenceSnapshotError::ResourceExhausted(_))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+        assert_eq!(
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM input_evidence_current", [], |r| r
+                    .get::<_, usize>(
+                    0
+                ))?,
+            0
+        );
+        db.connection()?.execute("UPDATE input_evidence_seed_attempt_turns SET proof_json=?1 WHERE seed_id=?2 AND capture_phase=?3 AND attempt_id='legacy-attempt'",params![original,seed,phase])?;
+        let repaired = observe()?;
+        assert!(repaired.0.turn_keys.is_empty());
+        drop(repaired);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_attempt_rejects_foreign_turn_header_before_foreign_body_traversal() -> Result<()> {
+    use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
+    let (_directory, db) = fresh()?;
+    let attempt = claim_only_attempt(&db)?;
+    db.transaction(|tx| {
+        let mut turn = TurnRecord::new("agent-a", "claim-turn", 1);
+        turn.input_message_ids.push("claim-source".into());
+        turn.run_id = Some("claim-run".into());
+        upsert_turn_record_tx(tx, &turn)?;
+        register_committed_input_evidence_tx(tx, &scope(), &[CanonicalInputEvidence::Turn(turn)])?;
+        Ok(())
+    })?;
+    let mut policy = request(InputWindowSelector::GlobalTurns, 1);
+    policy.windows.clear();
+    policy
+        .mandatory_roots
+        .insert(Key::new(Family::Attempt, &attempt.attempt_id));
+    policy.record_limit = MAX_RECORDS;
+    policy.byte_limit = MAX_METADATA_BYTES;
+    let body = "{".to_owned() + &"x".repeat(3 * 1024 * 1024);
+    db.connection()?.execute("UPDATE turn_records SET agent_id='foreign-actual-turn-owner',payload_json=?1 WHERE turn_id='claim-turn'",[&body])?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let error = db
+        .transaction(|tx| {
+            let actual_scope = scope();
+            let mut material =
+                read_material::InputReadMaterial::new(&actual_scope, &policy, &ledger, (0, 0))?;
+            prepare_input_evidence_snapshot_with_material_tx(
+                tx,
+                &actual_scope,
+                &policy,
+                false,
+                &mut material,
+            )
+            .map(|_| ())
+        })
+        .err()
+        .context("foreign Turn header must reject before its bad body")?;
+    assert!(
+        format!("{error:#}").contains("Attempt Turn has a different canonical scope"),
+        "{error:#}"
+    );
+    assert!(error.downcast_ref::<serde_json::Error>().is_none());
+    assert!(error.downcast_ref::<InputEvidenceSnapshotError>().is_none());
+    assert_eq!(ledger.report()?.observed_bytes, 0);
+    assert_eq!(
+        db.connection()?.query_row(
+            "SELECT payload_json FROM turn_records WHERE turn_id='claim-turn'",
+            [],
+            |r| r.get::<_, String>(0)
+        )?,
+        body
+    );
+    assert_eq!(db.connection()?.query_row("SELECT COUNT(*) FROM input_evidence_current WHERE agent_id='foreign-actual-turn-owner'",[],|r|r.get::<_,usize>(0))?,0);
     Ok(())
 }

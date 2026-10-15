@@ -21,38 +21,29 @@ struct Material<'a, 'memory> {
     guards: Vec<Arc<BudgetViewGuard>>,
 }
 impl Material<'_, '_> {
-    fn charge(&mut self, bytes: usize, records: usize, copies: usize) -> Result<()> {
-        let bytes = bytes
-            .checked_mul(copies)
-            .context("Task writer byte overflow")?;
-        let records = records
-            .checked_mul(copies)
-            .context("Task writer record overflow")?;
-        self.bytes = self
-            .bytes
-            .checked_add(bytes)
-            .context("Task writer material overflow")?;
-        self.records = self
-            .records
-            .checked_add(records)
-            .context("Task writer count overflow")?;
-        anyhow::ensure!(
-            self.bytes <= self.request.byte_limit.min(64 * 1024 * 1024)
-                && self.records <= self.request.record_limit.min(65_536),
-            tasks::TaskSnapshotError::ResourceExhausted("original writer material")
-        );
-        if let Some(memory) = &mut self.memory_budget {
-            memory.additional_material(bytes, records, 1)?;
-        }
-        self.guards.push(self.ledger.register_owned_bytes(
+    fn with_task_material<T>(
+        &mut self,
+        action: impl FnOnce(&mut tasks::read_preparation::TaskReadMaterial<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut phase = tasks::read_preparation::TaskReadMaterial::new(
             self.scope,
-            InputMemoryCategory::Candidate,
-            OwnedBytesEstimate {
-                payload_bytes: u64::try_from(bytes)?,
-                metadata_estimate_bytes: 0,
-            },
-        )?);
-        Ok(())
+            self.request,
+            Some(self.ledger),
+        )
+        .with_memory_budget(self.memory_budget.as_deref_mut())
+        .with_admitted_material(tasks::TaskMaintenanceMaterial {
+            bytes: self.bytes,
+            records: self.records,
+        })?;
+        let result = action(&mut phase);
+        let usage = phase.material_estimate();
+        self.bytes = usage.bytes;
+        self.records = usage.records;
+        self.guards.extend(phase.into_guards());
+        result
+    }
+    fn charge(&mut self, bytes: usize, records: usize, copies: usize) -> Result<()> {
+        self.with_task_material(|phase| phase.charge_writer_material(bytes, records, copies))
     }
     fn remaining(&self) -> Result<tasks::TaskDomainLoadRequest> {
         let byte_limit = self
@@ -157,6 +148,20 @@ pub(super) struct TaskTransaction<'tx, 'connection, 'command> {
     child_phase: bool,
 }
 impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
+    pub(super) fn input_writer_material(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(usize, usize)> {
+        anyhow::ensure!(
+            self.proof.scope() == scope && !self.guards.is_empty(),
+            "Native Input Task prior lacks its original guards"
+        );
+        for guard in &self.guards {
+            guard.validate_owned_material_binding(scope, ledger, 0)?;
+        }
+        Ok(self.material_total)
+    }
     pub(super) fn task_write_proof(&self) -> &tasks::TaskWriteProof {
         &self.proof
     }
@@ -399,8 +404,37 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
             &mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget,
         >,
     ) -> Result<()> {
-        self.finish_inner(tx, value, ledger, memory_budget, None)
+        self.finish_using_original_material(tx, value, ledger, memory_budget, None, None)
             .map(|_| ())
+    }
+    pub(super) fn finish_using_original_material(
+        mut self,
+        tx: &Transaction<'_>,
+        value: &mut TransitionCommit,
+        ledger: &InputEvidenceBudgetLedger,
+        memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+        inserted: Option<&crate::runtime_db::task_stop::TaskStopInsertedObservation<'_, '_>>,
+        remaining: Option<(usize, usize)>,
+    ) -> Result<tasks::TaskMaintenanceMaterial> {
+        if let Some(remaining) = remaining {
+            anyhow::ensure!(
+                remaining.0 > 0 && remaining.1 > 0,
+                tasks::TaskSnapshotError::ResourceExhausted("original final allowance")
+            );
+            self.request.byte_limit = self.request.byte_limit.min(
+                self.material_total
+                    .0
+                    .checked_add(remaining.0)
+                    .context("Task final byte allowance overflow")?,
+            );
+            self.request.record_limit = self.request.record_limit.min(
+                self.material_total
+                    .1
+                    .checked_add(remaining.1)
+                    .context("Task final node allowance overflow")?,
+            );
+        }
+        self.finish_inner(tx, value, ledger, memory, inserted)
     }
     pub(super) fn finish_with_stop_observation(
         self,
@@ -412,7 +446,7 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
         >,
         inserted: &crate::runtime_db::task_stop::TaskStopInsertedObservation<'_, '_>,
     ) -> Result<()> {
-        self.finish_inner(tx, value, ledger, memory_budget, Some(inserted))
+        self.finish_using_original_material(tx, value, ledger, memory_budget, Some(inserted), None)
             .map(|_| ())
     }
     fn finish_inner(
@@ -440,7 +474,24 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
             .effects
             .task_observation_keys
             .extend(self.observations);
-        let after = tasks::task_maintenance_material_tx(tx, self.proof.scope(), &self.allowed)?;
+        let original_scope = self.proof.scope().clone();
+        let mut phase = tasks::read_preparation::TaskReadMaterial::new(
+            &original_scope,
+            &self.request,
+            Some(ledger),
+        )
+        .with_memory_budget(memory_budget.as_deref_mut())
+        .with_admitted_material(tasks::TaskMaintenanceMaterial {
+            bytes: self.material_total.0,
+            records: self.material_total.1,
+        })?;
+        let final_state = phase
+            .scope_facts_tx(tx, &original_scope, true)?
+            .context("Task finalizer scope retired")?
+            .state
+            .context("Task finalizer requires actual final State")?;
+        phase.admit_original_aliases_tx(tx, &original_scope, &self.allowed)?;
+        let after = phase.original_maintenance_size_tx(tx, self.proof.scope(), &self.allowed)?;
         let state_material = state_material_tx(tx, self.proof.scope())?;
         let additional_bytes = after
             .bytes
@@ -449,19 +500,9 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
             .context("Task final State material overflow")?;
         let additional_records = after.records.saturating_sub(self.original_material.1);
         if additional_bytes > 0 || additional_records > 0 {
-            let mut material = Material {
-                scope: self.proof.scope(),
-                request: &self.request,
-                ledger,
-                memory_budget: memory_budget.as_deref_mut(),
-                bytes: self.material_total.0,
-                records: self.material_total.1,
-                guards: Vec::new(),
-            };
-            material.charge(additional_bytes, additional_records, 1)?;
-            self.material_total = (material.bytes, material.records);
-            self.guards.extend(material.guards);
+            phase.charge_writer_material(additional_bytes, additional_records, 1)?;
         }
+        // Cleanup's original scope and finite before authority remain unchanged.
         if let Some(cleanup) = self.cleanup.take() {
             let actual_result_ids = value
                 .effects
@@ -472,84 +513,38 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
                 .collect();
             self.proof = cleanup.into_task_write_proof(tx, &actual_result_ids)?;
         }
-        let final_state = crate::runtime_db::context_inputs::ContextDurableRead::new(
-            tx,
-            &self.proof.scope().agent_id,
-        )
-        .scope_facts()?
-        .state
-        .context("Task finalizer requires actual final State")?;
-        let facts = if self.child_phase {
-            anyhow::ensure!(
-                inserted.is_none(),
-                "child terminal cannot combine Stop insertion"
-            );
-            let mut material = tasks::read_preparation::TaskReadMaterial::new(
-                self.proof.scope(),
-                &self.request,
-                Some(ledger),
-            )
-            .with_memory_budget(memory_budget.as_deref_mut())
-            .with_admitted_material(tasks::TaskMaintenanceMaterial {
-                bytes: self.material_total.0,
-                records: self.material_total.1,
-            })?;
-            let facts = tasks::register_original_task_writes_using_material_tx(
+        let facts = match inserted {
+            Some(inserted) => {
+                anyhow::ensure!(
+                    !self.child_phase,
+                    "child terminal cannot combine Stop insertion"
+                );
+                tasks::register_original_task_writes_with_stop_using_material_tx(
+                    tx,
+                    &self.proof,
+                    &actual,
+                    &final_state,
+                    &self.request,
+                    ledger,
+                    &mut phase,
+                    inserted,
+                )?
+            }
+            None => tasks::register_original_task_writes_using_material_tx(
                 tx,
                 &self.proof,
                 &actual,
                 &final_state,
                 &self.request,
                 ledger,
-                &mut material,
-            )?;
-            let usage = material.material_estimate();
-            self.material_total = (usage.bytes, usage.records);
-            self.guards.extend(material.into_guards());
-            facts
-        } else {
-            match inserted {
-                Some(inserted) => tasks::register_task_writes_with_stop_observation_tx(
-                    tx,
-                    &self.proof,
-                    &actual,
-                    &final_state,
-                    &self.request,
-                    ledger,
-                    memory_budget.as_deref_mut(),
-                    inserted,
-                )?,
-                None => tasks::register_task_writes_with_memory_budget_tx(
-                    tx,
-                    &self.proof,
-                    &actual,
-                    &final_state,
-                    &self.request,
-                    ledger,
-                    memory_budget.as_deref_mut(),
-                )?,
-            }
+                &mut phase,
+            )?,
         };
-        // Delta owns the selected Arcs and a by-value coverage. These observations
-        // outlive SQL and remain with the ACK until authoritative root installation.
-        self.guards.push(ledger.register_task_view(
-            self.proof.scope(),
-            InputMemoryCategory::Candidate,
-            facts.delta.records.iter(),
-        )?);
-        self.guards.push(ledger.register_task_stop_view(
-            self.proof.scope(),
-            InputMemoryCategory::Candidate,
-            facts.delta.stop_records.iter(),
-        )?);
-        self.guards.push(ledger.register_owned_bytes(
-            self.proof.scope(),
-            InputMemoryCategory::Candidate,
-            OwnedBytesEstimate {
-                payload_bytes: 0,
-                metadata_estimate_bytes: serialized_bytes(&facts.delta.coverage)?,
-            },
-        )?);
+        let usage = phase.material_estimate();
+        self.material_total = (usage.bytes, usage.records);
+        self.guards.extend(phase.into_guards());
+        // Original readback retained only the actual delta's Arc/native and
+        // coverage guards after its complete decoder scratch had exited.
         value.effects.task_delta = Some(facts.delta);
         value.effects.task_delta_requires_prepared_domain = true;
         value.effects.task_material_budget_views.extend(self.guards);
@@ -724,6 +719,13 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
         request.query.selector_record_count()?,
         8,
     )?;
+    material.with_task_material(|phase| {
+        anyhow::ensure!(
+            phase.scope_facts_tx(tx, scope, deleting)?.is_some(),
+            tasks::TaskSnapshotError::RetiredScope
+        );
+        phase.admit_original_metadata_tx(tx, scope, &BTreeSet::new())
+    })?;
     material.checkpoint(tx)?;
     let original_state_material = state_material_tx(tx, scope)?;
     material.charge(original_state_material, 8, 1)?;
@@ -738,11 +740,8 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
     }
     let operation = match prepared.command.as_ref() {
         InputTransitionCommand::TaskResult(command) => {
-            material.charge(
-                usize::try_from(serialized_bytes(&command.operation)?)?,
-                1,
-                8,
-            )?;
+            let (bytes,nodes)=crate::runtime::input_evidence_budget::borrowed_json_material(&command.operation)?;
+            material.charge(usize::try_from(bytes)?,nodes,8)?;
             use super::super::prepared_task_result::TaskResultOperation as C;
             let operation = match &command.operation {
                 C::EnsurePending {
@@ -758,18 +757,11 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
                     )?)?;
                     result::prepare_ensure_pending_tx(tx, task_id, message, *at, limits)?
                 }
-                C::SettleInvalidOnly { message_id, .. } => {
-                    material.result(result::settle_invalid_only_material_estimate_tx(
-                        tx,
-                        scope.agent_id.as_str(),
-                        message_id,
-                    )?)?;
-                    command.selection_tx(tx, limits)?.materialize(limits)?
-                }
                 _ => {
-                    let selection = command.selection_tx(tx, limits)?;
-                    material.result(selection.material_estimate())?;
-                    selection.materialize(limits)?
+                    command.admit_selection_material_tx(tx,&mut |bytes,nodes,copies|material.charge(bytes,nodes,copies))?;
+                    // The actual raw/native envelope is already held before
+                    // selection; do not debit its legacy estimate again.
+                    command.selection_tx(tx, limits)?.materialize(limits)?
                 }
             };
             Some(operation)
@@ -796,6 +788,9 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
                     "SELECT COUNT(*),COALESCE(SUM(length(CAST(result_identity AS BLOB))+length(CAST(task_id AS BLOB))+256),0) FROM task_result_settlements WHERE agent_id=?1 AND activation_id=?2 AND state='caller_admitted'",
                     params![scope.agent_id,settlement.activation_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
                 material.charge(bytes, count, 4)?;
+                result::admit_original_selection_material_tx(tx,result::TaskResultSelectionRead::Activation {
+                    agent:&scope.agent_id,activation:&settlement.activation_id,
+                },&mut |bytes,nodes,copies|material.charge(bytes,nodes,copies))?;
                 let selection = result::select_settle_activation_tx(
                     tx,
                     &scope.agent_id,
@@ -804,7 +799,6 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
                     settlement.settled_at,
                     limits,
                 )?;
-                material.result(selection.material_estimate())?;
                 Some(selection.materialize(limits)?)
             }
             None => None,
@@ -895,7 +889,10 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
         }
     }
     material.keys(&candidates, 4)?;
-    let before_material = tasks::task_maintenance_material_tx(tx, scope, &candidates)?;
+    let before_material = material.with_task_material(|phase| {
+        phase.admit_original_aliases_tx(tx, scope, &candidates)?;
+        phase.original_maintenance_size_tx(tx, scope, &candidates)
+    })?;
     material.charge(before_material.bytes, before_material.records, 1)?;
     let mut allowed = tasks::qualified_task_recovery_selectors_tx(tx, scope, &candidates)?;
     let mut observations = BTreeSet::new();
@@ -995,51 +992,38 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command>(
     };
     material.keys(&allowed, 4)?;
     material.keys(&observations, 4)?;
-    let proof = if deleting {
-        tasks::prepare_original_task_cleanup_tx(tx, scope, &allowed)?
-    } else {
-        tasks::prepare_task_write_tx(tx, scope, &allowed)?
-    };
+    let proof = material.with_task_material(|phase| {
+        tasks::prepare_original_task_write_using_material_tx(
+            tx, scope, &allowed, deleting, request, ledger, phase,
+        )
+    })?;
     if let Some(cap) = &cleanup {
         allowed.insert(cap.result_key());
     }
     let final_request = request.clone();
+    // The proof retains only its finite before versions. This complete selected
+    // preflight is synchronous scratch, dropped before its private retirement.
     let memory = material.memory_budget.take();
-    if child_phase {
-        let mut phase =
-            tasks::read_preparation::TaskReadMaterial::new(scope, &final_request, Some(ledger))
-                .with_memory_budget(memory)
-                .with_admitted_material(tasks::TaskMaintenanceMaterial {
-                    bytes: material.bytes,
-                    records: material.records,
-                })?;
-        tasks::load_selected_using_material(
-            tx,
-            scope,
-            &final_request,
-            false,
-            deleting,
-            true,
-            Some(ledger),
-            None,
-            None,
-            &mut phase,
-        )?
-        .require_current()?;
-        let usage = phase.material_estimate();
-        material.bytes = usage.bytes;
-        material.records = usage.records;
-        material.guards.extend(phase.into_guards());
-    } else {
-        tasks::preflight_task_write_snapshot_with_memory_budget_tx(
-            tx,
-            &proof,
-            &final_request,
-            ledger,
-            memory,
-        )?
-        .require_current()?;
-    }
+    let mut phase =
+        tasks::read_preparation::TaskReadMaterial::new(scope, &final_request, Some(ledger))
+            .with_memory_budget(memory)
+            .with_admitted_material(tasks::TaskMaintenanceMaterial {
+                bytes: material.bytes,
+                records: material.records,
+            })?;
+    // The first guard anchors this phase even when the prelude was lent by its caller.
+    phase.charge_writer_material(0, 1, 1)?;
+    tasks::preflight_original_task_using_material_tx(
+        tx,
+        &proof,
+        &final_request,
+        ledger,
+        &mut phase,
+    )?;
+    let usage = phase.material_estimate();
+    material.bytes = usage.bytes;
+    material.records = usage.records;
+    material.guards.extend(phase.into_guards());
     Ok(Some(TaskTransaction {
         proof,
         cleanup,

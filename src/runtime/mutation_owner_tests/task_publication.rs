@@ -118,6 +118,7 @@ async fn task_metadata_retirement_never_installs_successor_or_old_domain() {
     MutationReservation::committed_all(
         std::slice::from_mut(&mut reservation),
         vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(7, AgentRegistryStatus::Active)),
             state: Some(state(2)),
         }))],
@@ -132,6 +133,7 @@ async fn task_metadata_retirement_never_installs_successor_or_old_domain() {
     MutationReservation::committed_all(
         std::slice::from_mut(&mut reservation),
         vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            _identity_budget: None,
             identity: Some(episode_identity(8, AgentRegistryStatus::Active)),
             state: None,
         }))],

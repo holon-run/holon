@@ -457,6 +457,7 @@ pub(super) fn load_coverage_tx(
     sources: &BTreeSet<String>,
     limit: usize,
     bytes: usize,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<ExecutionInputCoverage> {
     let initialized = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)",
@@ -470,6 +471,9 @@ pub(super) fn load_coverage_tx(
     let mut count = 0usize;
     let mut metadata_bytes_used = 0usize;
     for source in sources {
+        if let Some(material) = material.as_deref_mut() {
+            material.execution_source_tx(tx, binding, source)?;
+        }
         let Some(record) = source_on(
             tx,
             scope,
@@ -489,7 +493,7 @@ pub(super) fn load_coverage_tx(
         check_budget(count, metadata_bytes_used, limit, bytes)?;
         result.sources.insert(source.clone(), record);
     }
-    for key in qualified_live_protocol_keys(tx, scope, binding, limit)? {
+    for key in qualified_live_protocol_keys(tx, scope, binding, limit, material.as_deref_mut())? {
         match key.family {
             Family::Attempt => {
                 let open:bool=tx.query_row("SELECT lifecycle_state='open' FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2",params![scope.agent_id,key.id],|r|r.get(0))?;

@@ -322,6 +322,43 @@ pub(crate) fn derive_context_work_queue(
     active_waits: Vec<WaitConditionRecord>,
     continuations: Vec<crate::types::WorkItemContinuationFrame>,
 ) -> WorkQueueReadModel {
+    derive_context_work_queue_observed(
+        current_work_item_id,
+        latest,
+        external_triggers,
+        active_waits,
+        continuations,
+        &mut None,
+    )
+    .expect("unobserved Work queue projection cannot fail")
+}
+
+pub(crate) fn derive_context_work_queue_observed(
+    current_work_item_id: Option<String>,
+    latest: HashMap<String, WorkItemRecord>,
+    external_triggers: Vec<crate::types::ExternalTriggerRecord>,
+    active_waits: Vec<WaitConditionRecord>,
+    continuations: Vec<crate::types::WorkItemContinuationFrame>,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<WorkQueueReadModel> {
+    use crate::work_item_scheduling::{
+        observe_scheduling_clone as observe, observe_scheduling_slots as slots,
+    };
+    if let Some(item) = current_work_item_id
+        .as_deref()
+        .and_then(|id| latest.get(id))
+        .filter(|item| item.state == WorkItemState::Open)
+    {
+        observe(item, observer)?;
+    }
+    slots(external_triggers.len().saturating_mul(2), observer)?;
+    slots(continuations.len().saturating_mul(2), observer)?;
+    for condition in &active_waits {
+        if let Some(id) = &condition.work_item_id {
+            observe(id, observer)?;
+            slots(2, observer)?;
+        }
+    }
     let current = current_work_item_id
         .as_deref()
         .and_then(|id| latest.get(id))
@@ -353,15 +390,14 @@ pub(crate) fn derive_context_work_queue(
         .collect::<BTreeSet<_>>();
     let mut items = latest
         .values()
-        .cloned()
         .map(|item| {
             let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
                 && item.state == WorkItemState::Open;
             let yielded = item.state == WorkItemState::Open
                 && active_continuation_suspended_ids.contains(&item.id);
-            crate::work_item_scheduling::derive_work_item_scheduling(
+            crate::work_item_scheduling::derive_work_item_scheduling_observed(
                 crate::work_item_scheduling::WorkItemSchedulingFacts {
-                    work_item: &item,
+                    work_item: item,
                     is_current,
                     is_yielded: yielded,
                     active_wait_conditions: active_wait_conditions
@@ -370,58 +406,84 @@ pub(crate) fn derive_context_work_queue(
                         .unwrap_or(&[]),
                     trigger_delivery_by_id: &trigger_delivery_by_id,
                 },
+                observer,
             )
         })
-        .collect::<Vec<_>>();
-
+        .collect::<Result<Vec<_>>>()?;
+    slots(items.len().saturating_mul(2), observer)?;
     items.sort_by(compare_scheduling_projection_order);
     let current_runnable = items
         .iter()
         .find(|item| item.candidate_class == WorkItemCandidateClass::CurrentRunnable)
-        .cloned();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok::<_, anyhow::Error>(item.clone())
+        })
+        .transpose()?;
     let triggered_blocked = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::TriggeredBlocked)
         .take(3)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let queued_runnable = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::QueuedRunnable)
         .take(5)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let yielded = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::Yielded)
         .take(5)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let waiting_for_operator = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
         .take(3)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let blocked = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
         .filter(|item| item.scheduling_state != WorkItemSchedulingState::WaitingTask)
         .take(3)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let completing = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::Completing)
         .take(3)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let completed_recent = items
         .iter()
         .filter(|item| item.candidate_class == WorkItemCandidateClass::CompletedRecent)
         .take(3)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let mut queued_blocked = latest
         .values()
@@ -437,11 +499,14 @@ pub(crate) fn derive_context_work_queue(
                             .any(|condition| condition.kind == WaitConditionKind::Task)
                     })
         })
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|item| {
+            observe(item, observer)?;
+            Ok(item.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     queued_blocked.sort_by(compare_queue_display_order);
 
-    WorkQueueReadModel {
+    Ok(WorkQueueReadModel {
         current,
         queued_blocked,
         items,
@@ -453,7 +518,7 @@ pub(crate) fn derive_context_work_queue(
         blocked,
         completing,
         completed_recent,
-    }
+    })
 }
 
 pub(crate) fn filter_context_active_waits(
@@ -482,57 +547,93 @@ pub(crate) fn derive_agent_posture(
     work_queue: &WorkQueueReadModel,
     active_waits: &[WaitConditionRecord],
 ) -> AgentPostureProjection {
-    derive_agent_posture_before_work_queue(agent, has_queued_input)
-        .unwrap_or_else(|| derive_agent_posture_from_work_queue(work_queue, active_waits))
+    derive_agent_posture_observed(agent, has_queued_input, work_queue, active_waits, &mut None)
+        .expect("unobserved agent posture cannot fail")
+}
+pub(crate) fn derive_agent_posture_observed(
+    agent: &AgentState,
+    has_queued_input: bool,
+    work_queue: &WorkQueueReadModel,
+    active_waits: &[WaitConditionRecord],
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<AgentPostureProjection> {
+    crate::work_item_scheduling::observe_scheduling_slots(16, observer)?;
+    match derive_agent_posture_before_work_queue_observed(agent, has_queued_input, observer)? {
+        Some(posture) => Ok(posture),
+        None => derive_agent_posture_from_work_queue_observed(work_queue, active_waits, observer),
+    }
 }
 
 fn derive_agent_posture_before_work_queue(
     agent: &AgentState,
     has_queued_input: bool,
 ) -> Option<AgentPostureProjection> {
+    derive_agent_posture_before_work_queue_observed(agent, has_queued_input, &mut None)
+        .expect("unobserved early agent posture cannot fail")
+}
+fn derive_agent_posture_before_work_queue_observed(
+    agent: &AgentState,
+    has_queued_input: bool,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<Option<AgentPostureProjection>> {
     if matches!(agent.status, AgentStatus::Stopped) {
-        return Some(AgentPostureProjection {
+        return Ok(Some(AgentPostureProjection {
             posture: AgentSchedulingPosture::Stopped,
             reason: "agent lifecycle is stopped".into(),
             work_item_id: None,
             task_id: None,
             run_id: None,
-        });
+        }));
     }
-    if let Some(run_id) = agent.current_run_id.clone() {
-        return Some(AgentPostureProjection {
+    if let Some(run_id) = agent.current_run_id.as_ref() {
+        crate::work_item_scheduling::observe_scheduling_clone(
+            &(run_id, &agent.current_turn_work_item_id),
+            observer,
+        )?;
+        return Ok(Some(AgentPostureProjection {
             posture: AgentSchedulingPosture::ActiveTurn,
             reason: "agent has an active turn".into(),
             work_item_id: agent.current_turn_work_item_id.clone(),
             task_id: None,
-            run_id: Some(run_id),
-        });
+            run_id: Some(run_id.clone()),
+        }));
     }
-    has_queued_input.then(|| AgentPostureProjection {
+    Ok(has_queued_input.then(|| AgentPostureProjection {
         posture: AgentSchedulingPosture::HasQueuedInput,
         reason: "agent has queued input".into(),
         work_item_id: None,
         task_id: None,
         run_id: None,
-    })
+    }))
 }
 
 fn derive_agent_posture_from_work_queue(
     work_queue: &WorkQueueReadModel,
     active_waits: &[WaitConditionRecord],
 ) -> AgentPostureProjection {
+    derive_agent_posture_from_work_queue_observed(work_queue, active_waits, &mut None)
+        .expect("unobserved Work posture cannot fail")
+}
+
+fn derive_agent_posture_from_work_queue_observed(
+    work_queue: &WorkQueueReadModel,
+    active_waits: &[WaitConditionRecord],
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> Result<()>>,
+) -> Result<AgentPostureProjection> {
+    use crate::work_item_scheduling::observe_scheduling_clone as observe;
     if let Some(item) = work_queue
         .current_runnable
         .as_ref()
         .or_else(|| work_queue.queued_runnable.first())
     {
-        return AgentPostureProjection {
+        observe(&(&item.work_item.id, &item.work_item.id), observer)?;
+        return Ok(AgentPostureProjection {
             posture: AgentSchedulingPosture::HasRunnableWork,
             reason: item.posture_reason(),
             work_item_id: Some(item.work_item.id.clone()),
             task_id: None,
             run_id: None,
-        };
+        });
     }
 
     if let Some(item) = work_queue.items.iter().find(|item| {
@@ -545,26 +646,29 @@ fn derive_agent_posture_from_work_queue(
                     && condition.kind == WaitConditionKind::Task
                     && condition.work_item_id.as_deref() == Some(item.work_item.id.as_str())
             })
-            .and_then(|condition| condition.subject_ref.clone());
-        return AgentPostureProjection {
+            .and_then(|condition| condition.subject_ref.as_ref());
+        observe(&task_id, observer)?;
+        observe(&(&item.work_item.id, &item.work_item.id), observer)?;
+        return Ok(AgentPostureProjection {
             posture: AgentSchedulingPosture::WaitingForTask,
             reason: item.posture_reason(),
             work_item_id: Some(item.work_item.id.clone()),
-            task_id,
+            task_id: task_id.cloned(),
             run_id: None,
-        };
+        });
     }
 
     if let Some(item) = work_queue.items.iter().find(|item| {
         item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingExternal
     }) {
-        return AgentPostureProjection {
+        observe(&(&item.work_item.id, &item.work_item.id), observer)?;
+        return Ok(AgentPostureProjection {
             posture: AgentSchedulingPosture::WaitingForExternal,
             reason: item.posture_reason(),
             work_item_id: Some(item.work_item.id.clone()),
             task_id: None,
             run_id: None,
-        };
+        });
     }
 
     if let Some(item) = work_queue
@@ -572,13 +676,14 @@ fn derive_agent_posture_from_work_queue(
         .iter()
         .find(|item| item.is_current)
     {
-        return AgentPostureProjection {
+        observe(&(&item.work_item.id, &item.work_item.id), observer)?;
+        return Ok(AgentPostureProjection {
             posture: AgentSchedulingPosture::WaitingForOperator,
             reason: item.posture_reason(),
             work_item_id: Some(item.work_item.id.clone()),
             task_id: None,
             run_id: None,
-        };
+        });
     }
 
     if let Some(item) = work_queue
@@ -592,20 +697,21 @@ fn derive_agent_posture_from_work_queue(
                 .find(|item| item.is_current)
         })
     {
-        return AgentPostureProjection {
+        observe(&(&item.work_item.id, &item.work_item.id), observer)?;
+        return Ok(AgentPostureProjection {
             posture: AgentSchedulingPosture::Blocked,
             reason: item.posture_reason(),
             work_item_id: Some(item.work_item.id.clone()),
             task_id: None,
             run_id: None,
-        };
+        });
     }
 
-    AgentPostureProjection {
+    Ok(AgentPostureProjection {
         posture: AgentSchedulingPosture::Idle,
         reason: "no queued input, active turn, runnable work, or active waits".into(),
         work_item_id: None,
         task_id: None,
         run_id: None,
-    }
+    })
 }

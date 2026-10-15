@@ -41,8 +41,8 @@ fn identity() -> AgentIdentityRecord {
 fn request() -> WorkDomainLoadRequest {
     WorkDomainLoadRequest {
         capture: WorkCaptureRequest::current(),
-        record_limit: 1024,
-        byte_limit: 1024 * 1024,
+        record_limit: MAX_METADATA_RECORDS,
+        byte_limit: MAX_METADATA_BYTES,
     }
 }
 fn ensure_schema(tx: &Transaction<'_>) -> Result<()> {
@@ -201,6 +201,15 @@ fn fixed_manifest_limits_history_and_never_adopts_a_raw_late_work_or_result() ->
             prepare_work_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
         assert_eq!(loaded.resident.coverage().nonopen.keys.len(), 128);
         assert!(loaded.resident.coverage().nonopen.is_exhaustive);
+        // Keep explicit small-policy backpressure separate from this full
+        // runtime-window fixture, whose guards now include native containers.
+        let mut narrow = request();
+        narrow.record_limit = 1024;
+        narrow.byte_limit = 1024 * 1024;
+        let error = prepare_work_domain_snapshot_tx(tx, &scope(), &narrow)
+            .err().context("full native window must not fit the old small fixture policy")?;
+        assert!(matches!(error.downcast_ref::<crate::runtime::resident_work::WorkReadError>(),
+            Some(crate::runtime::resident_work::WorkReadError::ResourceExhausted(_))), "{error:#}");
         assert_eq!(
             loaded.resident.coverage().latest_results["live-fixed"],
             None
@@ -1282,3 +1291,9 @@ fn finalizer_view_selection_does_not_depend_on_working_memory_overlay() -> Resul
     })?;
     Ok(())
 }
+
+#[path = "read_material_tests.rs"]
+mod read_material_tests;
+
+#[path = "work_inputs_tests.rs"]
+mod delivery_inputs;

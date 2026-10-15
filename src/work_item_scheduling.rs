@@ -220,6 +220,26 @@ impl ActiveWaitConditionStates {
 pub fn derive_work_item_scheduling(
     facts: WorkItemSchedulingFacts<'_>,
 ) -> WorkItemSchedulingProjection {
+    derive_work_item_scheduling_observed(facts, &mut None)
+        .expect("unobserved Work scheduling projection cannot fail")
+}
+
+/// The original derivation, with an optional admission before owned copies.
+pub(crate) fn derive_work_item_scheduling_observed(
+    facts: WorkItemSchedulingFacts<'_>,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> anyhow::Result<()>>,
+) -> anyhow::Result<WorkItemSchedulingProjection> {
+    for wait in facts
+        .active_wait_conditions
+        .iter()
+        .filter(|condition| condition.work_item_id.as_deref() == Some(facts.work_item.id.as_str()))
+    {
+        observe_scheduling_clone(wait, observer)?;
+        observe_scheduling_clone(&wait.no_fallback_reason_ref(), observer)?;
+    }
+    // Each matching Wait is subsequently moved into its summary, not cloned.
+    // Fixed projection fields, sorting slots and diagnostic constants are finite.
+    observe_scheduling_slots(40, observer)?;
     let mut waits = facts
         .active_wait_conditions
         .iter()
@@ -331,7 +351,11 @@ pub fn derive_work_item_scheduling(
         WorkItemCandidateClass::Blocked
     };
 
-    WorkItemSchedulingProjection {
+    observe_scheduling_clone(facts.work_item, observer)?;
+    if let Some(todo) = current_todo_ref(facts.work_item) {
+        observe_scheduling_clone(todo, observer)?;
+    }
+    Ok(WorkItemSchedulingProjection {
         current_todo: current_todo(facts.work_item),
         work_item: facts.work_item.clone(),
         scheduling_state,
@@ -347,7 +371,53 @@ pub fn derive_work_item_scheduling(
         active_wait_conditions: waits.into_iter().map(WaitConditionSummary::from).collect(),
         reason_code,
         diagnostics,
+    })
+}
+
+/// Borrowed stream only; an absent observer preserves the original pure path.
+pub(crate) fn observe_scheduling_clone(
+    value: &impl Serialize,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    if let Some(observe) = observer.as_deref_mut() {
+        let (bytes, nodes) = crate::runtime::input_evidence_budget::borrowed_json_material(value)?;
+        observe(bytes, nodes)?;
     }
+    Ok(())
+}
+/// Count the original Debug formatting without an intermediate String. JSON
+/// encoding is not an upper bound for Debug's Unicode/control escaping.
+pub(crate) fn observe_scheduling_debug(
+    value: &impl std::fmt::Debug,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    if let Some(observe) = observer.as_deref_mut() {
+        struct Count(u64);
+        impl std::fmt::Write for Count {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0 = self
+                    .0
+                    .checked_add(text.len() as u64)
+                    .ok_or(std::fmt::Error)?;
+                Ok(())
+            }
+        }
+        let mut count = Count(0);
+        std::fmt::write(&mut count, format_args!("{value:?}"))
+            .map_err(|_| anyhow::anyhow!("scheduler Debug material overflow"))?;
+        observe(count.0, 1)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn observe_scheduling_slots(
+    slots: usize,
+    observer: &mut Option<&mut dyn FnMut(u64, usize) -> anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    if let Some(observe) = observer.as_deref_mut() {
+        observe(0, slots)?;
+    }
+    Ok(())
 }
 
 pub fn record_only_readiness(record: &WorkItemRecord) -> WorkItemReadiness {
@@ -462,6 +532,9 @@ fn compare_timestamp_desc_option(
 }
 
 pub fn current_todo(record: &WorkItemRecord) -> Option<TodoItem> {
+    current_todo_ref(record).cloned()
+}
+fn current_todo_ref(record: &WorkItemRecord) -> Option<&TodoItem> {
     record
         .todo_list
         .iter()
@@ -472,7 +545,6 @@ pub fn current_todo(record: &WorkItemRecord) -> Option<TodoItem> {
                 .iter()
                 .find(|item| item.state == TodoItemState::Pending)
         })
-        .cloned()
 }
 
 #[cfg(test)]
@@ -690,5 +762,25 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod observation_material_tests {
+    use super::*;
+    #[test]
+    fn borrowed_debug_material_counts_original_control_unicode_and_quotes_before_formatting(
+    ) -> anyhow::Result<()> {
+        let values = ["", "ordinary", "\u{7f}\0\n\"\\中文"];
+        for value in values {
+            let mut actual = (0u64, 0usize);
+            let mut observer = |bytes, nodes| {
+                actual = (bytes, nodes);
+                Ok(())
+            };
+            observe_scheduling_debug(&value, &mut Some(&mut observer))?;
+            assert_eq!(actual, (format!("{value:?}").len() as u64, 1));
+        }
+        Ok(())
     }
 }

@@ -12,12 +12,22 @@ fn isolated_delivery_hint_tx(
     tx: &Transaction<'_>,
     attempt: &ExecutionAttempt,
     message: &MessageEnvelope,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<bool> {
     if attempt.turn_id.is_some()
         || !matches!(&attempt.binding, ExecutionBinding::AgentLifecycle { agent_id }
             if agent_id == &attempt.agent_id)
     {
         return Ok(false);
+    }
+    if let Some(material) = material.as_deref_mut() {
+        material.attempt_relation_json_tx(
+            tx,
+            "agent_message_deliveries",
+            "message_id=?1",
+            "0",
+            params![message.id],
+        )?;
     }
     let Some(delivery) =
         crate::runtime_db::agent_message_delivery::delivery_by_message_id_tx(tx, &message.id)?
@@ -64,7 +74,27 @@ impl AttemptTurnProof {
     }
 }
 
-fn canonical_turn(tx: &Transaction<'_>, agent: &str, turn_id: &str) -> Result<bool> {
+fn canonical_turn(
+    tx: &Transaction<'_>,
+    agent: &str,
+    turn_id: &str,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
+) -> Result<bool> {
+    if let Some(material) = material.as_deref_mut() {
+        let foreign: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turn_records WHERE turn_id=?1 AND agent_id<>?2)",
+            params![turn_id, agent],
+            |r| r.get(0),
+        )?;
+        ensure!(!foreign, "Attempt Turn has a different canonical scope");
+        material.attempt_relation_json_tx(
+            tx,
+            "turn_records",
+            "turn_id=?1",
+            "0",
+            params![turn_id],
+        )?;
+    }
     let record: Option<String> = tx
         .query_row(
             "SELECT payload_json FROM turn_records WHERE turn_id=?1",
@@ -82,7 +112,20 @@ fn canonical_turn(tx: &Transaction<'_>, agent: &str, turn_id: &str) -> Result<bo
     );
     Ok(true)
 }
-fn state_on(tx: &Transaction<'_>, agent: &str) -> Result<Option<AgentState>> {
+fn state_on(
+    tx: &Transaction<'_>,
+    agent: &str,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
+) -> Result<Option<AgentState>> {
+    if let Some(material) = material.as_deref_mut() {
+        material.attempt_relation_json_tx(
+            tx,
+            "agent_states",
+            "agent_id=?1",
+            "0",
+            params![agent],
+        )?;
+    }
     tx.query_row(
         "SELECT payload_json FROM agent_states WHERE agent_id=?1",
         [agent],
@@ -92,10 +135,17 @@ fn state_on(tx: &Transaction<'_>, agent: &str) -> Result<Option<AgentState>> {
     .map(|p| serde_json::from_str(&p).map_err(anyhow::Error::from))
     .transpose()
 }
-fn source_assignment(tx: &Transaction<'_>, attempt: &ExecutionAttempt) -> Result<Option<String>> {
+fn source_assignment(
+    tx: &Transaction<'_>,
+    attempt: &ExecutionAttempt,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
+) -> Result<Option<String>> {
     let Some(message) = &attempt.source_message_id else {
         return Ok(None);
     };
+    if let Some(material) = material.as_deref_mut() {
+        material.attempt_assignment_tx(tx, message)?;
+    }
     let assignment: Option<(String, String)> = tx
         .query_row(
             "SELECT agent_id,turn_id FROM conversation_input_assignments WHERE message_id=?1",
@@ -117,6 +167,7 @@ fn strict_unstarted(
     tx: &Transaction<'_>,
     attempt: &ExecutionAttempt,
     state: Option<&AgentState>,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<bool> {
     let Some(state) = state else { return Ok(false) };
     let Some(source) = attempt.source_message_id.as_deref() else {
@@ -133,9 +184,18 @@ fn strict_unstarted(
             .turn_id
             .as_ref()
             .is_some_and(|id| state.current_turn_id.as_ref() == Some(id))
-        || source_assignment(tx, attempt)?.is_some()
+        || source_assignment(tx, attempt, material.as_deref_mut())?.is_some()
     {
         return Ok(false);
+    }
+    if let Some(material) = material.as_deref_mut() {
+        material.attempt_relation_json_tx(
+            tx,
+            "messages",
+            "message_id=?1 AND agent_id=?2",
+            "COALESCE(length(CAST(message_seq AS BLOB)),0)",
+            params![source, attempt.agent_id],
+        )?;
     }
     let message: Option<(String, Option<i64>)> = tx
         .query_row(
@@ -154,9 +214,18 @@ fn strict_unstarted(
         || message.message_seq != Some(attempt.source.generation)
         || message.message_seq != Some(attempt.admitted_fences.source_revision)
         || (message.turn_id != attempt.turn_id
-            && !isolated_delivery_hint_tx(tx, attempt, &message)?)
+            && !isolated_delivery_hint_tx(tx, attempt, &message, material.as_deref_mut())?)
     {
         return Ok(false);
+    }
+    if let Some(material) = material.as_deref_mut() {
+        material.attempt_relation_json_tx(
+            tx,
+            "queue_entries",
+            "message_id=?1",
+            "length(CAST(agent_id AS BLOB))+length(CAST(status AS BLOB))",
+            params![source],
+        )?;
     }
     let queue: Option<(String, String, String)> = tx
         .query_row(
@@ -190,6 +259,16 @@ pub(super) fn observe(
     attempt: &ExecutionAttempt,
     prior: Option<&AttemptTurnProof>,
 ) -> Result<AttemptTurnProof> {
+    observe_inner(tx, scope, attempt, prior, None, None)
+}
+fn observe_inner(
+    tx: &Transaction<'_>,
+    scope: Option<&InputEvidenceScope>,
+    attempt: &ExecutionAttempt,
+    prior: Option<&AttemptTurnProof>,
+    actual_state: Option<Option<&AgentState>>,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
+) -> Result<AttemptTurnProof> {
     if let Some(prior) = prior {
         ensure!(
             prior.matches_attempt(attempt),
@@ -201,20 +280,26 @@ pub(super) fn observe(
             attempt
                 .turn_id
                 .as_deref()
-                .map(|id| canonical_turn(tx, &attempt.agent_id, id))
+                .map(|id| canonical_turn(tx, &attempt.agent_id, id, material.as_deref_mut()))
                 .transpose()?
                 .unwrap_or(false),
             "Attempt changed its hint without a canonical Turn"
         );
     }
-    let state = state_on(tx, &attempt.agent_id)?;
+    // Selected preparation already has this exact same-TX guarded State.
+    let owned_state = if actual_state.is_none() {
+        state_on(tx, &attempt.agent_id, material.as_deref_mut())?
+    } else {
+        None
+    };
+    let state = actual_state.unwrap_or(owned_state.as_ref());
     let mut turns = BTreeSet::new();
     if let Some(turn) = attempt.turn_id.as_deref() {
-        if canonical_turn(tx, &attempt.agent_id, turn)? {
+        if canonical_turn(tx, &attempt.agent_id, turn, material.as_deref_mut())? {
             turns.insert(Key::new(Family::Turn, turn));
         }
     }
-    if let Some(turn) = source_assignment(tx, attempt)? {
+    if let Some(turn) = source_assignment(tx, attempt, material.as_deref_mut())? {
         turns.insert(Key::new(Family::Turn, turn));
     }
     if let Some(binding) = state
@@ -232,7 +317,10 @@ pub(super) fn observe(
         turns.extend(prior.turn_keys.iter().cloned());
     }
     for turn in &turns {
-        if !canonical_turn(tx, &attempt.agent_id, &turn.id)? {
+        if !canonical_turn(tx, &attempt.agent_id, &turn.id, material.as_deref_mut())? {
+            if let Some(material) = material.as_deref_mut() {
+                material.attempt_turn_alias_tx(tx, turn)?;
+            }
             let pruned = scope
                 .map(|s| alias_on(tx, s, turn))
                 .transpose()?
@@ -247,7 +335,10 @@ pub(super) fn observe(
             }
         }
     }
-    if turns.is_empty() && prior.is_none() && !strict_unstarted(tx, attempt, state.as_ref())? {
+    if turns.is_empty()
+        && prior.is_none()
+        && !strict_unstarted(tx, attempt, state, material.as_deref_mut())?
+    {
         return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
             "Attempt {} lacks fixed claim-only Turn proof",
             attempt.attempt_id
@@ -273,12 +364,52 @@ pub(super) fn for_current(
 ) -> Result<AttemptTurnProof> {
     let key = Key::new(Family::Attempt, &attempt.attempt_id);
     let old = alias_on(tx, scope, &key)?;
-    let mut prior = old
-        .as_ref()
-        .and_then(|a| a.attempt_turn_proof.as_ref())
-        .cloned();
+    for_current_inner(
+        tx,
+        scope,
+        binding,
+        attempt,
+        old.as_ref().and_then(|a| a.attempt_turn_proof.as_ref()),
+        None,
+        None,
+    )
+}
+/// The original selected read lends its already guarded same-TX observations.
+pub(super) fn for_current_from_observation(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    binding: &Binding,
+    attempt: &ExecutionAttempt,
+    prior: Option<&AttemptTurnProof>,
+    state: Option<&AgentState>,
+    material: &mut read_material::InputReadMaterial<'_>,
+) -> Result<AttemptTurnProof> {
+    material.validate_binding(scope)?;
+    for_current_inner(
+        tx,
+        scope,
+        binding,
+        attempt,
+        prior,
+        Some(state),
+        Some(material),
+    )
+}
+fn for_current_inner(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    binding: &Binding,
+    attempt: &ExecutionAttempt,
+    prior: Option<&AttemptTurnProof>,
+    state: Option<Option<&AgentState>>,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
+) -> Result<AttemptTurnProof> {
+    let mut prior = prior.cloned();
     if prior.is_none() {
         if let Some(seed) = binding.seed_id.as_deref() {
+            if let Some(material) = material.as_deref_mut() {
+                material.attempt_fixed_proofs_tx(tx, seed, &attempt.attempt_id)?;
+            }
             let proofs = {
                 let mut stmt=tx.prepare("SELECT proof_json FROM input_evidence_seed_attempt_turns WHERE seed_id=?1 AND attempt_id=?2 ORDER BY capture_phase")?;
                 let rows =
@@ -299,12 +430,32 @@ pub(super) fn for_current(
             }
         }
     }
-    let observed = observe(tx, Some(scope), attempt, prior.as_ref())?;
+    let observed = observe_inner(
+        tx,
+        Some(scope),
+        attempt,
+        prior.as_ref(),
+        state,
+        material.as_deref_mut(),
+    )?;
     if prior.is_none() && observed.turn_keys.is_empty() {
         let source = attempt
             .source_message_id
             .as_ref()
             .context("unstarted Attempt has no exact source")?;
+        if let Some(material) = material.as_deref_mut() {
+            let key = Key::new(Family::Message, source);
+            material.record_metadata_tx(tx, binding, &key)?;
+            let aliased: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3)",
+                params![scope.agent_id,scope.identity_incarnation,source], |r|r.get(0),
+            )?;
+            if !aliased {
+                if let Some(seed) = binding.seed_id.as_deref() {
+                    material.origin_context_tx(tx, seed, &key)?;
+                }
+            }
+        }
         ensure!(
             is_existing_member_on(tx, scope, binding, &Key::new(Family::Message, source))?,
             "unstarted Attempt source is not qualified in this incarnation"

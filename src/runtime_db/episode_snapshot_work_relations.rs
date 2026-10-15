@@ -79,10 +79,10 @@ pub(super) fn capture_relations(
             [&id],
             |row| row.get(0),
         )?;
-        if authority.is_some_and(|proof| {
-            !proof.permits_relation_source(&id, &bytes_digest(payload.as_bytes()))
-        }) {
-            continue;
+        if let Some(proof) = authority {
+            if !proof.permits_relation_source(connection, &id, &bytes_digest(payload.as_bytes()))? {
+                continue;
+            }
         }
         let message: MessageEnvelope = serde_json::from_str(&payload)?;
         ensure!(
@@ -129,7 +129,7 @@ pub(super) fn capture_relations(
                 [id],
                 |row| row.get(0),
             )?;
-            authority.validate_relation_wait(id, &bytes_digest(payload.as_bytes()))?;
+            authority.validate_relation_wait(connection, id, &bytes_digest(payload.as_bytes()))?;
             enqueue(pending, selected, selected_bytes, "wait", id, 0)?;
         }
     }
@@ -181,7 +181,11 @@ pub(super) fn capture_relations(
                             [&id],
                             |row| row.get(0),
                         )?;
-                        authority.validate_relation_wait(&id, &bytes_digest(payload.as_bytes()))?;
+                        authority.validate_relation_wait(
+                            connection,
+                            &id,
+                            &bytes_digest(payload.as_bytes()),
+                        )?;
                     }
                     enqueue(pending, selected, selected_bytes, "wait", &id, 0)?;
                     ids.insert(id);

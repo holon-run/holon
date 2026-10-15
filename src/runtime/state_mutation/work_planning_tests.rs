@@ -509,3 +509,42 @@ async fn activation_prepares_original_closure_brief_policy_without_ordinary_hydr
     assert_eq!(mutation.capture_published_root()?.token, before.token);
     Ok(())
 }
+
+#[tokio::test]
+async fn scheduler_prior_estimate_keeps_selected_and_owned_material_without_second_registration(
+) -> Result<()> {
+    let (_home, runtime) = fixture();
+    runtime
+        .create_work_item("scheduler prior actual Work".into(), None, None, Vec::new())
+        .await?;
+    let mut owner = runtime.begin_mutation().await?;
+    drop(
+        owner
+            .prepare_scheduler_read(None, Default::default(), Default::default(), runtime.now())
+            .await?,
+    );
+    let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+    let read = owner.capture_child_observability_read(runtime.now())?;
+    let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
+    let prior = read.material_estimate()?;
+    let work = read.work.selected_material_estimate()?;
+    let tasks = read.tasks.selected_material_estimate()?;
+    let scheduling = read.scheduling.selected_material_estimate()?;
+    let original_owned = read._owned_budget.owned_material_bytes()?;
+    assert!(prior.0 >= work.0 + tasks.0 + scheduling.0 + original_owned);
+    assert!(prior.1 > work.1 + tasks.1 + scheduling.1);
+    assert_eq!(read.material_estimate()?, prior);
+    assert_eq!(
+        runtime.inner.input_evidence_budget.report()?.observed_bytes,
+        before,
+        "a remaining-allowance observation cannot register a second allocation"
+    );
+    let weak = Arc::downgrade(&read._owned_budget);
+    drop(read);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(
+        runtime.inner.input_evidence_budget.report()?.observed_bytes,
+        baseline
+    );
+    Ok(())
+}

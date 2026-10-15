@@ -56,6 +56,27 @@ pub fn render_agent_home_notes_catalog_section(agent_home: &Path) -> Option<Stri
     Some(render_notes_catalog(&entries))
 }
 
+/// Explicit refresh preserves optional omission while recording failure apart from Absent.
+pub(crate) fn observe_agent_home_notes_catalog(
+    agent_home: &Path,
+) -> (Option<String>, Option<String>) {
+    let directory = agent_home.join(NOTES_DIRECTORY);
+    match std::fs::metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+        Err(error) => (None, Some(error.to_string())),
+        Ok(metadata) if !metadata.is_dir() => {
+            (None, Some("notes source is not a directory".into()))
+        }
+        Ok(_) => match scan_agent_home_notes(agent_home) {
+            Some(entries) => (
+                (!entries.is_empty()).then(|| render_notes_catalog(&entries)),
+                None,
+            ),
+            None => (None, Some("notes catalog refresh failed".into())),
+        },
+    }
+}
+
 /// Scan `<agent_home>/notes/` for readable `*.md` files and return
 /// their catalog metadata. Returns `None` when the directory is
 /// absent or unreadable so the caller can simply omit the section.
@@ -181,6 +202,9 @@ fn split_frontmatter(content: &str) -> (Option<Frontmatter>, &str) {
         // A non-blank character right after `---` (without newline)
         // means the fence was a substring; treat the file as no
         // frontmatter to be conservative.
+        return (None, content);
+    }
+    if crate::diagnostics::resource_io::charge_structured_text(block).is_err() {
         return (None, content);
     }
     let parsed = parse_frontmatter_block(block);

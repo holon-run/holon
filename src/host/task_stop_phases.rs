@@ -90,6 +90,25 @@ impl RuntimeHost {
             .await?;
         anyhow::ensure!(reservations.len() == 1, "Host Stop original group changed");
         let reservation = &reservations[0];
+        let event_roles = reservation.current_event_roles(
+            &scope,
+            ledger,
+            (
+                usize::try_from(
+                    limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("Stop Event role allowance overflow")?,
+                )?,
+                usize::try_from(limits.record_limit)?,
+            ),
+        )?;
+        let prepared = match event_roles {
+            Some(roles) => {
+                prepared.with_current_event_roles(roles, reservation.owner_epoch(), ledger)?
+            }
+            None => prepared,
+        };
         let original_runtime = self.bridge().runtime_for_mutation(reservation).await?;
         // This is the first ACK under a Ready reservation, before any recovery
         // witness exists. Freeze the actual instance's roles directly.
@@ -118,8 +137,10 @@ impl RuntimeHost {
             .cloned()
             .unwrap_or_default();
         let mut runtime_facts = Vec::new();
+        let mut current_read_source = None;
         if let Some(runtime) = &original_runtime {
             if let Some(root) = reservation.capture_ready_snapshot()? {
+                current_read_source = root.current_reads.clone();
                 runtime_facts.push(Arc::new(
                     runtime
                         .prepare_external_input_facts(
@@ -132,6 +153,10 @@ impl RuntimeHost {
                 ));
             }
         }
+        let prepared = match current_read_source {
+            Some(source) => prepared.with_current_read_source(source)?,
+            None => prepared,
+        };
         let prepared = crate::runtime::attach_task_stop_phase_memory_to_original_owner(
             self.runtime_db(),
             ledger,
@@ -157,6 +182,9 @@ impl RuntimeHost {
                     .context("Stop Work limits overflow")?,
             )?,
         };
+        let input_source = reservations[0].input_query_source(
+            &scope, ledger, (work_request.byte_limit, work_request.record_limit),
+        )?;
         let mut pending = Vec::new();
         for message in prepared.pending_messages()? {
             match ledger.reserve_pending(&scope, &message.id, serialized_bytes(&message.body)?) {
@@ -205,11 +233,12 @@ impl RuntimeHost {
         let result = self
             .runtime_db()
             .transitions_in_scope(&scope)
-            .commit_prepared_transition_with_work_request_and_memory_budget(
+            .commit_prepared_transition_with_input_query_source(
                 &prepared,
                 &work_request,
                 ledger,
                 &request,
+                &input_source,
             );
         // No await separates the synchronous attempt from its original witness.
         let replay = matches!(&result, Ok(InputMutationExecution::Replayed { .. }));

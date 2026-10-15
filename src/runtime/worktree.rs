@@ -163,13 +163,90 @@ impl RuntimeHandle {
         worktree_path: PathBuf,
         worktree_branch: String,
     ) -> Result<()> {
-        let agent_id = self.agent_id().await?;
-        let worktree_session = WorktreeSession {
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&(
+            &original_cwd,
+            &original_branch,
+            &worktree_path,
+            &worktree_branch,
+        ))?;
+        let session = WorktreeSession {
             original_cwd,
             original_branch,
-            worktree_path: worktree_path.clone(),
+            worktree_path,
             worktree_branch,
         };
+        self.start_owned_legacy_worktree_entry(session, material, admission)
+            .await
+    }
+    pub(crate) async fn enter_worktree_from_seed(&self, seed: &ManagedWorktreeSeed) -> Result<()> {
+        let admission = self.execution_admission_lease()?;
+        let material = self.prepare_original_workspace_request_material(&(
+            &seed.original_cwd,
+            &seed.original_branch,
+            &seed.worktree_path,
+            &seed.worktree_branch,
+        ))?;
+        let session = WorktreeSession {
+            original_cwd: seed.original_cwd.clone(),
+            original_branch: seed.original_branch.clone(),
+            worktree_path: seed.worktree_path.clone(),
+            worktree_branch: seed.worktree_branch.clone(),
+        };
+        self.start_owned_legacy_worktree_entry(session, material, admission)
+            .await
+    }
+    async fn start_owned_legacy_worktree_entry(
+        &self,
+        session: WorktreeSession,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+        _admission: super::execution_admission::ExecutionLease,
+    ) -> Result<()> {
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = _admission;
+            let result = runtime.enter_worktree_owned(session, material).await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original worktree entry worker ended before its ACK")?
+    }
+    pub(crate) async fn enter_worktree_for_original_child_spawn(
+        &self,
+        source: &super::OriginalChildTaskProducer,
+        seed: &ManagedWorktreeSeed,
+    ) -> Result<()> {
+        source.validate_original_spawn_worktree_target(
+            self.instance_agent_id(),
+            self.instance_incarnation(),
+            seed,
+        )?;
+        let material = self.prepare_original_workspace_request_material(&(
+            &seed.original_cwd,
+            &seed.original_branch,
+            &seed.worktree_path,
+            &seed.worktree_branch,
+        ))?;
+        let session = WorktreeSession {
+            original_cwd: seed.original_cwd.clone(),
+            original_branch: seed.original_branch.clone(),
+            worktree_path: seed.worktree_path.clone(),
+            worktree_branch: seed.worktree_branch.clone(),
+        };
+        self.enter_worktree_owned(session, material).await
+    }
+    async fn enter_worktree_owned(
+        &self,
+        worktree_session: WorktreeSession,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+    ) -> Result<()> {
+        self.invalidate_context_resources(
+            super::resource_observation::ResourceInvalidation::WorkspaceChange,
+        )?;
+        let agent_id = self.agent_id().await?;
+        let worktree_path = &worktree_session.worktree_path;
         let (workspace_id, workspace_anchor) = {
             let guard = self.inner.agent.lock().await;
             let entry = guard
@@ -218,7 +295,9 @@ impl RuntimeHandle {
                 )),
             });
             guard.state.worktree_session = Some(worktree_session.clone());
-            guard.persist_state(&self.inner.storage).await?;
+            guard
+                .persist_state_with_original_workspace_request(material.clone())
+                .await?;
         }
         let active = self
             .agent_state()
@@ -253,19 +332,15 @@ impl RuntimeHandle {
             );
         }
 
-        let boundary = crate::system::HostLocalBoundary::from_parts(
-            &self.agent_state().await?.execution_profile,
-            Some(WorkspaceProjectionKind::GitWorktreeRoot),
-            Some(WorkspaceAccessMode::ExclusiveWrite),
-            Some(execution_root_id),
-        );
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "worktree_entered",
-            serde_json::json!({
-                "worktree": to_json_value(&worktree_session),
-                "boundary": boundary.audit_metadata(),
-            }),
-        ))?;
+        let profile = self.agent_state().await?.execution_profile;
+        let audit = self.prepare_original_legacy_worktree_entered_observation(
+            material,
+            &worktree_session,
+            &profile,
+            &execution_root_id,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(())
     }
 
@@ -339,6 +414,28 @@ impl RuntimeHandle {
     }
 
     pub async fn exit_worktree(&self, original_cwd: PathBuf, removed: bool) -> Result<()> {
+        let admission = self.execution_admission_lease()?;
+        let material =
+            self.prepare_original_workspace_request_material(&(&original_cwd, removed))?;
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = runtime
+                .exit_worktree_owned(original_cwd, removed, material)
+                .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("original worktree exit worker ended before its ACK")?
+    }
+    async fn exit_worktree_owned(
+        &self,
+        original_cwd: PathBuf,
+        removed: bool,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
+    ) -> Result<()> {
         let (worktree_session, occupancy_id, prev_execution_root_id) = {
             let mut guard = self.begin_mutation().await?;
             let session = guard.state.worktree_session.take();
@@ -374,7 +471,9 @@ impl RuntimeHandle {
                     projection_metadata: None,
                 });
             }
-            guard.persist_state(&self.inner.storage).await?;
+            guard
+                .persist_state_with_original_workspace_request(material.clone())
+                .await?;
             (session, occupancy_id, prev_execution_root_id)
         };
         // Soft-delete the worktree execution root entry from the registry
@@ -403,14 +502,13 @@ impl RuntimeHandle {
             }
         }
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "worktree_exited",
-            serde_json::json!({
-                "worktree_path": worktree_session.as_ref().map(|w| &w.worktree_path),
-                "worktree_branch": worktree_session.as_ref().map(|w| &w.worktree_branch),
-                "removed": removed,
-            }),
-        ))?;
+        let audit = self.prepare_original_legacy_worktree_exited_observation(
+            material,
+            worktree_session.as_ref(),
+            removed,
+        )?;
+        self.finish_owned_original_workspace_observation(audit)
+            .await?;
         Ok(())
     }
 
@@ -418,6 +516,7 @@ impl RuntimeHandle {
         &self,
         task_id: &str,
         seed: &ManagedWorktreeSeed,
+        material: Arc<super::OriginalWorkspaceRequestMaterial>,
     ) -> Result<()> {
         let mut mutation = self.begin_mutation().await?;
         let scope = mutation.input_evidence_scope();
@@ -444,7 +543,12 @@ impl RuntimeHandle {
             &request,
             &self.inner.input_evidence_budget,
         )?;
-        let mut capture = super::resident_task::TaskCaptureRequest::current();
+        let mut capture = super::resident_task::TaskCaptureRequest {
+            include_active: false,
+            include_unsettled: false,
+            terminal_limit: 0,
+            required_keys: Default::default(),
+        };
         capture
             .required_keys
             .insert(super::resident_task::TaskKey::new(
@@ -462,25 +566,58 @@ impl RuntimeHandle {
         let super::resident_task::CanonicalTaskFact::Task(task) = &fact.fact else {
             anyhow::bail!("worktree Task producer selected another family")
         };
-        let _owned = crate::runtime_db::command_task_terminal::charge_material(
-            &scope,
-            usize::try_from(super::input_evidence_budget::serialized_bytes(&(
-                task,
-                &seed.original_cwd,
-                &seed.original_branch,
-                &seed.worktree_path,
-                &seed.worktree_branch,
-            ))?)?
-            .checked_add(1024)
+        let (encoded, native) = super::input_evidence_budget::borrowed_json_material(&(
+            task,
+            &seed.original_cwd,
+            &seed.original_branch,
+            &seed.worktree_path,
+            &seed.worktree_branch,
+        ))?;
+        let copy_bytes = usize::try_from(encoded)?
+            .checked_add(
+                native
+                    .checked_mul(256)
+                    .context("worktree Task native bytes overflow")?,
+            )
+            .and_then(|n| n.checked_add(1024))
             .and_then(|n| n.checked_mul(8))
-            .context("worktree Task material overflow")?,
-            super::child_task_terminal::completion_value_nodes(task.detail.as_ref())?
-                .checked_add(16)
-                .and_then(|n| n.checked_mul(8))
-                .context("worktree Task nodes overflow")?,
-            &request,
+            .context("worktree Task copy bytes overflow")?;
+        let copy_records = native
+            .checked_add(32)
+            .and_then(|n| n.checked_mul(8))
+            .context("worktree Task copy records overflow")?;
+        let selected_usage = physical_worktree_selected_task_material(&selected)?;
+        let request_usage = material.material_estimate()?;
+        let selector_bytes = usize::try_from(_selector.owned_material_bytes()?)?;
+        let prior_bytes = selected_usage
+            .0
+            .checked_add(request_usage.0)
+            .and_then(|n| n.checked_add(selector_bytes))
+            .context("worktree Task selected prior bytes overflow")?;
+        let prior_records = selected_usage
+            .1
+            .checked_add(request_usage.1)
+            .and_then(|n| n.checked_add(8))
+            .context("worktree Task selected prior records overflow")?;
+        let mut copy_request = request;
+        copy_request.byte_limit = copy_request
+            .byte_limit
+            .min(64 * 1024 * 1024)
+            .checked_sub(prior_bytes)
+            .ok_or(super::current_read_facts::CurrentReadError::ResourceExhausted)?;
+        copy_request.record_limit = copy_request
+            .record_limit
+            .min(65536)
+            .checked_sub(prior_records)
+            .ok_or(super::current_read_facts::CurrentReadError::ResourceExhausted)?;
+        let owned = crate::runtime_db::command_task_terminal::charge_material(
+            &scope,
+            copy_bytes,
+            copy_records,
+            &copy_request,
             &self.inner.input_evidence_budget,
         )?;
+        let task_material = material.with_original_task_copy(owned, copy_records)?;
         let task = task.clone();
         let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(detail) = detail.as_object_mut() {
@@ -508,36 +645,20 @@ impl RuntimeHandle {
             updated_at: chrono::Utc::now(),
             ..task
         };
-        drop(mutation);
-        self.apply_task_transition(task_state_reducer::TaskTransition::new(
-            &updated,
-            "task_status_updated",
-        ))
+        // These original read/selector allocations end before the business
+        // write phase; only the guarded owned updated Task and request survive.
+        drop((mutation, selected, capture, _selector));
+        self.apply_task_transition(
+            task_state_reducer::TaskTransition::new(&updated, "task_status_updated")
+                .with_original_worktree_request_material(task_material),
+        )
         .await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "task_worktree_metadata_recorded",
-            serde_json::json!({
-                "task_id": task_id,
-                "worktree_path": seed.worktree_path,
-                "worktree_branch": seed.worktree_branch,
-            }),
-        ))?;
-        Ok(())
-    }
-
-    pub(super) async fn cleanup_task_owned_worktree_in_detail(
-        &self,
-        task_id: &str,
-        detail: &mut serde_json::Value,
-        reason: &str,
-    ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
-        let Some(worktree) = detail.get_mut("worktree") else {
-            return Ok(None);
-        };
-        let cleanup = self
-            .cleanup_task_owned_worktree_metadata(task_id, worktree, reason)
+        drop(updated);
+        let audit =
+            self.prepare_original_task_worktree_metadata_observation(material, task_id, seed)?;
+        self.finish_owned_original_workspace_observation(audit)
             .await?;
-        Ok(Some(cleanup))
+        Ok(())
     }
 
     pub(super) async fn cleanup_original_control_worktree_in_detail(
@@ -557,15 +678,6 @@ impl RuntimeHandle {
         .await
         .map(Some)
     }
-    async fn cleanup_task_owned_worktree_metadata(
-        &self,
-        task_id: &str,
-        worktree: &mut serde_json::Value,
-        reason: &str,
-    ) -> Result<TaskOwnedWorktreeCleanup> {
-        cleanup::cleanup_runtime_metadata(self, task_id, worktree, reason).await
-    }
-
     pub async fn summarize_worktree_tasks(&self) -> Result<String> {
         let tasks = self.latest_task_records().await?;
         let worktree_tasks: Vec<_> = tasks
@@ -715,6 +827,7 @@ impl RuntimeHandle {
         Ok(summary_lines.join("\n"))
     }
 
+    #[cfg(test)]
     async fn remove_task_owned_worktree(
         &self,
         artifact: &TaskOwnedWorktreeArtifact,
@@ -838,6 +951,7 @@ impl RuntimeHandle {
         Ok(output.exit_status.success())
     }
 
+    #[cfg(test)]
     async fn current_worktree_branch(&self, worktree_path: &Path) -> Result<String> {
         git_stdout(
             self,
@@ -848,6 +962,7 @@ impl RuntimeHandle {
         .await
     }
 
+    #[cfg(test)]
     async fn changed_files_for_worktree(&self, worktree_path: &Path) -> Result<Vec<String>> {
         let status = git_stdout(
             self,
@@ -1098,4 +1213,47 @@ async fn git_stdout(
 
 fn sanitize_branch_name(branch_name: &str) -> PathBuf {
     PathBuf::from(branch_name.replace(['/', '\\', ' '], "-"))
+}
+
+fn physical_worktree_selected_task_material(
+    selected: &super::resident_task::CapturedTasks,
+) -> Result<(usize, usize)> {
+    let base = selected.selected_material_estimate()?;
+    let mut total = (usize::try_from(base.0)?, base.1);
+    fn add(total: &mut (usize, usize), value: &impl serde::Serialize, floor: usize) -> Result<()> {
+        let (encoded, nodes) = super::input_evidence_budget::borrowed_json_material(value)?;
+        let actual = usize::try_from(encoded)?
+            .max(floor)
+            .checked_add(
+                nodes
+                    .checked_mul(256)
+                    .context("physical selected Task native bytes overflow")?,
+            )
+            .and_then(|n| n.checked_add(std::mem::size_of_val(value)))
+            .context("physical selected Task bytes overflow")?;
+        total.0 = total
+            .0
+            .checked_add(
+                actual
+                    .checked_sub(floor)
+                    .context("physical selected floor underflow")?,
+            )
+            .context("physical selected total bytes overflow")?;
+        total.1 = total
+            .1
+            .checked_add(nodes)
+            .context("physical selected Task records overflow")?;
+        Ok(())
+    }
+    for record in &selected.records {
+        add(&mut total, record.as_ref(), record.resident_bytes)?;
+    }
+    for record in &selected.stop_records {
+        add(
+            &mut total,
+            record.as_ref(),
+            usize::try_from(record.resident_bytes()?)?,
+        )?;
+    }
+    Ok(total)
 }

@@ -19,7 +19,7 @@ fn ledger() -> Result<InputEvidenceBudgetLedger> {
 fn work() -> crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
     crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
         capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
-        record_limit: 4096,
+        record_limit: 65_536,
         byte_limit: 4 * 1024 * 1024,
     }
 }
@@ -130,7 +130,17 @@ fn source_with_signal(
             Default::default(),
             None,
         )?;
-        commit(f, &p, l)?;
+        // This real W1 seed now includes the complete preproof/preflight/final
+        // native material, before the Stop Result phase under its original policy.
+        let mut seed_work = work();
+        seed_work.record_limit = 65_536;
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_work_request_and_memory_budget(
+                &p,
+                &seed_work,
+                l,
+                &request(),
+            )?;
     }
     let locator = f.db.transaction(|tx| {
         let current =
@@ -303,6 +313,9 @@ fn frozen_stop_result_delivers_without_physical_join_and_owns_work_wait_input_ac
     assert!(!value.effects.audit_events.is_empty());
     assert_eq!(f.state()?.pending, 1);
     assert_eq!(f.state()?.total_message_count, 1);
+    let native = native_stop_source(&f)?;
+    assert!(native.0 > 0 && native.1 > 0);
+    assert!(native.2.is_some_and(|birth| birth > 0));
     let durable = rows(&f)?;
     let after = load(&f, source.record.effect_seq, &l)?;
     let retry = PreparedInputTransition::task_stop_result(&after.record, &request(), &l)?
@@ -316,6 +329,7 @@ fn frozen_stop_result_delivers_without_physical_join_and_owns_work_wait_input_ac
     };
     assert_eq!(original, receipt);
     assert_eq!(rows(&f)?, durable);
+    assert_eq!(native_stop_source(&f)?, native);
     Ok(())
 }
 
@@ -353,9 +367,13 @@ fn frozen_stop_result_final_receipt_failure_rolls_back_every_business_and_progre
     let p = PreparedInputTransition::task_stop_result(&source.record, &request(), &l)?;
     f.db.connection()?.execute_batch("CREATE TRIGGER fail_frozen_result_receipt BEFORE INSERT ON input_mutation_receipts WHEN NEW.command_nonce='original-frozen-result-phase' BEGIN SELECT RAISE(ABORT,'frozen-result-receipt-fault'); END;")?;
     let before = rows(&f)?;
+    let native_before = native_stop_source(&f)?;
+    let budget_before = l.report()?.observed_bytes;
     let error = commit(&f, &p, &l).unwrap_err();
     assert!(format!("{error:#}").contains("frozen-result-receipt-fault"));
     assert_eq!(rows(&f)?, before);
+    assert_eq!(native_stop_source(&f)?, native_before);
+    assert_eq!(l.report()?.observed_bytes, budget_before);
     f.db.connection()?
         .execute_batch("DROP TRIGGER fail_frozen_result_receipt;")?;
     let InputMutationExecution::Committed { receipt, .. } = commit(&f, &p, &l)? else {
@@ -365,6 +383,10 @@ fn frozen_stop_result_final_receipt_failure_rolls_back_every_business_and_progre
         ack(&receipt).progress.result,
         stops::TaskStopResultState::Completed
     );
+    let native_after = native_stop_source(&f)?;
+    assert_eq!(native_after.0, native_before.0 + 1);
+    assert_eq!(native_after.1, native_before.1 + 1);
+    assert_eq!(native_after.2, Some(native_after.0));
     Ok(())
 }
 
@@ -444,6 +466,7 @@ fn frozen_stop_result_no_state_and_retired_poisoned_successor_only_record_unavai
         let f = Fixture::new()?;
         let l = ledger()?;
         let source = source(&f, &l, true, false)?;
+        let native_before = native_stop_source(&f)?;
         if retired {
             // Explicit conflicting successor restore: the old continuation must
             // not decode, install or overwrite this unrelated State body.
@@ -476,6 +499,17 @@ fn frozen_stop_result_no_state_and_retired_poisoned_successor_only_record_unavai
                 && value.effects.agent_state.is_none()
                 && value.effects.task_delta.is_none()
         );
+        assert!(
+            value.effects.current_read_facts.is_none()
+                && value.effects.current_read_maintenance.is_none()
+        );
+        let current_members:u64=f.db.connection()?.query_row(
+            "SELECT COUNT(*) FROM current_read_members WHERE family='queue' AND record_id='frozen-stop-feedback'",
+            [],|r|r.get(0))?;
+        assert_eq!(
+            current_members, 0,
+            "NoState/retired original scope grants no new Queue member"
+        );
         let after = rows(&f)?;
         assert!(matches!(
             commit(&f, &p, &l)?,
@@ -488,6 +522,7 @@ fn frozen_stop_result_no_state_and_retired_poisoned_successor_only_record_unavai
             |r| r.get(0),
         )?;
         assert_eq!(count, 0);
+        assert_eq!(native_stop_source(&f)?, native_before);
     }
     Ok(())
 }
@@ -568,4 +603,65 @@ impl RuntimeDb {
         let source = source_with_signal(&f, l, false, false, stops::TaskStopSignal::Abort)?;
         Ok((source.record, source._view))
     }
+}
+
+#[test]
+fn original_stop_result_work_projection_is_budgeted_before_decoder_and_whole_write() -> Result<()> {
+    let f = Fixture::new()?;
+    let l = ledger()?;
+    let source = source(&f, &l, true, true)?;
+    let p = PreparedInputTransition::task_stop_result(&source.record, &request(), &l)?;
+    let huge = "normalized-original-Work-".repeat(64 * 1024);
+    f.db.connection()?.execute(
+        "UPDATE work_items SET revision=?1 WHERE work_item_id='original-work'",
+        [&huge],
+    )?;
+    let before = rows(&f)?;
+    let baseline = l.report()?.observed_bytes;
+    let mut limited = work();
+    limited.byte_limit = 4 * 1024 * 1024;
+    limited.record_limit = 65_536;
+    let error =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_work_request_and_memory_budget(
+                &p,
+                &limited,
+                &l,
+                &request(),
+            )
+            .err()
+            .context("normalized Work projection must budget before owned String/decoder")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::runtime_db::work_snapshot::WorkSnapshotError>(),
+            Some(crate::runtime_db::work_snapshot::WorkSnapshotError::ResourceExhausted(_))
+        ),
+        "{error:#}"
+    );
+    assert_eq!(rows(&f)?, before);
+    assert_eq!(l.report()?.observed_bytes, baseline);
+    assert!(f
+        .db
+        .messages()
+        .by_id(Some(&f.scope.agent_id), "frozen-stop-feedback")?
+        .is_none());
+    let actual: String = f.db.connection()?.query_row(
+        "SELECT revision FROM work_items WHERE work_item_id='original-work'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(actual, huge);
+    Ok(())
+}
+
+#[path = "task_stop_current_read_tests.rs"]
+mod current_read_writes;
+
+
+fn native_stop_source(f: &Fixture) -> Result<(u64, usize, Option<u64>)> {
+    Ok(f.db.connection()?.query_row(
+        "SELECT COALESCE((SELECT high_water FROM input_query_birth_cursors WHERE agent_id=?1 AND identity_incarnation=?2),0),(SELECT COUNT(*) FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2),(SELECT birth_seq FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id='frozen-stop-feedback')",
+        params![f.scope.agent_id,f.scope.identity_incarnation],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    )?)
 }

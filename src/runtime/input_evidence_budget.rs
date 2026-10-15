@@ -116,6 +116,7 @@ pub(crate) enum InputMemoryCategory {
     Candidate,
     Pins,
     PreparedPrompt,
+    ResourceObservation,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct AllocationUsage {
@@ -168,6 +169,7 @@ enum AllocationWeak {
     Work(Weak<QualifiedWorkRecord>),
     Task(Weak<QualifiedTaskFact>),
     Scheduling(Weak<QualifiedSchedulingFact>),
+    CurrentRead(Weak<super::current_read_facts::QualifiedCurrentReadFact>),
     TaskStop(Weak<crate::runtime_db::task_stop::TaskStopRecord>),
 }
 impl AllocationWeak {
@@ -178,6 +180,7 @@ impl AllocationWeak {
             Self::Work(record) => record.strong_count(),
             Self::Task(record) => record.strong_count(),
             Self::Scheduling(record) => record.strong_count(),
+            Self::CurrentRead(record) => record.strong_count(),
             Self::TaskStop(record) => record.strong_count(),
         }
     }
@@ -249,6 +252,30 @@ pub(crate) struct BudgetViewGuard {
     ledger: Arc<LedgerInner>,
     nonce: u64,
 }
+impl BudgetViewGuard {
+    /// Observe only this original owned allocation; do not register a new view.
+    pub(crate) fn owned_material_bytes(&self) -> Result<u64> {
+        let state = self
+            .ledger
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        let owned = state
+            .views
+            .get(&self.nonce)
+            .map(|view| view.owned)
+            .or_else(|| {
+                state
+                    .host_owned_views
+                    .get(&self.nonce)
+                    .map(|view| view.owned)
+            })
+            .ok_or(InputEvidenceBudgetError::InvalidInput(
+                "owned material view is absent",
+            ))?;
+        owned.total()
+    }
+}
 /// A single already registered owned completion view. Growth records actual
 /// source-output ownership and cannot acquire a new nonce or reject a quota.
 #[derive(Debug)]
@@ -266,11 +293,9 @@ impl OwnedCompletionBudget {
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let view = state
-            .views
-            .get(&self.guard.nonce)
-            .expect("live completion reservation");
-        view.scope.0 == scope.agent_id && view.scope.1 == scope.identity_incarnation
+        state.views.get(&self.guard.nonce).is_some_and(|view| {
+            view.scope.0 == scope.agent_id && view.scope.1 == scope.identity_incarnation
+        })
     }
     /// Call before the original kernel allocates its derived owned copies.
     /// Saturation preserves responsibility; report still diagnoses total overflow.
@@ -281,18 +306,127 @@ impl OwnedCompletionBudget {
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let view = state
-            .views
-            .get_mut(&self.guard.nonce)
-            .expect("live completion reservation");
-        view.owned.payload_bytes = view.owned.payload_bytes.saturating_add(payload_bytes);
-        view.owned.metadata_estimate_bytes = view
-            .owned
-            .metadata_estimate_bytes
-            .saturating_add(metadata_bytes);
+        let owned = if let Some(view) = state.views.get_mut(&self.guard.nonce) {
+            &mut view.owned
+        } else {
+            &mut state
+                .host_owned_views
+                .get_mut(&self.guard.nonce)
+                .expect("live Host completion reservation")
+                .owned
+        };
+        owned.payload_bytes = owned.payload_bytes.saturating_add(payload_bytes);
+        owned.metadata_estimate_bytes =
+            owned.metadata_estimate_bytes.saturating_add(metadata_bytes);
+    }
+    /// Transfer the refresh candidate allocation to its actual retained view.
+    /// No pending responsibility, nonce or mutation authority is changed.
+    pub(crate) fn seal_resource_observation(
+        self,
+        retained: OwnedBytesEstimate,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        retained.total()?;
+        let mut state = self
+            .guard
+            .ledger
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        let (category, owned) = if let Some(view) = state.views.get_mut(&self.guard.nonce) {
+            (&mut view.category, &mut view.owned)
+        } else if let Some(view) = state.host_owned_views.get_mut(&self.guard.nonce) {
+            (&mut view.category, &mut view.owned)
+        } else {
+            return Err(InputEvidenceBudgetError::InvalidInput(
+                "resource reservation absent",
+            ));
+        };
+        if *category != InputMemoryCategory::Candidate {
+            return Err(InputEvidenceBudgetError::InvalidInput(
+                "resource reservation is not Candidate",
+            ));
+        }
+        *category = InputMemoryCategory::ResourceObservation;
+        *owned = retained;
+        Ok(self.guard.clone())
     }
     pub(crate) fn guard(&self) -> Arc<BudgetViewGuard> {
         self.guard.clone()
+    }
+}
+impl BudgetViewGuard {
+    pub(crate) fn validate_resource_observation(
+        &self,
+        scope: &InputEvidenceScope,
+        bytes: u64,
+    ) -> Result<()> {
+        let state = self
+            .ledger
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        let view = state
+            .views
+            .get(&self.nonce)
+            .ok_or(InputEvidenceBudgetError::InvalidInput(
+                "resource observation guard absent",
+            ))?;
+        if view.scope.0 != scope.agent_id
+            || view.scope.1 != scope.identity_incarnation
+            || view.category != InputMemoryCategory::ResourceObservation
+            || view.owned.total()? < bytes
+        {
+            return Err(InputEvidenceBudgetError::InvalidInput(
+                "resource observation guard does not cover original body",
+            ));
+        }
+        Ok(())
+    }
+    /// Validate an already registered allocation; this grants no record authority.
+    pub(crate) fn validate_owned_material_binding(
+        &self, scope: &InputEvidenceScope, ledger: &InputEvidenceBudgetLedger, bytes: u64,
+    ) -> Result<()> {
+        if !self.matches_resource_ledger(ledger) {
+            return Err(InputEvidenceBudgetError::InvalidInput("owned material ledger differs"));
+        }
+        let state = self.ledger.state.lock().map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        let view = state.views.get(&self.nonce)
+            .ok_or(InputEvidenceBudgetError::InvalidInput("owned material allocation absent"))?;
+        if view.scope.0 != scope.agent_id || view.scope.1 != scope.identity_incarnation
+            || view.owned.total()? < bytes {
+            return Err(InputEvidenceBudgetError::InvalidInput("owned material scope or size differs"));
+        }
+        Ok(())
+    }
+    /// Validate only an already-owned Host metadata view; this has no scope,
+    /// body/source grant, pending ticket or mutation authority.
+    pub(crate) fn validate_host_owned_material_binding(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+        bytes: u64,
+    ) -> Result<()> {
+        if !self.matches_resource_ledger(ledger) {
+            return Err(InputEvidenceBudgetError::InvalidInput(
+                "Host material ledger differs",
+            ));
+        }
+        let state = self
+            .ledger
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        let view = state.host_owned_views.get(&self.nonce).ok_or(
+            InputEvidenceBudgetError::InvalidInput("Host owned material view absent"),
+        )?;
+        if view.owned.total()? < bytes {
+            return Err(InputEvidenceBudgetError::InvalidInput(
+                "Host material size differs",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn matches_resource_ledger(&self, ledger: &InputEvidenceBudgetLedger) -> bool {
+        Arc::ptr_eq(&self.ledger, &ledger.inner)
     }
 }
 impl Drop for BudgetViewGuard {
@@ -776,7 +910,11 @@ impl InputEvidenceBudgetLedger {
                     "record scope differs from view",
                 ));
             }
-            let bytes = u64::try_from(record.resident_bytes)
+            // Immutable typed bodies, object keys and container slots are the
+            // allocation floor, even when an old DTO understates encoded bytes.
+            let (bytes, _) = record.resident_material_estimate()
+                .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
+            let bytes = u64::try_from(bytes)
                 .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
             unique.insert(Arc::as_ptr(record) as usize, (record, bytes));
         }
@@ -1024,6 +1162,70 @@ impl InputEvidenceBudgetLedger {
         }))
     }
 
+    pub(crate) fn register_current_read_view<'a>(
+        &self,
+        scope: &InputEvidenceScope,
+        category: InputMemoryCategory,
+        records: impl IntoIterator<Item = &'a Arc<super::current_read_facts::QualifiedCurrentReadFact>>,
+    ) -> Result<Arc<BudgetViewGuard>> {
+        valid_scope(scope)?;
+        let sk = ScopeKey::from(scope);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| InputEvidenceBudgetError::Poisoned)?;
+        state.prune_dead();
+        let mut unique = BTreeMap::new();
+        for record in records {
+            if &record.locator.scope != scope {
+                return Err(InputEvidenceBudgetError::InvalidInput(
+                    "CurrentRead scope differs from view",
+                ));
+            }
+            let id = Arc::as_ptr(record) as usize;
+            let bytes = u64::try_from(record.resident_bytes)
+                .map_err(|_| InputEvidenceBudgetError::CounterOverflow)?;
+            if let Some(entry) = state.allocations.get(&id) {
+                if entry.scope != sk
+                    || !matches!(&entry.weak, AllocationWeak::CurrentRead(_))
+                    || entry.bytes != bytes
+                {
+                    return Err(InputEvidenceBudgetError::InvalidInput(
+                        "CurrentRead allocation scope/charge changed",
+                    ));
+                }
+            }
+            unique.insert(id, (record, bytes));
+        }
+        let nonce = state.nonce()?;
+        for (id, (record, bytes)) in &unique {
+            let entry = state
+                .allocations
+                .entry(*id)
+                .or_insert_with(|| AllocationEntry {
+                    weak: AllocationWeak::CurrentRead(Arc::downgrade(record)),
+                    scope: sk.clone(),
+                    bytes: *bytes,
+                    memberships: BTreeMap::new(),
+                });
+            entry.memberships.insert(nonce, category);
+        }
+        state.views.insert(
+            nonce,
+            ViewEntry {
+                scope: sk,
+                category,
+                allocations: unique.into_keys().collect(),
+                owned: OwnedBytesEstimate::default(),
+            },
+        );
+        Ok(Arc::new(BudgetViewGuard {
+            ledger: self.inner.clone(),
+            nonce,
+        }))
+    }
+
     pub(crate) fn register_task_view<'a>(
         &self,
         scope: &InputEvidenceScope,
@@ -1192,6 +1394,16 @@ impl InputEvidenceBudgetLedger {
             guard: self.register_owned_bytes(scope, category, initial)?,
         })
     }
+    /// A global resource read owns physical output without inventing an agent scope.
+    pub(crate) fn reserve_host_owned_completion(
+        &self,
+        category: InputMemoryCategory,
+        initial: OwnedBytesEstimate,
+    ) -> Result<OwnedCompletionBudget> {
+        Ok(OwnedCompletionBudget {
+            guard: self.register_host_owned_bytes(category, initial)?,
+        })
+    }
     /// A Host actor may own bounded metadata before any agent identity exists.
     /// This registers no body, pending ticket, namespace or mutation authority.
     pub(crate) fn register_host_owned_bytes(
@@ -1273,6 +1485,7 @@ impl InputEvidenceBudgetLedger {
                             | InputMemoryCategory::Candidate
                             | InputMemoryCategory::Pins
                             | InputMemoryCategory::PreparedPrompt
+                            | InputMemoryCategory::ResourceObservation
                     )
                 })
             {
@@ -1357,6 +1570,76 @@ pub(crate) fn serialized_bytes(value: &impl Serialize) -> Result<u64> {
     Ok(count.0)
 }
 
+/// Count encoded bytes and every JSON value/container/object key by borrowing.
+/// Escapes and strings are streamed, with no intermediate String/Value/Vec.
+pub(crate) fn borrowed_json_material(
+    value: &impl serde::Serialize,
+) -> Result<(u64, usize)> {
+    #[derive(Default)]
+    struct Counter {
+        bytes: usize,
+        nodes: usize,
+        string: bool,
+        escape: bool,
+        primitive: bool,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("Input encoded count overflow"))?;
+            for byte in bytes {
+                if self.string {
+                    if self.escape {
+                        self.escape = false;
+                    } else if *byte == b'\\' {
+                        self.escape = true;
+                    } else if *byte == b'"' {
+                        self.string = false;
+                    }
+                    continue;
+                }
+                let start = match *byte {
+                    b'"' => {
+                        self.string = true;
+                        self.primitive = false;
+                        true
+                    }
+                    b'{' | b'[' => {
+                        self.primitive = false;
+                        true
+                    }
+                    b'}' | b']' | b',' | b':' => {
+                        self.primitive = false;
+                        false
+                    }
+                    b' ' | b'\n' | b'\r' | b'\t' => false,
+                    _ if !self.primitive => {
+                        self.primitive = true;
+                        true
+                    }
+                    _ => false,
+                };
+                if start {
+                    self.nodes = self
+                        .nodes
+                        .checked_add(1)
+                        .ok_or_else(|| std::io::Error::other("Input native count overflow"))?;
+                }
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Counter::default();
+    serde_json::to_writer(&mut count, value)
+        .map_err(|_| InputEvidenceBudgetError::InvalidInput("native footprint serialization failed"))?;
+    Ok((u64::try_from(count.bytes).map_err(|_|InputEvidenceBudgetError::CounterOverflow)?, count.nodes))
+}
+
 fn empty_scope(sk: &ScopeKey) -> ScopeMemoryReport {
     ScopeMemoryReport {
         scope: sk.scope(),
@@ -1426,3 +1709,7 @@ mod tests;
 #[cfg(test)]
 #[path = "input_evidence_owned_completion_tests.rs"]
 mod owned_completion_tests;
+
+#[cfg(test)]
+#[path = "input_evidence_native_material_tests.rs"]
+mod native_material_tests;

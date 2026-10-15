@@ -35,6 +35,7 @@ fn owner() -> Arc<QualifiedWorkRecord> {
 }
 fn coverage(records: &[Arc<QualifiedWorkRecord>], revision: u64) -> WorkCoverage {
     WorkCoverage {
+        legacy_delivery_heads: std::collections::BTreeMap::new(),
         revision,
         live_complete: true,
         live_work_ids: BTreeSet::new(),
@@ -204,6 +205,7 @@ fn original_transaction_delta_preserves_final_turn_wait_relation_after_terminal_
         BTreeSet::from(["wait".into(), "extra".into()]),
     );
     let delta = CommittedWorkDelta {
+        _material_views: None,
         scope: scope(),
         base_revision: 1,
         revision: 2,

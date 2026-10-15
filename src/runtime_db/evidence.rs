@@ -1366,7 +1366,8 @@ pub(crate) fn import_audit_event_tx(
         );
     }
     if event.event_seq == 0 {
-        append_audit_event_tx(tx, agent_id, &event)?;
+        let (actual, _) = append_audit_event_tx(tx, agent_id, &event)?;
+        record_imported_current_event_tx(tx, agent_id, &actual)?;
         return Ok(());
     }
     if let Some((existing_agent_id, payload)) = tx
@@ -1389,6 +1390,7 @@ pub(crate) fn import_audit_event_tx(
             event.id
         );
         ensure_same_audit_event_identity_content(&existing, &event)?;
+        record_imported_current_event_tx(tx, agent_id, &existing)?;
         return Ok(());
     }
     let event_seq = i64::try_from(event.event_seq)
@@ -1404,6 +1406,7 @@ pub(crate) fn import_audit_event_tx(
     {
         let existing: AuditEvent = serde_json::from_str(&payload)?;
         ensure_same_audit_event_identity_content(&existing, &event)?;
+        record_imported_current_event_tx(tx, agent_id, &existing)?;
         return Ok(());
     }
     insert_audit_event_with_sequence_tx(tx, agent_id, &event)?;
@@ -1412,7 +1415,25 @@ pub(crate) fn import_audit_event_tx(
         AUDIT_EVENT_SEQUENCE_DOMAIN,
         &audit_event_sequence_scope(agent_id),
         event.event_seq,
-    )
+    )?;
+    record_imported_current_event_tx(tx, agent_id, &event)
+}
+fn record_imported_current_event_tx(
+    tx: &Transaction<'_>,
+    agent: Option<&str>,
+    actual: &AuditEvent,
+) -> Result<()> {
+    // Host events have no Agent namespace or CurrentRead scope.
+    if let Some(agent) = agent {
+        super::current_read_snapshot::record_current_read_import_tx(
+            tx,
+            agent,
+            crate::runtime::current_read_facts::CurrentReadFamily::Event,
+            &actual.id,
+            &super::current_read_snapshot::typed_digest(actual)?,
+        )?;
+    }
+    Ok(())
 }
 
 fn event_log_epoch_tx(tx: &Transaction<'_>) -> Result<String> {

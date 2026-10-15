@@ -150,21 +150,38 @@ pub(super) fn capture_seed_tx(
         usize::try_from(stored_bytes)?,
     ))
 }
-pub(super) fn load_tx(
+pub(super) fn load_with_material_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     binding: &Binding,
     mandatory: &BTreeSet<Key>,
     sources: &BTreeSet<String>,
+    mut material: Option<&mut read_material::InputReadMaterial<'_>>,
 ) -> Result<BTreeMap<String, ExecutionWorkObservation>> {
+    if let Some(material) = material.as_deref_mut() {
+        material.execution_selectors(mandatory, sources)?;
+    }
     let mut ids = mandatory
         .iter()
         .filter(|x| x.family == Family::WorkExecution)
         .map(|x| x.id.clone())
         .collect::<BTreeSet<_>>();
-    message_work_ids(tx, &scope.agent_id, sources.iter().cloned(), &mut ids)?;
+    for source in sources {
+        if let Some(material) = material.as_deref_mut() {
+            material.execution_work_id_tx(tx, source)?;
+        }
+        let work:Option<String>=tx.query_row("SELECT json_extract(payload_json,'$.work_item_id') FROM messages WHERE agent_id=?1 AND message_id=?2",params![scope.agent_id,source],|r|r.get(0)).optional()?.flatten();
+        if let Some(work) = work {
+            ensure!(work.len() <= 4096, "execution Work ID exceeds metadata bound");
+            ids.insert(work);
+        }
+        ensure!(ids.len() <= MAX_RECORDS, "execution Work metadata count exceeded");
+    }
     let mut result = BTreeMap::new();
     for id in ids {
+        if let Some(material) = material.as_deref_mut() {
+            material.execution_work_observation_tx(tx, binding, &id)?;
+        }
         let Some(value) = observed(tx, scope, binding, &id)? else {
             continue;
         };
@@ -182,6 +199,16 @@ pub(super) fn load_tx(
         result.insert(id, value);
     }
     Ok(result)
+}
+#[cfg(test)]
+pub(super) fn load_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    binding: &Binding,
+    mandatory: &BTreeSet<Key>,
+    sources: &BTreeSet<String>,
+) -> Result<BTreeMap<String, ExecutionWorkObservation>> {
+    load_with_material_tx(tx, scope, binding, mandatory, sources, None)
 }
 pub(super) fn register_tx(
     tx: &Transaction<'_>,

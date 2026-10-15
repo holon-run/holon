@@ -27,6 +27,7 @@ fn qualify(record: PreparedInputEvidence) -> Arc<QualifiedInputEvidence> {
         turn_index: None,
         owner: None,
         attempt_turn_keys: None,
+        tool_run_report: None,
     })
 }
 fn head(id: &str) -> Arc<QualifiedInputEvidence> {
@@ -54,6 +55,7 @@ fn coverage(
     source: &Arc<QualifiedInputEvidence>,
 ) -> InputEvidenceCoverage {
     InputEvidenceCoverage {
+        query: Default::default(),
         selected_completion_brief_ids: BTreeSet::from([head.locator.key.id.clone()]),
         completion_source_observations: vec![CompletionOptionalSourceObservation {
             head: head.locator.clone(),
@@ -198,7 +200,8 @@ fn source_commit_invalidates_completion_preparation_instead_of_reusing_old_absen
 fn current_budget_counts_completion_bodies_after_request_pins_are_released() {
     let head = head("head");
     let source = source();
-    let bytes = (head.resident_bytes + source.resident_bytes) as u64;
+    let bytes = (head.resident_material_estimate().unwrap().0
+        + source.resident_material_estimate().unwrap().0) as u64;
     let weak_head = Arc::downgrade(&head);
     let weak_source = Arc::downgrade(&source);
     let prepared = coverage(&head, &source);

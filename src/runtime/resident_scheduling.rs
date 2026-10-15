@@ -15,6 +15,11 @@ use std::{
     sync::Arc,
 };
 
+#[path = "scheduling_capture_material.rs"]
+mod capture_material;
+pub(crate) use capture_material::SchedulingCaptureMaterial;
+use capture_material::SchedulingCapturePhase;
+
 pub(crate) const SCHEDULING_HISTORY_WINDOW: usize = 128;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,10 +195,18 @@ impl SchedulingCoverage {
             .map(|o| o.availability)
     }
     fn roots(&self, request: &SchedulingCaptureRequest) -> Result<BTreeSet<SchedulingKey>> {
+        self.roots_observed(request, &mut SchedulingCapturePhase::unobserved())
+    }
+    fn roots_observed(
+        &self,
+        request: &SchedulingCaptureRequest,
+        phase: &mut SchedulingCapturePhase<'_>,
+    ) -> Result<BTreeSet<SchedulingKey>> {
         ensure!(
             request.history_limit <= SCHEDULING_HISTORY_WINDOW,
             "Scheduling history request exceeds policy"
         );
+        phase.json(&request.required_keys, 1)?;
         let mut keys = request.required_keys.clone();
         if request.include_live {
             ensure!(
@@ -202,13 +215,15 @@ impl SchedulingCoverage {
                     && self.active_triggers_complete,
                 SchedulingReadError::IncompleteLive
             );
-            keys.extend(
-                self.active_timers
-                    .iter()
-                    .chain(&self.pending_wakes)
-                    .chain(&self.active_triggers)
-                    .cloned(),
-            );
+            for key in self
+                .active_timers
+                .iter()
+                .chain(&self.pending_wakes)
+                .chain(&self.active_triggers)
+            {
+                phase.key(key, 1)?;
+                keys.insert(key.clone());
+            }
         }
         for family in [
             SchedulingFamily::Timer,
@@ -229,14 +244,14 @@ impl SchedulingCoverage {
                 history.loaded_keys.len() >= history.keys.len().min(request.history_limit),
                 SchedulingReadError::NeedsHistory
             );
-            keys.extend(history.keys.iter().take(request.history_limit).cloned());
-            keys.extend(
-                history
-                    .loaded_keys
-                    .iter()
-                    .take(request.history_limit)
-                    .cloned(),
-            );
+            for key in history.keys.iter().take(request.history_limit) {
+                phase.key(key, 1)?;
+                keys.insert(key.clone());
+            }
+            for key in history.loaded_keys.iter().take(request.history_limit) {
+                phase.key(key, 1)?;
+                keys.insert(key.clone());
+            }
         }
         Ok(keys)
     }
@@ -307,6 +322,20 @@ pub(crate) struct CapturedScheduling {
     pub records: Vec<Arc<QualifiedSchedulingFact>>,
     _views: Vec<Arc<BudgetViewGuard>>,
 }
+impl CapturedScheduling {
+    pub(crate) fn validate_material_binding(
+        &self,
+        scope: &InputEvidenceScope,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(self.scope == *scope, "selected Scheduling scope differs");
+        for guard in &self._views {
+            guard.validate_owned_material_binding(scope, ledger, 0)?;
+        }
+        Ok(())
+    }
+}
+
 impl ResidentSchedulingDomain {
     pub(crate) fn bootstrap(
         scope: InputEvidenceScope,
@@ -347,6 +376,25 @@ impl ResidentSchedulingDomain {
         domain.validate()?;
         Ok(domain)
     }
+    pub(in crate::runtime) fn validate_capture_material_binding(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
+        ensure!(
+            self.budget
+                .as_ref()
+                .is_some_and(|actual| actual.same_ledger(ledger))
+                && !self.views.is_empty(),
+            "scheduler Scheduling material ledger differs"
+        );
+        for guard in &self.views {
+            guard.validate_owned_material_binding(&self.scope, ledger, 0)?;
+        }
+        Ok(())
+    }
+    pub(in crate::runtime) fn acquisition_registration_count(&self) -> Result<usize> {
+        Ok(self.records.len())
+    }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         &self.scope
     }
@@ -375,9 +423,13 @@ impl ResidentSchedulingDomain {
             })
             .transpose()
     }
-    fn required_closure(
+    fn required_closure(&self, keys: BTreeSet<SchedulingKey>) -> Result<BTreeSet<SchedulingKey>> {
+        self.required_closure_observed(keys, &mut SchedulingCapturePhase::unobserved())
+    }
+    fn required_closure_observed(
         &self,
         mut keys: BTreeSet<SchedulingKey>,
+        phase: &mut SchedulingCapturePhase<'_>,
     ) -> Result<BTreeSet<SchedulingKey>> {
         let optional_pruned = |key: &SchedulingKey| {
             self.coverage.availability(key) == Some(SchedulingAvailability::Pruned)
@@ -386,13 +438,15 @@ impl ResidentSchedulingDomain {
                 && !self.coverage.pending_wakes.contains(key)
                 && !self.coverage.active_triggers.contains(key)
         };
+        phase.json(&keys, 1)?;
         let initial: Vec<_> = keys.iter().cloned().collect();
         for key in initial {
             if optional_pruned(&key) {
                 continue;
             }
-            if let Some(record) = self.lookup(&key)? {
+            if let Some(record) = self.lookup_observed(&key, phase)? {
                 if let CanonicalSchedulingFact::TimerWake(w) = &record.fact {
+                    phase.key_parts(SchedulingFamily::Timer, &w.timer_id, 1)?;
                     keys.insert(SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id));
                 }
             }
@@ -401,7 +455,7 @@ impl ResidentSchedulingDomain {
             if optional_pruned(key) {
                 continue;
             }
-            self.lookup(key)?;
+            self.lookup_observed(key, phase)?;
         }
         for record in self
             .records
@@ -409,8 +463,12 @@ impl ResidentSchedulingDomain {
             .filter(|r| keys.contains(&r.locator.key))
         {
             if let CanonicalSchedulingFact::TimerWake(w) = &record.fact {
+                phase.key_parts(SchedulingFamily::Timer, &w.timer_id, 1)?;
                 let parent = self
-                    .lookup(&SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id))?
+                    .lookup_observed(
+                        &SchedulingKey::new(SchedulingFamily::Timer, &w.timer_id),
+                        phase,
+                    )?
                     .context("Scheduling Wake has no qualified Timer body")?;
                 ensure!(
                     matches!(&parent.fact,CanonicalSchedulingFact::Timer(t) if t.id==w.timer_id),
@@ -421,20 +479,37 @@ impl ResidentSchedulingDomain {
         Ok(keys)
     }
     fn lookup(&self, key: &SchedulingKey) -> Result<Option<&Arc<QualifiedSchedulingFact>>> {
+        self.lookup_observed(key, &mut SchedulingCapturePhase::unobserved())
+    }
+    fn lookup_observed(
+        &self,
+        key: &SchedulingKey,
+        phase: &mut SchedulingCapturePhase<'_>,
+    ) -> Result<Option<&Arc<QualifiedSchedulingFact>>> {
         match self.coverage.availability(key) {
             Some(SchedulingAvailability::Absent) => Ok(None),
             Some(SchedulingAvailability::Pruned) => {
+                phase.key(key, 1)?;
                 Err(SchedulingReadError::Pruned(key.clone()).into())
             }
             Some(SchedulingAvailability::HistoricalUnavailable) => {
+                phase.key(key, 1)?;
                 Err(SchedulingReadError::HistoricalUnavailable(key.clone()).into())
             }
-            Some(SchedulingAvailability::Present) => self
-                .records
-                .get(key)
-                .map(Some)
-                .ok_or_else(|| SchedulingReadError::NeedsPreparation(key.clone()).into()),
-            None => Err(SchedulingReadError::NeedsPreparation(key.clone()).into()),
+            Some(SchedulingAvailability::Present) => match self.records.get(key) {
+                Some(record) => {
+                    phase.body(record)?;
+                    Ok(Some(record))
+                }
+                None => {
+                    phase.key(key, 1)?;
+                    Err(SchedulingReadError::NeedsPreparation(key.clone()).into())
+                }
+            },
+            None => {
+                phase.key(key, 1)?;
+                Err(SchedulingReadError::NeedsPreparation(key.clone()).into())
+            }
         }
     }
     fn validate(&self) -> Result<()> {
@@ -604,7 +679,158 @@ impl ResidentSchedulingDomain {
         next.refresh_views()?;
         Ok(next)
     }
+    /// Complete Active Trigger input for Work queue routing. Other Scheduling
+    /// families remain explicitly unavailable in this selected observation.
+    pub(in crate::runtime) fn capture_work_query_triggers_with_prior(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+        prior: (usize, usize),
+        limits: (usize, usize),
+    ) -> Result<(CapturedScheduling, (usize, usize))> {
+        ensure!(
+            self.coverage.active_triggers_complete,
+            SchedulingReadError::IncompleteLive
+        );
+        if let Some(original) = &self.budget {
+            ensure!(
+                original.same_ledger(ledger),
+                "Scheduling query ledger differs"
+            );
+        }
+        let byte_limit = self.byte_limit.min(limits.0).min(64 * 1024 * 1024);
+        let record_limit = self.record_limit.min(limits.1).min(65_536);
+        let source = (
+            &self.scope,
+            self.coverage.revision,
+            &self.coverage.active_triggers,
+        );
+        let nodes = crate::runtime::resource_refresh::borrowed_resource_record_count(&source)?
+            .checked_add(
+                self.coverage
+                    .active_triggers
+                    .len()
+                    .checked_mul(4)
+                    .context("Trigger query slots overflow")?,
+            )
+            .and_then(|n| n.checked_add(8))
+            .context("Trigger query metadata count overflow")?;
+        let metadata = serialized_bytes(&source)?
+            .checked_add(
+                u64::try_from(nodes)?
+                    .checked_mul(256)
+                    .context("Trigger query native bytes overflow")?,
+            )
+            .and_then(|n| n.checked_mul(8))
+            .context("Trigger query metadata bytes overflow")?;
+        let count = nodes
+            .checked_mul(8)
+            .context("Trigger query metadata count overflow")?;
+        let mut used = (
+            prior
+                .0
+                .checked_add(usize::try_from(metadata)?)
+                .context("Trigger query combined bytes overflow")?,
+            prior
+                .1
+                .checked_add(count)
+                .context("Trigger query combined count overflow")?,
+        );
+        ensure!(
+            used.0 <= byte_limit && used.1 <= record_limit,
+            SchedulingReadError::ResourceExhausted("Work query Trigger metadata")
+        );
+        // Admit every String/BTree/Vec/Arc slot before lookup errors or selection.
+        let guard = ledger.register_owned_bytes(
+            &self.scope,
+            InputMemoryCategory::Pins,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: metadata,
+            },
+        )?;
+        for key in &self.coverage.active_triggers {
+            let record = self
+                .lookup(key)?
+                .context("complete Active Trigger body missing")?;
+            ensure!(
+                key.family == SchedulingFamily::ExternalTrigger
+                    && matches!(&record.fact,CanonicalSchedulingFact::ExternalTrigger(trigger)
+                    if trigger.status==crate::types::ExternalTriggerStatus::Active),
+                "Work query Trigger root differs"
+            );
+            let count =
+                crate::runtime::resource_refresh::borrowed_resource_record_count(&record.fact)?;
+            let bytes = record
+                .resident_bytes
+                .checked_add(
+                    count
+                        .checked_mul(256)
+                        .context("Trigger query body native bytes overflow")?,
+                )
+                .context("Trigger query body bytes overflow")?;
+            used.0 = used
+                .0
+                .checked_add(bytes)
+                .context("Trigger query body total overflow")?;
+            used.1 = used
+                .1
+                .checked_add(count)
+                .context("Trigger query body count overflow")?;
+            ensure!(
+                used.0 <= byte_limit && used.1 <= record_limit,
+                SchedulingReadError::ResourceExhausted("Work query Trigger selected bodies")
+            );
+        }
+        let mut coverage = SchedulingCoverage::empty(self.coverage.revision);
+        coverage.active_timers_complete = false;
+        coverage.pending_wakes_complete = false;
+        coverage.active_triggers = self.coverage.active_triggers.clone();
+        coverage.required_keys = self.coverage.active_triggers.clone();
+        let mut records = Vec::new();
+        for key in &self.coverage.active_triggers {
+            coverage.observations.push(SchedulingObservation {
+                key: key.clone(),
+                availability: SchedulingAvailability::Present,
+            });
+            records.push(
+                self.lookup(key)?
+                    .context("validated Active Trigger missing")?
+                    .clone(),
+            );
+        }
+        let body = ledger.register_scheduling_view(
+            &self.scope,
+            InputMemoryCategory::Pins,
+            records.iter(),
+        )?;
+        let captured = CapturedScheduling {
+            scope: self.scope.clone(),
+            revision: self.coverage.revision,
+            coverage,
+            records,
+            _views: vec![guard, body],
+        };
+        Ok((captured, used))
+    }
+    pub(crate) fn capture_with_material(
+        &self,
+        request: &SchedulingCaptureRequest,
+        ledger: &InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+        prior: (u64, usize),
+    ) -> Result<(CapturedScheduling, SchedulingCaptureMaterial)> {
+        let mut phase = SchedulingCapturePhase::new(self, ledger, limits, prior)?;
+        let captured = self.capture_observed(request, &mut phase)?;
+        phase.finish(captured)
+    }
     pub(crate) fn capture(&self, request: &SchedulingCaptureRequest) -> Result<CapturedScheduling> {
+        self.capture_observed(request, &mut SchedulingCapturePhase::unobserved())
+    }
+    fn capture_observed(
+        &self,
+        request: &SchedulingCaptureRequest,
+        phase: &mut SchedulingCapturePhase<'_>,
+    ) -> Result<CapturedScheduling> {
         let request_bytes = serialized_bytes(&request.required_keys)?
             .checked_mul(4)
             .context("Scheduling capture selector overflow")?;
@@ -623,6 +849,7 @@ impl ResidentSchedulingDomain {
         let metadata = self
             .budget
             .as_ref()
+            .filter(|_| !phase.is_observed())
             .map(|b| {
                 b.register_owned_bytes(
                     &self.scope,
@@ -635,14 +862,23 @@ impl ResidentSchedulingDomain {
             })
             .transpose()?;
         for key in &request.required_keys {
-            self.lookup(key)?;
+            self.lookup_observed(key, phase)?;
         }
-        let selected = self.required_closure(self.coverage.roots(request)?)?;
+        let roots = self.coverage.roots_observed(request, phase)?;
+        let selected = self.required_closure_observed(roots, phase)?;
+        phase.slots(selected.len(), 1)?;
+        for key in &selected {
+            if let Some(record) = self.records.get(key) {
+                phase.body(record)?;
+            }
+        }
         let records: Vec<_> = selected
             .iter()
             .filter_map(|k| self.records.get(k).cloned())
             .collect();
+        phase.json(&self.coverage, 1)?;
         let mut coverage = self.coverage.clone();
+        phase.json(&request.required_keys, 1)?;
         coverage.required_keys = request.required_keys.clone();
         coverage.observations.retain(|o| selected.contains(&o.key));
         if !request.include_live {
@@ -658,9 +894,11 @@ impl ResidentSchedulingDomain {
             history.keys.truncate(request.history_limit);
             history.loaded_keys.truncate(request.history_limit);
         }
+        phase.json(&self.scope, 3)?;
+        phase.slots(records.len(), 3)?;
         let mut views = Vec::new();
         if let Some(b) = &self.budget {
-            views.push(metadata.unwrap());
+            views.extend(metadata);
             views.push(b.register_scheduling_view(
                 &self.scope,
                 InputMemoryCategory::Pins,

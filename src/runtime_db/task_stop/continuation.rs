@@ -143,6 +143,21 @@ impl OriginalTaskStopResultView<'_> {
             .expect("verified template")
             .message
     }
+    pub(in crate::runtime_db) fn validate_current_read_message_tx(
+        &self,
+        tx: &Transaction<'_>,
+        scope: &InputEvidenceScope,
+        message: &MessageEnvelope,
+    ) -> Result<()> {
+        ensure!(
+            std::ptr::eq(tx, self.tx)
+                && scope == &self.record.intent.task.scope
+                && message == self.message()
+                && self.descriptor.scopes() == std::slice::from_ref(scope),
+            "CurrentRead Stop Queue changed its frozen original Message/view"
+        );
+        Ok(())
+    }
     pub(crate) fn validate_tx(
         &self,
         tx: &Transaction<'_>,
