@@ -99,8 +99,48 @@ pub(super) fn kilocode_entries() -> Vec<BuiltInModelMetadata> {
     ]
 }
 
+fn opencode_go_models_dev_entries() -> Vec<BuiltInModelMetadata> {
+    // Routing follows the official Go endpoint table; specifications are from
+    // models.dev's opencode-go entry only, never inherited from upstream vendors.
+    // Grok 4.6 lacks Go-specific specifications; Gemini requires Google's protocol.
+    [
+        ("grok-4.7", "Grok 4.7", 500_000, 500_000, true, Some("responses")),
+        ("gpt-6-luna", "GPT-6 Luna", 1_050_000, 128_000, true, Some("responses")),
+        ("gpt-5.6-luna", "GPT-5.6 Luna", 1_050_000, 128_000, true, Some("responses")),
+        ("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000, 128_000, true, Some("messages")),
+        ("glm-5.3-flash", "GLM-5.3-Flash", 1_000_000, 131_072, true, None),
+        ("glm-5.3", "GLM-5.3", 1_000_000, 131_072, false, None),
+        ("kimi-k3", "Kimi K3", 1_048_576, 131_072, true, None),
+        ("longcat-2.0", "LongCat-2.0", 1_000_000, 131_072, false, None),
+        ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", 1_000_000, 384_000, true, None),
+        ("mimo-v2.6-flash", "MiMo-V2.6-Flash", 1_048_576, 131_072, true, None),
+        ("mimo-v2.6-pro", "MiMo-V2.6-Pro", 1_048_576, 131_072, true, None),
+        ("muse-spark-1.3-contributor", "Muse Spark 1.3 Contributor", 1_048_576, 131_072, true, Some("responses")),
+        ("muse-spark-1.2-contributor", "Muse Spark 1.2 Contributor", 1_048_576, 131_072, true, Some("responses")),
+        ("qwen3.8-max", "Qwen3.8 Max", 1_000_000, 131_072, true, Some("messages")),
+        ("qwen3.8-flash", "Qwen3.8 Flash", 1_000_000, 131_072, true, Some("messages")),
+        ("hy4-preview", "Hy4 preview", 1_024_000, 64_000, false, None),
+        ("hy3", "Hy3", 256_000, 128_000, false, None),
+        ("space-bunny", "Space Bunny", 1_048_576, 524_288, true, None),
+        ("longcat-2.5-preview-free", "LongCat 2.5 Preview Free", 1_000_000, 131_072, true, None),
+        ("step-5-preview-free", "Step 5 Preview Free", 1_000_000, 65_536, true, None),
+        ("cat-jam-free", "Cat Jam Free", 262_144, 131_072, false, None),
+    ]
+    .into_iter()
+    .map(|(id, name, context, output, image_input, endpoint)| {
+        let mut model = opencode_go_model(
+            id, name, context, Some(output), true, image_input, endpoint,
+        );
+        model.description = format!(
+            "OpenCode Go {id} route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits."
+        );
+        model
+    })
+    .collect()
+}
+
 pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
-    vec![
+    let mut entries = vec![
         opencode_go_model(
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
@@ -249,5 +289,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::ConservativeBuiltin,
             endpoint: None,
         },
-    ]
+    ];
+    entries.extend(opencode_go_models_dev_entries());
+    entries
 }

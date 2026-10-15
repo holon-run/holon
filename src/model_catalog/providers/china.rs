@@ -70,6 +70,47 @@ fn volcengine_route_definition(
     }
 }
 
+// Eligibility comes from the separate Coding/Agent Plan lists, not API models.
+// Public limits use "k" without an exact numeric definition; leave hard token
+// limits unset rather than inherit conflicting API or third-party values.
+fn reviewed_coding_model(
+    provider: &str,
+    model: &str,
+    display_name: &str,
+    supports_reasoning: bool,
+    image_input: bool,
+) -> BuiltInModelMetadata {
+    let tier_note = if provider == "volcengine" && model == "kimi-k3" {
+        " Kimi K3 requires Medium/Large/Max on Agent Plan."
+    } else {
+        ""
+    };
+    BuiltInModelMetadata {
+        model_ref: ModelRef::new(provider_id(provider), model),
+        display_name: display_name.into(),
+        description: format!(
+            "{provider} coding subscription {display_name}; exact token limits unconfirmed.{tier_note}"
+        ),
+        context_window_tokens: None,
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            supports_reasoning,
+            image_input,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: Some(ProviderEndpointId::parse("coding").expect("valid endpoint")),
+    }
+}
+
 pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
     let mut definitions = ["step-3.7-flash", "step-3.5-flash-2603", "step-3.5-flash"]
         .into_iter()
@@ -98,6 +139,8 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("qwen3.6-plus", None, None),
             ("qwen3.6-flash", None, None),
             ("deepseek-v4-pro", None, Some(65_536)),
+            ("deepseek-v4-pro-0813", None, None),
+            ("deepseek-v4.1-flash", None, None),
             ("deepseek-v4-flash", None, Some(65_536)),
             ("deepseek-v4-flash-0731", None, Some(65_536)),
             ("deepseek-v3.2", None, None),
@@ -105,6 +148,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("kimi-k2.6", None, Some(65_536)),
             ("kimi-k2.5", None, None),
             ("glm-5.2", Some(1_000_000), Some(65_536)),
+            ("glm-5.3", None, None),
             ("glm-5.1", None, Some(65_536)),
             ("glm-5", None, None),
             ("MiniMax-M2.5", None, None),
@@ -181,6 +225,21 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         .map(|(model, display_name)| {
             volcengine_route_definition("volcengine-agent", "plan", model, display_name)
         }),
+    );
+    definitions.extend(
+        [
+            "doubao-seed-evolving",
+            "doubao-seed-2.1-pro",
+            "doubao-seed-2.1-lite",
+            "doubao-seed-2.0-mini",
+            "minimax-m3",
+            "glm-5.3-flash",
+            "deepseek-v4.1-flash",
+            "kimi-k2.8-preview",
+            "kimi-k3",
+        ]
+        .into_iter()
+        .map(|model| volcengine_route_definition("volcengine-agent", "plan", model, None)),
     );
     definitions
 }
@@ -1082,5 +1141,107 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
     ]);
+    entries.extend(
+        [
+            ("doubao-seed-evolving", "Doubao Seed Evolving", false, false),
+            ("doubao-seed-2.1-pro", "Doubao Seed 2.1 Pro", false, false),
+            ("doubao-seed-2.1-lite", "Doubao Seed 2.1 Lite", false, false),
+            ("doubao-seed-2.0-mini", "Doubao Seed 2.0 Mini", false, false),
+            ("minimax-m3", "MiniMax M3", true, true),
+            ("glm-5.3-flash", "GLM-5.3 Flash", false, true),
+            ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true),
+            ("kimi-k2.8-preview", "Kimi K2.8 Preview", true, true),
+            ("kimi-k3", "Kimi K3", true, true),
+        ]
+        .into_iter()
+        .map(|(model, name, reasoning, image)| {
+            reviewed_coding_model("volcengine", model, name, reasoning, image)
+        }),
+    );
+    // Reviewed independently against BytePlus Coding Plan, never copied from
+    // the mainland Volcengine catalog. API-key availability is a separate fact.
+    entries.extend(
+        [
+            ("ark-code-latest", "Ark Code Latest", false, false),
+            ("dola-seed-2.0-pro", "Dola Seed 2.0 Pro", false, false),
+            ("dola-seed-2.0-lite", "Dola Seed 2.0 Lite", false, false),
+            ("dola-seed-2.0-code", "Dola Seed 2.0 Code", false, false),
+            ("bytedance-seed-code", "ByteDance Seed Code", false, false),
+            ("glm-5.3-flash", "GLM-5.3 Flash", false, true),
+            ("glm-5.2", "GLM-5.2", false, false),
+            ("glm-5.1", "GLM-5.1", false, false),
+            ("kimi-k2.5", "Kimi K2.5", false, true),
+            ("gpt-oss-120b", "GPT OSS 120B", false, false),
+            ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true),
+            (
+                "deepseek-v4-flash",
+                "DeepSeek V4 Flash Preview",
+                true,
+                false,
+            ),
+            ("deepseek-v4-pro", "DeepSeek V4 Pro Preview", true, false),
+        ]
+        .into_iter()
+        .map(|(model, name, reasoning, image)| {
+            reviewed_coding_model("byteplus", model, name, reasoning, image)
+        }),
+    );
+    // Endpoint eligibility is reviewed against the official Token Plan list.
+    // Limits and tool support come from models.dev's alibaba-token-plan-cn,
+    // not from the underlying vendors' API catalogs or official hard limits.
+    entries.extend(
+        [
+            ("glm-5.3", "GLM-5.3", 131_072, false),
+            ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", 384_000, true),
+            (
+                "deepseek-v4-pro-0813",
+                "DeepSeek V4 Pro 0813",
+                384_000,
+                false,
+            ),
+        ]
+        .into_iter()
+        .map(|(model, name, output, image)| {
+            let mut entry = catalog_model("dashscope", model, name, 1_000_000, output, true, image);
+            entry.endpoint = Some(ProviderEndpointId::parse("token-plan").expect("valid endpoint"));
+            entry.description = format!(
+                "DashScope Token Plan {name}; limits and tool support from models.dev \
+                 alibaba-token-plan-cn, not confirmed official endpoint limits."
+            );
+            entry
+        }),
+    );
     entries
+}
+
+#[test]
+fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
+    let catalog = BuiltInModelCatalog::new();
+    for model in [
+        "doubao-seed-evolving",
+        "doubao-seed-2.1-pro",
+        "doubao-seed-2.1-lite",
+        "doubao-seed-2.0-mini",
+        "minimax-m3",
+        "glm-5.3-flash",
+        "deepseek-v4.1-flash",
+        "kimi-k2.8-preview",
+        "kimi-k3",
+    ] {
+        for endpoint in ["coding", "plan"] {
+            let route = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+        }
+        let api = ModelRouteRef::parse(&format!("volcengine@default/{model}")).unwrap();
+        assert!(catalog.get_route(&api).is_none(), "{}", api.as_string());
+        let metadata = catalog
+            .get(&ModelRef::parse(&format!("volcengine/{model}")).unwrap())
+            .unwrap();
+        assert_eq!(metadata.context_window_tokens, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+    }
+    for endpoint in ["coding", "plan"] {
+        let auto = ModelRouteRef::parse(&format!("volcengine@{endpoint}/Auto")).unwrap();
+        assert!(catalog.get_route(&auto).is_none());
+    }
 }

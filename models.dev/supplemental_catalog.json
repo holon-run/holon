@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "94443e070c993dd16f330d05b9d4bc4ecef7684138d19c9fcfe8f423a1f5415d",
-  "adapter_version": "0.52.0 (10100e22)",
+  "upstream_revision": "5087b02d80c580601ae37826c6bfd37b84dd49545d34fc909ab7a9b123a12e31",
+  "adapter_version": "0.52.0 (5eb18b18-dirty)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -1244,36 +1244,6 @@
       "source": "models_dev_supplement"
     },
     {
-      "model_ref": "volcengine/doubao-seed-evolving",
-      "display_name": "Seed Evolving",
-      "description": "Rolling ByteDance Seed model for rapidly updated reasoning, coding, and agent capabilities",
-      "context_window_tokens": 256000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 243200,
-      "default_max_output_tokens": 256000,
-      "max_output_tokens_upper_limit": 256000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
-      "source": "models_dev_supplement"
-    },
-    {
       "model_ref": "volcengine/glm-5-2-260617",
       "display_name": "GLM-5.2",
       "description": "Open flagship GLM for long-horizon coding agents and million-token context work",
@@ -1504,12 +1474,10 @@
     "volcengine@plan/doubao-seed-2-1-pro-260628",
     "volcengine@plan/doubao-seed-2-1-turbo-260628",
     "volcengine@plan/doubao-seed-character-260628",
-    "volcengine@plan/doubao-seed-evolving",
     "volcengine@plan/glm-5-2-260617",
     "volcengine@plan/glm-5-3-flash-260828",
     "xiaomi@token-plan/mimo-v2.5-pro-ultraspeed",
     "xiaomi@token-plan/mimo-v2.6-flash",
-    "xiaomi@token-plan/mimo-v2.6-pro",
-    "xiaomi@token-plan/mimo-v2.6-pro-ultraspeed"
+    "xiaomi@token-plan/mimo-v2.6-pro"
   ]
 }

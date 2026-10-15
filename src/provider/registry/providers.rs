@@ -301,15 +301,24 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     ),
     provider!(
         "opencode-go" => "opencode-go" @ "default",
-        OpenAiChatCompletions, "https://opencode.ai/zen/go/v1", ["OPENCODE_GO_API_KEY"],
+        OpenAiChatCompletions, "https://opencode.ai/inference/go/openai/v1", ["OPENCODE_GO_API_KEY"],
         Generic, Default, None, None,
-        discovery!(Optional, ModelDiscoveryRoute::OpenAiCompatible, OpenCodeGo),
+        discovery!(
+            Optional,
+            ModelDiscoveryRoute::Fixed("https://opencode.ai/inference/go/v1/models"),
+            OpenCodeGo
+        ),
         StaticAndDiscovery, OpenCodeGo
     ),
     provider!(
         "opencode-go-messages" => "opencode-go" @ "messages",
-        AnthropicMessages, "https://opencode.ai/zen/go/v1", ["OPENCODE_GO_API_KEY"],
+        AnthropicMessages, "https://opencode.ai/inference/go/anthropic/v1", ["OPENCODE_GO_API_KEY"],
         Generic, AnthropicCompatible, None, None, None, StaticOnly
+    ),
+    provider!(
+        "opencode-go-responses" => "opencode-go" @ "responses",
+        OpenAiResponses, "https://opencode.ai/inference/go/openai/v1", ["OPENCODE_GO_API_KEY"],
+        Generic, Default, None, None, None, StaticOnly
     ),
     provider!(
         "openrouter" => "openrouter" @ "default",

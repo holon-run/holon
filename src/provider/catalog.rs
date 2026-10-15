@@ -223,7 +223,18 @@ mod tests {
             command_task_min_free_disk_percent: 5,
             disable_provider_fallback: false,
             tui_alternate_screen: crate::config::AltScreenMode::Auto,
-            validated_model_overrides: Default::default(),
+            // Keep effort-filtering coverage independent of retired catalog entries.
+            validated_model_overrides: [(
+                crate::config::ModelRef::parse("openai-codex/test-limited-effort").unwrap(),
+                crate::model_catalog::ModelRuntimeOverride {
+                    capabilities: Some(crate::model_catalog::ModelCapabilityOverride {
+                        supports_reasoning: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )]
+            .into(),
             validated_unknown_model_fallback: None,
             model_discovery_cache: Default::default(),
             providers,
@@ -239,11 +250,13 @@ mod tests {
             panic!("supported effort should build provider: {error:#}");
         }
 
-        let unsupported = codex_config("gpt-5.5", "max");
+        let unsupported = codex_config("test-limited-effort", "max");
         let error = build_provider_from_model_chain(&unsupported, &unsupported.provider_chain())
             .err()
             .expect("unsupported effort should fail provider construction");
-        assert!(error.to_string().contains("openai-codex/gpt-5.5"));
+        assert!(error
+            .to_string()
+            .contains("openai-codex/test-limited-effort"));
         assert!(error.to_string().contains("low, medium, high, xhigh"));
     }
 
@@ -251,7 +264,7 @@ mod tests {
     fn model_route_effort_override_does_not_filter_same_provider_fallback() {
         let mut config = codex_config("gpt-5.6-luna", "medium");
         let primary = config.default_model.clone();
-        let fallback = ModelRouteRef::parse_compatible("openai-codex/gpt-5.5").unwrap();
+        let fallback = ModelRouteRef::parse_compatible("openai-codex/test-limited-effort").unwrap();
         config.fallback_models.push(fallback.clone());
 
         let provider = build_provider_from_model_chain_with_override(
@@ -276,13 +289,14 @@ mod tests {
         let mut config = codex_config("gpt-5.6-luna", "max");
         let primary = config.default_model.clone();
         config.fallback_models =
-            vec![ModelRouteRef::parse_compatible("openai-codex/gpt-5.5").unwrap()];
+            vec![ModelRouteRef::parse_compatible("openai-codex/test-limited-effort").unwrap()];
 
         let provider = build_provider_from_model_chain(&config, &config.provider_chain())
             .expect("the compatible primary should remain available");
         assert_eq!(provider.configured_model_refs(), vec![primary.as_string()]);
 
-        config.default_model = ModelRouteRef::parse_compatible("openai-codex/gpt-5.5").unwrap();
+        config.default_model =
+            ModelRouteRef::parse_compatible("openai-codex/test-limited-effort").unwrap();
         config.fallback_models.clear();
         let error = build_provider_from_model_chain(&config, &config.provider_chain())
             .err()

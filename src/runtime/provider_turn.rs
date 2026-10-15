@@ -661,7 +661,10 @@ mod tests {
         let home = tempfile::tempdir().expect("home").keep();
         std::fs::write(
             home.join("config.json"),
-            r#"{"model":{"default":"openai-codex/gpt-5.3-codex-spark","fallbacks":["openai-codex/gpt-5.5"]}}"#,
+            r#"{
+                "model":{"default":"openai-codex/test-text-only","fallbacks":["openai-codex/gpt-6-sol"]},
+                "models":{"catalog":{"openai-codex/test-text-only":{"capabilities":{"image_input":false}}}}
+            }"#,
         )
         .expect("write config");
         let mut config =
@@ -677,9 +680,9 @@ mod tests {
         assert_eq!(
             config.provider_chain(),
             vec![
-                ModelRouteRef::parse_compatible("openai-codex/gpt-5.3-codex-spark")
+                ModelRouteRef::parse_compatible("openai-codex/test-text-only")
                     .expect("text-only route"),
-                ModelRouteRef::parse_compatible("openai-codex/gpt-5.5").expect("image route"),
+                ModelRouteRef::parse_compatible("openai-codex/gpt-6-sol").expect("image route"),
             ]
         );
         config

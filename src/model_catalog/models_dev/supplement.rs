@@ -80,7 +80,7 @@ pub struct ModelsDevSupplement {
     #[serde(default)]
     pub adapter_version: String,
     pub models: Vec<BuiltInModelMetadata>,
-    /// Non-default routes admitted for newly drafted models.
+    /// Explicitly reviewed non-default routes; never inferred from API availability.
     #[serde(default)]
     pub routes: Vec<ModelRouteRef>,
 }
@@ -352,7 +352,7 @@ pub fn generate(
                     continue;
                 };
                 let model_ref_string = model_ref.as_string();
-                if !supplement_model_supported_by_provider(&holon_provider_id, model) {
+                if !supplement_model_supported_by_provider(&holon_provider_id, md_model_id, model) {
                     if remaining_previous.remove(&model_ref_string) {
                         removed.push(RemovedModel {
                             model_ref: model_ref_string,
@@ -487,20 +487,9 @@ pub fn generate(
             }
         }
     }
-    for model in &drafted {
-        for endpoint in supplemental_route_endpoints(model.model_ref.provider.as_str()) {
-            let endpoint = ProviderEndpointId::parse(endpoint)
-                .expect("supplemental route endpoint constants must be valid");
-            let route = ModelRouteRef::new(
-                model.model_ref.provider.clone(),
-                endpoint,
-                model.model_ref.model.clone(),
-            );
-            if route_keys.insert(route.as_string()) {
-                routes.push(route);
-            }
-        }
-    }
+    // API catalog availability does not establish subscription endpoint support.
+    // New non-default routes must be checked against endpoint-specific evidence
+    // and explicitly added to the reviewed supplement.
     routes.sort_by_key(ModelRouteRef::as_string);
     retained.sort();
     deferred.sort_by(|a, b| a.model_ref.cmp(&b.model_ref));
@@ -523,16 +512,6 @@ pub fn generate(
     })
 }
 
-fn supplemental_route_endpoints(provider: &str) -> &'static [&'static str] {
-    match provider {
-        "dashscope" => &["coding-plan", "token-plan"],
-        "stepfun" => &["plan"],
-        "volcengine" => &["plan"],
-        "xiaomi" => &["token-plan"],
-        _ => &[],
-    }
-}
-
 fn supplement_provider_targets(md_provider_id: &str, holon_provider_id: &str) -> Vec<String> {
     let mut targets = vec![holon_provider_id.to_string()];
     targets.extend(
@@ -544,9 +523,26 @@ fn supplement_provider_targets(md_provider_id: &str, holon_provider_id: &str) ->
     targets
 }
 
-fn supplement_model_supported_by_provider(provider: &str, model: &ModelsDevModel) -> bool {
+fn supplement_model_supported_by_provider(
+    provider: &str,
+    model_id: &str,
+    model: &ModelsDevModel,
+) -> bool {
     if provider != "openai-codex" {
         return true;
+    }
+    // Retired for ChatGPT sign-in, not for API-key sessions.
+    // https://learn.chatgpt.com/docs/models#deprecated-codex-models
+    if matches!(
+        model_id,
+        "gpt-5.2"
+            | "gpt-5.3-codex"
+            | "gpt-5.3-codex-spark"
+            | "gpt-5.4"
+            | "gpt-5.4-mini"
+            | "gpt-5.5"
+    ) {
+        return false;
     }
     model.modalities.as_ref().is_none_or(|modalities| {
         !modalities
@@ -875,6 +871,70 @@ mod tests {
     }
 
     #[test]
+    fn excludes_retired_codex_models_without_removing_api_models() {
+        let legacy = legacy();
+        for model_id in [
+            "gpt-5.2",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+        ] {
+            let mut parsed: ModelsDevSnapshot =
+                serde_json::from_str(r#"{"openai":{"id":"openai","models":{}}}"#).unwrap();
+            parsed.providers.get_mut("openai").unwrap().models.insert(
+                model_id.to_string(),
+                serde_json::from_value(serde_json::json!({
+                    "id": model_id,
+                    "release_date": "2026-10-14",
+                    "modalities": {"input": ["text", "image"], "output": ["text"]}
+                }))
+                .unwrap(),
+            );
+            let codex_ref = format!("openai-codex/{model_id}");
+            let previous = ModelsDevSupplement {
+                schema_version: SUPPLEMENT_SCHEMA_VERSION,
+                upstream_revision: "abc".into(),
+                adapter_version: "test".into(),
+                models: vec![supplement_metadata(&codex_ref, model_id)],
+                routes: Vec::new(),
+            };
+            for previous in [None, Some(&previous)] {
+                let update =
+                    generate(&parsed, previous, &legacy, "2026-10-01", "rev", "ver").unwrap();
+                assert!(!update
+                    .supplement
+                    .models
+                    .iter()
+                    .any(|model| { model.model_ref.as_string() == codex_ref }));
+                let api_ref = ModelRef::parse(&format!("openai/{model_id}")).unwrap();
+                assert!(
+                    legacy.entries.contains_key(&api_ref)
+                        || update
+                            .supplement
+                            .models
+                            .iter()
+                            .any(|model| model.model_ref == api_ref),
+                    "{} must remain available in the base catalog or supplement",
+                    api_ref.as_string()
+                );
+                if previous.is_some() {
+                    assert!(update.removed.iter().any(|removed| {
+                        removed.model_ref == codex_ref
+                            && removed.reason == RemovalReason::UnsupportedByProvider
+                    }));
+                } else {
+                    assert!(update.deferred.iter().any(|deferred| {
+                        deferred.model_ref == codex_ref
+                            && deferred.reason == DeferredReason::UnsupportedByProvider
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn excludes_audio_models_from_the_openai_codex_projection() {
         let parsed: ModelsDevSnapshot = serde_json::from_str(
             r#"{
@@ -943,6 +1003,76 @@ mod tests {
             deferred.model_ref == "openai-codex/gpt-realtime-2.2"
                 && deferred.reason == DeferredReason::UnsupportedByProvider
         }));
+    }
+
+    #[test]
+    fn subscription_routes_require_explicit_review_and_retain_only_current_models() {
+        for (source, provider, endpoints) in [
+            ("alibaba", "dashscope", &["coding-plan", "token-plan"][..]),
+            ("stepfun", "stepfun", &["plan"][..]),
+            ("volcengine", "volcengine", &["plan"][..]),
+            ("xiaomi", "xiaomi", &["token-plan"][..]),
+        ] {
+            let parsed: ModelsDevSnapshot = serde_json::from_value(serde_json::json!({
+                (source): {
+                    "id": source,
+                    "models": {
+                        "reviewed-model": {
+                            "id": "reviewed-model",
+                            "name": "Reviewed model",
+                            "release_date": "2026-01-01",
+                            "modalities": { "input": ["text"], "output": ["text"] }
+                        },
+                        "new-api-model": {
+                            "id": "new-api-model",
+                            "name": "New API model",
+                            "release_date": "2026-08-30",
+                            "modalities": { "input": ["text"], "output": ["text"] }
+                        }
+                    }
+                }
+            }))
+            .unwrap();
+            let reviewed_routes: Vec<ModelRouteRef> = endpoints
+                .iter()
+                .map(|endpoint| {
+                    ModelRouteRef::parse(&format!("{provider}@{endpoint}/reviewed-model")).unwrap()
+                })
+                .collect();
+            let mut previous = ModelsDevSupplement {
+                schema_version: SUPPLEMENT_SCHEMA_VERSION,
+                upstream_revision: "abc".into(),
+                adapter_version: "test".into(),
+                models: vec![
+                    supplement_metadata(&format!("{provider}/reviewed-model"), "Reviewed model"),
+                    supplement_metadata(&format!("{provider}/removed-model"), "Removed model"),
+                ],
+                routes: reviewed_routes.clone(),
+            };
+            previous.routes.push(
+                ModelRouteRef::parse(&format!("{provider}@{}/removed-model", endpoints[0]))
+                    .unwrap(),
+            );
+
+            let update = generate(
+                &parsed,
+                Some(&previous),
+                &legacy(),
+                "2026-05-05",
+                "rev",
+                "ver",
+            )
+            .unwrap();
+            assert_eq!(update.drafted.len(), 1, "{provider}");
+            assert_eq!(
+                update.drafted[0].model_ref.as_string(),
+                format!("{provider}/new-api-model")
+            );
+            assert_eq!(update.supplement.routes, reviewed_routes, "{provider}");
+
+            let fresh = generate(&parsed, None, &legacy(), "2026-05-05", "rev", "ver").unwrap();
+            assert!(fresh.supplement.routes.is_empty(), "{provider}");
+        }
     }
 
     #[test]
