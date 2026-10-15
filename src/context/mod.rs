@@ -1320,8 +1320,9 @@ fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
             "    status: use TaskStatus({}) for lifecycle details",
             task_id
         ));
+        lines.push("    output: boundedly read only runtime-confirmed command files when available; observe agent progress with bounded holon tail --agent; neither is task completion".to_string());
         lines.push(format!(
-            "    output: use TaskOutput({}) for bounded/current output when available",
+            "    completion: use WaitFor(wake=task_result, resource={}) and result re-entry when only completion remains",
             task_id
         ));
     }
@@ -1481,7 +1482,7 @@ fn render_pending_task_result_records_excluding(
             }
         }
         lines.push(format!(
-            "  retrieval: use TaskOutput or TaskStatus with task_id={}",
+            "  retrieval: use TaskStatus with task_id={} for exact lifecycle/result evidence; read only confirmed output refs/files boundedly",
             sanitize_inline(&record.task_id)
         ));
     }
@@ -8171,7 +8172,10 @@ mod tests {
         assert!(active_tasks.contains("input_target: stdin"));
         assert!(active_tasks.contains("output_path: /tmp/holon-task-output.txt"));
         assert!(active_tasks.contains("use TaskStatus(task-running)"));
-        assert!(active_tasks.contains("use TaskOutput(task-running)"));
+        assert!(active_tasks.contains("runtime-confirmed command files"));
+        assert!(active_tasks.contains("bounded holon tail --agent"));
+        assert!(active_tasks.contains("WaitFor(wake=task_result, resource=task-running)"));
+        assert!(!active_tasks.contains("TaskOutput"));
         assert!(!active_tasks.contains("status: running"));
         assert!(!active_tasks.contains("wait_policy"));
     }

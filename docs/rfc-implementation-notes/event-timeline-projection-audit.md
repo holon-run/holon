@@ -51,7 +51,7 @@ and full-brief hydration.
 | `assistant_round_recorded` / `text_only_round_observed` | Assistant progress preview. Deduplicated when it matches a final `brief_created`. | Verbose assistant preview. Deduplicated when it matches final brief text. | Useful only as progress/debug preview. It duplicates final brief content by design, so it should stay preview-bounded and lower visibility. |
 | `provider_round_completed` | Provider/model progress detail. | Debug event through `provider_` prefix. | Debug/diagnostic only. Avoid carrying large prompt/response content here. |
 | `tool_executed` / `tool_execution_failed` | Main tool/command/action projection. Special cases for commands, `ApplyPatch`, work-item mutations, `ListWorkItems`, sleep, and failures. | Verbose tool item. Special cases for `ApplyPatch`, work-item tools, `ListWorkItems`, `GetWorkItem`, `ViewImage`, command output previews, and errors. | Successful `tool_executed` long-field issue resolved. Current `ToolExecutionAuditEvent` keeps execution ids, status, duration, summary, command previews/cost/disposition, exit status, task handle, and bounded error metadata; full tool output/result JSON lives in canonical tool execution evidence. Errors may still carry error detail, which is acceptable as failure evidence unless future error objects become large. |
-| task lifecycle events (`task_created`, `task_status_updated`, `task_result_received`, child/recovery/command-task failures) | TUI presentation can summarize slim task lifecycle events; state-sync compatibility now decodes `TaskLifecycleAuditEvent` in some paths. | Most `task_` events are debug. Active task display comes primarily from agent state/detail, not timeline. | Boundary resolved. Current `TaskLifecycleAuditEvent` is lifecycle metadata plus `output_path` and bounded `output_summary_preview`; full command stdout/stderr belongs in `TaskOutput` and task output artifacts. |
+| task lifecycle events (`task_created`, `task_status_updated`, `task_result_received`, child/recovery/command-task failures) | TUI presentation can summarize slim task lifecycle events; state-sync compatibility now decodes `TaskLifecycleAuditEvent` in some paths. | Most `task_` events are debug. Active task display comes primarily from agent state/detail, not timeline. | Boundary resolved. Current `TaskLifecycleAuditEvent` is lifecycle metadata plus `output_path` and bounded `output_summary_preview`; retained command stdout/stderr belongs in runtime-confirmed artifacts and the internal/HTTP output projection. |
 | timer/wait/resume events (`timer_created`, `timer_fired`, `wait_condition_registered`, `wait_conditions_*`, `waiting_intent_*`, `callback_delivered`, `continuation_trigger_received`, `continuation_resolved`) | Timers update timer state; fired callback/continuation events can become resume notices; waits can become waiting notices. | `wait_condition_registered` and `agent_waiting` are visible system/waiting items; many others fall through to debug. | Keep. Several events describe different layers of the same wait lifecycle, so only one should be operator-visible by default. Other layers are debug/correlation. |
 | work-item lifecycle events (`work_item_written`, `work_item_picked`, `work_item_focus_released`, continuation/delegation/turn-end/stale-reminder events) | `work_item_written` updates work-item state and selected transitions become cards/bookkeeping. Many work-item lifecycle events become bookkeeping. TUI summaries understand `objective_preview` and `result_summary_preview`. | `work_item_*` events are verbose or debug; work-item mutation tools are hidden from normal tool timeline unless debug projection asks for them. | Long-field issue resolved. Current `WorkItemLifecycleAuditEvent` carries lifecycle metadata, readiness, `objective_preview`/len, result brief id, bounded result/blocker previews, and recheck time; full plans, todo lists, and completion bodies stay in work-item/detail storage or briefs. |
 | agent/session state events (`agent_state_changed`, legacy `session_state_changed`, `closure_decided`, `control_applied`, lifecycle shutdown/posture events) | `agent_state_changed` drives TUI state; `closure_decided` updates closure and may present an internal transition. | `closure_decided` is debug; agent detail/bootstrap drives most visible state. | `agent_state_changed` is state sync, not conversation. `session_state_changed` is legacy replay-only and should not be used for new transitions. |
@@ -136,7 +136,8 @@ These payload fields were the main duplication risks. Current status:
   an index/summary.
 - task output in task lifecycle events: resolved. Lifecycle events keep
   `output_path` and bounded `output_summary_preview`; full output is fetched
-  through `TaskOutput`/artifacts.
+  through bounded reads of runtime-confirmed artifacts or the retained HTTP
+  output projection, not the retired model/CLI output surfaces.
 - full work-item objectives, plans, completion reports, or todo lists in
   work-item lifecycle events: resolved. Lifecycle events use bounded previews
   and ids.
@@ -164,7 +165,9 @@ The preferred shape is:
 2. Task lifecycle and task output now have the right storage boundary, but
    clients should keep the distinction explicit:
    - lifecycle/state views may use `TaskLifecycleAuditEvent`;
-   - output panes should call `TaskOutput` or read artifacts;
+   - output panes may use the retained HTTP task-output route; model/CLI
+     observation uses bounded reads of runtime-confirmed command artifacts or
+     bounded `holon tail --agent` progress, never completion inference from EOF;
    - `output_path` and bounded `output_summary_preview` are acceptable refs/
      previews, not a replacement for output hydration.
 

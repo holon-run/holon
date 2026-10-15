@@ -134,7 +134,6 @@ pub fn tool_sections_with_context(
         || names.contains(&tn::TASK_LIST)
         || names.contains(&tn::TASK_STATUS)
         || names.contains(&tn::TASK_INPUT)
-        || names.contains(&tn::TASK_OUTPUT)
         || names.contains(&tn::TASK_STOP)
     {
         sections.push(section(
@@ -325,6 +324,13 @@ mod tests {
         assert!(section.content.contains("requested agent"));
         assert!(section.content.contains("read-only query"));
         assert!(section.content.contains("does not start"));
+        assert!(section.content.contains("TaskStatus for exact task state"));
+        assert!(section.content.contains("to read output bodies"));
+        assert!(section.content.contains("Use bounded agent tail"));
+        assert!(section
+            .content
+            .contains("confirm reported file paths and availability"));
+        assert!(!section.content.contains("TaskOutput"));
     }
 
     #[test]
@@ -350,8 +356,13 @@ mod tests {
                 "unless an explicit reply obligation remains",
                 "ExecCommand plus the local CLI are available",
                 "holon tail --agent <agent_id> --include-progress --limit 20 --max-events 100 --max-bytes 65536",
+                "holon tail --agent <agent_id> --include-progress --follow --timeout-ms 5000 --limit 20 --max-events 100 --max-bytes 65536",
                 "Only ask a targeted question when observable records cannot answer it",
-                "does not consume task results, satisfy reply obligations, or prove task completion",
+                "read-only agent-scoped observation",
+                "does not claim or consume task results, wake the target, satisfy reply obligations, or prove task completion",
+                "not task-exclusive",
+                "use TaskStatus for exact task state",
+                "No in-turn blocking output wait is provided",
                 "Do not loop or poll merely to wait",
                 "InvokeAgent(existing_agent)",
                 "still requires a durable SendAgentMessage response",
@@ -360,6 +371,7 @@ mod tests {
             ] {
                 assert!(content.contains(rule), "{name} missing rule: {rule}");
             }
+            assert!(!content.contains("TaskOutput"));
         }
         assert!(!tool_sections(&[])
             .iter()
@@ -369,22 +381,28 @@ mod tests {
     #[test]
     fn test_parent_progress_example_parses_as_bounded_agent_tail() {
         let content = include_str!("tool_guidance/tool_agent_invocation.md");
-        let example = content
+        let examples = content
             .split('`')
-            .find(|text| text.starts_with("holon tail "))
-            .expect("parent progress CLI example");
-        let cli = crate::cli::Cli::try_parse_from(example.split_whitespace())
-            .expect("progress example must match the public CLI");
-        let crate::cli::Commands::Tail { options, agent } = cli.command else {
-            panic!("progress example must use agent tail");
-        };
-        assert_eq!(agent.as_deref(), Some("<agent_id>"));
-        assert!(options.include_progress);
-        assert!(!options.follow);
-        assert!(options.cursor.is_none());
-        assert_eq!(options.limit, 20);
-        assert_eq!(options.max_events, 100);
-        assert_eq!(options.max_bytes, 65536);
+            .filter(|text| text.starts_with("holon tail "))
+            .collect::<Vec<_>>();
+        assert_eq!(examples.len(), 2, "snapshot and bounded follow examples");
+        for (example, follow) in examples.into_iter().zip([false, true]) {
+            let cli = crate::cli::Cli::try_parse_from(example.split_whitespace())
+                .expect("progress example must match the public CLI");
+            let crate::cli::Commands::Tail { options, agent } = cli.command else {
+                panic!("progress example must use agent tail");
+            };
+            assert_eq!(agent.as_deref(), Some("<agent_id>"));
+            assert!(options.include_progress);
+            assert_eq!(options.follow, follow);
+            assert!(options.cursor.is_none());
+            assert_eq!(options.limit, 20);
+            assert_eq!(options.max_events, 100);
+            assert_eq!(options.max_bytes, 65536);
+            if follow {
+                assert_eq!(options.timeout_ms, 5000);
+            }
+        }
     }
 
     #[test]
@@ -405,9 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn test_task_output_section_emitted_when_available() {
+    fn test_task_status_section_emitted_when_available() {
         let tools = vec![ToolSpec {
-            name: "TaskOutput".into(),
+            name: "TaskStatus".into(),
             description: String::new(),
             input_schema: json!({}),
             freeform_grammar: None,
@@ -417,13 +435,39 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_task_control")
             .expect("task control section");
-        assert!(section
-            .content
-            .contains("Use TaskOutput for bounded output inspection"));
-        assert!(section.content.contains("not routine completion polling"));
-        assert!(!section
-            .content
-            .contains("call WaitFor with wake=task_result"));
+        for rule in [
+            "TaskStatus for exact task state",
+            "not an output reader",
+            "reported file paths and availability",
+            "bounded ExecCommand file reads",
+            "Do not guess output paths",
+            "holon tail --agent <agent_id> --include-progress",
+            "read-only",
+            "does not claim or consume task results",
+            "does not wake the target",
+            "not task-exclusive",
+            "The old `block`/`timeout_ms` in-turn short wait is not provided",
+            "WaitFor with `wake=task_result` and `resource=<task_id>`",
+            "Do not poll",
+            "unbounded `tail -f`",
+        ] {
+            assert!(section.content.contains(rule), "missing rule: {rule}");
+        }
+        assert!(!section.content.contains("TaskOutput"));
+        assert!(!section.content.contains("holon task output"));
+    }
+
+    #[test]
+    fn test_removed_task_output_does_not_emit_task_control_guidance() {
+        let sections = tool_sections(&[ToolSpec {
+            name: "TaskOutput".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }]);
+        assert!(!sections
+            .iter()
+            .any(|section| section.name == "tool_task_control"));
     }
 
     #[test]
@@ -1072,7 +1116,7 @@ mod tests {
     fn test_multiple_tool_sections_emitted() {
         let tools = vec![
             ToolSpec {
-                name: "TaskOutput".into(),
+                name: "TaskStatus".into(),
                 description: String::new(),
                 input_schema: json!({}),
                 freeform_grammar: None,

@@ -44,7 +44,6 @@ pub(crate) mod sleep;
 pub(crate) mod switch_workspace;
 pub(crate) mod task_input;
 pub(crate) mod task_list;
-pub(crate) mod task_output;
 pub(crate) mod task_status;
 pub(crate) mod task_stop;
 pub(crate) mod timer;
@@ -87,7 +86,6 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         task_list::legacy_definition()?,
         task_status::definition()?,
         task_input::definition()?,
-        task_output::definition()?,
         task_stop::definition()?,
         list_model_providers::definition()?,
         list_provider_models::definition()?,
@@ -247,12 +245,6 @@ fn execute_builtin_tool_inner<'a>(
             &call.input,
         )),
         task_input::NAME => Box::pin(task_input::execute(
-            runtime,
-            agent_id,
-            authority_class,
-            &call.input,
-        )),
-        task_output::NAME => defer_tool_future!(task_output::execute(
             runtime,
             agent_id,
             authority_class,
@@ -465,7 +457,6 @@ fn render_tool_result_for_model_base(result: &ToolResult) -> Result<String> {
         apply_patch_tool::NAME => apply_patch_tool::render_for_model(result),
         exec_command::NAME => exec_command::render_for_model(result),
         exec_command_batch::NAME => exec_command_batch::render_for_model(result),
-        task_output::NAME => task_output::render_for_model(result),
         generate_image::NAME => generate_image::render_for_model(result),
         view_image::NAME => view_image::render_for_model(result),
         _ => canonical_json_render(result),
@@ -515,7 +506,6 @@ fn uses_custom_model_renderer(result: &ToolResult) -> bool {
             apply_patch_tool::NAME
                 | exec_command::NAME
                 | exec_command_batch::NAME
-                | task_output::NAME
                 | generate_image::NAME
                 | view_image::NAME
         )
@@ -655,7 +645,6 @@ mod tests {
             "InvokeAgent" => "src/tool/tool_descriptions/invoke_agent.md",
             "TaskInput" => "src/tool/tool_descriptions/task_input.md",
             "TaskList" => "src/tool/tool_descriptions/task_list_legacy.md",
-            "TaskOutput" => "src/tool/tool_descriptions/task_output.md",
             "TaskStatus" => "src/tool/tool_descriptions/task_status.md",
             "TaskStop" => "src/tool/tool_descriptions/task_stop.md",
             "SwitchWorkspace" => "src/tool/tool_descriptions/switch_workspace.md",

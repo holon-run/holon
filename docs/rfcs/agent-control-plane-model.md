@@ -306,7 +306,7 @@ gravity.
 This means:
 
 - `ExecCommand` is the startup primitive
-- `TaskList`, `TaskStatus`, `TaskOutput`, `TaskStop`, and later `TaskInput`
+- `TaskList`, `TaskStatus`, `TaskStop`, and later `TaskInput`
   inspect and control managed execution state
 - delegated child context creation should move out of task language
 
@@ -643,7 +643,9 @@ task plane for bounded supervision:
 
 - `TaskStatus` for handle-level lifecycle state using `task_handle.task_id`
 - `TaskInput` for supervisor follow-up input
-- `TaskOutput` for progress and result output
+- bounded `holon tail --agent <id> --include-progress` for agent-scoped progress,
+  and `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` for results;
+  observation is not task-exclusive and EOF is not completion
 - `TaskStop` for cancellation or termination of the supervised execution
 
 This should not replace future mailbox-style agent communication.

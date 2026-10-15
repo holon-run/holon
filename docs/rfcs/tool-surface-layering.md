@@ -133,7 +133,6 @@ Typical members include:
 - `Enqueue`
 - `TaskList`
 - `TaskStatus`
-- `TaskOutput`
 - `TaskInput`
 - `TaskStop`
 - `CreateWorkItem`

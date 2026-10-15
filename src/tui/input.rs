@@ -2703,7 +2703,7 @@ impl TuiApp {
             self.status_line = format!(
                 "{} entry point: {} is available for task {}",
                 action.label(),
-                action.tool_name(),
+                action.entry_point(),
                 task.id
             );
         } else {

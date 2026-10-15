@@ -117,8 +117,11 @@ order: 13
 一次典型的父子交互：
 
 1. **调用** — 父 Agent 用 `InvokeAgent` 发起调用，用 `initial_message` 描述任务
-2. **监控** — 父 Agent 用 `TaskStatus` 检查子 Agent 是在工作、休眠，还是在等待
-3. **审阅** — 父 Agent 读 `TaskOutput` 获取有界预览，或等待完成
+2. **监控** — 父 Agent 用 `TaskStatus` 查任务生命周期，用有界的
+   `holon tail --agent <child_id> --include-progress` 观测 Agent 进度。
+3. **审阅** — 只剩任务完成这一依赖时，用
+   `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` 等待并在重入后审阅结果。
+   对已有 Agent 的调用，审阅结果引用的原始已投递消息。
 4. **交付** — 父 Agent 把子 Agent 的结果汇总成最终面向用户的答案
 5. **清理** — 子 Agent 的产出被整合后，由父 Agent 负责其生命周期清理。调用 `GetAgent(detail="full")` 获取子 Agent 的 `identity.incarnation` 并检查当前阻碍项，随后调用 `DeleteAgent(agent_id, incarnation)` 释放资源。
 
@@ -127,6 +130,10 @@ order: 13
 - **验证** — 子 Agent 的输出是证据，不是权威
 - **汇总** — 合并多个子 Agent 的结果
 - **最终交付** — 由父 Agent 产出面向用户的答案
+
+tail 按 Agent 而非单个任务归属输出，不消费结果、不唤醒生产者；EOF 或 Agent 空闲
+不等于任务完成。命令日志只从运行时确认的文件路径有界读取。原 `TaskOutput` /
+`holon task output` 的轮内短等已移除，见[任务](/zh-CN/spec/tasks.md#输出观测不等于完成)。
 
 ### 子 Agent 生命周期与清理契约
 

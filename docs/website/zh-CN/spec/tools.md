@@ -34,7 +34,7 @@ schema/分发对齐，以及结果信封约定。
 
 | 家族 | 工具 | 权限 |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`、`GetAgent`、`SendAgentMessage`、`Enqueue`、`CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer`、`ListTasks`、`TaskStatus`、`TaskInput`、`TaskOutput`、`TaskStop`、`ListModelProviders`、`ListProviderModels`、工作项工具、`MemorySearch`、`MemoryGet` | 所有 Agent profile |
+| `CoreAgent` | `WaitFor`、`GetAgent`、`SendAgentMessage`、`Enqueue`、`CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer`、`ListTasks`、`TaskStatus`、`TaskInput`、`TaskStop`、`ListModelProviders`、`ListProviderModels`、工作项工具、`MemorySearch`、`MemoryGet` | 所有 Agent profile |
 | `LocalEnvironment` | `ExecCommand`、`ExecCommandBatch`、`ApplyPatch`、`ViewImage`、`GenerateImage`、`GetWorkspaceState`、`SwitchWorkspace`、`CreateWorktree` | 所有 profile |
 | `AuthorityExpanding` | `AttachWorkspace`、`DetachWorkspace`、`RemoveWorktree` | 公有具名 Agent |
 | `Web` | `WebFetch`、`WebSearch`、`XSearch` | 所有 profile |
@@ -68,9 +68,15 @@ schema/分发对齐，以及结果信封约定。
 | `ExecCommandBatch` | 运行有界的顺序命令批次 |
 | `ListTasks` | 紧凑的活跃任务摘要，输出有界 |
 | `TaskStatus` | 单任务生命周期快照 |
-| `TaskOutput` | 有界输出预览，可选阻塞等待 |
 | `TaskInput` | 向交互式任务发送输入 |
 | `TaskStop` | 停止正在运行的任务 |
+
+原模型工具 `TaskOutput` 和 CLI `holon task output` 已退役，包括其
+`block`/`timeout_ms` 轮内短等。用 `TaskStatus` 查生命周期，从运行时确认的命令
+文件路径有界读取输出，用有界的 `holon tail --agent <id> --include-progress`
+观测 Agent 进度。tail 不消费结果、不唤醒生产者、不保证任务独占输出；EOF 不等于
+完成。任务完成与重入用 `WaitFor(wake=task_result, resource=<task_id>, delivery=...)`。
+底层 HTTP 输出路由和运行时 result/capture 服务保留，见[任务](tasks.md)。
 
 ### Agent 平面
 

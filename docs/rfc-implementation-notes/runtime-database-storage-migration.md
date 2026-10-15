@@ -298,8 +298,10 @@ Acceptance:
 
 - Parent and child task handles can be inspected from the shared DB.
 - Completed, failed, cancelled, and running task states remain distinguishable.
-- `TaskOutput` can still resolve output refs while lifecycle metadata comes from
-  DB.
+- The retained runtime/HTTP output projection can still resolve output refs
+  while lifecycle metadata comes from DB. The model `TaskOutput` tool and
+  `holon task output` CLI are retired; current callers inspect `TaskStatus` and
+  read runtime-confirmed command files in bounded ranges.
 - Import does not create runnable work from historical terminal task records.
 
 Useful verification:
