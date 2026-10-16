@@ -7336,9 +7336,10 @@ code {
 .file-browser-controls .file-browser-md-toggle { flex-shrink: 0; }
 .file-browser-controls .file-browser-md-toggle button.active { color: white; background: var(--accent); border-radius: 0; }
 .file-browser-popover { position: relative; flex-shrink: 0; }
-.file-browser-popover-content { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; display: flex; flex-direction: column; min-width: 200px; max-width: min(300px, 80vw); max-height: 280px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px #0002; }
+.file-browser-popover-content { position: fixed; inset: auto; margin: 0; box-sizing: border-box; display: flex; flex-direction: column; min-width: 200px; max-width: min(300px, calc(100vw - 16px)); max-height: 280px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px #0002; }
 .file-browser-popover-content button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 8px 10px; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
 .file-browser-popover-content button:hover { background: var(--surface-hover); }
+.file-browser-popover-content button:disabled { opacity: .5; cursor: default; }
 
 /* Mobile navigation and conversation controls. The narrow layout keeps the
    conversation as the primary surface and opens the full roster on demand;
