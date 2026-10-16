@@ -18,6 +18,10 @@
           "href": "/zh-CN/getting-started/"
         },
         {
+          "label": "Agent 模板",
+          "href": "/zh-CN/templates/"
+        },
+        {
           "label": "博客",
           "href": "/zh-CN/blog/"
         },
@@ -77,6 +81,10 @@
     {
       "label": "Start",
       "href": "/getting-started/"
+    },
+    {
+      "label": "Agent Templates",
+      "href": "/templates/"
     },
     {
       "label": "Blog",

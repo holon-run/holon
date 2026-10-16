@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "templates": {
+    "code-health-steward": {
+      "category": "engineering"
+    },
+    "code-reviewer": {
+      "category": "engineering",
+      "featuredRank": 2,
+      "zh-CN": {
+        "name": "代码审阅员",
+        "summary": "持续跟踪 PR 生命周期，评估合并准备情况，并管理事件驱动的审阅订阅。"
+      }
+    },
+    "community-steward": {
+      "category": "operations"
+    },
+    "dependency-steward": {
+      "category": "engineering"
+    },
+    "docs-steward": {
+      "category": "content"
+    },
+    "github-solver": {
+      "category": "engineering"
+    },
+    "holon-ops": {
+      "category": "operations"
+    },
+    "issue-triager": {
+      "category": "engineering"
+    },
+    "knowledge-steward": {
+      "category": "productivity",
+      "featuredRank": 4,
+      "zh-CN": {
+        "name": "知识管家",
+        "summary": "持续维护可导航、关联来源的 Markdown 知识库，提供可审阅的草稿、索引和时效性信号，并保留明确的人工决策。"
+      }
+    },
+    "learning-coach": {
+      "category": "productivity",
+      "featuredRank": 5,
+      "zh-CN": {
+        "name": "学习教练",
+        "summary": "以证据为依据，通过练习、反思和复习，帮助学习者在不同学科中建立持久理解。"
+      }
+    },
+    "legal-ops-steward": {
+      "category": "operations"
+    },
+    "marketing-steward": {
+      "category": "content"
+    },
+    "office-assistant": {
+      "category": "productivity",
+      "featuredRank": 3,
+      "zh-CN": {
+        "name": "办公助手",
+        "summary": "持续负责办公文档与生产力事务。"
+      }
+    },
+    "product-manager": {
+      "category": "productivity"
+    },
+    "qa-engineer": {
+      "category": "engineering"
+    },
+    "release-manager": {
+      "category": "engineering"
+    },
+    "reverse-engineer": {
+      "category": "engineering"
+    },
+    "security-reviewer": {
+      "category": "engineering"
+    },
+    "server-ops": {
+      "category": "operations"
+    },
+    "software-developer": {
+      "category": "engineering",
+      "featuredRank": 1,
+      "zh-CN": {
+        "name": "软件开发者",
+        "summary": "专注于持续推进实现工作的 Agent。"
+      }
+    },
+    "video-producer": {
+      "category": "content",
+      "featuredRank": 6,
+      "zh-CN": {
+        "name": "视频制作人",
+        "summary": "将结构化制作素材包转化为经过验证的视频交付物。"
+      }
+    }
+  }
+}

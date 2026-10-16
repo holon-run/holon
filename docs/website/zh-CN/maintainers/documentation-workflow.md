@@ -6,7 +6,7 @@ order: 20
 
 # 文档工作流
 
-Holon 网站是 `docs/website/` 下的一个 mdorigin 内容根。源页面是 Markdown 文件，可以渲染为 HTML，也可以按 Markdown 获取。
+Holon 网站源码位于 `docs/website/`，构建时会在 `.tools/dist/content/` 中准备隔离的 mdorigin 内容根。源页面是 Markdown 文件，可以渲染为 HTML，也可以按 Markdown 获取。
 
 ## 编辑内容
 
@@ -54,26 +54,36 @@ docs/website/
 在仓库根目录运行检查：
 
 ```bash
-python3 docs/website/.tools/check-links.py
+npm --prefix docs/website/.tools run prepare:content
+npm --prefix docs/website/.tools run check:content
 python3 docs/website/.tools/test-check-contract-refs.py
 python3 docs/website/.tools/check-contract-refs.py
 ```
 
 失败时用 `file:line:target` 格式给出诊断，方便编辑器和 CI 日志直接定位声明位置。
+链接与导航统一使用准备好的内容根检查，其中包含生成路由。
 
 ## 本地预览
 
+使用 Node.js 22 和 Python 3.11 或更高版本。在仓库根目录运行：
+
 ```bash
-cd docs/website
-mdorigin dev --root .
+npm ci --prefix docs/website/.tools
+npm --prefix docs/website/.tools run dev
 ```
+
+`dev` 在启动时生成内容快照，预览服务读取该快照，而不是源码树。修改任何网站正文
+（包括普通 Markdown）、配置、样式、模板或展示元数据后，都需要重启预览。
+仅正文改动时，也可另行运行 `npm --prefix docs/website/.tools run prepare:content`
+刷新生成文件；配置和样式由 mdorigin 在启动时加载，必须重启才能更新。
+源码改动不会自动复制；目前没有监听源码树的 watcher。
 
 ## 刷新索引
 
 文档目录页只用一份受管理的索引列出本节文章。正文可保留导读和跨分区链接，
 但不要复制目录，也不要把索引翻译成正文里的第二份列表。翻译各文章的
 `title` 和 `summary` 后重新生成索引即可。在 `docs/website` 下运行
-`npm --prefix .tools run check:directories` 检查重复链接。
+`npm --prefix .tools run check:directories` 检查生成目录页中的重复链接；运行前先准备内容并构建索引。
 
 目录页可以包含受管理的索引块：
 
@@ -82,20 +92,40 @@ mdorigin dev --root .
 <!-- INDEX:END -->
 ```
 
-用下面的命令重新生成：
+在 `docs/website` 下运行以下命令，在隔离内容根中重新生成：
 
 ```bash
-mdorigin build index --root .
+npm --prefix .tools run prepare:content
+npm --prefix .tools run build:index
+npm --prefix .tools run check:directories
 ```
 
 ## 构建可部署产物
 
+在 `docs/website` 下运行：
+
 ```bash
-mdorigin build search --root . --out dist/search
-mdorigin build cloudflare --root . --search dist/search
+npm --prefix .tools run build
 ```
 
-生成的 `dist/` 目录已被忽略，不应提交。
+构建只准备一次内容，后续目录索引、生成链接与目录检查、搜索索引和 Cloudflare
+打包都使用同一个内容根。搜索与部署产物仍分别位于 `.tools/dist/search/` 和
+`.tools/dist/cloudflare/`。生成的 `.tools/dist/` 已被忽略，不应提交，也不要把生成目录复制回源码页面。
+
+## 模板目录
+
+模板目录读取仓库本地的 `agent_templates/*/template.toml` 和 `skills.toml`。
+`.tools/build-template-catalog.py` 复制网站内容（不包含 `.tools`），并在
+`.tools/dist/content/` 中生成首页精选、完整目录页和 JSON 资源。该脚本可以从任意当前目录运行。
+构建不会通过网络拉取模板，也没有目录 API：模板数据与文档来自同一次 Git 提交 SHA。
+
+分类、精选顺序和可选的中文展示名称及摘要维护在 `template-display.json`，
+角色契约仍以模板文件为准。缺少中文展示文案时回退到模板的英文元数据；
+没有展示配置的模板仍会出现在完整目录中，并使用兜底分类。
+删除精选模板后，构建会报错，直到在 `template-display.json` 中移除或替换对应的失效精选项。
+
+CI 会验证模板与生成器测试，保留契约引用和生成副本检查，并使用实际内容根检查全部复制的源码、生成页面链接及导航。
+PR 只构建和上传产物，不部署。
 
 ## 生成页面与多语言
 

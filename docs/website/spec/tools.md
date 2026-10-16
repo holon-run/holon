@@ -178,7 +178,7 @@ byte counters, dropped-byte evidence, and capture truncation through
 exact runtime-confirmed path. The retained HTTP output DTO's `output_truncated`
 remains an independent API preview-truncation flag, not a model tool contract.
 
-See [Command Task Output Safety](../../rfcs/command-task-output-safety.md).
+See [Command Task Output Safety](https://github.com/holon-run/holon/blob/main/docs/rfcs/command-task-output-safety.md).
 
 ## Input/result separation
 
