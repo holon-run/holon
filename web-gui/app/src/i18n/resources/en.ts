@@ -15,8 +15,6 @@ const en = {
     subagent: "Subagent conversation",
     backToParent: "Back to parent agent",
     parentTask: "Parent task",
-    directInput: "Messages go directly to this subagent as operator input. Accepted means queued, not an immediate response; the parent task is unchanged.",
-    inputPlaceholder: "Message this subagent ({{id}})…",
   },
   clipboard: {
     copied: "Copied",

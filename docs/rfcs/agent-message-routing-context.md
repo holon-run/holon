@@ -85,6 +85,13 @@ inventing route information.
 
 ## Low-noise collaboration guidance
 
+Creation provenance and lineage do not create a reporting obligation. An
+independently managed long-lived agent replies to the operator for operator
+work and to the actual delegator for delegated work, determined by the current
+task or trusted message routing context. An identity or lineage parent is not
+a default reporting recipient and grants no messaging authority. This rule is
+also included in the agent contract when collaboration tools are unavailable.
+
 Issue #3530 P0 changes runtime-injected collaboration guidance on both sides,
 not delivery admission, queue consumption, routing, trust, or task settlement.
 Routine progress, compile/retry updates, unchanged test status, and self-resolved

@@ -59,7 +59,6 @@ export interface ConversationTimelineBundle extends ConversationTimelineActions 
 
 interface AgentPageProps {
   agent: AgentSummary;
-  directSubagent?: boolean;
   parentAgentId?: string;
   parentTaskId?: string;
   inputDisabledReason?: string;
@@ -167,7 +166,6 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
 
 export function AgentPage({
   agent,
-  directSubagent = false,
   parentAgentId,
   parentTaskId,
   inputDisabledReason,
@@ -740,14 +738,16 @@ export function AgentPage({
     <section className="page agent-page" aria-label={t("agent.conversationAria")}>
       <div className="agent-workbench">
         <section className="conversation-pane">
-          {parentAgentId ? (
-            <div className="conversation-sync-status" role="note">
-              <strong>{t("agentAccess.subagent")}</strong>{" · "}
-              <a href={pathForRoute("agent", parentAgentId)}>{t("agentAccess.backToParent")}</a>
-              {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
-            </div>
-          ) : null}
-          {conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
+          <div className="conversation-header">
+            {parentAgentId ? (
+              <div className="conversation-parent-status" role="note">
+                <strong>{t("agentAccess.subagent")}</strong>{" · "}
+                <a href={pathForRoute("agent", parentAgentId)}>{t("agentAccess.backToParent")}</a>
+                {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
+              </div>
+            ) : null}
+            {conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
+          </div>
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
             <div className="message-list-content" ref={messageContentRef}>
               {location ? (
@@ -849,7 +849,6 @@ export function AgentPage({
 
           <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
             conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
-          {directSubagent ? <div className="composer-status" role="note">{t("agentAccess.directInput")}</div> : null}
           {inputDisabledReason ? <div className="composer-status" role="status">{inputDisabledReason}</div> : null}
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}
@@ -868,7 +867,7 @@ export function AgentPage({
             <textarea
               ref={composerTextareaRef}
               rows={1}
-              placeholder={t(directSubagent ? "agentAccess.inputPlaceholder" : "agent.sendInputPlaceholder", { id: activeAgent.id })}
+              placeholder={t("agent.sendInputPlaceholder", { id: activeAgent.id })}
               value={prompt}
               disabled={sendingPrompt || Boolean(inputDisabledReason)}
               onChange={(event) => handlePromptChange(event.target.value)}

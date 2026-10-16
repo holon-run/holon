@@ -815,7 +815,6 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
-            directSubagent={Boolean(agentAccess.parentAgentId)}
             inputDisabledReason={activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
             parentAgentId={agentAccess.parentAgentId}
             parentTaskId={agentAccess.parentTaskId}
@@ -1295,7 +1294,7 @@ function MissingAgentPage({ agentId, status, error, parentAgentId, onRetry }: { 
   return (
     <section className="page agent-page" aria-label="Agent conversation">
       <div className="agent-workbench">
-        <section className="conversation-pane">
+        <section className="conversation-pane conversation-access-state" aria-live="polite" aria-busy={status === "loading"}>
           <EmptyState
             className="conversation-empty"
             title={t(`agentAccess.${status}`)}

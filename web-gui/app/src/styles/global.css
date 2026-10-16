@@ -1636,10 +1636,33 @@ code {
   background: var(--surface);
 
   display: grid;
-  grid-template-rows: 32px minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+}
+
+.conversation-header {
+  min-width: 0;
+}
+
+.conversation-parent-status {
+  padding: 6px 16px;
+  overflow-wrap: anywhere;
+}
+
+.conversation-access-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+}
+
+.conversation-access-state .conversation-empty {
+  width: min(100%, 420px);
+  margin: 0;
 }
 
 .source-chip {
