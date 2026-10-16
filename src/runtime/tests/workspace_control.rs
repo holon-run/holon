@@ -38,6 +38,185 @@ fn init_git_repo() -> TempDir {
     repo
 }
 
+struct WorktreeLifecycleProvider {
+    steps: Mutex<std::collections::VecDeque<ModelBlock>>,
+}
+
+#[async_trait]
+impl AgentProvider for WorktreeLifecycleProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        assert!(request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "RemoveWorktree"));
+        let block = self
+            .steps
+            .lock()
+            .await
+            .pop_front()
+            .unwrap_or(ModelBlock::Text {
+                text: "diagnostic task completed".into(),
+            });
+        Ok(ProviderTurnResponse {
+            blocks: vec![block],
+            stop_reason: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+
+    fn configured_model_refs(&self) -> Vec<String> {
+        vec!["stub".into()]
+    }
+}
+
+#[tokio::test]
+async fn supervised_child_worktree_cleanup_survives_task_completion_and_reload() {
+    let home = tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let provider = Arc::new(WorktreeLifecycleProvider {
+        steps: Mutex::new(Default::default()),
+    });
+    let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+    let parent = host.default_runtime().await.unwrap();
+    let repo = init_git_repo();
+    let workspace = parent
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    parent
+        .switch_workspace_target(
+            WorkspaceSwitchTarget::WorkspaceId(workspace.workspace_id.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+    for (name, input) in [
+        (
+            "CreateWorktree",
+            serde_json::json!({
+                "workspace_id": workspace.workspace_id,
+                "branch": "feature/child-cleanup",
+                "base_ref": "main"
+            }),
+        ),
+        (
+            "SwitchWorkspace",
+            serde_json::json!({"workspace_id": "agent_home"}),
+        ),
+    ] {
+        provider.steps.lock().await.push_back(ModelBlock::ToolUse {
+            id: name.into(),
+            name: name.into(),
+            input,
+            kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
+        });
+    }
+    let model_resolution = parent
+        .resolve_agent_model_request("InvokeAgent", None)
+        .await
+        .unwrap();
+    let invoked = parent
+        .agent_invocation_service()
+        .invoke(crate::types::InvokeAgentRequest {
+            target: crate::types::InvokeAgentTarget::NewSubagent {
+                template: None,
+                workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                model_resolution: Some(model_resolution),
+            },
+            message: "create a diagnostic worktree, switch home, and finish".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if parent
+                .task_record(&invoked.task_handle.task_id)
+                .await
+                .unwrap()
+                .is_some_and(|task| task.status == TaskStatus::Completed)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("child task must complete");
+    let root = host
+        .runtime_db()
+        .execution_root_entries()
+        .active_for_workspace(&workspace.workspace_id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.root_kind == WorkspaceProjectionKind::GitWorktreeRoot)
+        .expect("child created a registered worktree");
+    assert_eq!(
+        root.worktree
+            .as_ref()
+            .unwrap()
+            .registered_by_agent_id
+            .as_deref(),
+        Some(invoked.agent_id.as_str())
+    );
+    assert!(!host.workspace_occupancies().unwrap().iter().any(|holder| {
+        holder.execution_root_id == root.execution_root_id && holder.released_at.is_none()
+    }));
+    host.unload_runtime(&invoked.agent_id).await;
+    let child = host.get_operator_agent(&invoked.agent_id).await.unwrap();
+    let identity = child.agent_identity_view().await.unwrap();
+    assert_eq!(identity.profile_preset, AgentProfilePreset::PrivateChild);
+    assert!(child
+        .filtered_tool_specs()
+        .await
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == "RemoveWorktree"));
+    // The reloaded creator and its parent use exactly the same cleanup service.
+    git(
+        repo.path(),
+        &["worktree", "lock", root.filesystem_path.to_str().unwrap()],
+    );
+    let error = child
+        .remove_registered_worktree(
+            &root.execution_root_id,
+            None,
+            WorktreeBranchPolicy::Keep,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("locked"), "{error}");
+    git(
+        repo.path(),
+        &["worktree", "unlock", root.filesystem_path.to_str().unwrap()],
+    );
+    let removed = parent
+        .remove_registered_worktree(
+            &root.execution_root_id,
+            None,
+            WorktreeBranchPolicy::DeleteIfMerged,
+            Some("main"),
+        )
+        .await
+        .unwrap();
+    assert!(removed.removed);
+    assert!(removed.branch_deleted);
+    assert!(!root.filesystem_path.exists());
+}
+
 #[tokio::test]
 async fn attach_and_switch_normalize_git_subdirectory() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
@@ -515,7 +694,7 @@ async fn active_remove_accepts_canonical_path_as_return_to() {
 }
 
 #[tokio::test]
-async fn remove_worktree_rejects_unauthorized_agent_registration() {
+async fn remove_worktree_accepts_historical_other_agent_registration() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let repo = init_git_repo();
     let workspace = runtime
@@ -526,7 +705,7 @@ async fn remove_worktree_rejects_unauthorized_agent_registration() {
     let created = runtime
         .create_worktree_for_workspace(
             &workspace.workspace_id,
-            "feature/unauthorized",
+            "feature/historical-registration",
             "main",
             None,
             false,
@@ -542,13 +721,149 @@ async fn remove_worktree_rejects_unauthorized_agent_registration() {
     worktree.authorized_agent_ids = vec!["another-agent".into()];
     repository.upsert(&entry).unwrap();
 
-    let error = runtime
+    // Both populated historical lists and empty legacy lists are provenance only.
+    for legacy_empty_list in [false, true] {
+        if legacy_empty_list {
+            let worktree = entry.worktree.as_mut().unwrap();
+            worktree.authorized_agent_ids.clear();
+            repository.upsert(&entry).unwrap();
+        }
+        let path = created.worktree_path.as_ref().unwrap();
+        std::fs::write(path.join("dirty.txt"), "retain until final check\n").unwrap();
+        let retained = runtime
+            .remove_registered_worktree(&execution_root_id, None, WorktreeBranchPolicy::Keep, None)
+            .await
+            .unwrap();
+        assert_eq!(retained.disposition, "retained_dirty");
+        assert!(path.exists());
+        std::fs::remove_file(path.join("dirty.txt")).unwrap();
+    }
+    let removed = runtime
         .remove_registered_worktree(&execution_root_id, None, WorktreeBranchPolicy::Keep, None)
         .await
-        .unwrap_err();
+        .unwrap();
+    assert!(removed.removed);
+    assert!(!created.worktree_path.unwrap().exists());
+}
 
-    assert!(error.to_string().contains("is not authorized to remove"));
-    assert!(created.worktree_path.unwrap().exists());
+#[tokio::test]
+async fn remove_worktree_requires_caller_binding_for_ids_paths_and_tombstones() {
+    let (_home, host, creator) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = creator
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let created = creator
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/binding-scope",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Reuse,
+        )
+        .await
+        .unwrap();
+    let id = created.execution_root_id.unwrap();
+    let path = created.worktree_path.unwrap();
+    host.create_named_agent("cleaner", None).await.unwrap();
+    let cleaner = host.get_public_agent("cleaner").await.unwrap();
+    for by_path in [false, true] {
+        let error = cleaner
+            .remove_registered_worktree_selector(
+                (!by_path).then_some(id.as_str()),
+                by_path.then_some(path.as_path()),
+                None,
+                WorktreeBranchPolicy::Keep,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not attached"), "{error}");
+        assert!(path.exists());
+    }
+    assert!(!cleaner
+        .agent_state()
+        .await
+        .unwrap()
+        .attached_workspaces
+        .contains(&workspace.workspace_id));
+    cleaner
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap();
+    let canonical = creator
+        .switch_workspace_target(
+            WorkspaceSwitchTarget::WorkspaceId(workspace.workspace_id.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+    let error = cleaner
+        .remove_registered_worktree(
+            &canonical.execution_root_id,
+            None,
+            WorktreeBranchPolicy::Keep,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("canonical"), "{error}");
+    creator
+        .switch_workspace_target(WorkspaceSwitchTarget::ExecutionRootId(id.clone()), None)
+        .await
+        .unwrap();
+    let occupied = creator.agent_state().await.unwrap().active_workspace_entry;
+    let error = cleaner
+        .remove_registered_worktree(&id, Some("agent_home"), WorktreeBranchPolicy::Keep, None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("occupancy"), "{error}");
+    assert_eq!(
+        creator.agent_state().await.unwrap().active_workspace_entry,
+        occupied
+    );
+    assert!(path.exists());
+    creator
+        .switch_workspace_target(
+            WorkspaceSwitchTarget::WorkspaceId(workspace.workspace_id.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+    let before = creator.agent_state().await.unwrap().active_workspace_entry;
+    let removed = cleaner
+        .remove_registered_worktree_selector(
+            None,
+            Some(&path),
+            None,
+            WorktreeBranchPolicy::Keep,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(removed.removed);
+    assert!(!path.exists());
+    assert_eq!(
+        creator.agent_state().await.unwrap().active_workspace_entry,
+        before
+    );
+    cleaner
+        .detach_workspace_with_fallback(&workspace.workspace_id)
+        .await
+        .unwrap();
+    let error = cleaner
+        .remove_registered_worktree(&id, None, WorktreeBranchPolicy::Keep, None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("not attached"), "{error}");
+    let repeated = creator
+        .remove_registered_worktree(&id, None, WorktreeBranchPolicy::Keep, None)
+        .await
+        .unwrap();
+    assert_eq!(repeated.disposition, "already_removed");
 }
 
 #[tokio::test]

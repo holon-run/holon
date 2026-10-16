@@ -350,8 +350,7 @@ async fn filtered_tool_specs_keep_exec_command_visible_when_process_execution_di
         guard.state.execution_profile.process_execution_exposed = false;
         runtime.inner.storage.write_agent(&guard.state).unwrap();
     }
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let tools = runtime.filtered_tool_specs(&identity).unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(tools.iter().any(|tool| tool.name == "ExecCommand"));
 }
@@ -359,9 +358,9 @@ async fn filtered_tool_specs_keep_exec_command_visible_when_process_execution_di
 #[tokio::test]
 async fn filtered_tool_specs_expose_x_search_only_after_xai_activation() {
     let (home, _host, runtime) = host_backed_test_runtime().await;
-    let identity = runtime.agent_identity_view().await.unwrap();
     assert!(!runtime
-        .filtered_tool_specs(&identity)
+        .filtered_tool_specs()
+        .await
         .unwrap()
         .iter()
         .any(|tool| tool.name == crate::tool::names::X_SEARCH));
@@ -387,7 +386,8 @@ async fn filtered_tool_specs_expose_x_search_only_after_xai_activation() {
     runtime.reload_config(&config).await.unwrap();
 
     assert!(runtime
-        .filtered_tool_specs(&identity)
+        .filtered_tool_specs()
+        .await
         .unwrap()
         .iter()
         .any(|tool| tool.name == crate::tool::names::X_SEARCH));
@@ -412,8 +412,7 @@ async fn filtered_tool_specs_do_not_expose_worktree_discard() {
         guard.state.execution_profile.supports_managed_worktrees = false;
         runtime.inner.storage.write_agent(&guard.state).unwrap();
     }
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let tools = runtime.filtered_tool_specs(&identity).unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(!tools.iter().any(|tool| tool.name == "WorktreeTaskDiscard"));
 }
@@ -432,8 +431,7 @@ async fn filtered_tool_specs_expose_no_public_task_creation_tool() {
         context_config(),
     )
     .unwrap();
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let tools = runtime.filtered_tool_specs(&identity).unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(!tools.iter().any(|tool| tool.name == "CreateTask"));
 }
@@ -452,18 +450,8 @@ async fn filtered_tool_specs_hide_notify_operator_for_normal_agents() {
         context_config(),
     )
     .unwrap();
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let public_tools = runtime.filtered_tool_specs(&identity).unwrap();
-    let private_tools = runtime
-        .filtered_tool_specs(&private_child_identity("tmp_child_demo"))
-        .unwrap();
-
-    assert!(!public_tools
-        .iter()
-        .any(|tool| tool.name == "NotifyOperator"));
-    assert!(!private_tools
-        .iter()
-        .any(|tool| tool.name == "NotifyOperator"));
+    let tools = runtime.filtered_tool_specs().await.unwrap();
+    assert!(!tools.iter().any(|tool| tool.name == "NotifyOperator"));
 }
 
 #[tokio::test]
@@ -480,9 +468,8 @@ async fn filtered_tool_specs_keep_agent_tools_visible_without_host_bridge() {
         context_config(),
     )
     .unwrap();
-    let identity = runtime.agent_identity_view().await.unwrap();
 
-    let tools = runtime.filtered_tool_specs(&identity).unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(tools.iter().any(|tool| tool.name == "CreateAgent"));
     assert!(tools.iter().any(|tool| tool.name == "InvokeAgent"));
@@ -491,11 +478,19 @@ async fn filtered_tool_specs_keep_agent_tools_visible_without_host_bridge() {
 }
 
 #[tokio::test]
-async fn filtered_tool_specs_hide_agent_creation_family_for_private_child() {
-    let (_home, _host, runtime) = host_backed_test_runtime().await;
-    let tools = runtime
-        .filtered_tool_specs(&private_child_identity("tmp_child_demo"))
+async fn filtered_tool_specs_hide_agent_creation_family_when_canonical_policy_denies() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let mut policy = runtime.agent_capability_policy().await.unwrap().unwrap();
+    policy.revision += 1;
+    policy.rules.push(crate::types::AgentCapabilityPolicyRule {
+        family: crate::types::AgentCapabilityFamily::AgentCreation,
+        effect: crate::types::AgentPolicyEffect::Deny,
+    });
+    host.runtime_db()
+        .agent_canonical_relations()
+        .upsert_capability_policy(&policy)
         .unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(!tools.iter().any(|tool| tool.name == "CreateAgent"));
     assert!(!tools.iter().any(|tool| tool.name == "InvokeAgent"));
@@ -504,27 +499,24 @@ async fn filtered_tool_specs_hide_agent_creation_family_for_private_child() {
 }
 
 #[tokio::test]
-async fn filtered_tool_specs_keep_workspace_lifecycle_visible_for_private_child() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("done")),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-
-    let tools = runtime
-        .filtered_tool_specs(&private_child_identity("tmp_child_demo"))
+async fn filtered_tool_specs_keep_local_environment_visible_when_authority_expanding_denied() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let mut policy = runtime.agent_capability_policy().await.unwrap().unwrap();
+    policy.revision += 1;
+    policy.rules.push(crate::types::AgentCapabilityPolicyRule {
+        family: crate::types::AgentCapabilityFamily::AuthorityExpanding,
+        effect: crate::types::AgentPolicyEffect::Deny,
+    });
+    host.runtime_db()
+        .agent_canonical_relations()
+        .upsert_capability_policy(&policy)
         .unwrap();
+
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(tools.iter().any(|tool| tool.name == "SwitchWorkspace"));
     assert!(tools.iter().any(|tool| tool.name == "CreateWorktree"));
-    assert!(!tools.iter().any(|tool| tool.name == "RemoveWorktree"));
+    assert!(tools.iter().any(|tool| tool.name == "RemoveWorktree"));
     assert!(!tools.iter().any(|tool| tool.name == "UseWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "EnterWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "ExitWorkspace"));
@@ -533,8 +525,7 @@ async fn filtered_tool_specs_keep_workspace_lifecycle_visible_for_private_child(
 #[tokio::test]
 async fn filtered_tool_specs_keep_agent_creation_family_for_public_named_agent() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let tools = runtime.filtered_tool_specs(&identity).unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
 
     assert!(tools.iter().any(|tool| tool.name == "CreateAgent"));
     assert!(tools.iter().any(|tool| tool.name == "InvokeAgent"));
@@ -545,6 +536,157 @@ async fn filtered_tool_specs_keep_agent_creation_family_for_public_named_agent()
     assert!(!tools.iter().any(|tool| tool.name == "UseWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "EnterWorkspace"));
     assert!(!tools.iter().any(|tool| tool.name == "ExitWorkspace"));
+}
+
+#[tokio::test]
+async fn canonical_capability_policy_agrees_across_provider_preview_and_dispatch() {
+    use crate::types::{AgentCapabilityFamily, AgentCapabilityPolicyRule, AgentPolicyEffect};
+
+    for (preset, effect) in [
+        (AgentProfilePreset::PublicNamed, AgentPolicyEffect::Deny),
+        (AgentProfilePreset::PrivateChild, AgentPolicyEffect::Allow),
+        (AgentProfilePreset::PrivateChild, AgentPolicyEffect::Deny),
+    ] {
+        let home = tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let provider = Arc::new(ToolCaptureProvider {
+            requests: Mutex::new(Vec::new()),
+        });
+        let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+        let runtime = host.default_runtime().await.unwrap();
+        let agent_id = runtime.agent_id().await.unwrap();
+        let mut identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(&agent_id)
+            .unwrap()
+            .unwrap();
+        // Deliberately disagree with the legacy preset in the first two cases.
+        identity.profile_preset = Some(preset);
+        identity.revision += 1;
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+        host.cache_agent_identity(&identity).unwrap();
+        assert_eq!(
+            runtime.agent_identity_view().await.unwrap().profile_preset,
+            preset
+        );
+        let mut policy = runtime.agent_capability_policy().await.unwrap().unwrap();
+        policy.revision += 1;
+        // Unspecified families remain denied; no preset rules may fill them in.
+        policy.rules = vec![
+            AgentCapabilityPolicyRule {
+                family: AgentCapabilityFamily::AgentCreation,
+                effect,
+            },
+            AgentCapabilityPolicyRule {
+                family: AgentCapabilityFamily::LocalEnvironment,
+                effect: AgentPolicyEffect::Deny,
+            },
+        ];
+        host.runtime_db()
+            .agent_canonical_relations()
+            .upsert_capability_policy(&policy)
+            .unwrap();
+        let allowed = effect == AgentPolicyEffect::Allow;
+
+        let (_, tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
+        assert_eq!(tools.iter().any(|tool| tool.name == "CreateAgent"), allowed);
+        assert_eq!(tools.iter().any(|tool| tool.name == "InvokeAgent"), allowed);
+        assert!(!tools.iter().any(|tool| tool.name == "GetAgent"));
+        assert!(!tools.iter().any(|tool| tool.name == "RemoveWorktree"));
+        for preview in [
+            runtime
+                .preview_prompt("inspect tools".into(), AuthorityClass::OperatorInstruction)
+                .await
+                .unwrap(),
+            host.preview_agent_prompt(
+                &agent_id,
+                "inspect tools".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap(),
+        ] {
+            assert_eq!(
+                preview
+                    .system_sections
+                    .iter()
+                    .any(|section| section.name == "tool_agent_invocation"),
+                allowed
+            );
+            assert!(!preview
+                .system_sections
+                .iter()
+                .any(|section| section.name == "tool_workspace"));
+        }
+
+        let error = runtime
+            .inner
+            .tools
+            .execute(
+                &runtime,
+                &agent_id,
+                &AuthorityClass::OperatorInstruction,
+                &crate::tool::ToolCall {
+                    id: "local-environment-deny-probe".into(),
+                    name: "RemoveWorktree".into(),
+                    input: serde_json::Value::Null,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).code,
+            "agent_capability_not_allowed"
+        );
+
+        // Malformed input proves admission without creating an agent.
+        let error = runtime
+            .inner
+            .tools
+            .execute(
+                &runtime,
+                &agent_id,
+                &AuthorityClass::OperatorInstruction,
+                &crate::tool::ToolCall {
+                    id: "capability-policy-probe".into(),
+                    name: "CreateAgent".into(),
+                    input: serde_json::Value::Null,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).code
+                == "agent_capability_not_allowed",
+            !allowed
+        );
+        runtime
+            .run_agent_loop(
+                &agent_id,
+                AuthorityClass::OperatorInstruction,
+                test_effective_prompt(),
+                LoopControlOptions {
+                    max_tool_rounds: None,
+                },
+            )
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().await;
+        let names = requests.last().unwrap();
+        assert_eq!(names.iter().any(|name| name == "CreateAgent"), allowed);
+        assert_eq!(names.iter().any(|name| name == "InvokeAgent"), allowed);
+        assert!(!names.iter().any(|name| name == "GetAgent"));
+        assert!(!names.iter().any(|name| name == "RemoveWorktree"));
+    }
 }
 
 #[tokio::test]

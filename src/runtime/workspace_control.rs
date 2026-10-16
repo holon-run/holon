@@ -857,6 +857,13 @@ impl RuntimeHandle {
         if entry.root_kind != WorkspaceProjectionKind::GitWorktreeRoot {
             return Err(anyhow!("canonical workspace roots cannot be removed"));
         }
+        if !state.attached_workspaces.contains(&entry.workspace_id) {
+            return Err(anyhow!(
+                "workspace `{}` is not attached to agent `{}`",
+                entry.workspace_id,
+                state.id
+            ));
+        }
         if entry.removed_at.is_some() {
             return Ok(RemoveWorktreeResult {
                 execution_root_id: resolved_execution_root_id.clone(),
@@ -886,18 +893,6 @@ impl RuntimeHandle {
             .worktree
             .as_ref()
             .ok_or_else(|| anyhow!("registered worktree identity metadata is unavailable"))?;
-        let authorized = worktree_metadata
-            .authorized_agent_ids
-            .iter()
-            .any(|agent_id| agent_id == &state.id)
-            || (worktree_metadata.authorized_agent_ids.is_empty()
-                && worktree_metadata.registered_by_agent_id.as_deref() == Some(state.id.as_str()));
-        if !authorized {
-            return Err(anyhow!(
-                "agent `{}` is not authorized to remove execution root `{resolved_execution_root_id}`",
-                state.id
-            ));
-        }
         let active_target = state
             .active_workspace_entry
             .as_ref()

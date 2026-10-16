@@ -135,17 +135,32 @@ failure retains the created artifact for later inspection or switching.
 
 ```text
 RemoveWorktree {
-  execution_root_id: string,
-  return_to?: "canonical" | "agent_home" | execution_root_id,
+  execution_root_id?: string,
+  path?: string,
+  return_to?: "canonical" | "agent_home" | execution_root_id | attached_path,
   branch_policy?: "keep" | "delete_if_merged" = "keep",
   merged_into?: git_ref
 }
 ```
 
+Exactly one of `execution_root_id` or `path` is required. Paths must resolve to
+a unique registered worktree in a workspace already attached to the caller;
+ID selectors enforce the same binding scope, including removed artifacts.
+Removal never implicitly attaches a workspace.
+
+`RemoveWorktree` belongs to `LocalEnvironment`, available by default to
+supervised children as well as independent agents. Within an attached workspace,
+creators, supervisors, peers, and cleanup agents use the same removal rules.
+Artifact creator and historical authorization metadata remain provenance, not
+cleanup admission requirements. No cleanup grant or supervisor role is needed.
+The host-local shell environment is not a strong filesystem isolation boundary;
+the native operation provides safety checks, audit, and registry consistency.
+A clean and unoccupied worktree is mechanically removable, not necessarily
+abandoned: agents must still respect their task scope.
+
 The runtime validates the durable artifact generation against live Git
 common-directory, worktree git-directory, path, branch, and checkout state. It
-also requires explicit artifact authorization for the calling agent. It
-refuses canonical roots, arbitrary path selectors, force removal, dirty
+refuses canonical roots, arbitrary directories, force removal, dirty
 worktrees, locked worktrees, and roots with any additional active occupancy.
 
 An active target requires `return_to`. All read-only identity, occupancy,

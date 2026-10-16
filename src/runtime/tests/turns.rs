@@ -3024,8 +3024,7 @@ async fn turn_local_continuation_recovers_by_reprojecting_recent_turns() {
     )
     .unwrap();
 
-    let identity = runtime.agent_identity_view().await.unwrap();
-    let (_, available_tools, _, _, _) = runtime.provider_tool_selection(&identity).await.unwrap();
+    let (_, available_tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
     let mut historical_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
