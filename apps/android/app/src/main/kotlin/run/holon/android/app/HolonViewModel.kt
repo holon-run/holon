@@ -100,7 +100,7 @@ internal class HolonViewModel(
     private var artifactJob: Job? = null
     private var workspaceBrowseGeneration = 0L
     private var workspaceBrowseRequest: WorkspaceBrowseRequest? = null
-    private var refreshJob: Job? = null
+    private var refreshConversationOnRoster = false
     private val sessionResetBarrier = SessionResetBarrier(viewModelScope)
     private var sessionTransitionGeneration = 0L
     private var briefReadStateScope: String? = null
@@ -139,9 +139,13 @@ internal class HolonViewModel(
             if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
         },
     )
-    private val rosterRefresh = RosterRefreshRequest(viewModelScope) {
-        withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() }
-    }
+    private val rosterRefresh = RosterRefreshCoordinator(
+        scope = viewModelScope,
+        read = { withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() } },
+        onLoaded = { (session, roster) -> acceptRoster(session, roster) },
+        onFailure = ::handleRuntimeFailure,
+        onRefreshing = { refreshing -> mutableState.update { it.copy(rosterRefreshing = refreshing) } },
+    )
     private val briefReadStateLoader = BriefReadStateLoader(
         scope = viewModelScope,
         read = {
@@ -801,63 +805,50 @@ internal class HolonViewModel(
         super.onCleared()
     }
 
-    private suspend fun loadRoster(generation: Long = liveSyncGeneration): Pair<ActiveSession, HolonRosterSnapshot> {
-        if (generation != liveSyncGeneration) throw CancellationException("Session changed")
-        return rosterRefresh.load().await().also {
-            if (generation != liveSyncGeneration) throw CancellationException("Session changed")
-        }
+    fun refresh(showProgress: Boolean = true) {
+        if (!foreground || state.value.phase != AppPhase.Ready) return
+        refreshConversationOnRoster = true
+        if (showProgress) mutableState.update { it.copy(error = null) }
+        rosterRefresh.request(showProgress)
     }
 
-    fun refresh(showProgress: Boolean = true) {
-        if (state.value.phase != AppPhase.Ready) return
-        if (refreshJob?.isActive == true) return
+    private fun acceptRoster(session: ActiveSession, roster: HolonRosterSnapshot) {
         val generation = liveSyncGeneration
-        if (showProgress) mutableState.update { it.copy(busy = true, error = null) }
-        refreshJob = viewModelScope.launch {
+        val refreshConversation = refreshConversationOnRoster || !state.value.online || state.value.session?.isOffline == true
+        refreshConversationOnRoster = false
+        mutableState.update {
+            val scopeChanged = it.session?.scopeKey != session.scopeKey
+            it.copy(
+                session = session,
+                agents = roster.agents,
+                briefReadStates = if (scopeChanged) emptyMap() else it.briefReadStates,
+                briefReadStatesLoaded = if (scopeChanged) false else it.briefReadStatesLoaded,
+                readBriefIds = if (scopeChanged) emptyMap() else it.readBriefIds,
+                readBriefsLoaded = if (scopeChanged) false else it.readBriefsLoaded,
+                online = true,
+                lastSyncedAt = System.currentTimeMillis(),
+                error = null,
+                statusMessage = null,
+            )
+        }
+        loadBriefReadStates()
+        startLiveSync(roster.agents, roster.eventLogEpoch)
+        if (refreshConversation) state.value.selectedAgent?.let(::openAgent)
+        viewModelScope.launch {
             runCatching {
-                loadRoster(generation)
-            }.onSuccess { (session, roster) ->
+                withContext(Dispatchers.IO) { repository.retryOutbox() }
+            }.onSuccess {
                 if (generation != liveSyncGeneration) return@onSuccess
-                mutableState.update {
-                    val scopeChanged = it.session?.scopeKey != session.scopeKey
-                    it.copy(
-                        session = session,
-                        agents = roster.agents,
-                        briefReadStates = if (scopeChanged) emptyMap() else it.briefReadStates,
-                        briefReadStatesLoaded = if (scopeChanged) false else it.briefReadStatesLoaded,
-                        readBriefIds = if (scopeChanged) emptyMap() else it.readBriefIds,
-                        readBriefsLoaded = if (scopeChanged) false else it.readBriefsLoaded,
-                        online = true,
-                        lastSyncedAt = System.currentTimeMillis(),
-                        busy = false,
-                        statusMessage = null,
-                    )
-                }
-                loadBriefReadStates()
-                startLiveSync(roster.agents, roster.eventLogEpoch)
-                state.value.selectedAgent?.let(::openAgent)
-                viewModelScope.launch {
-                    runCatching {
-                        withContext(Dispatchers.IO) { repository.retryOutbox() }
-                    }.onSuccess {
-                        state.value.selectedAgent?.id?.let { agentId ->
-                            runCatching { withContext(Dispatchers.IO) { repository.outbox(agentId) } }
-                                .onSuccess { messages ->
-                                    if (state.value.selectedAgent?.id == agentId) {
-                                        mutableState.update { it.copy(outbox = messages) }
-                                    }
-                                }
+                state.value.selectedAgent?.id?.let { agentId ->
+                    runCatching { withContext(Dispatchers.IO) { repository.outbox(agentId) } }
+                        .onSuccess { messages ->
+                            if (generation == liveSyncGeneration && state.value.selectedAgent?.id == agentId) {
+                                mutableState.update { it.copy(outbox = messages) }
+                            }
                         }
-                    }.onFailure(::handleRuntimeFailure)
                 }
-            }.onFailure { error ->
-                if (generation != liveSyncGeneration) return@onFailure
-                handleRuntimeFailure(error)
-                if (state.value.phase == AppPhase.Ready && foreground) {
-                    state.value.selectedAgent?.let { agent ->
-                        startConversationStream(agent, state.value.conversation?.snapshotCursor)
-                    }
-                }
+            }.onFailure {
+                if (generation == liveSyncGeneration) handleRuntimeFailure(it)
             }
         }
     }
@@ -889,6 +880,8 @@ internal class HolonViewModel(
 
 
     private fun stopLiveSync() {
+        rosterRefresh.reset()
+        refreshConversationOnRoster = false
         operatorPreviewLoader.reset()
         briefReadStateWriter.reset()
         taskRefreshJob?.cancel()
@@ -956,8 +949,6 @@ internal class HolonViewModel(
         stopLiveSync()
         conversationJob?.cancel()
         conversationJob = null
-        refreshJob?.cancel()
-        refreshJob = null
         briefReadStateLoader.reset()
         briefReadStateScope = null
         rosterRefresh.reset()
@@ -971,28 +962,9 @@ internal class HolonViewModel(
         liveRosterRefreshJob =
             viewModelScope.launch {
                 delay(250)
-                runCatching { loadRoster(generation) }
-                    .onSuccess { (session, roster) ->
-                        if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) {
-                            return@onSuccess
-                        }
-                        mutableState.update {
-                            it.copy(
-                                session = session,
-                                agents = roster.agents,
-                                online = true,
-                                lastSyncedAt = System.currentTimeMillis(),
-                                statusMessage = null,
-                            )
-                        }
-                        loadBriefReadStates()
-                        startLiveSync(roster.agents, roster.eventLogEpoch, generation)
-                    }
-                    .onFailure { error ->
-                        if (isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) {
-                            handleRuntimeFailure(error)
-                        }
-                    }
+                if (isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) {
+                    rosterRefresh.request()
+                }
             }
     }
 
@@ -2569,6 +2541,7 @@ internal class HolonViewModel(
                     statusMessage = TRANSIENT_NETWORK_STATUS_MESSAGE,
                 )
             }
+            if (foreground && state.value.phase == AppPhase.Ready) rosterRefresh.request()
             return
         }
         mutableState.update {

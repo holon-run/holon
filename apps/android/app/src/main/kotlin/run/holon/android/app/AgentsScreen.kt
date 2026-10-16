@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.background
@@ -28,6 +29,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -40,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +59,7 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
     var searchOpen by rememberSaveable { mutableStateOf(state.search.isNotBlank()) }
     var networkChooser by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val refresh: () -> Unit = { if (!state.rosterRefreshing) viewModel.refresh() }
     val attentionCount = state.agents.count { it.needsReply() }
     val unreadCount =
         if (state.briefReadStatesLoaded) state.agents.count { it.unreadCount(state.briefReadStates) > 0 }
@@ -92,6 +96,9 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = refresh, enabled = !state.rosterRefreshing) {
+                        Icon(Icons.Default.Refresh, contentDescription = ui("刷新"))
+                    }
                     IconButton(onClick = {
                         if (searchOpen) viewModel.setSearch("")
                         searchOpen = !searchOpen
@@ -107,7 +114,19 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.statusMessage?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
-            state.error?.let { ErrorBanner(it, null) }
+            if (state.error != null || !state.online) {
+                Surface(
+                    color = if (state.error != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = if (state.error != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
+                    shape = RoundedCornerShape(9.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(ui(state.error ?: "离线缓存"), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = refresh, enabled = !state.rosterRefreshing) { Text(ui("重试")) }
+                    }
+                }
+            }
             AnimatedVisibility(searchOpen) {
                 OutlinedTextField(
                     value = state.search,
@@ -141,34 +160,40 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                     )
                 }
             }
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                items(filtered, key = AgentSummary::id) { agent ->
-                    AgentConversationRow(
-                        agent,
-                        operatorPreview = state.operatorPreviews[agent.id],
-                        unreadCount =
-                            if (state.briefReadStatesLoaded) agent.unreadCount(state.briefReadStates)
-                            else if (state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)) 1
-                            else 0,
-                        onClick = { viewModel.openAgent(agent) },
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                }
-                if (filtered.isEmpty()) item {
-                    when {
-                        state.agents.isEmpty() -> EmptyPage(ui("还没有 Agent"), ui("连接成功后，Agent 会显示在这里。"))
-                        filter == AgentFilter.Attention && attentionCount == 0 ->
-                            EmptyPage(ui("目前没有需要回应的 Agent"), ui("选择“全部”查看其他 Agent。"))
-                        filter == AgentFilter.NewResults && unreadCount == 0 ->
-                            EmptyPage(ui("目前没有未读结果"), ui("选择“全部”查看其他 Agent。"))
-                        filter == AgentFilter.Active && activeCount == 0 ->
-                            EmptyPage(ui("目前没有工作中的 Agent"), ui("选择“全部”查看其他 Agent。"))
-                        state.search.isNotBlank() ->
-                            EmptyPage(ui("没有匹配的 Agent"), ui("调整搜索词或筛选条件后再试。"))
-                        else -> EmptyPage(ui("这个筛选暂无 Agent"), ui("选择“全部”查看所有 Agent。"))
+            PullToRefreshBox(
+                isRefreshing = state.rosterRefreshing,
+                onRefresh = refresh,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+            ) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    items(filtered, key = AgentSummary::id) { agent ->
+                        AgentConversationRow(
+                            agent,
+                            operatorPreview = state.operatorPreviews[agent.id],
+                            unreadCount =
+                                if (state.briefReadStatesLoaded) agent.unreadCount(state.briefReadStates)
+                                else if (state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)) 1
+                                else 0,
+                            onClick = { viewModel.openAgent(agent) },
+                        )
+                        HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                     }
+                    if (filtered.isEmpty()) item {
+                        when {
+                            state.agents.isEmpty() -> EmptyPage(ui("还没有 Agent"), ui("连接成功后，Agent 会显示在这里。"))
+                            filter == AgentFilter.Attention && attentionCount == 0 ->
+                                EmptyPage(ui("目前没有需要回应的 Agent"), ui("选择“全部”查看其他 Agent。"))
+                            filter == AgentFilter.NewResults && unreadCount == 0 ->
+                                EmptyPage(ui("目前没有未读结果"), ui("选择“全部”查看其他 Agent。"))
+                            filter == AgentFilter.Active && activeCount == 0 ->
+                                EmptyPage(ui("目前没有工作中的 Agent"), ui("选择“全部”查看其他 Agent。"))
+                            state.search.isNotBlank() ->
+                                EmptyPage(ui("没有匹配的 Agent"), ui("调整搜索词或筛选条件后再试。"))
+                            else -> EmptyPage(ui("这个筛选暂无 Agent"), ui("选择“全部”查看所有 Agent。"))
+                        }
+                    }
+                    item { Spacer(Modifier.height(20.dp)) }
                 }
-                item { Spacer(Modifier.height(20.dp)) }
             }
         }
     }

@@ -3,39 +3,12 @@ package run.holon.android.app
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import run.holon.android.sdk.HolonBriefReadState
-
-/** UI-dispatcher owned. Callers share active work without owning its cancellation. */
-internal class RosterRefreshRequest<T>(
-    private val scope: CoroutineScope,
-    private val read: suspend () -> T,
-) {
-    private val lock = Any()
-    private var request: Deferred<T>? = null
-
-    fun load(): Deferred<T> =
-        synchronized(lock) {
-            request?.takeIf { it.isActive }?.let { return@synchronized it }
-            scope.async(start = CoroutineStart.LAZY) { read() }.also {
-                request = it
-                it.start()
-            }
-        }
-
-    fun reset() {
-        synchronized(lock) {
-            request?.cancel()
-            request = null
-        }
-    }
-}
 
 internal sealed interface BriefReadSnapshot {
     data class Server(val states: Map<String, HolonBriefReadState>) : BriefReadSnapshot
