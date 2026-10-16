@@ -181,6 +181,34 @@ def category_name(category, locale):
     return CATEGORIES[category][locale == "zh-CN"]
 
 
+def category_icon(category):
+    paths = {
+        "engineering": '<path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/>',
+        "content": '<path d="M12 5C8 2 4 3 2 4v15c3-2 7-2 10 0 3-2 7-2 10 0V4c-2-1-6-2-10 1Zm0 0v14"/>',
+        "productivity": '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V2h6v2m-7 9 3 3 5-6"/>',
+        "operations": '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+        "other": '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+    }
+    return (
+        f'<span class="template-icon template-icon--{category}">'
+        '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" '
+        'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" '
+        f'stroke-linejoin="round" aria-hidden="true" focusable="false">{paths[category]}</svg></span>'
+    )
+
+
+def card_heading(entry, locale, href=None):
+    label = escape(entry["localized"][locale]["name"])
+    if href:
+        label = f'<a href="{href}">{label}</a>'
+    return (
+        '<div class="template-card-top">'
+        f'{category_icon(entry["category"])}'
+        f'<span class="template-category">{escape(category_name(entry["category"], locale))}</span></div>'
+        f'<h3>{label}</h3>'
+    )
+
+
 def render_home(catalog, locale):
     zh = locale == "zh-CN"
     base = "/zh-CN" if zh else ""
@@ -193,59 +221,91 @@ def render_home(catalog, locale):
     for entry in featured:
         label = entry["localized"][locale]
         count = len(entry["skills"])
-        skills = f"{count} 个声明技能引用" if zh else f"{count} declared skill references"
+        skills = f"{count} 个技能引用" if zh else f"{count} skill references"
+        href = f'{base}/templates/#{entry["id"]}'
         cards.append(
             '<article class="template-card">'
-            f'<h3><a href="{base}/templates/#{entry["id"]}">{escape(label["name"])}</a></h3>'
-            f'<p>{escape(label["summary"])}</p>'
-            f'<p class="template-meta">{escape(category_name(entry["category"], locale))} · {skills}</p>'
+            f'{card_heading(entry, locale, href)}'
+            f'<p class="template-summary">{escape(label["summary"])}</p>'
+            f'<p class="template-card-footer"><span>{skills}</span><span aria-hidden="true">↗</span></p>'
             '</article>'
         )
     all_label = f'查看全部 {len(catalog["templates"])} 个模板' if zh else f'Explore all {len(catalog["templates"])} templates'
     how = "如何使用模板" if zh else "How to use templates"
     return (
         f'<section class="home-templates" aria-labelledby="agent-templates">\n'
-        f'<h2 id="agent-templates">{title}</h2>\n<p>{lede}</p>\n'
+        '<div class="template-section-heading">'
+        f'<div><h2 id="agent-templates">{title}</h2>\n<p>{lede}</p></div>'
+        f'<a class="template-browse" href="{base}/templates/">{all_label} <span aria-hidden="true">→</span></a></div>\n'
         '<div class="template-grid">\n' + "\n".join(cards) + '\n</div>\n'
-        f'<div class="home-actions"><a class="home-button home-button--primary" href="{base}/templates/">{all_label}</a>'
-        f'<a class="home-button home-button--quiet" href="{base}/reference/agent-templates">{how}</a></div>\n'
+        f'<a class="template-guide" href="{base}/reference/agent-templates">{how} →</a>\n'
         '</section>'
     )
 
 
 def render_directory(catalog, locale):
     zh = locale == "zh-CN"
+    base = "/zh-CN" if zh else ""
     title = "Agent 模板" if zh else "Agent Templates"
-    summary = "官方长期角色与声明的技能引用。" if zh else "Official long-lived roles and their declared skill references."
+    summary = ("找到合适的长期角色，让 Agent 在明确权限内持续跟进。" if zh else
+               "Find a long-lived role to follow through within the permissions you set.")
     notice = ("这是构建快照，不是 GitHub 实时列表。创建前请安装 Holon，并检查角色契约、技能依赖、环境与权限；展示不代表已安装或已配置。固定模板 SHA 不会固定未指定 ref 的外部技能。" if zh else
               "This is a build snapshot, not a live GitHub listing. Install Holon and review the role contract, skill dependencies, environment and permissions before creating an agent. Listing does not mean installed or configured. Pinning a template SHA does not pin external skills without a ref.")
     result = [
-        f"---\ntitle: {title}\nsummary: {summary}\n---\n\n# {title}\n\n{notice}\n",
-        f'<p class="template-source">{"来源" if zh else "Source"}: <a href="{GITHUB}/tree/{catalog["source"]["sha"]}/agent_templates">holon-run/holon</a> · <code>{catalog["source"]["sha"]}</code> · {len(catalog["templates"])} templates</p>',
-        '<nav aria-label="Template categories">' + " · ".join(
-            f'<a href="#{key}">{escape(category_name(key, locale))}</a>'
+        f"---\ntitle: {title}\nsummary: {summary}\n---\n",
+        '<div class="template-directory">',
+        '<header class="template-directory-heading">'
+        f'<p class="template-eyebrow">{"从一个角色开始" if zh else "A ROLE TO START WITH"}</p>'
+        f'<h1>{title}</h1><p>{summary}</p>'
+        f'<a class="template-guide" href="{base}/reference/agent-templates">{"如何使用模板" if zh else "How to use templates"} →</a></header>',
+        '<div class="template-toolbar">',
+        '<div class="template-search" data-template-search hidden>'
+        f'<label for="template-query">{"搜索角色" if zh else "Search roles"}</label>'
+        f'<input id="template-query" type="search" placeholder="{"搜索名称、职责或技能…" if zh else "Search names, roles or skills…"}" '
+        'autocomplete="off" aria-controls="template-catalog"></div>',
+        f'<nav class="template-filters" aria-label="{"模板分类" if zh else "Template categories"}">'
+        f'<a href="#template-catalog" data-template-filter="all" aria-current="true">{"全部" if zh else "All"} <span>{len(catalog["templates"])}</span></a>' + "".join(
+            f'<a href="#{key}" data-template-filter="{key}">{escape(category_name(key, locale))}</a>'
             for key in CATEGORIES if any(e["category"] == key for e in catalog["templates"])
-        ) + '</nav>\n<div class="template-catalog">',
+        ) + '</nav></div>',
+        '<p class="template-results" role="status" data-template-results hidden></p>',
+        '<div class="template-catalog" id="template-catalog">',
     ]
     for category in CATEGORIES:
         entries = [e for e in catalog["templates"] if e["category"] == category]
         if not entries:
             continue
-        result.append(f'<h2 id="{category}">{escape(category_name(category, locale))}</h2>')
+        result.append(
+            f'<section class="template-group" id="{category}" data-template-group>'
+            f'<h2>{escape(category_name(category, locale))} <span>{len(entries)}</span></h2>'
+            '<div class="template-grid">'
+        )
         for entry in entries:
             label = entry["localized"][locale]
             command = f'holon agent create {shlex.quote(entry["id"])} --template {shlex.quote(entry["createSelector"])}'
             result.extend([
                 f'<article class="template-entry" id="{entry["id"]}">',
-                f'<h3>{escape(label["name"])}</h3><p>{escape(label["summary"])}</p>',
-                f'<p class="template-meta">Holon <code>{escape(entry["compatibility"]["holon"])}</code> · {len(entry["skills"])} {"个声明技能引用" if zh else "declared skill references"}</p>',
+                f'<div class="template-overview" data-template-category="{category}">'
+                f'{card_heading(entry, locale)}'
+                f'<p class="template-summary">{escape(label["summary"])}</p>'
+                f'<p class="template-card-footer">{len(entry["skills"])} {"个技能引用" if zh else "skill references"}</p></div>',
+                '<details class="template-details">'
+                f'<summary>{"查看详情" if zh else "View details"}</summary>'
+                '<div class="template-details-body">'
+                f'<p>{escape(label["summary"])}</p>'
+                f'<p class="template-meta">Holon <code>{escape(entry["compatibility"]["holon"])}</code></p>',
                 f'<p><a href="{entry["sourceUrl"]}">{"模板源码（快照）" if zh else "Template source (snapshot)"}</a> · '
                 f'<a href="{entry["contractUrl"]}">AGENTS.md</a> · '
                 f'<a href="{entry["mainUrl"]}">{"跟随 main" if zh else "Follow main"}</a></p>',
+                f'<h4>{"创建 Agent" if zh else "Create an agent"}</h4>'
+                f'<p class="template-meta">{"创建前请安装 Holon，并检查角色契约、技能依赖、环境与权限。展示不代表已安装或已配置。" if zh else "Before creating, install Holon and check the role contract, skills, environment and permissions. Listing does not mean installed or configured."}</p>',
                 f'<pre><code>{escape(command)}</code></pre>',
+                '<div class="template-copy-row">'
+                f'<button type="button" data-template-copy hidden>{"复制命令" if zh else "Copy command"}</button>'
+                '<span class="template-copy-status" role="status"></span></div>',
             ])
             if entry["skills"]:
-                result.append('<ul>')
+                result.append(f'<h4>{"声明的技能引用" if zh else "Declared skill references"}</h4><ul class="template-skills">')
                 for skill in entry["skills"]:
                     ref = skill.get("ref")
                     note = (f"ref: {ref}" if ref else
@@ -253,8 +313,19 @@ def render_directory(catalog, locale):
                             ("跟随默认引用" if zh else "follows default reference"))
                     result.append(f'<li><code>{escape(skill["reference"])}</code> — {escape(note)}</li>')
                 result.append('</ul>')
-            result.append('</article>')
-    result.append('</div>\n')
+            result.append('</div></details></article>')
+        result.append('</div></section>')
+    result.extend([
+        '</div>',
+        '<p class="template-empty" data-template-empty hidden>'
+        f'{"没有匹配的角色，试试其他关键词或分类。" if zh else "No matching roles. Try another search or category."}</p>',
+        '<details class="template-source">'
+        f'<summary>{"关于目录与构建快照" if zh else "About this catalog and snapshot"}</summary>'
+        f'<p>{notice}</p><p>{"来源" if zh else "Source"}: '
+        f'<a href="{GITHUB}/tree/{catalog["source"]["sha"]}/agent_templates">holon-run/holon</a> · '
+        f'<code>{catalog["source"]["sha"]}</code></p></details>',
+        '</div>\n<script src="/assets/template-catalog.js" defer></script>\n',
+    ])
     # Separate HTML blocks so Markdown search chunking can split role content.
     return "\n\n".join(result)
 

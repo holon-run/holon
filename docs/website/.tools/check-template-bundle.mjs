@@ -71,6 +71,11 @@ for (const prefix of ["", "/zh-CN"]) {
     catalog.templates.length,
   );
   assert.ok(directory.includes(catalog.source.sha), "directory must show source SHA");
+  assert.ok(directory.includes('src="/assets/template-catalog.js"'),
+    "directory must load progressive enhancement from a CSP-compatible asset");
+  assert.equal((directory.match(/class="template-details"/g) ?? []).length,
+    catalog.templates.length, "each role must retain native expandable details");
+  assert.ok(directory.includes('id="template-query"'), "directory must include search control");
   for (const entry of catalog.templates) {
     assert.ok(directory.includes(`id="${entry.id}"`), `${locale}: missing ${entry.id}`);
     assert.ok(directoryText.includes(entry.localized[locale].name), `${locale}: missing name for ${entry.id}`);
@@ -100,6 +105,9 @@ for (const prefix of ["", "/zh-CN"]) {
 }
 const served = JSON.parse(await fetchText("/assets/agent-templates.json", "application/json"));
 assert.deepEqual(served, catalog, "public catalog must be the same staged snapshot");
+assert.equal(await fetchText("/assets/template-catalog.js", "text/javascript"),
+  await readFile(path.join(here, "../assets/template-catalog.js"), "utf8"),
+  "gallery interaction script must be served unchanged");
 assert.ok(checked.has("/reference/agent-templates"), "English usage entry point must resolve");
 assert.ok(checked.has("/zh-CN/reference/agent-templates"), "Chinese usage entry point must resolve");
 console.log(`Template bundle: bilingual homepages, ${catalog.templates.length} roles, links, anchors, search and JSON verified at ${catalog.source.sha}.`);
