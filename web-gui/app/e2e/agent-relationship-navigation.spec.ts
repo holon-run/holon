@@ -85,7 +85,8 @@ for (const supervised of [false, true]) {
 test("missing agent state stays centered with a retry action", async ({ page, context }, info) => {
   await context.addCookies([{ name: "holon_e2e_session", value: sessionFor(info), domain: "127.0.0.1", path: "/" }]);
   await page.goto("/agents/removed-agent/conversation");
-  await expect(page.getByText("Agent not found", { exact: true })).toBeVisible();
+  await expect(page.locator(".conversation-access-state").getByText("Agent not found", { exact: true })).toBeVisible();
+  await expect(page.locator(".side-panel").getByText("Agent not found", { exact: true })).toHaveCount(1);
   await expect(page.locator(".conversation-access-state")).toHaveCSS("display", "flex");
   await expect(page.locator(".conversation-access-state").getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Back to parent agent", exact: true })).toHaveCount(0);
