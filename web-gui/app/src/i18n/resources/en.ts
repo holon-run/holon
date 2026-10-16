@@ -968,6 +968,7 @@ const en = {
     openGithub: "Open Holon on GitHub",
   },
   rightPanel: {
+    loadingAgentInformation: "Loading agent information…",
     recentCompletedTasks: "Recently completed (up to {{count}})",
     refreshRecentTasks: "Refresh recent tasks",
     loadingRecentTasks: "Loading recent tasks…",

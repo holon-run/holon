@@ -969,6 +969,7 @@ const zh: Record<string, any> = {
     openGithub: "在 GitHub 上打开 Holon",
   },
   rightPanel: {
+    loadingAgentInformation: "正在加载智能体信息…",
     recentCompletedTasks: "最近完成（最多 {{count}} 条）",
     refreshRecentTasks: "刷新最近任务",
     loadingRecentTasks: "正在加载最近任务…",

@@ -5115,6 +5115,25 @@ code {
   gap: 8px;
 }
 
+.agent-overview-loading-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.agent-overview-skeleton {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-overview-skeleton .skeleton-line {
+  height: 12px;
+}
+
+.agent-overview-skeleton .skeleton-line.short {
+  height: 16px;
+}
+
 .context-card {
   padding: 14px;
 }
