@@ -53,12 +53,9 @@ impl DaemonServeProfile {
             bail!("daemon serve profile must contain exactly one valid listen or port");
         }
         if let Some(listen) = &self.listen {
-            let addr: std::net::SocketAddr = listen
-                .parse()
+            listen
+                .parse::<std::net::SocketAddr>()
                 .context("invalid daemon serve profile listen address")?;
-            if addr.port() == 0 {
-                bail!("daemon serve profile listen port must not be zero");
-            }
         }
         if self.host.as_ref().is_some_and(|host| {
             host.is_empty()

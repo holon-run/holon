@@ -84,6 +84,15 @@ fn serve_profile_roundtrip_is_independent_of_runtime_cleanup() {
     assert!(!super::serve_profile_path(&config).starts_with(config.run_dir()));
 }
 
+#[test]
+fn serve_profile_roundtrip_preserves_ephemeral_port_intent() {
+    let config = test_config();
+    let mut profile = serve_profile_fixture();
+    profile.listen = Some("127.0.0.1:0".into());
+    super::persist_serve_profile(&config, &profile).unwrap();
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+}
+
 #[cfg(unix)]
 #[test]
 fn serve_profile_atomic_replacement_has_private_permissions() {

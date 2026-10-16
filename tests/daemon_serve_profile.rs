@@ -7,7 +7,7 @@
 
 use std::{
     fs::{self, File},
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener, TcpStream},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -362,6 +362,46 @@ fn assert_profile_options(profile: &Value, address: &str, home: &Path) {
         json!({"mode": "token_file", "path": home.join("control.token")}),
         "token-file path must also be independent of the next command's cwd"
     );
+}
+
+#[test]
+fn ephemeral_port_intent_survives_foreground_start_and_restart() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let assert_listener = |path: &Path| {
+        let log = fs::read_to_string(path).unwrap();
+        let address: SocketAddr = log
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("Holon listening on "))
+            .unwrap_or_else(|| panic!("missing bound listener address:\n{log}"))
+            .parse()
+            .unwrap();
+        assert_ne!(address.port(), 0);
+        TcpStream::connect_timeout(&address, Duration::from_secs(5))
+            .expect("ephemeral listener must be reachable");
+    };
+    let foreground = fixture.foreground(&[
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--token-file",
+        "control.token",
+    ]);
+    let original = fixture.profile();
+    assert_eq!(original["listen"], "127.0.0.1:0", "{original}");
+    assert!(original["port"].is_null(), "{original}");
+    let running = fixture.success(&["daemon", "status"]);
+    assert_eq!(running["healthy"], true, "{running}");
+    assert_listener(&fixture.processes[foreground].stdout);
+    fixture.stop();
+    for command in ["start", "restart"] {
+        let running = fixture.success(&["daemon", command]);
+        assert_eq!(running["healthy"], true, "{running}");
+        assert_listener(&fixture.path("run/daemon.log"));
+        assert_eq!(fixture.profile(), original);
+    }
+    fixture.stop();
 }
 
 #[test]

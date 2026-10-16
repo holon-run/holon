@@ -36,6 +36,9 @@ changes preserve networking, web assets and desktop settings.
 
 Save the complete resolved intent, not only this invocation's patch. Preserve
 binding semantics rather than flattening every request into a `listen` string.
+`--listen HOST:0` remains valid for an OS-assigned ephemeral listener. Persist
+that requested address, not the assigned port, so subsequent launches retain
+the intent. The existing `--port` range remains 1–65535.
 Resolve relative token-file and web-dist paths against the accepting process's
 working directory. Home, socket, executable identity and credentials are not
 inherited from the profile.

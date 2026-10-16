@@ -1071,13 +1071,10 @@ fn resolve_daemon_serve_plan_with_inputs(
     config.http_addr = "127.0.0.1:7878".into();
     config.control_token = None;
     let advertise = apply_serve_options(&mut config, options.clone())?;
-    let listener: SocketAddr = config
+    let _: SocketAddr = config
         .http_addr
         .parse()
         .context("invalid serve listen address")?;
-    if listener.port() == 0 {
-        anyhow::bail!("serve listen port must not be zero");
-    }
     if config.control_auth_mode == ControlAuthMode::Required && config.control_token.is_none() {
         anyhow::bail!(
             "required daemon authentication needs --token, --token-file, or HOLON_CONTROL_TOKEN"
@@ -1597,6 +1594,30 @@ mod tests {
             .serve_args
             .iter()
             .any(|arg| arg == "second-secret"));
+    }
+
+    #[test]
+    fn serve_profile_preserves_ephemeral_port_intent() {
+        let args = ["--listen", "127.0.0.1:0"];
+        for initial in [
+            serve_profile_plan(&args, &[], None),
+            serve_profile_plan(&[], &args, None),
+        ] {
+            let initial = initial.unwrap();
+            assert_eq!(initial.config.http_addr, "127.0.0.1:0");
+            assert_eq!(initial.profile.listen.as_deref(), Some("127.0.0.1:0"));
+            assert_eq!(initial.profile.port, None);
+            let encoded = serde_json::to_vec(&initial.profile).unwrap();
+            let saved: DaemonServeProfile = serde_json::from_slice(&encoded).unwrap();
+            saved.validate().unwrap();
+            let inherited = serve_profile_plan(&[], &[], Some(&saved)).unwrap();
+            assert_eq!(inherited.config.http_addr, "127.0.0.1:0");
+            assert_eq!(inherited.profile, initial.profile);
+            let reparsed = parse_serve_options_from_args(&inherited.serve_args).unwrap();
+            assert_eq!(reparsed.listen, initial.profile.listen);
+            assert_eq!(reparsed.port, initial.profile.port);
+        }
+        assert!(serve_profile_plan(&["--port", "0"], &[], None).is_err());
     }
 
     #[test]
