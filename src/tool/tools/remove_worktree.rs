@@ -34,7 +34,7 @@ pub(crate) struct RemoveWorktreeArgs {
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
-        family: ToolCapabilityFamily::AuthorityExpanding,
+        family: ToolCapabilityFamily::LocalEnvironment,
         spec: typed_spec::<RemoveWorktreeArgs>(
             NAME,
             include_str!("../tool_descriptions/remove_worktree.md"),

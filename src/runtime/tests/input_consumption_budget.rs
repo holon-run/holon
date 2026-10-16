@@ -86,8 +86,7 @@ async fn build(
     let state = runtime.agent_state().await.unwrap();
     let identity = runtime.agent_identity_view().await.unwrap();
     let execution = runtime.execution_snapshot().await.unwrap();
-    let (provider, tools, surface, _, _) =
-        runtime.provider_tool_selection(&identity).await.unwrap();
+    let (provider, tools, surface, _, _) = runtime.provider_tool_selection().await.unwrap();
     let skills = runtime
         .skills_runtime_view_for_state(&state, &identity)
         .await

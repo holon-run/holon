@@ -207,7 +207,7 @@ impl RuntimeHandle {
             let state = guard.state.clone();
             drop(guard);
             let (provider, available_tools, apply_patch_surface, _, _) = self
-                .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
+                .provider_tool_selection_for_turn(model_selection.fallback_model())
                 .await?;
             let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
@@ -465,30 +465,25 @@ impl RuntimeHandle {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn filtered_tool_specs(
-        &self,
-        identity: &AgentIdentityView,
-    ) -> Result<Vec<crate::tool::ToolSpec>> {
-        self.filtered_tool_specs_for_apply_patch_surface(
-            identity,
-            ApplyPatchSurface::UnifiedDiffJson,
-        )
+    pub(super) async fn filtered_tool_specs(&self) -> Result<Vec<crate::tool::ToolSpec>> {
+        self.filtered_tool_specs_for_apply_patch_surface(ApplyPatchSurface::UnifiedDiffJson)
+            .await
     }
 
-    fn filtered_tool_specs_for_apply_patch_surface(
+    async fn filtered_tool_specs_for_apply_patch_surface(
         &self,
-        identity: &AgentIdentityView,
         apply_patch_surface: ApplyPatchSurface,
     ) -> Result<Vec<crate::tool::ToolSpec>> {
+        let capability_policy = self.agent_capability_policy().await?;
         Ok(self
             .inner
             .tools
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
             .into_iter()
             .filter(|(family, _)| {
-                identity
-                    .profile_preset
-                    .allows_tool_capability_family(*family)
+                capability_policy
+                    .as_ref()
+                    .is_none_or(|policy| policy.allows(*family))
             })
             .filter(|(_, tool)| {
                 tool.name != crate::tool::names::X_SEARCH || self.x_search_config().is_some()
@@ -536,7 +531,7 @@ impl RuntimeHandle {
             .external_triggers()
             .latest(&default_external_ingress.external_trigger_id)?;
         let (provider, available_tools, apply_patch_surface, _, _) =
-            self.provider_tool_selection(&identity).await?;
+            self.provider_tool_selection().await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
@@ -659,7 +654,6 @@ impl RuntimeHandle {
 
     pub(super) async fn provider_tool_selection(
         &self,
-        identity: &AgentIdentityView,
     ) -> Result<(
         Arc<dyn AgentProvider>,
         Vec<ToolSpec>,
@@ -667,12 +661,11 @@ impl RuntimeHandle {
         Option<ProviderNativeWebSearchRequest>,
         BuiltinWebSearchSelectionDiagnostics,
     )> {
-        self.provider_tool_selection_for_turn(identity, None).await
+        self.provider_tool_selection_for_turn(None).await
     }
 
     pub(super) async fn provider_tool_selection_for_turn(
         &self,
-        identity: &AgentIdentityView,
         fallback_model: Option<&ModelRouteRef>,
     ) -> Result<(
         Arc<dyn AgentProvider>,
@@ -695,7 +688,8 @@ impl RuntimeHandle {
             self.apply_patch_surface_for_turn(&guard.state, fallback_model)
         };
         let available_tools = filter_native_web_search_tools(
-            self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
+            self.filtered_tool_specs_for_apply_patch_surface(apply_patch_surface)
+                .await?,
             native_web_search.is_some(),
         );
         Ok((

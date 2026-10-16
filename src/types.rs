@@ -372,6 +372,7 @@ impl AgentProfilePreset {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn allows_tool_capability_family(self, family: ToolCapabilityFamily) -> bool {
         match self {
             Self::PrivateChild => matches!(

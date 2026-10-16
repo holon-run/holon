@@ -1973,7 +1973,6 @@ impl TurnExecution<'_> {
                 runtime.model_state_for_turn(&guard.state, model_selection.fallback_model()),
             )
         };
-        let identity = runtime.agent_identity_view().await?;
         let time_timezone = runtime.current_time_timezone().await?;
         let (
             provider,
@@ -1982,7 +1981,7 @@ impl TurnExecution<'_> {
             native_web_search,
             builtin_web_search_selection,
         ) = runtime
-            .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
+            .provider_tool_selection_for_turn(model_selection.fallback_model())
             .await?;
         let configured_selector =
             configured_history_selector(agent_id, &turn_model_state.effective_model);
