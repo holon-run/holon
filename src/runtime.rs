@@ -461,6 +461,9 @@ struct RuntimeInner {
     #[cfg(test)]
     task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
+    task_transition_snapshot_pause:
+        StdMutex<Option<Arc<task_state_reducer::TaskTransitionSnapshotPause>>>,
+    #[cfg(test)]
     terminal_task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,

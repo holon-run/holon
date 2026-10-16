@@ -778,6 +778,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 task_transition_conflicts_remaining: AtomicUsize::new(0),
                 #[cfg(test)]
+                task_transition_snapshot_pause: StdMutex::new(None),
+                #[cfg(test)]
                 terminal_task_transition_conflicts_remaining: AtomicUsize::new(0),
                 #[cfg(test)]
                 fail_after_next_runtime_claim: AtomicBool::new(false),

@@ -4,6 +4,18 @@ use sha2::{Digest, Sha256};
 
 const TASK_TRANSITION_MAX_ATTEMPTS: usize = 3;
 
+#[cfg(test)]
+pub(super) struct TaskTransitionSnapshotPause {
+    task_id: String,
+    snapshots: tokio::sync::mpsc::UnboundedSender<(
+        Option<TaskRecord>,
+        TaskRecord,
+        tokio::sync::oneshot::Sender<()>,
+    )>,
+    audit_events: tokio::sync::mpsc::UnboundedSender<AuditEvent>,
+    commits: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
 #[derive(Debug)]
 pub(super) struct TaskTransitionRetryExhausted {
     source: anyhow::Error,
@@ -148,6 +160,13 @@ impl RuntimeHandle {
         emit_event: bool,
     ) -> Result<()> {
         let task = transition.task;
+        let agent_id = self.agent_id().await?;
+        // Serialize the task snapshot with result admission and its commit.
+        let mut agent_guard = if transition.admit_result_message {
+            Some(self.inner.agent.lock().await)
+        } else {
+            None
+        };
         let latest_task = self.inner.runtime_db.tasks().latest(&task.id)?;
         if should_ignore_task_update(latest_task.clone(), task) {
             return Ok(());
@@ -176,12 +195,24 @@ impl RuntimeHandle {
                 .unwrap_or(true)
         };
 
-        let agent_id = self.agent_id().await?;
-        let mut agent_guard = if transition.admit_result_message {
-            Some(self.inner.agent.lock().await)
-        } else {
-            None
-        };
+        #[cfg(test)]
+        let snapshot_pause = self
+            .inner
+            .task_transition_snapshot_pause
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|pause| pause.task_id == task.id);
+        #[cfg(test)]
+        if let Some(pause) = snapshot_pause.as_ref() {
+            let (release, resume) = tokio::sync::oneshot::channel();
+            pause
+                .snapshots
+                .send((latest_task.clone(), persisted_task.clone(), release))
+                .expect("snapshot observer must remain alive");
+            resume.await.expect("snapshot release must remain alive");
+        }
+
         let (mut state, expected_state) = if let Some(guard) = agent_guard.as_ref() {
             (guard.state.clone(), guard.last_persisted_state.clone())
         } else {
@@ -225,6 +256,13 @@ impl RuntimeHandle {
                         .has_event_by_id(&event.id)?;
             }
             if !skip_event {
+                #[cfg(test)]
+                if let Some(pause) = snapshot_pause.as_ref() {
+                    pause
+                        .audit_events
+                        .send(event.clone())
+                        .expect("audit observer must remain alive");
+                }
                 audit_events.push(event);
             }
         }
@@ -365,6 +403,13 @@ impl RuntimeHandle {
                     && is_terminal_task_status(&task.status),
                 fault: self.take_transition_fault(),
             })?;
+        #[cfg(test)]
+        if let Some(pause) = snapshot_pause.as_ref() {
+            pause
+                .commits
+                .send(())
+                .expect("commit observer must remain alive");
+        }
         let mut commit = commit;
         if let (Some(guard), Some(message)) = (
             agent_guard.as_mut(),
@@ -1787,6 +1832,178 @@ mod tests {
             brief.kind == crate::types::BriefKind::Result
                 && brief.text.contains("Task task-1 completed")
         }));
+    }
+
+    #[tokio::test]
+    async fn concurrent_terminal_snapshots_do_not_emit_conflicting_audit_event() {
+        let runtime = runtime();
+        let running = task_with_kind(
+            "task-terminal-race",
+            TaskStatus::Running,
+            false,
+            TaskKind::AgentMessageWait,
+        );
+        runtime
+            .persist_task_transition(&running, "task_created")
+            .await
+            .unwrap();
+        let mut message = task_result_message(&running.id);
+        // Same result-message identity as monitor/reconciliation completion.
+        message.id = format!("message:agent-message-wait:{}", running.id);
+        let mut first = running.clone();
+        first.status = TaskStatus::Completed;
+        first.parent_message_id = Some(message.id.clone());
+        first.updated_at += chrono::Duration::seconds(1);
+        let mut second = first.clone();
+        // Timestamp is deliberately distinct, not dependent on clock resolution.
+        second.updated_at += chrono::Duration::milliseconds(1);
+
+        let (snapshots, mut observed_snapshots) = tokio::sync::mpsc::unbounded_channel();
+        let (audit_events, mut observed_events) = tokio::sync::mpsc::unbounded_channel();
+        let (commits, mut observed_commits) = tokio::sync::mpsc::unbounded_channel();
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() =
+            Some(Arc::new(TaskTransitionSnapshotPause {
+                task_id: running.id.clone(),
+                snapshots,
+                audit_events,
+                commits,
+            }));
+
+        // Bound the concurrent protocol, not synchronous database setup.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let first_writer = {
+            let runtime = runtime.runtime.clone();
+            let task = first.clone();
+            let message = message.clone();
+            tokio::spawn(async move {
+                runtime
+                    .commit_terminal_task_result(
+                        &task,
+                        "task_agent_message_wait_completed",
+                        &message,
+                    )
+                    .await
+            })
+        };
+        let (first_latest, first_candidate, release_first) =
+            tokio::time::timeout_at(deadline, observed_snapshots.recv())
+                .await
+                .expect("first reducer must reach the snapshot pause")
+                .unwrap();
+        let second_writer = {
+            let runtime = runtime.runtime.clone();
+            let task = second.clone();
+            Box::pin(async move {
+                runtime
+                    .commit_terminal_task_result(
+                        &task,
+                        "task_agent_message_wait_completed",
+                        &message,
+                    )
+                    .await
+            })
+        };
+        let mut second_writer = second_writer;
+        // Drive the contender until its first suspension while the first
+        // snapshot is held. With the lock boundary fixed, this waits for the
+        // agent lock; without it, this computes and pauses a stale snapshot.
+        assert!(futures_util::poll!(second_writer.as_mut()).is_pending());
+        assert_eq!(first_latest, Some(running.clone()));
+        assert_eq!(first_candidate, first);
+
+        // No sleeps, raw SQL mutation, or synthetic database error injection.
+        release_first.send(()).unwrap();
+        // Wait for the database commit, not all post-commit effects: those
+        // may need the agent lock already queued for the contender.
+        tokio::time::timeout_at(deadline, observed_commits.recv())
+            .await
+            .expect("first database commit must finish while the second remains paused")
+            .unwrap();
+        let second_writer = tokio::spawn(second_writer);
+        let (second_latest, second_candidate, release_second) =
+            tokio::time::timeout_at(deadline, observed_snapshots.recv())
+                .await
+                .expect("second reducer must reach the snapshot pause after the first commits")
+                .unwrap();
+        release_second.send(()).unwrap();
+        let second_result = tokio::time::timeout_at(deadline, second_writer)
+            .await
+            .expect("second commit must finish after release")
+            .unwrap();
+        tokio::time::timeout_at(deadline, first_writer)
+            .await
+            .expect("first post-commit effects must finish after contender release")
+            .unwrap()
+            .unwrap();
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
+
+        let existing = runtime
+            .recent_events(20)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "task_agent_message_wait_completed")
+            .unwrap();
+        let first_emission = observed_events.try_recv().unwrap();
+        let incoming = observed_events.try_recv().ok();
+        assert_eq!(first_emission.id, existing.id);
+        if let Err(error) = &second_result {
+            assert!(
+                error
+                    .to_string()
+                    .contains("conflicting audit event content"),
+                "expected audit-content conflict, not task/state conflict: {error:#}",
+            );
+            let incoming = incoming.as_ref().expect("capture the rejected audit event");
+            assert_eq!(incoming.id, existing.id);
+            assert_ne!(incoming.created_at, existing.created_at);
+            assert_ne!(incoming.data, existing.data);
+            // The payload changes only in the task's observation timestamp.
+            let mut incoming_payload = incoming.data.clone();
+            incoming_payload["updated_at"] = existing.data["updated_at"].clone();
+            assert_eq!(incoming_payload, existing.data);
+        }
+        assert_eq!(
+            crate::runtime_db::repositories::task_transition(&first, &second).unwrap(),
+            crate::runtime_db::repositories::StateTransitionOutcome::Idempotent,
+        );
+        assert_eq!(
+            runtime.task_record(&running.id).await.unwrap().unwrap(),
+            first,
+        );
+        assert_eq!(
+            runtime
+                .recent_events(20)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "task_agent_message_wait_completed")
+                .count(),
+            1,
+        );
+        eprintln!(
+            "terminal audit race evidence: {}",
+            json!({
+                "event_id": existing.id,
+                "existing_seq": existing.event_seq,
+                "existing_created_at": existing.created_at,
+                "incoming_created_at": incoming.as_ref().map(|event| event.created_at),
+                "existing_payload": existing.data,
+                "incoming_payload": incoming.as_ref().map(|event| &event.data),
+                "task_transition": "Idempotent",
+                "second_result": format!("{second_result:?}"),
+            })
+        );
+        assert!(
+            second_result.is_ok(),
+            "same terminal result must be idempotent after a concurrent commit: {second_result:?}",
+        );
+        assert_eq!(second_latest, Some(first.clone()));
+        assert_eq!(second_candidate, first);
+        assert!(
+            incoming.is_none(),
+            "duplicate terminal audit must be skipped"
+        );
     }
 
     #[tokio::test]
