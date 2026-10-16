@@ -249,6 +249,24 @@ impl Fixture {
         }
     }
 
+    fn restore_stopped_legacy_metadata(&self, metadata: &[u8]) {
+        let legacy: Value = serde_json::from_slice(metadata).unwrap();
+        let pid = legacy["pid"].as_u64().unwrap();
+        let process = PathBuf::from(format!("/proc/{pid}"));
+        let deadline = Instant::now() + DEADLINE;
+        // Shutdown may remove runtime files before the process exits. Restoring
+        // its metadata earlier would make the live-PID fallback report Running.
+        while process.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "stopped legacy daemon PID {pid} has not exited: {}",
+                fs::read_to_string(process.join("stat")).unwrap_or_default()
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        fs::write(self.path("run/daemon.json"), metadata).unwrap();
+    }
+
     fn foreground(&mut self, args: &[&str]) -> usize {
         let index = self.spawn(args, &[]);
         let deadline = Instant::now() + DEADLINE;
@@ -763,9 +781,15 @@ fn menu_defaults_hint_is_ignored_for_stopped_profile_and_legacy_metadata() {
             fixture.stop();
             if legacy {
                 fs::remove_file(fixture.path("daemon/serve_profile.json")).unwrap();
-                fs::write(fixture.path("run/daemon.json"), metadata).unwrap();
+                fixture.restore_stopped_legacy_metadata(&metadata);
             }
             let before = fixture.success(&["daemon", "status"]);
+            assert_eq!(
+                before["state"],
+                if legacy { "stale" } else { "stopped" },
+                "{before}"
+            );
+            assert_eq!(before["control_connectivity"], false, "{before}");
             assert_eq!(
                 before["desired_serve"]["source"],
                 if legacy { "legacy" } else { "profile" },
@@ -846,17 +870,16 @@ fn legacy_metadata_status_reports_migration_source_and_start_saves_profile() {
         "--desktop-integration=false"
     ]);
     legacy["control_token_env_configured"] = json!(false);
-    fs::write(
-        fixture.path("run/daemon.json"),
-        serde_json::to_vec(&legacy).unwrap(),
-    )
-    .unwrap();
+    fixture.restore_stopped_legacy_metadata(&serde_json::to_vec(&legacy).unwrap());
     let status = fixture.success(&["daemon", "status"]);
+    assert_eq!(status["state"], "stale", "{status}");
+    assert_eq!(status["control_connectivity"], false, "{status}");
     assert_eq!(status["desired_serve"]["source"], "legacy", "{status}");
     assert_eq!(status["desired_serve"]["listen"], address, "{status}");
     assert!(!fixture.path("daemon/serve_profile.json").exists());
     fixture.cwd = fixture.path("elsewhere");
     let started = fixture.success(&["daemon", "start"]);
+    assert_eq!(started["process_created"], true, "{started}");
     assert_eq!(started["http_addr"], address, "{started}");
     assert_profile_options(&fixture.profile(), &address, fixture.home.path());
     let status = fixture.success(&["daemon", "status"]);
