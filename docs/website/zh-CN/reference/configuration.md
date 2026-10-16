@@ -7,6 +7,8 @@ order: 15
 
 # 配置参考
 
+关于配置与验证步骤，请参阅[配置模型、凭据与回退](/zh-CN/guides/configure-models.md)与[配置咨询决策](/zh-CN/guides/configure-decision-subsystem.md)。关于路由心智模型，请参阅[模型、提供商与路由](/zh-CN/concepts/models-and-providers.md)。
+
 Holon 把运行时配置保存在 `~/.holon/` 下的 JSON 文件中：
 
 | 文件 | 用途 |
@@ -314,14 +316,7 @@ Web GUI 无需任何凭据配置即可发现本地运行的 Ollama 模型，`Vie
 
 ### 添加自定义提供商
 
-```bash
-holon config providers set my-proxy \
-  --transport openai_chat_completions \
-  --base-url "https://my-proxy.example.com/v1" \
-  --credential-source env \
-  --credential-env "MY_PROXY_API_KEY" \
-  --credential-kind api_key
-```
+`holon config providers set <provider> [options]` 用于创建或更新提供商。
 
 选项：
 - `--transport`：协议，取值为 `anthropic_messages`、`openai_chat_completions` 或 `openai_responses`

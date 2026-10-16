@@ -78,7 +78,7 @@ order: 40
   <!-- mdorigin:index kind=article -->
 
 - [Workspace 与执行环境](./workspaces.md)
-  workspace、执行根和 worktree 的绑定、切换与隔离契约。
+  Workspace、执行根目录与 Worktree 的绑定、切换及隔离契约。
   <!-- mdorigin:index kind=article -->
 
 - [Agent 模板](./agent-templates.md)
@@ -86,7 +86,7 @@ order: 40
   <!-- mdorigin:index kind=article -->
 
 - [Skills](./skills.md)
-  Skill 来源、skills.toml schema，以及安装、启用、更新和校验 skill 的 CLI 命令。
+  Skill 来源规范、管理命令以及用于安装、启用、更新和校验的 API 端点。
   <!-- mdorigin:index kind=article -->
 
 - [TUI](./tui.md)
@@ -97,8 +97,12 @@ order: 40
   工作项字段、状态、生命周期操作，以及操作它们的 CLI 和 HTTP 接口。
   <!-- mdorigin:index kind=article -->
 
+- [事件与定时器](./events-and-timers.md)
+  回调路由、交付模式、定时器字段与显式等待契约。
+  <!-- mdorigin:index kind=article -->
+
 - [可观测性](./observability.md)
-  Trace 导出、受保护的指标端点，以及 OTLP、OpenMetrics、仪表盘和告警的配置。
+  Trace 导出、受保护的指标端点、OTLP 字段定义以及运行时性能快照契约。
   <!-- mdorigin:index kind=article -->
 
 - [Web 工具](./web-tools.md)
@@ -111,6 +115,10 @@ order: 40
 
 - [图像生成](./image-generation.md)
   图像生成工具的参数、支持的模型、输出尺寸和格式，以及错误行为。
+  <!-- mdorigin:index kind=article -->
+
+- [Local App 参考](./local-apps.md)
+  由 Agent 托管的应用清单字段、浏览器 SDK 方法、事件作用域与托管限制。
   <!-- mdorigin:index kind=article -->
 
 - [支持的模型](./models.md)

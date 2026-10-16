@@ -6,8 +6,7 @@ order: 50
 
 # 维护者
 
-这些页面写给参与 Holon 开发的人：在本地构建它、修改文档站点。使用 Holon 不需要
-读这些内容。
+这些页面写给参与 Holon 开发的人：在本地构建它、修改文档站点。使用 Holon 不需要读这些内容。
 
 运行时契约见 [Spec](/zh-CN/spec/)；心智模型见[概念](/zh-CN/concepts/)。
 
@@ -19,6 +18,14 @@ order: 50
 
 - [文档工作流](./documentation-workflow.md)
   如何编辑和构建由 mdorigin 驱动的 Holon 网站。
+  <!-- mdorigin:index kind=article -->
+
+- [文档分层](./documentation-layers.md)
+  明确文档修改的归属层次，将面向用户的解释与内部运行时规格严格区分开。
+  <!-- mdorigin:index kind=article -->
+
+- [构建移动客户端](./build-mobile-clients.md)
+  从本地代码检出构建并安装 Android 与 iOS 原生客户端。
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

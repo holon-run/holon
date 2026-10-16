@@ -1,135 +1,23 @@
 ---
-title: 托管 Local App
-summary: 为 Agent 托管静态 HTML/JS 应用，通过内置 App SDK 与 Agent 交互，构建轻量级前端工具。
-order: 25
+title: 托管本地应用
+summary: 构建一个由 Agent 拥有的轻量本地应用，提交请求并在浏览器中验证队列事件。
+order: 240
 ---
 
-# 托管 Local App
+# 托管本地应用
 
-在 v0.47.0 中，Holon 引入了 Local App Engine。Agent 可以在其 `agent_home/apps/` 目录下托管静态 HTML 和 JavaScript 应用。
+构建一个可展示所属 Agent 信息、提交 `ping` 请求并实时呈现事件流的交互卡片。此流程用于验证 App SDK 的连通性，同时不会向该应用开放执行任意任务的特权。底层心智模型请参阅[本地应用（Local Apps）](../concepts/local-apps.md)。
 
-客户端通过逻辑 URL 访问这些应用，不需要直接暴露宿主机的文件路径。
+## 开始之前
 
-## 运行机制
+- 使用已有 Agent 并确认其 Agent Home 路径。可以让该 Agent 在其主目录下创建应用，或使用已确认的主机路径；自定义数据目录可能会改变实际存储位置。请避免覆盖同名的 `ping-card` 应用。
+- 执行 `holon daemon status` 检查运行时状态。若未启动，请执行 `holon daemon start`。
+- 使用运行时的浏览器同源地址；远程访问时需具备有效会话。请参阅[连接到远程运行时](connect-remote-runtime.md)。
+- 仅托管你信任的代码。本地应用与运行时共享同源域和会话，并不对主机凭据构成隔离屏障。
 
-每个应用存放在对应 Agent 目录下的独立子目录中：
+## 1. 创建目录与清单文件
 
-```text
-~/.holon/agents/<agent_id>/apps/<app_id>/
-├── manifest.json
-├── index.html
-├── style.css
-└── app.js
-```
-
-当浏览器访问 `/apps/<agent_id>/<app_id>/` 时，Holon 服务端会：
-
-1. 校验该目录及 `manifest.json` 的有效性。
-2. 注入基础内容安全策略（CSP）响应头并执行路径穿越检查。
-3. 返回清单文件中指定的入口 HTML 文件及静态资源。
-4. 在 `/apps/<agent_id>/<app_id>/holon.js` 提供预构建的浏览器端 SDK。
-
-## 清单文件契约（manifest.json）
-
-每个应用根目录下必须包含一个合法的 `manifest.json` 文件（大小不超过 64 KiB）：
-
-```json
-{
-  "id": "status-monitor",
-  "name": "状态监控卡片",
-  "version": "1.0.0",
-  "entry": "index.html",
-  "description": "展示 Agent 状态并触发健康检查"
-}
-```
-
-### 字段说明
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` | string | 应用唯一标识。必须与所在目录名完全一致。 |
-| `name` | string | 应用名称。 |
-| `version` | string | 版本号（如 `1.0.0`）。 |
-| `entry` | string | 应用入口 HTML 文件的相对路径。 |
-| `description` | string | 可选的应用简要说明。 |
-
-## 浏览器端 App SDK
-
-Holon 在每个应用的路由根下内置提供了 `@holon/app-sdk` 脚本。在入口 HTML 中直接引入即可：
-
-```html
-<script src="holon.js"></script>
-```
-
-该脚本会在全局环境中注入 `window.Holon` 对象，提供以下三个核心方法：
-
-### 1. `window.Holon.context()`
-
-获取当前应用的运行时元数据及认证状态：
-
-```javascript
-const ctx = await window.Holon.context();
-console.log(ctx.agent_id, ctx.app_id, ctx.session.authenticated);
-```
-
-返回格式示例：
-
-```json
-{
-  "sdk_version": "1",
-  "agent_id": "main",
-  "app_id": "status-monitor",
-  "session": { "authenticated": true }
-}
-```
-
-### 2. `window.Holon.request(requestType, payload, requestId)`
-
-向对应 Agent 消息队列发送结构化请求：
-
-```javascript
-const response = await window.Holon.request("run_diagnostics", { verbose: true });
-console.log("请求已入队，ID:", response.request_id);
-```
-
-该方法向 `/apps/<agent_id>/<app_id>/request` 发起 `POST` 请求，并在事件日志中保留来源标记。
-
-### 3. `window.Holon.events(options)`
-
-通过 Server-Sent Events（SSE）流式接收应用生命周期事件。该方法返回 `AsyncIterable<AppEvent>`，支持传入包含可选 `AbortSignal` 的配置选项：
-
-```javascript
-const controller = new AbortController();
-
-try {
-  for await (const event of window.Holon.events({ signal: controller.signal })) {
-    console.log("收到事件:", event);
-  }
-} catch (err) {
-  if (err.name !== "AbortError") {
-    console.error("事件流异常:", err);
-  }
-}
-
-// 通过 break 退出循环或调用 controller.abort() 均会关闭底层 SSE 连接。
-```
-
-## 安全边界与限制
-
-Local App Engine 包含以下明确的安全限制：
-
-- **同源会话机制：** 托管应用与 Holon 守护进程共享同一源（Origin），自动携带已有的控制面会话 Cookie，但不会获得超出当前会话范围的额外特权。
-- **内容安全策略（CSP）：** 服务端默认下发基础 CSP 策略，禁止加载任何外部跨源资源；仅允许加载同源（`'self'`）资源以及内联脚本与样式（`'unsafe-inline'`），图片和字体额外允许 `data:` URI。这允许无需打包工具的自包含前端小组件直接运行，同时阻止外部脚本注入与跨域外发请求。更强的跨源隔离（如独立 Origin 或沙箱 iframe）不在当前切片范围内。
-- **静态资源白名单：** 单个资源文件体积限制在 8 MiB 以内。只允许托管常见静态文件格式（HTML、JS、CSS、JSON、TXT、SVG、主流图片与字体文件），未知扩展名或可执行文件会被服务端直接拦截。
-- **路径沙箱防御：** 服务端会对每个静态资源请求进行路径规范化（Canonicalize），阻止包含 `../` 的路径穿越请求，并拒绝指向应用根目录以外的符号链接。
-
-## 完整示例：构建一个 Ping 测试卡片
-
-下面通过一个简单示例演示如何编写并运行一个 Local App。
-
-### 1. 创建目录与清单
-
-创建目录 `~/.holon/agents/main/apps/ping-card/`，并在其中创建 `manifest.json`：
+在已确认的 Agent Home 中创建 `apps/ping-card/` 目录，并保存 `manifest.json`：
 
 ```json
 {
@@ -137,18 +25,20 @@ Local App Engine 包含以下明确的安全限制：
   "name": "Ping Card",
   "version": "0.1.0",
   "entry": "index.html",
-  "description": "通过轻量静态卡片与 Agent 互相 Ping"
+  "description": "Ping the agent from a static card"
 }
 ```
 
-### 2. 编写 `index.html`
+## 2. 编写页面代码
+
+创建 `apps/ping-card/index.html`：
 
 ```html
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>Agent Ping 卡片</title>
+  <title>Agent Ping Card</title>
   <style>
     body { font-family: sans-serif; padding: 2rem; max-width: 480px; margin: auto; }
     button { padding: 0.5rem 1rem; cursor: pointer; }
@@ -156,10 +46,11 @@ Local App Engine 包含以下明确的安全限制：
   </style>
 </head>
 <body>
-  <h2>Agent Ping 卡片</h2>
+  <h2>Agent Ping Card</h2>
   <p id="status">正在加载上下文...</p>
-  <button id="ping-btn" disabled>发送 Ping</button>
+  <button id="ping-btn" disabled>Ping Agent</button>
   <pre id="output"></pre>
+  <pre id="events"></pre>
 
   <script src="holon.js"></script>
   <script>
@@ -170,8 +61,9 @@ Local App Engine 包含以下明确的安全限制：
     async function init() {
       try {
         const ctx = await window.Holon.context();
-        statusEl.textContent = `已连接到 Agent: ${ctx.agent_id}`;
+        statusEl.textContent = `已连接至 Agent: ${ctx.agent_id}`;
         pingBtn.disabled = false;
+        observeEvents();
       } catch (err) {
         statusEl.textContent = `加载上下文失败: ${err.message}`;
       }
@@ -179,16 +71,31 @@ Local App Engine 包含以下明确的安全限制：
 
     pingBtn.addEventListener("click", async () => {
       pingBtn.disabled = true;
-      outputEl.textContent = "正在提交请求...";
+      outputEl.textContent = "正在发送请求...";
       try {
         const res = await window.Holon.request("ping", { timestamp: Date.now() });
-        outputEl.textContent = JSON.stringify(res, null, 2);
+        outputEl.textContent = "入队回执（非最终执行结果）:
+" +
+          JSON.stringify(res, null, 2);
       } catch (err) {
-        outputEl.textContent = `发生错误: ${err.message}`;
+        outputEl.textContent = `错误: ${err.message}`;
       } finally {
         pingBtn.disabled = false;
       }
     });
+
+    async function observeEvents() {
+      const eventsEl = document.getElementById("events");
+      try {
+        for await (const item of window.Holon.events()) {
+          const event = item.event;
+          eventsEl.textContent += `${event.type}: ${event.message_id}
+`;
+        }
+      } catch (err) {
+        eventsEl.textContent += `事件流中断: ${err.message}`;
+      }
+    }
 
     init();
   </script>
@@ -196,18 +103,50 @@ Local App Engine 包含以下明确的安全限制：
 </html>
 ```
 
-### 3. 在浏览器中打开
+## 3. 打开并测试应用
 
-启动 Holon 守护进程：
+在浏览器的运行时同源地址下打开 `/apps/<agent-id>/ping-card/`，将 `<agent-id>` 替换为实际的 Agent ID。例如，在本地默认端口运行且 Agent ID 为 `main` 时，访问路径为 `http://127.0.0.1:7878/apps/main/ping-card/`。切勿直接通过 `file:` 本地文件协议打开 HTML。
 
-```bash
-holon daemon start
-```
+1. 检查页面中显示的所属 Agent 名称是否正确，该信息来自 `context()`。
+2. 等待事件流连接建立，点击一次 **Ping Agent**。
+3. 检查返回的入队回执中是否包含 `status: "accepted"` 以及对应的 `message_id`。
+4. 在下方事件流中匹配该 ID 的 `message_enqueued` 事件。若 Agent 处于可运行状态，还会进一步触发 `message_processing_started`。
 
-在浏览器中访问 `http://127.0.0.1:7878/apps/main/ping-card/`。页面会自动调用 `window.Holon.context()` 显示连接的 Agent，点击按钮即可发送请求。
+事件流反映的是消息入队与处理事件，并非最终的业务完成结果。`ping` 请求属于结构化的消息输入，并非内置的可执行命令。请参阅[观察 Agent 工作](observe-agent-work.md)确认 Agent 实际执行的动作。应用请求的任何业务动作都必须单独获得操作者的指令授权。
 
-## 下一步
+## 故障排查
 
-- [使用 Web GUI](/zh-CN/guides/use-web-gui.md) — 在浏览器中管理 Agent 与浏览工作区文件。
-- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — 了解 `/apps` 相关端点与认证机制。
-- [通过 HTTP 自动化操作](/zh-CN/guides/automate-over-http.md) — 了解使用 HTTP API 驱动 Agent 的更多模式。
+- **应用未找到或被拒绝访问：** 检查 `manifest.json` 格式是否合法、`id` 是否严格等于 `ping-card`，且入口文件是否存在于该目录下。
+- **鉴权失败：** 在登录或配对后，从运行时同源地址直接打开应用。严禁在 HTML 或 JavaScript 中硬编码 Bearer Token。
+- **SDK 不可用：** 检查 `holon.js` 请求的响应。源码构建必须包含 App SDK 静态资源；单独的 HTML 页面无法自包含这些实现。
+- **未收到任何事件：** 在浏览器控制台的 Network 面板中检查 `/events` 请求。刷新页面并在连接建立后重新提交请求。切勿将网络断开期间遗漏的事件误判为服务故障。
+- **外部脚本或跨域请求被拦截：** 仅使用同源静态资源。严禁为了引入不受信任的代码而放宽 CSP 内容安全策略。
+
+## 契约细节
+
+<a id="how-local-apps-work"></a>
+关于所有权与请求流转心智模型，请参阅[本地应用（Local Apps）](../concepts/local-apps.md)。
+
+<a id="manifest-contract"></a>
+<a id="manifest-fields"></a>
+[清单规范契约](../reference/local-apps.md#manifest-contract)定义了必填字段与校验规则。
+
+<a id="the-browser-app-sdk"></a>
+<a id="1-windowholoncontext"></a>
+<a id="2-windowholonrequestrequesttype-payload-requestid"></a>
+<a id="3-windowholoneventsoptions"></a>
+[浏览器 SDK 参考](../reference/local-apps.md#browser-sdk)详细记录了返回值定义与事件流限额。
+
+<a id="security-invariants"></a>
+关于静态资源限制、鉴权机制与 CSP 规则，请参阅[托管与访问限制](../reference/local-apps.md#hosting-and-access-limits)。
+
+<a id="example-building-a-minimal-app"></a>
+<a id="1-create-the-directory-and-manifest"></a>
+<a id="2-write-indexhtml"></a>
+<a id="3-open-in-browser"></a>
+上文给出的示例已取代早期版本的极简应用演示。
+
+## 另见
+
+- [使用 Web GUI](use-web-gui.md) — 管理 Agent 与查阅文件
+- [HTTP 控制平面参考](../reference/http-control-plane.md) — 路由规范与鉴权说明

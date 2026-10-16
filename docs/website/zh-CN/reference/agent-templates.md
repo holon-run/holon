@@ -6,35 +6,13 @@ order: 32
 
 # Agent 模板
 
-Agent 模板是一种可复用的引导文件，用来初始化新 Agent 的 `AGENTS.md` 角色契约
-和可选的预装 skill。模板让新 Agent 有一个已知的起点，不必手动搭建。
+本页列出内置模板角色、模板库解析规则以及清单格式。
+有关心智模型，请参阅 [Agent 模板](/zh-CN/concepts/agent-templates.md)。
+有关设置步骤，请参阅[创建 Agent](/zh-CN/guides/create-agent.md)或[创建 Agent 模板](/zh-CN/guides/create-agent-template.md)。
 
 ## 什么时候用模板
 
-当你希望新 Agent 以特定的角色和能力起步时，就用 `--template`。不用模板时，
-Agent 会以一个通用的默认契约启动。
-
-常见场景：
-
-- **创建可同步的评审 Agent** — `holon agent create reviewer --template code-reviewer`
-- **处理办公文档** — `holon agent create office --template office-assistant`
-- **制作视频成片** — `holon agent create video --template video-producer`
-- **拥有 GitHub issue 收件箱** — `holon agent create triage --template issue-triager`
-- **变更落地后的验收** — `holon agent create qa --template qa-engineer`
-- **文档卫生** — `holon agent create docs --template docs-steward`
-- **维护代码健康度与降低技术债** — `holon agent create code-health --template code-health-steward`
-- **维护营销上下文与 campaign brief** — `holon agent create marketing --template marketing-steward`
-- **维护社区健康与贡献者体验** — `holon agent create community --template community-steward`
-- **法务事务与合同归档支持** — `holon agent create legal --template legal-ops-steward`
-- **维护可导航且附带源引用的知识库** — `holon agent create knowledge --template knowledge-steward`
-- **指导刻意练习与间隔复习** — `holon agent create coach --template learning-coach`
-- **防御性安全评审** — `holon agent create security --template security-reviewer`
-- **依赖更新队列** — `holon agent create deps --template dependency-steward`
-- **把目标收成规格** — `holon agent create pm --template product-manager`
-- **运维服务器和服务** — `holon agent create ops --template server-ops`
-- **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
-- **带角色的一次性任务** — `holon run --template software-developer "Fix the null check in handler.rs"`
-- **解决 GitHub issue** — `holon solve https://github.com/owner/repo/issues/42`
+有关模板检查、安装、创建与校验的完整流程，请参阅[从模板创建 Agent](/zh-CN/guides/create-agent.md)。常用的模板选择器包括 `code-reviewer`、`office-assistant`、`software-developer`、`server-ops`、`holon-ops` 以及 `github-solver`；下文列出的各专业角色详细说明了它们各自的依赖项与职责边界。显式指定的选择器必须能够解析为已安装的模板、本地路径或远程模板。
 
 ## 视频制作
 
@@ -241,13 +219,11 @@ Holon 还带一个隐藏的内置 `holon-default` 模板，用于零配置和离
 
 ### 创建 Agent
 
-```bash
-holon agent create reviewer --template code-reviewer
+```text
+holon agent create <agent-id> --template <selector>
 ```
 
-这会在 `code-reviewer` 模板已安装或同步后，从本地模板初始化
-`~/.holon/agents/reviewer/AGENTS.md`。如果 Agent home 已经存在且非空，模板
-初始化会拒绝覆盖。
+选择器支持目录名称、绝对路径目录以及 GitHub tree URL。初始化拒绝覆盖非空的 Agent Home。完整流程请参阅[创建 Agent 指南](/zh-CN/guides/create-agent.md)。
 
 ### 一次性运行
 
@@ -285,9 +261,19 @@ Agent 的角色契约，格式和其他 Agent 的 `AGENTS.md` 一样。运行时
 
 ### `template.toml`
 
-可选清单，用于模板元数据，例如显示名、简介、schema 和兼容性。同步的远程模板
-用它提供目录元数据；基于路径的本地模板可以省略它，回退到目录/AGENTS.md
-元数据。
+声明模板元数据的可选清单：
+
+```toml
+schema = "holon.agent_template.v1"
+id = "my-template"
+name = "My Template"
+summary = "The agent's responsibility."
+
+[compatibility]
+holon = ">=0.1.0"
+```
+
+同步的远程模板用它提供目录元数据；基于路径的本地模板可以省略它，回退到目录/AGENTS.md 元数据。
 
 ### `skills.toml`
 
@@ -339,32 +325,10 @@ GitHub 托管的 skill 用同样的方式引用，例如 `repo = "holon-run/holo
 
 ## 创建自定义模板
 
-建一个包含 `AGENTS.md`、可选的 `template.toml` 和可选的 `skills.toml` 的目录，
-然后用绝对路径作为模板选择器：
+请参阅[创建 Agent 模板](/zh-CN/guides/create-agent-template.md)了解如何编写、测试与复用模板，避免覆盖现有 Agent。
 
-```bash
-holon agent create my-agent --template /path/to/my-template
-```
-
-你也可以把模板托管在 GitHub 上，用 URL 引用：
-
-```bash
-holon agent create my-agent --template https://github.com/owner/repo/tree/main/templates/my-template
-```
-
-用绝对路径或 GitHub URL 引用的模板会在 Agent home 里记录来源
-（`template-provenance.json`），方便你追溯 Agent 契约的出处。
+通过绝对路径或 GitHub URL 引用的模板会在 Agent Home 中记录来源元数据（`template-provenance.json`），方便追溯 Agent 角色契约的来源。
 
 ## 模板 vs Skill
 
-模板和 skill 的用途不同：
-
-| 特性 | 模板 | Skill |
-|---------|----------|-------|
-| 提供什么 | Agent 身份和角色契约 | 可复用的任务工作流 |
-| 何时应用 | 创建 Agent 时 | 任务中按需加载 |
-| 持久性 | 永久留在 Agent home | 只要安装着就可用 |
-| 示例 | “你是一名评审者” | “这样评审一个 PR” |
-
-模板常常包含 skill 引用，好让新 Agent 一开始就有合适的工具。skill 的细节见
-[Skills 指南](/zh-CN/reference/skills)。
+关于创建时刻的初始化，请参阅 [Agent 模板](/zh-CN/concepts/agent-templates.md)；关于按需加载的工作流，请参阅 [Skill 与工具](/zh-CN/concepts/skills-and-tools.md)。声明 Skill 依赖并不等于自动授予工具执行权限。

@@ -1,233 +1,147 @@
 ---
-title: 使用 holon solve 执行 GitHub 任务
-summary: 从 issue 或 PR 输入到任务完成，再检查结果。
-order: 11
+title: 使用 holon solve 处理 GitHub 任务
+summary: 明确 issue、评审或 PR 修复的目标与交付边界；单次执行并验证本地产物与 GitHub 副作用。
+order: 90
 ---
 
-# 使用 holon solve 执行 GitHub 任务
+# 使用 holon solve 处理 GitHub 任务
 
-`holon solve` 把一个 GitHub issue 或 pull request 变成一件完成的任务。给它一个
-目标，它会运行 Agent 收集上下文、做出改动、审查 PR 或发表评论，然后把结构化输出
-写到脚本或 CI 能读取的位置。
-
-完整参数见 [CLI 参考](/zh-CN/reference/cli.md)；本页讲你会实际用到的几种运行方式。
+`holon solve` 针对 GitHub issue 或 Pull Request 发起单次执行的 Agent 任务。在启动前明确目标与发布边界，任务结束后核实本地产物与 GitHub 上的实际变更。执行成功并不代表 PR 已被合并。
 
 ## 何时使用 solve
 
-在以下场景使用 `holon solve`：
+适用于实现单个 issue、评审单个 PR 或修复审查反馈。对于持续跟踪的审查闭环或 CI 监控，请使用带有显式事件订阅的[长生命周期工作项](run-long-lived-task.md)。`solve` 预设在单次运行结束后不会持续监听 PR。
 
-- 无需手动操作 TUI 即可自动实现一个 GitHub issue
-- 在 CI 中根据审查反馈修复 PR
-- 对 pull request 跑一次审查
-- 把 Holon 接入脚本化流水线（GitHub Actions、CLI 脚本）
+## 环境配置
 
-交互式工作不要用 `holon solve`。需要直接和 Agent 对话时，用 `holon tui` 或 `holon run`。
-
-## 目标引用格式
-
-第一个位置参数是目标引用。Holon 接受三种格式：
-
-| 格式 | 示例 | 说明 |
-|--------|---------|-------|
-| 完整 URL | `https://github.com/holon-run/holon/issues/42` | 最明确；类型从 URL 推断 |
-| `owner/repo#NN` | `holon-run/holon#42` | 按 issue 或 pull request 处理 |
-| `#NN` 加 `--repo` | `#42 --repo holon-run/holon` | 最短形式；需要 `--repo` |
-
-## 快速开始
-
-### 解决一个 issue
-
-```bash
-# 完整 URL 形式
-holon solve https://github.com/holon-run/holon/issues/42
-
-# 短形式
-holon solve holon-run/holon#42
-
-# 数字引用 + --repo
-holon solve '#42' --repo holon-run/holon
-```
-
-Agent 会克隆仓库、读取 issue、收集相关上下文、实现修复并提交改动。输出产物写入临时目录。
-
-### 提供自定义目标
-
-```bash
-holon solve holon-run/holon#42 \
-  --goal "Add a --dry-run flag to the solve command"
-```
-
-用 `--goal` 覆盖 Agent 对目标的解读，或在 issue 正文很长时收窄工作范围。
-
-### 审查一个 pull request
-
-```bash
-holon solve https://github.com/holon-run/holon/pull/753 \
-  --goal "Review only: check for security issues and publish one review"
-```
-
-当目标里提到审查时，Holon 会加上护栏，要求 Agent 只发表一次审查或一条 PR 评论，然后停止。
-这让审查运行保持单次且可预期。
-
-### 根据审查反馈修复 PR
-
-```bash
-holon solve https://github.com/holon-run/holon/pull/753 \
-  --base "feature-branch"
-```
-
-用 `--base` 为修复分支设置不同的基础分支。默认基础分支是 `main`。
-
-## 配置
-
-solve 读取标准的 Holon 运行时配置（`~/.holon/config.json`）。至少需要配置一个模型和凭据。
-用 CLI 配置：
-
-```bash
-# 设置默认模型
-holon config set model.default "anthropic/claude-sonnet-4-6"
-
-# 安全地存储凭据（推荐）
-holon config credentials set --kind api_key --stdin anthropic
-# 粘贴 API key 并按回车，然后按 Ctrl+D
-```
-
-也可以用环境变量快速设置：
-
-```bash
-export ANTHROPIC_AUTH_TOKEN="your-api-key"
-holon config set model.default "anthropic/claude-sonnet-4-6"
-```
-
-Holon 还需要一个 GitHub token。它会从环境中读取 `GITHUB_TOKEN` 或 `GH_TOKEN`：
-
-```bash
-export GITHUB_TOKEN="ghp_..."
-holon solve holon-run/holon#42
-```
-
-确认配置完整：
+启动前检查：
 
 ```bash
 holon config doctor
 holon config models list
+gh auth status
 ```
 
-## solve 的工作方式
+按照[模型配置指南](configure-models.md)配置可用模型与凭据。在任务需要访问 GitHub 时，安全注入 `GITHUB_TOKEN` 或 `GH_TOKEN`。确保 Token 仅具备当前读写或发布操作所需的最小权限。切勿将 Token 打印到日志中。
 
-运行 `holon solve` 时，运行时内部会执行这些步骤：
+自行准备好本地仓库检出，并检查当前分支与工作区状态：
 
-1. **解析目标**：Holon 从你提供的引用中提取 owner、repo、issue/PR 编号和类型。
+```bash
+git status --short --branch
+```
 
-2. **准备目录**：创建输出目录（默认：`$TMPDIR/holon-output-<uuid>`），并用
-   `github-context/` 子目录存放输入元数据。
+在目标检出目录下执行命令，或通过 `--workspace` 显式传入其路径。`solve` 提示词假定由调用者自行准备好仓库环境，并不承诺会在执行前自动 clone。授权编辑前先处理好工作区冲突改动。
 
-3. **创建 Agent**：Holon 用配置的 solve 模板创建 Agent，通常是命令自带的
-   `github-solver` 预设。它包含 `sview`、`code-review`、`github-issue-solve`、
-   `github-pr-fix`、`github-review` 和 `ghx`。
+## 目标引用格式
 
-4. **运行提示词**：运行时构造一个描述目标和 goal 的提示词，然后用配置的信任级别和
-   轮次上限运行 Agent。
+推荐使用完整的 issue 或 PR URL，以便明确目标类型。同时也支持以下简写形式：
 
-5. **收集产物**：运行结束后，Holon 把这些文件写入输出目录：
+```text
+owner/repo#42
+#42 --repo owner/repo
+```
 
-   | 文件 | 内容 |
-   |------|---------|
-   | `manifest.json` | 结果元数据：provider、status、outcome、target |
-   | `summary.md` | Agent 所做工作的可读摘要 |
-   | `run.json` | 完整的结构化运行响应 |
+在 Shell 中若以 `#` 开头请加上引号。将示例中的仓库名和编号替换为你的实际目标。
 
-每个标志、类型和默认值见 [CLI 参考](/zh-CN/reference/cli.md)。
+## 快速上手
+
+### 解决一个 Issue
+
+```bash
+holon solve 'owner/repo#42' --workspace "$PWD"   --goal "实现 issue 42，运行相关测试并提交 PR。不要合并。"   --output ./solve-results/issue-42 --json
+```
+
+该目标授权了修改代码仓库与创建 PR。若希望进行先期只读调研，目标中必须显式注明仅限排查。采纳修改前，务必审查 `summary.md`、代码 Diff 与测试证据。
+
+### 指定自定义目标
+
+```bash
+holon solve '#42' --repo owner/repo --workspace "$PWD"   --goal "调查该问题并提出修复方案。不要编辑、提交、推送或发布任何内容。"   --output ./solve-results/investigation-42 --json
+```
+
+目标中应清晰声明任务范围、验收检查项与允许的副作用。标准的 solve 工作流在需要代码改动时有能力执行 commit、push 以及创建/更新 PR；切勿寄希望于“未提及发布操作”就等同于“只读排查”。
+
+### 评审 Pull Request
+
+```bash
+holon solve https://github.com/owner/repo/pull/123 --workspace "$PWD"   --goal "仅限审查：检查正确性与测试覆盖率。不要修改文件。发布一条 review 或 PR 评论后停止。不要批准，不要合并。"   --output ./solve-results/review-123 --json
+```
+
+审查护栏会要求 Agent 在发布前检查最新提交与已有评审，使用单一发布界面，并在重试前核实模糊的返回结果。执行后依然需要查看发布的评论链接与审查的 commit SHA。若执行在发布后被中断，重新运行前先在 GitHub 上检查状态。
+
+### 根据评审反馈修复 PR
+
+```bash
+holon solve https://github.com/owner/repo/pull/123 --workspace "$PWD"   --goal "处理可操作的评审反馈，运行受影响的测试，并更新该 PR。汇报已处理的每一项内容及任何阻塞项。不要合并。"   --output ./solve-results/fix-123 --json
+```
+
+若 Agent 需要基准分支提示，可传入 `--base BRANCH`。该参数不能替代对 PR 实际基准与最新提交的核查。
+
+## solve 的工作原理
+
+运行时解析目标、准备输入/输出目录、选用配置的 solve 模板（通常为 `github-solver`），并启动限定范围的提示词执行。每次运行建议使用独立的输出目录，避免将历史产物误判为新结论。
+
+运行结束后，检查以下文件：
+
+| 文件 | 检查要点 |
+|---|---|
+| `run.json` | 结构化运行结果，包含 `final_status` |
+| `summary.md` | 改动点、验证记录、发布链接以及遗留的阻塞项 |
+| `manifest.json` | 执行结论元数据与可用产物引用 |
+
+在早期配置阶段失败可能无法生成完整的产物集。请保留标准错误输出与命令退出码。[CLI 参考](../reference/cli.md)列出了全部参数；本指南不重新定义输出结构。
 
 ## 与 holon run 的区别
 
-`holon run` 和 `holon solve` 都在无头模式下执行 Agent，但用途不同：
+针对通用的无头提示词任务使用 `holon run`。当任务以 GitHub issue 或 PR 为输入起点、且需要 solve 预设自带的 GitHub 工作流时，使用 `holon solve`。无论是进程成功退出还是生成了简短摘要，都不能替代对预定验收标准的逐一核对。
 
-| | `holon run` | `holon solve` |
-|---|---|---|
-| 用例 | 通用无头任务 | GitHub issue 和 PR |
-| 输入 | 自由文本提示词 | GitHub 目标引用 |
-| Agent 模板 | 未提供选择器时用隐藏的默认模板 | `github-solver`（预加载 GitHub skill） |
-| 输出 | stdout 上的文本或 JSON | 输出目录中的结构化产物 |
-| GitHub 集成 | 手动（`gh` CLI） | 自动收集上下文并分发 skill |
-| 便于接入流水线 | 用 `--json` 获得结构化输出 | 内置 manifest 和摘要文件 |
+## 脚本化集成
 
-通用自动化和脚本用 `holon run`。任务从 GitHub issue 或 pull request 开始、且你希望自动
-选择 skill 时，用 `holon solve`。solve 预设是单次的：合并、批准或持续跟踪 PR 事件都
-需要显式指令。
+### 用于脚本的 JSON 输出
 
-## 用 solve 写脚本
-
-### 供脚本使用的 JSON 输出
-
-```bash
-holon solve holon-run/holon#42 --json | jq '.final_status'
-# "completed"
-```
+在检查 `final_status` 前先捕获命令退出码。避免在不保留退出码的情况下直接通过管道将输出传递给 `jq`。
 
 ### 自定义输出目录
 
 ```bash
-holon solve holon-run/holon#42 --output ./solve-results/
-cat ./solve-results/run.json
-# { "provider": "holon-solve", "status": "completed", ... }
+holon solve 'owner/repo#42' --workspace "$PWD"   --goal "仅限调查；不要编辑或发布。"   --output ./solve-results/inspect-42 --json
+cat ./solve-results/inspect-42/summary.md
 ```
 
+### CI 集成范例
 
-### CI 集成草图
+以下 Bash 示例在遇到执行错误或未完成运行时会立即中止，且不会盲目推送当前检出的分支：
 
 ```bash
-#!/bin/bash
-# 运行 solve，结果不完整时失败
-
+set -euo pipefail
+: "${TARGET_REF:?请设置 issue 或 PR 引用}"
 OUTPUT=$(mktemp -d)
-holon solve "$ISSUE_URL" --output "$OUTPUT" --json
 
-STATUS=$(jq -r '.final_status' "$OUTPUT/run.json")
-if [ "$STATUS" != "completed" ]; then
-  echo "Solve did not complete: $STATUS"
-  exit 1
+if holon solve "$TARGET_REF" --workspace "$PWD"   --goal "仅限调查；不要编辑、提交、推送或发布。"   --output "$OUTPUT" --json >"$OUTPUT/stdout.json"; then
+  jq -e '.final_status == "completed"' "$OUTPUT/run.json" >/dev/null
+  cat "$OUTPUT/summary.md"
+else
+  status=$?
+  printf 'Solve 失败；请检查 %s 中的产物
+' "$OUTPUT" >&2
+  exit "$status"
 fi
-
-# Agent 可能已经提交了改动；把它们推上去
-git push origin HEAD
 ```
 
-### GitHub Actions
+即使执行失败，在排查敏感信息后也应将该目录作为 CI 产物归档。添加具体的业务验收检查；`final_status=completed` 仅代表运行时本身执行完毕。
 
-当你想在仓库工作流里用普通的步骤级环境变量传模型提供商凭据时，用这个复合 action：
+### GitHub Actions 集成
 
-```yaml
-jobs:
-  holon:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+仓库中的组合 Action（composite action）支持传入目标 `ref` 或在受支持的事件中传入 `trigger: auto`。在启用发布权限前，先审查检入的 `action.yml` 与工作流的 Token 权限。在工作流密钥管理中保存凭据。遵循仓库安全规范固定 Action 版本。
 
-      - uses: holon-run/holon@main
-        with:
-          trigger: auto
-          model: deepseek/deepseek-v3.2
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-```
+在任务超时后不要盲目自动重试具备发布权限的工作流：先在 GitHub 上确认它是否已经创建了 Commit、PR、Review 或评论。
 
-`trigger: auto` 会从受支持的 issue、pull request、label、assignment 和 `@holonbot` 评论
-事件中推导目标和 goal。需要显式运行时，改用 `ref: owner/repo#123`。
+## 任务未完成时的排查
 
-`.github/workflows/holon-solve.yml` 里的可复用工作流仍然可用，作为兼容包装；但当你需要
-任意提供商环境变量时，推荐入口是复合 action。
+检查模型连通性、GitHub 鉴权状态、选中的检出目录以及执行的标准错误。若 Agent 达到了轮次上限或时间限制，在决定继续或重新启动前，先检查已生成的产物与外部副作用。如实报告未解决的阻塞项，切勿谎称问题已解决。
 
 ## 另见
 
-- [CLI 参考](/zh-CN/reference/cli)：完整命令树，包括 `holon solve` 参数
-- [配置参考](/zh-CN/reference/configuration)：模型和提供商设置
-- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http)：用代码完成同样的运行
-- [委派工作给另一个 Agent](/zh-CN/guides/delegate-work)：把工作交给子 Agent
+- [CLI 参考](../reference/cli.md)
+- [运行长生命周期任务](run-long-lived-task.md)
+- [故障排查](troubleshooting.md)

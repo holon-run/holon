@@ -268,5 +268,6 @@ holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtim
 ## 另见
 
 - [配置参考](/zh-CN/reference/configuration.md) — 配置键与凭据管理
-- [运行你的第一个 Holon 任务](/zh-CN/guides/quick-examples.md) — 常见任务示例
+- [观察 Agent 工作](observe-agent-work.md)
+- [运行长生命周期任务](run-long-lived-task.md)
 - [快速开始](/zh-CN/getting-started/first-agent.md) — 首次运行流程

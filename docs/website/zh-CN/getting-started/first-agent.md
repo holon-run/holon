@@ -1,65 +1,52 @@
 ---
 title: 创建你的第一个 Agent
-summary: "从零到你的第一个 Holon Agent：安装、启动、TUI 基础、创建 Agent、配置模型。"
+summary: 安装 Holon、配置模型，并从具名 Agent 获得经核实的交付结果。
 order: 20
-updated: 2026-05-23
+aliases:
+  - /zh-CN/guides/quick-examples
+  - /zh-CN/guides/quick-examples.md
 ---
+
+<a id="run-your-first-holon-task"></a>
+
+<a id="create-your-first-agent"></a>
 
 # 创建你的第一个 Agent
 
-本指南带你从零创建第一个 Holon Agent。你将：
+本教程带你完整跑通从零开始的配置流程，并最终由一个具名 Agent 回答一个简单请求。在发送请求前先配置模型，随后无论在终端还是浏览器中都可以与同一个 Agent 交互。
 
-1. 安装 Holon
-2. 启动运行时（单次执行与 daemon 模式）
-3. 用 TUI 连接
-4. 创建 Agent
-5. 配置模型
-
-**耗时：** 约 10 分钟（Homebrew）；约 15 分钟（源码构建）
+<a id="prerequisites"></a>
 
 ## 前置条件
 
-- **Holon** 已安装并在 `PATH` 上（见第 1 步）
-- 一个**模型提供商**账号（Anthropic、OpenAI 或兼容服务）
-- 基本的**终端**操作能力
+你需要一个终端环境以及对受支持模型提供商的访问权限。如果使用本地模型提供商，必须确保其模型服务已正常运行且网络可达。第一次执行无需准备模板、项目工作区或外部事件集成。
 
-## 第 1 步：安装 Holon
+<a id="step-1-install-holon"></a>
 
-Holon v0.14.0 及以后版本以可安装发布形式分发。选择适合你的方式。
+## 步骤 1：安装 Holon
 
-### 方式 A：Homebrew（推荐）
+<a id="option-a-homebrew-recommended"></a>
+
+### 方式 A：Homebrew 安装（推荐）
 
 ```bash
 brew tap holon-run/tap
 brew install holon
 ```
 
+<a id="option-b-direct-binary-download"></a>
+
 ### 方式 B：直接下载二进制
 
-从 [GitHub Releases 页面](https://github.com/holon-run/holon/releases/latest)
-下载对应平台的最新二进制，放到 `PATH` 上：
+从 [GitHub Releases](https://github.com/holon-run/holon/releases/latest) 下载适用于你操作系统与架构的二进制文件，根据需要添加执行权限，并放入系统的 `PATH` 路径中。
 
-```bash
-# 示例：Linux amd64
-curl -L https://github.com/holon-run/holon/releases/latest/download/holon-linux-amd64 -o holon
-chmod +x holon
-sudo mv holon /usr/local/bin/
-```
+<a id="option-c-build-from-source"></a>
 
-可用平台：Linux amd64、macOS amd64、macOS arm64。
+### 方式 C：源码编译
 
-### 方式 C：源码构建
+如果你打算对 Holon 自身进行开发，请遵循[本地编译工作流程](../maintainers/local-runtime.md)。
 
-如果你偏好源码构建或打算给 Holon 做贡献：
-
-```bash
-git clone https://github.com/holon-run/holon.git
-cd holon
-cargo build --release
-```
-
-源码构建时，把下文示例中的 `holon` 命令替换为 `cargo run --`。例如
-`holon --help` 变成 `cargo run -- --help`。
+<a id="verify-the-install"></a>
 
 ### 验证安装
 
@@ -67,262 +54,165 @@ cargo build --release
 holon --help
 ```
 
-你应该看到带可用命令列表的 CLI 帮助输出。
+若提示找不到命令，请在继续前检查并修正你的 `PATH` 环境变量。
 
-## 第 2 步：启动 Holon 运行时
+<a id="step-5-configure-models"></a>
+<a id="recommended-quick-setup-with-holon-onboard"></a>
+<a id="7-set-up-api-credentials"></a>
 
-Holon 有两种运行模式：
+<a id="step-2-configure-a-model"></a>
 
-- **CLI 模式**（默认）：单次命令，直接输出
-- **Daemon 模式**：后台服务，支持 TUI
-
-### 方式 A：CLI 模式（快速上手）
-
-执行单条命令：
+## 步骤 2：配置模型
 
 ```bash
-holon run "What is Holon?"
+holon onboard
+holon config doctor
 ```
 
-执行一轮后退出。适合快速任务，不适合交互式会话。
+交互式向导会引导你选择模型提供商、配置凭据并选定模型。如果你在提示过程中需要指导，请参考[引导配置指南](onboarding.md)。在继续之前解决所有凭据缺失或模型不可用的报错；切勿在 Agent 对话中直接粘贴敏感密钥。
 
-### 方式 B：Daemon 模式（Agent 场景推荐）
+<a id="step-2-start-the-holon-runtime"></a>
+<a id="option-b-daemon-mode-recommended-for-agents"></a>
+<a id="4-run-as-a-background-daemon"></a>
 
-启动后台 daemon：
+<a id="step-3-start-the-runtime"></a>
+
+## 步骤 3：启动运行时
 
 ```bash
 holon daemon start
-```
-
-这会把 Holon 作为后台服务启动，提供：
-
-- **Unix socket** 位于 `~/.holon/run/holon.sock`（本地访问）
-- 供 TUI 和 HTTP 客户端使用的**控制平面**
-- 跨会话的**持久状态**
-
-#### 验证 daemon 正在运行
-
-```bash
 holon daemon status
 ```
 
-你应该看到包含默认 Agent 的运行时状态。
+<a id="verify-the-daemon-is-running"></a>
 
-#### 停止 daemon
+### 验证守护进程是否正常运行
+
+检查状态命令是否报告守护进程处于运行中。守护进程负责托管 Agent 及其工作状态，支持各类客户端随时连接与断开。
+
+<a id="step-4-create-an-agent"></a>
+<a id="2-create-an-agent"></a>
+
+<a id="step-4-create-a-named-agent"></a>
+
+## 步骤 4：创建具名 Agent
+
+选择一个未被使用的 ID；本示例使用 `first-helper`：
 
 ```bash
-holon daemon stop
+holon agent create first-helper
+holon agent list
+holon run --agent first-helper "用三句话解释 Rust 的所有权机制。不要修改任何文件。"
 ```
 
-## 第 3 步：用 TUI 连接
+确认列表中包含 `first-helper`，且请求输出了有效解答。Agent 出现在列表中仅代表创建成功，不代表模型一定能正常应答；这句简短的请求同时对这两者进行了验证。如果报错，请检查错误提示并再次运行 `holon config doctor`。
 
-**终端 UI（TUI）** 提供与 Agent 协作的交互界面。
+<a id="the-default-agent"></a>
 
-### 启动 TUI
+### 默认 Agent
+
+全新的运行时也内置提供了 `main` Agent。你可以直接使用它，而无需专门创建具名 Agent。不过，具名 Agent 有助于将持续的独立职责与其他日常交互分离开来；详见 [Agent、角色与指引](../concepts/agents.md)。
+
+<a id="create-a-named-agent"></a>
+<a id="list-agents"></a>
+<a id="step-3-connect-with-the-tui"></a>
+<a id="5-use-the-terminal-ui-tui"></a>
+
+<a id="step-5-continue-in-a-client"></a>
+
+## 步骤 5：在客户端中继续交互
+
+<a id="start-the-tui"></a>
+
+### 启动终端 UI（TUI）
 
 ```bash
 holon tui
 ```
 
-TUI 默认连接本地 Unix socket。
+<a id="tui-basics"></a>
 
-### TUI 基础
+### TUI 基础操作
 
-TUI 界面包含：
+在发送后续请求前，先选择 `first-helper`。输入 `/` 可打开命令菜单，输入 `/help` 可查看当前快捷键。有关界面导航和命令用法，请参阅 [TUI 参考](../reference/tui.md)。
 
-- **Agent 列表**：当前 Agent 及其状态
-- **活跃 Agent**：正在接收你输入的 Agent
-- **对话记录**：会话历史
-- **任务列表**：后台任务和工作项
+<a id="basic-navigation"></a>
+<a id="switch-agents-in-the-tui"></a>
 
-### 基本操作
+你也可以使用 [Web GUI](../guides/use-web-gui.md)。无论使用哪种客户端，先确认当前选中的 Agent ID，以确保后续交互递送给同一个 Agent。
 
-- **输入**消息后回车发送
-- **Ctrl+C** 退出 TUI
-- **方向键**或 **Page Up/Down** 滚动历史
+<a id="option-a-cli-mode-quick-start"></a>
+<a id="1-one-shot-question"></a>
 
-### 远程 TUI（可选）
+<a id="run-a-one-shot-question-instead"></a>
 
-连接远程 Holon 实例：
+## 改为单次执行问答
 
-```bash
-# 在远程主机上
-holon serve --access lan --host 192.168.1.10 --token-file ~/.holon/remote.token
-
-# 从本地机器
-holon tui --connect http://192.168.1.10:7878 --token-file ~/.holon/remote.token
-```
-
-详见 [Remote TUI Access RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/remote-tui-access.md)（英文）。
-
-## 第 4 步：创建 Agent
-
-Holon 支持面向不同用途的多种 Agent 类型。
-
-### 默认 Agent
-
-启动 Holon 时，它会自动在 `~/.holon/agents/main/` 创建一个**默认 Agent**。该 Agent：
-
-- 拥有自己的 `agent_home` 和 `AGENTS.md`
-- 可以有 Agent 本地 skills
-- 保存会话历史和工作状态
-
-### 创建命名 Agent
-
-为特定角色创建专门化 Agent：
+对于不需要持久守护进程会话的有界请求，可以直接单次运行：
 
 ```bash
-holon agent create reviewer
+holon run "用三句话解释 Rust 的所有权机制"
 ```
 
-这会在 `~/.holon/agents/reviewer/` 创建一个使用默认角色契约初始化的新 Agent。
+单次运行可能包含多轮模型与工具交互才能最终退出。请不要将其用作需要等待 CI 或后续人工决策的跟踪手段；长生命周期工作请参阅[运行长生命周期任务](../guides/run-long-lived-task.md)。
 
-### 使用模板
+<a id="stop-the-daemon"></a>
 
-模板提供可复用的 Agent 配置：
+### 停止守护进程
 
-```bash
-# 用已安装或已同步的模板 ID
-holon agent create docs-helper --template software-developer
+所有工作结束后，可以通过 `holon daemon stop` 停止本地守护进程。不要单纯为了关闭某个客户端窗口而停止守护进程，因为其他 Agent 可能仍在后台推进任务。
 
-# 用本地模板路径
-holon agent create custom --template /path/to/template
-
-# 用 GitHub 模板 URL
-holon agent create github-agent --template https://github.com/owner/repo/tree/main/template-path
-```
-
-### 列出 Agent
-
-```bash
-holon agent list
-```
-
-### 在 TUI 中切换 Agent
-
-在 TUI 中，通过 Agent 列表视图切换 Agent。
-
-## 第 5 步：配置模型
-
-### 推荐：用 `holon onboard` 快速配置
-
-最快的配置方式是交互式引导向导：
-
-```bash
-holon onboard
-```
-
-在终端中，这会启动交互式 TUI，带你完成：
-
-1. **选择提供商** — 从内置提供商（Anthropic、OpenAI、DeepSeek、Codex 等）或自定义提供商中选择
-2. **录入凭据** — OpenAI Codex 走浏览器 OAuth 登录；其他提供商输入 API key
-   （输入不会回显，也不会记入日志）
-3. **选择模型** — 选择默认模型，或输入自定义模型 ID
-4. **搜索配置** — 启用 DuckDuckGo 托管搜索、模型原生搜索，或保持禁用
-
-`holon onboard` 会写入配置、安全保存凭据并打印摘要。这是首次配置的推荐路径。
-
-### 手动配置（备选）
-
-Holon 需要模型配置才能与 Anthropic、OpenAI 等提供商协作。
-
-### 配置分层
-
-Holon 使用三层配置：
-
-1. **启动设置**（环境变量、CLI 标志）
-2. **运行时配置**（`config.json`）
-3. **Agent 状态**（按 Agent 覆盖）
-
-详见 [Runtime Configuration Surface RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-configuration-surface.md)（英文）。
-
-### 设置提供商凭据
-
-#### 方式 A：环境变量（快速上手）
-
-```bash
-# Anthropic
-export ANTHROPIC_AUTH_TOKEN="your-api-key"
-
-# OpenAI
-export OPENAI_API_KEY="your-api-key"
-```
-
-#### 方式 B：凭据存储（持久配置推荐）
-
-安全保存凭据，避免暴露在 shell 历史或环境变量中：
-
-```bash
-holon config credentials set --kind api_key --stdin anthropic
-# 粘贴你的 ANTHROPIC_AUTH_TOKEN 并回车
-```
-
-### 设置默认模型
-
-```bash
-holon config set model.default "anthropic@default/claude-sonnet-4-6"
-```
-
-### Agent 级模型覆盖
-
-单个 Agent 可以覆盖默认模型：
-
-```bash
-holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
-```
-
-Agent 模型覆盖的更多细节见[配置参考](/zh-CN/reference/configuration.md)。
-
-### 验证模型配置
-
-```bash
-holon config get model.default
-holon config doctor
-```
-
-查看可用模型：
-
-```bash
-holon config models list
-```
+<a id="next-steps"></a>
 
 ## 下一步
 
-你的第一个 Agent 已经跑起来了，接下来可以：
+原“快速示例”页面现已重定向至此。若要了解初次运行之外的进阶工作流，请参阅下列专项指南：
 
-- **了解概念**：阅读[运行时模型](/zh-CN/concepts/runtime-model.md)和[信任边界](/zh-CN/concepts/trust-boundaries.md)
-- **试试示例**：参见[快速示例](/zh-CN/guides/quick-examples.md)
-- **构建集成**：查看[集成指南](/zh-CN/guides/automate-over-http.md)
-- **参考文档**：[CLI 参考](/zh-CN/reference/cli.md)、[HTTP 控制平面](/zh-CN/reference/http-control-plane.md)、[配置参考](/zh-CN/reference/configuration.md)
+<a id="use-a-template"></a>
+- [使用模板创建 Agent](../guides/create-agent.md) 介绍在创建新 Agent 之前如何查找与准备角色模板。
+
+<a id="3-switch-models"></a>
+<a id="manual-setup-alternative"></a>
+<a id="configuration-layers"></a>
+<a id="set-provider-credentials"></a>
+<a id="option-a-environment-variables-quick-start"></a>
+<a id="option-b-credential-store-recommended-for-persistent-config"></a>
+<a id="set-the-default-model"></a>
+<a id="agent-level-model-override"></a>
+<a id="verify-model-configuration"></a>
+<a id="8-inspect-configuration"></a>
+- [配置模型](../guides/configure-models.md) 涵盖手动配置凭据、按 Agent 指定模型、回退链机制以及配置诊断。
+
+<a id="remote-tui-optional"></a>
+- [连接远程运行时](../guides/connect-remote-runtime.md) 介绍访问模式、身份认证以及远程客户端连接。
+
+<a id="6-start-the-http-server"></a>
+- [通过 HTTP 自动化 Holon](../guides/automate-over-http.md) 涵盖通过 API 提交工作与追踪进度。
+
+<a id="9-run-a-multi-turn-task"></a>
+<a id="10-create-an-agent-with-a-custom-workspace"></a>
+- [在项目工作区或 worktree 中工作](../guides/work-with-workspaces.md) 介绍项目绑定与改动隔离。[运行长生命周期任务](../guides/run-long-lived-task.md) 介绍需要持久化进度与等待的目标管理。
+
+<a id="see-also"></a>
+
+<a id="troubleshooting"></a>
 
 ## 故障排查
 
-### daemon 启动失败
+<a id="daemon-wont-start"></a>
 
-检查是否有其他实例在运行：
+### 守护进程无法启动
 
-```bash
-holon daemon status
-holon daemon stop
-holon daemon start
-```
+执行 `holon daemon status` 与 `holon daemon logs` 检查日志。根据报告的启动报错进行针对性排查，不要随意删除运行时数据或反复重复启动。
 
-### TUI 连接不上
+<a id="tui-cant-connect"></a>
 
-确认 daemon 正在运行且 socket 存在：
+### TUI 无法连接
 
-```bash
-ls ~/.holon/run/holon.sock
-holon daemon status
-```
+确认守护进程正在目标主机上正常运行。对于远程连接，请遵循前述远程指南进行配置，不要假设本地套接字可以跨机器通信。
 
-### 模型错误
+<a id="model-errors"></a>
 
-检查凭据：
+### 模型报错
 
-```bash
-echo $ANTHROPIC_AUTH_TOKEN
-holon config get model.default
-```
-
-更多帮助见[故障排查指南](/zh-CN/guides/troubleshooting.md)。
+运行 `holon config doctor` 检查模型与凭据状态。可结合前述模型配置指南进行核对。如果请求已被受理但执行报错或停滞不前，请参阅[排查 Holon 任务问题](../guides/troubleshooting.md)。
