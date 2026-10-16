@@ -4,6 +4,8 @@
 const en = {
   agentAccess: {
     loading: "Loading agent…",
+    revalidating: "Verifying access — cached history is read-only.",
+    cachedOffline: "Access could not be verified — offline history is read-only.",
     available: "Agent conversation",
     unauthorized: "Authentication required to open this agent",
     missing: "Agent not found",

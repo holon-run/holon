@@ -62,6 +62,7 @@ export function useConversationSession(
   agentId: string | undefined,
   navigation?: ConversationNavigation,
   incarnation?: number,
+  readOnly = false,
 ): UseConversationSessionResult {
   const currentUser = useRuntimeStore((state) => state.currentUser);
   const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
@@ -87,22 +88,23 @@ export function useConversationSession(
       ? resolveConversationScopeKey(remoteKey, agentId, currentUser, incarnation)
       : null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (scopeKey === null || agentId === undefined) return;
     const config = getRuntimeConnectionConfig();
     acquireConversationScope({
       key: scopeKey,
       agentId,
       incarnation,
+      readOnly,
       remoteId: remoteKey,
       cacheKey,
       baseUrl: apiBase ?? "",
       ...(config.token === undefined ? {} : { token: config.token }),
     });
     return () => {
-      releaseConversationScope(scopeKey);
+      releaseConversationScope(scopeKey, readOnly);
     };
-  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey, incarnation]);
+  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey, incarnation, readOnly]);
 
   // Subscribe to scope snapshots so brief/detail/history request states and
   // view revisions re-render even while the controller object is stable.
@@ -127,7 +129,7 @@ export function useConversationSession(
   const runtimeMismatch = targetRuntime !== undefined && snapshot.view?.scope != null && targetRuntime !== snapshot.view.scope.runtime_id;
   const browsing = browse !== null;
   const navigationActive = navigation !== undefined;
-  const conversationReady = bootstrapped && !browsing && !navigation && !runtimeMismatch;
+  const conversationReady = !readOnly && bootstrapped && !browsing && !navigation && !runtimeMismatch;
   const lastNavigation = useRef<{ controller: ConversationController; requestId: number } | null>(null);
 
   useLayoutEffect(() => {
@@ -136,19 +138,19 @@ export function useConversationSession(
     return () => { setConversationNavigationActive(scopeKey, false); };
   }, [scopeKey, navigationActive]);
 
-  // Cancellation belongs to route intent, not transient stream status changes.
-  useEffect(() => () => {
-    controller?.returnToLatest();
-    lastNavigation.current = null;
-  }, [controller, navigation?.requestId]);
-
   useEffect(() => {
+    if (!controller || readOnly) return;
+    // Preserve a released scope's historical window across A → B → A.
+    if (!navigation && lastNavigation.current?.controller === controller) {
+      controller.returnToLatest();
+      lastNavigation.current = null;
+    }
     if (!controller || !navigation?.sourceRef || !bootstrapped || runtimeMismatch) return;
     if (lastNavigation.current?.controller === controller && lastNavigation.current.requestId === navigation.requestId) return;
     boundNavigationRuntime.current = { requestId: navigation.requestId, runtimeId: snapshot.view!.scope!.runtime_id };
     lastNavigation.current = { controller, requestId: navigation.requestId };
     void controller.locateSource(navigation.sourceRef);
-  }, [controller, navigation?.requestId, navigation?.sourceRef, bootstrapped, runtimeMismatch, snapshot.view?.scope?.runtime_id]);
+  }, [controller, readOnly, navigation?.requestId, navigation?.sourceRef, bootstrapped, runtimeMismatch, snapshot.view?.scope?.runtime_id]);
 
   const location = useMemo<ConversationLocation | undefined>(() => {
     if (!navigation) return undefined;
@@ -241,38 +243,38 @@ export function useConversationSession(
   }, [snapshot, controller, version, pendingOperatorPrompts, browse, location?.turnId]);
 
   const loadOlderHistory = useCallback(() => {
-    if (controller === null || controller.view().reset_reason !== null) return;
+    if (readOnly || controller === null || controller.view().reset_reason !== null) return;
     void controller.loadOlderHistory();
-  }, [controller]);
+  }, [controller, readOnly]);
 
-  const loadNewerHistory = useCallback(() => { void controller?.loadNewerHistory(); }, [controller]);
+  const loadNewerHistory = useCallback(() => { if (!readOnly) void controller?.loadNewerHistory(); }, [controller, readOnly]);
   const locateSource = useCallback(() => {
-    if (navigation?.sourceRef && controller && !runtimeMismatch) void controller.locateSource(navigation.sourceRef);
-  }, [controller, navigation?.sourceRef, runtimeMismatch]);
-  const returnToLatest = useCallback(() => { controller?.returnToLatest(); }, [controller]);
+    if (!readOnly && navigation?.sourceRef && controller && !runtimeMismatch) void controller.locateSource(navigation.sourceRef);
+  }, [controller, readOnly, navigation?.sourceRef, runtimeMismatch]);
+  const returnToLatest = useCallback(() => { if (!readOnly) controller?.returnToLatest(); }, [controller, readOnly]);
 
   const loadDetail = useCallback(
     (turnId: string) => {
-      if (controller === null || controller.view().reset_reason !== null) return;
+      if (readOnly || controller === null || controller.view().reset_reason !== null) return;
       void controller.loadDetail(turnId);
     },
-    [controller],
+    [controller, readOnly],
   );
 
   const loadOlderActivities = useCallback(
     (turnId: string) => {
-      if (controller === null || controller.view().reset_reason !== null) return;
+      if (readOnly || controller === null || controller.view().reset_reason !== null) return;
       void controller.loadOlderActivities(turnId);
     },
-    [controller],
+    [controller, readOnly],
   );
 
   const loadBrief = useCallback(
     (briefId: string) => {
-      if (controller === null || controller.view().reset_reason !== null) return;
+      if (readOnly || controller === null || controller.view().reset_reason !== null) return;
       void controller.loadBrief(briefId);
     },
-    [controller],
+    [controller, readOnly],
   );
 
   const briefRecord = useCallback(
@@ -297,13 +299,13 @@ export function useConversationSession(
   );
 
   const retry = useCallback(() => {
-    controller?.retry();
-  }, [controller]);
+    if (!readOnly) controller?.retry();
+  }, [controller, readOnly]);
 
   return {
     model,
     scopeKey,
-    controller,
+    controller: readOnly ? null : controller,
     conversationReady,
     location,
     browsing,

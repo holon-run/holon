@@ -25,6 +25,7 @@ import { CurrentWorkBar } from "./CurrentWorkBar";
 import { pathForRoute } from "../../app/routes";
 import { ConversationSyncStatus, ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
+import { conversationViewport, saveConversationViewport } from "../../runtime/conversation-scope-store";
 import { useTranslation } from "react-i18next";
 import type {
   AgentDetail,
@@ -38,6 +39,7 @@ import type { OperatorPromptAttachment } from "../../runtime/client";
 import type { ConversationHistoryLoadState } from "@holon/conversation-sdk";
 import {
   captureConversationReadingAnchors,
+  findConversationAnchor,
   positionConversationAnchor,
   revealConversationAnchor,
   restoreConversationReadingAnchor,
@@ -47,6 +49,9 @@ import {
 
 export interface ConversationTimelineBundle extends ConversationTimelineActions {
   model: ConversationSessionModel;
+  scopeKey?: string;
+  readOnlyNotice?: string;
+  onRetryAccess?: () => void;
   onLoadOlderHistory: () => void;
   location?: ConversationLocation;
   browsing?: boolean;
@@ -379,14 +384,33 @@ export function AgentPage({
   }
 
   useLayoutEffect(() => {
-    stickToBottomRef.current = !browsing;
-    readingAnchorRef.current = [];
+    const scopeKey = conversation?.scopeKey;
+    const saved = scopeKey ? conversationViewport(scopeKey) : undefined;
+    const list = messageListRef.current;
+    stickToBottomRef.current = saved?.stickToBottom ?? !browsing;
+    readingAnchorRef.current = list && saved ? saved.anchors.flatMap((item) => {
+      const element = findConversationAnchor(list, item.anchor);
+      return element ? [{ ...item, element }] : [];
+    }) : [];
     restoredScrollTopRef.current = null;
     // A fresh conversation view must not inherit scroll intent from the
     // previously viewed agent.
     clearUserScrollIntent(userScrollIntentRef, userScrollIntentTimerRef);
-    if (!browsing) scrollToConversationBottom();
-  }, [activeAgent.id]);
+    if (saved && list) {
+      list.scrollTop = saved.scrollTop;
+      if (!saved.stickToBottom) restoreReadingAnchor();
+      setShowJumpToLatest(!saved.stickToBottom);
+    } else if (!browsing) scrollToConversationBottom();
+    return () => {
+      if (!scopeKey || !list) return;
+      saveConversationViewport(scopeKey, {
+        scrollTop: list.scrollTop,
+        stickToBottom: stickToBottomRef.current,
+        anchors: captureConversationReadingAnchors(list).flatMap((item) =>
+          item.anchor ? [{ anchor: item.anchor, offset: item.offset }] : []),
+      });
+    };
+  }, [activeAgent.id, conversation?.scopeKey]);
 
   useLayoutEffect(() => {
     if (!browsing) return;
@@ -746,7 +770,12 @@ export function AgentPage({
                 {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
               </div>
             ) : null}
-            {conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
+            {conversation?.readOnlyNotice ? (
+              <div className="conversation-sync-status" role="status">
+                {conversation.readOnlyNotice}
+                {conversation.onRetryAccess ? <Button variant="secondary" onClick={conversation.onRetryAccess}>{t("agentPage.retry")}</Button> : null}
+              </div>
+            ) : conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
           </div>
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
             <div className="message-list-content" ref={messageContentRef}>

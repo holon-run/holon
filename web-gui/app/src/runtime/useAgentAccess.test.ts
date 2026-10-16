@@ -7,10 +7,13 @@ const mocks = vi.hoisted(() => ({
   identity: vi.fn(),
   state: vi.fn(),
   connection: { mode: "local", baseUrl: "/api" },
+  user: { authMethod: "token", userId: "alice" },
+  userLoaded: true,
+  token: undefined as string | undefined,
 }));
 vi.mock("./runtime-store", () => ({
-  getRuntimeConnectionConfig: () => ({ mode: "local" }),
-  useRuntimeStore: (select: (state: unknown) => unknown) => select({ bootstrap: { connection: mocks.connection, agents: [] } }),
+  getRuntimeConnectionConfig: () => ({ mode: "local", token: mocks.token }),
+  useRuntimeStore: (select: (state: unknown) => unknown) => select({ bootstrap: { connection: mocks.connection, agents: [] }, currentUser: mocks.user, currentUserLoaded: mocks.userLoaded }),
 }));
 vi.mock("./client", async (original) => ({
   ...await original<typeof import("./client")>(),
@@ -18,7 +21,10 @@ vi.mock("./client", async (original) => ({
 }));
 
 import { RuntimeHttpError } from "./client";
+import { ConversationHttpError } from "@holon/conversation-sdk";
 import { useAgentAccess } from "./useAgentAccess";
+import { AGENT_ACCESS_KEEP_ALIVE, agentAccessRecordCount, clearAgentAccessRecords } from "./agent-access-records";
+import { resolveConversationScopeKey, useConversationScopeStore } from "./conversation-scope-store";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
@@ -46,29 +52,232 @@ function Probe({ id, incarnation }: { id: string; incarnation?: number }) {
 async function render(id = "private-child", incarnation?: number) {
   await act(async () => { root.render(createElement(Probe, { id, incarnation })); });
 }
+function warm(id = "private-child", incarnation = 1) {
+  const key = resolveConversationScopeKey("local", id, mocks.user, incarnation);
+  useConversationScopeStore.setState((state) => ({ scopes: { ...state.scopes, [key]: {
+    status: { kind: "paused" }, view: null, version: 1,
+    displayView: { scope: {}, turns: [{ turn_id: "cached" }], pending_inputs: [] } as never,
+  } } }));
+  return key;
+}
+function deferred<T = unknown>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
 beforeEach(() => {
   vi.useFakeTimers();
+  clearAgentAccessRecords();
+  mocks.user = { authMethod: "token", userId: "alice" };
+  mocks.userLoaded = true;
+  mocks.connection = { mode: "local", baseUrl: "/api" };
+  mocks.token = undefined;
+  useConversationScopeStore.setState({ scopes: {} });
   mocks.identity.mockReset();
   withChild(childDetail());
-  mocks.state.mockReset().mockResolvedValue({ id: "private-child", incarnation: 1, acceptsInput: true });
+  mocks.state.mockReset().mockImplementation(async (id: string) => ({ id, incarnation: 1, acceptsInput: true }));
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
 });
 afterEach(() => {
   act(() => root.unmount());
+  clearAgentAccessRecords();
   container.remove();
   vi.useRealTimers();
 });
 
 describe("route-selected agent admission", () => {
+  it("revokes admission immediately when the conversation identity fence rejects", async () => {
+    await render();
+    act(() => {
+      const key = warm();
+      useConversationScopeStore.setState((state) => ({ scopes: { ...state.scopes, [key]: {
+        ...state.scopes[key],
+        status: { kind: "terminal_error", error: new ConversationHttpError(403, {
+          ok: false, code: "conversation_identity_changed", error: "replaced",
+        }) },
+      } } }));
+    });
+    expect(current.status).toBe("replaced");
+    expect(current.agent).toBeUndefined();
+    const count = mocks.identity.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(mocks.identity).toHaveBeenCalledTimes(count);
+  });
+
+  it("shares child and parent in-flight requests for concurrent known pinned links", async () => {
+    const parent = deferred();
+    mocks.identity.mockImplementation(async (id: string) => id === "parent" ? parent.promise : childDetail());
+    await render();
+    const second = createRoot(document.createElement("div"));
+    try {
+      await act(async () => second.render(createElement(Probe, { id: "private-child", incarnation: 1 })));
+      expect(mocks.state).toHaveBeenCalledTimes(1);
+      expect(mocks.identity.mock.calls.filter(([id]) => id === "parent")).toHaveLength(1);
+      expect(current.status).toBe("available");
+      await act(async () => parent.resolve({ identity: { agent_id: "parent", status: "active" } }));
+      expect(current.parentAgentId).toBe("parent");
+    } finally {
+      act(() => second.unmount());
+    }
+  });
+
+  it("handles terminal state failure without waiting for a hung identity", async () => {
+    mocks.identity.mockReturnValue(new Promise(() => {}));
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 403));
+    await render();
+    expect(current.status).toBe("unauthorized");
+    expect(mocks.identity.mock.calls[0][1].aborted).toBe(true);
+  });
+
+  it.each([undefined, 0, -1, NaN, 1.5])("does not admit a malformed incarnation %s", async (incarnation) => {
+    mocks.identity.mockResolvedValue({ identity: { agent_id: "private-child", incarnation, status: "active" } });
+    mocks.state.mockResolvedValue({ id: "private-child", incarnation });
+    await render();
+    expect(current.status).toBe("error");
+    expect(current.agent).toBeUndefined();
+  });
+
+  it("starts identity and state together, but never admits a state alone", async () => {
+    const identity = deferred();
+    mocks.identity.mockReturnValue(identity.promise);
+    await render();
+    expect(mocks.identity).toHaveBeenCalledTimes(1);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(current.status).toBe("loading");
+    expect(current.agent).toBeUndefined();
+    await act(async () => identity.resolve(childDetail()));
+    expect(current.status).toBe("available");
+  });
+
+  it("restores pinned warm history before either revalidation finishes", async () => {
+    await render();
+    act(() => { warm(); });
+    await render("other");
+    const identity = deferred();
+    const state = deferred();
+    mocks.identity.mockReturnValue(identity.promise);
+    mocks.state.mockReturnValue(state.promise);
+    await render();
+    expect(current.status).toBe("revalidating");
+    expect(current.agent?.incarnation).toBe(1);
+    expect(mocks.state.mock.calls.at(-1)?.[1].aborted).toBe(false);
+    await act(async () => identity.resolve(childDetail()));
+    expect(current.status).toBe("revalidating");
+    await act(async () => state.resolve({ id: "private-child", incarnation: 1 }));
+    expect(current.status).toBe("available");
+  });
+
+  it("does not use unpinned or empty history as a preview", async () => {
+    act(() => { warm(); });
+    mocks.identity.mockReturnValue(new Promise(() => {}));
+    await render();
+    expect(current.status).toBe("loading");
+    expect(current.agent).toBeUndefined();
+  });
+
+  it("retains only read-only history after a transport error and retries explicitly", async () => {
+    await render();
+    act(() => { warm(); });
+    await render("other");
+    mocks.identity.mockRejectedValue(new Error("offline"));
+    await render();
+    expect(current.status).toBe("error");
+    expect(current.agent?.incarnation).toBe(1);
+    mocks.identity.mockReturnValue(new Promise(() => {}));
+    await act(async () => current.retry());
+    expect(current.status).toBe("revalidating");
+    expect(current.agent?.incarnation).toBe(1);
+  });
+
+  it.each([401, 403, 404, "deleted", "deleting", "replaced"] as const)(
+    "removes warm history and stops automatic access retries after %s", async (failure) => {
+      await render();
+      let key!: string;
+      act(() => { key = warm(); });
+      await render("other");
+      if (typeof failure === "number") {
+        mocks.identity.mockRejectedValue(new RuntimeHttpError("GET", "/detail", failure));
+      } else {
+        mocks.identity.mockResolvedValue({ identity: { agent_id: "private-child", incarnation: failure === "replaced" ? 2 : 1,
+          status: failure === "replaced" ? "active" : failure } });
+      }
+      await render();
+      expect(current.agent).toBeUndefined();
+      expect(useConversationScopeStore.getState().scopes[key]?.displayView).toBeUndefined();
+      const count = mocks.identity.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+      expect(mocks.identity).toHaveBeenCalledTimes(count);
+    },
+  );
+
+  it.each(["user", "connection", "token", "unknown-user"] as const)(
+    "does not preview history across a changed %s", async (change) => {
+      await render();
+      act(() => { warm(); });
+      await render("other");
+      if (change === "user") mocks.user = { ...mocks.user, userId: "bob" };
+      if (change === "connection") mocks.connection = { mode: "remote", baseUrl: "http://other/api" };
+      if (change === "token") mocks.token = "different";
+      if (change === "unknown-user") mocks.userLoaded = false;
+      mocks.identity.mockReturnValue(new Promise(() => {}));
+      await render();
+      expect(current.status).toBe("loading");
+      expect(current.agent).toBeUndefined();
+    },
+  );
+
+  it("merges mounted readers' validation and aborts only after the final release", async () => {
+    mocks.identity.mockReturnValue(new Promise(() => {}));
+    const secondContainer = document.createElement("div");
+    const second = createRoot(secondContainer);
+    await render();
+    await act(async () => second.render(createElement(Probe, { id: "private-child" })));
+    expect(mocks.identity).toHaveBeenCalledTimes(1);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    const signal = mocks.state.mock.calls[0][1] as AbortSignal;
+    await render("other");
+    expect(signal.aborted).toBe(false);
+    act(() => second.unmount());
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("ignores an aborted A response after A → B → A even for the same pinned scope", async () => {
+    await render();
+    act(() => { warm(); });
+    await render("other");
+    const old = deferred();
+    mocks.identity.mockReturnValue(old.promise);
+    await render();
+    const oldSignal = mocks.state.mock.calls.at(-1)?.[1] as AbortSignal;
+    await render("other");
+    const fresh = deferred();
+    mocks.identity.mockReturnValue(fresh.promise);
+    await render();
+    expect(oldSignal.aborted).toBe(true);
+    await act(async () => old.resolve({ identity: { agent_id: "private-child", incarnation: 99, status: "active" } }));
+    expect(current.status).toBe("revalidating");
+    expect(current.agent?.incarnation).toBe(1);
+    await act(async () => fresh.resolve(childDetail()));
+    expect(current.status).toBe("available");
+    expect(current.agent?.incarnation).toBe(1);
+  });
+
+  it("bounds released access records rather than retaining every visited agent", async () => {
+    mocks.identity.mockImplementation(async (id: string) => ({ identity: { agent_id: id, incarnation: 1, status: "active" } }));
+    for (let i = 0; i < AGENT_ACCESS_KEEP_ALIVE + 5; i++) await render(`agent-${i}`);
+    expect(agentAccessRecordCount()).toBe(AGENT_ACCESS_KEEP_ALIVE + 1);
+  });
+
   it("loads a private child without adding it to the public roster", async () => {
     await render();
     expect(current.status).toBe("available");
     expect(current.agent?.id).toBe("private-child");
     expect(current.parentAgentId).toBe("parent");
     expect(current.parentTaskId).toBe("task-1");
-    expect(mocks.identity).toHaveBeenCalledWith("parent");
+    expect(mocks.identity).toHaveBeenCalledWith("parent", expect.any(AbortSignal));
   });
 
   it.each([
@@ -148,14 +357,15 @@ describe("route-selected agent admission", () => {
     expect(current.status).toBe("available");
   });
 
-  it("keeps cleanup navigation for a deleted child without reading its state", async () => {
+  it("keeps cleanup navigation for a deleted child while cancelling parallel state", async () => {
     const detail = childDetail({ state: "cleanup_required" });
     detail.identity.status = "deleted";
     withChild(detail);
     await render();
     expect(current.status).toBe("deleted");
     expect(current.parentAgentId).toBe("parent");
-    expect(mocks.state).not.toHaveBeenCalled();
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.state.mock.calls[0][1].aborted).toBe(true);
   });
 
   it("discards a late parent lookup after navigating to an independent agent", async () => {
@@ -170,11 +380,12 @@ describe("route-selected agent admission", () => {
     expect(current.status).toBe("available");
   });
 
-  it.each(["deleting", "deleted"] as const)("keeps %s distinct without reading runtime state", async (status) => {
+  it.each(["deleting", "deleted"] as const)("keeps %s distinct and cancels parallel state", async (status) => {
     mocks.identity.mockResolvedValue({ identity: { status, incarnation: 1 } });
     await render();
     expect(current.status).toBe(status);
-    expect(mocks.state).not.toHaveBeenCalled();
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.state.mock.calls[0][1].aborted).toBe(true);
   });
 
   it.each([[401, "unauthorized"], [403, "unauthorized"], [404, "missing"], [500, "error"]] as const)(
@@ -190,8 +401,9 @@ describe("route-selected agent admission", () => {
     await render("private-child", 2);
     expect(current.status).toBe("replaced");
     expect(current.parentAgentId).toBeUndefined();
-    expect(mocks.state).not.toHaveBeenCalled();
-    expect(mocks.identity).not.toHaveBeenCalledWith("parent");
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.state.mock.calls[0][1].aborted).toBe(true);
+    expect(mocks.identity).not.toHaveBeenCalledWith("parent", expect.any(AbortSignal));
   });
 
   it("pins a bare URL identity across polling and retry", async () => {
@@ -201,7 +413,7 @@ describe("route-selected agent admission", () => {
     expect(current.status).toBe("replaced");
     await act(async () => current.retry());
     expect(current.status).toBe("replaced");
-    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.state).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an identity change between detail and state", async () => {
@@ -215,10 +427,11 @@ describe("route-selected agent admission", () => {
     let resolve!: (value: unknown) => void;
     mocks.identity.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
     await render("old");
+    mocks.identity.mockResolvedValue({ identity: { agent_id: "new", status: "active", incarnation: 1 } });
     await render("new");
     expect(current.status).toBe("available");
     await act(async () => resolve({ identity: { status: "deleted", incarnation: 1 } }));
     expect(current.status).toBe("available");
-    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.state).toHaveBeenCalledTimes(2);
   });
 });
