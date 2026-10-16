@@ -190,7 +190,7 @@ async function startDelegationProvider(existingAgentId?: string) {
 
 async function json<T>(daemon: DaemonApi, pathname: string): Promise<T> {
   const response = await daemon.api(pathname);
-  expect(response.ok, `${pathname}: HTTP ${response.status}`).toBe(true);
+  expect(response.ok, `${pathname}: HTTP ${response.status}${response.ok ? "" : ` ${await response.text()}`}`).toBe(true);
   return await response.json() as T;
 }
 
@@ -293,7 +293,8 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await authenticate(stale, daemon.token);
     const staleUrl = `${daemon.baseUrl}/agents/${encodeURIComponent(childId)}/conversation?incarnation=${incarnation + 1}`;
     await stale.goto(staleUrl);
-    await expect(stale.getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();
+    await expect(stale.getByRole("region", { name: "Agent conversation", exact: true })
+      .getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();
     await expect(stale).toHaveURL(staleUrl);
     await expect(stale.locator(".composer textarea")).toHaveCount(0);
     await stale.close();
@@ -460,7 +461,8 @@ test("pinned conversation rejects a first summary fetched after same-name recrea
       retryable: false,
     });
     expect(deliveredSummary).not.toContain(OPERATOR_INPUT);
-    await expect(page.getByText("This link belongs to an earlier agent identity", { exact: true }))
+    await expect(page.getByRole("region", { name: "Agent conversation", exact: true })
+      .getByText("This link belongs to an earlier agent identity", { exact: true }))
       .toBeVisible();
     await expect(page).toHaveURL(pinnedUrl);
     await expect(page.locator(".message-list")).toHaveCount(0);
@@ -494,7 +496,8 @@ test("existing-agent wait links keep their original identity after deletion and 
     await page.setViewportSize({ width: 1600, height: 1000 });
     const missingUrl = `${daemon.baseUrl}/agents/e2e-missing-target/conversation?incarnation=1`;
     await page.goto(missingUrl);
-    await expect(page.getByText("Agent not found", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Agent conversation", exact: true })
+      .getByText("Agent not found", { exact: true })).toBeVisible();
     await expect(page).toHaveURL(missingUrl);
     await expect(page.locator(".composer textarea")).toHaveCount(0);
 
@@ -540,11 +543,13 @@ test("existing-agent wait links keep their original identity after deletion and 
     provider.release();
     await expect(page.locator(".message-list")).toContainText(CHILD_BRIEF, { timeout: 30_000 });
     await expect.poll(async () => (await json<TaskStatus>(daemon, statusPath)).status).toBe("completed");
+    // Check the actual parent continuation, not just durable task completion,
+    // before asserting that its retained delivery is available.
+    await page.goto(parentUrl);
+    await expect(page.locator(".message-list")).toContainText(PARENT_BRIEF, { timeout: 30_000 });
     const outputPath = `${statusPath}/output?block=false`;
     const output = await json<{ task: { output_preview: string } }>(daemon, outputPath);
     expect(output.task.output_preview).toContain(CHILD_BRIEF);
-    await page.goto(parentUrl);
-    await expect(page.locator(".message-list")).toContainText(PARENT_BRIEF, { timeout: 30_000 });
     await openContextPanel(page);
     await page.getByText("Recently completed (up to 20)", { exact: true }).click();
     await expect(targetLink).toBeVisible();
@@ -563,7 +568,8 @@ test("existing-agent wait links keep their original identity after deletion and 
       return ((await response.json()) as ChildDetail).identity.status === "deleted";
     }, { timeout: 30_000 }).toBe(true);
     await page.reload();
-    await expect(page.getByText("This agent has been deleted. Its parent task result is still available.", { exact: true }))
+    await expect(page.getByRole("region", { name: "Agent conversation", exact: true })
+      .getByText("This agent has been deleted. Its parent task result is still available.", { exact: true }))
       .toBeVisible();
     await expect(page.locator(".composer textarea")).toHaveCount(0);
 
@@ -575,7 +581,8 @@ test("existing-agent wait links keep their original identity after deletion and 
     expect(recreatedState.status, await recreatedState.text()).toBe(200);
     await page.reload();
     await expect(page).toHaveURL(`${daemon.baseUrl}${targetPath}`);
-    await expect(page.getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Agent conversation", exact: true })
+      .getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();
     await expect(page.locator(".composer textarea")).toHaveCount(0);
     await expect(page.locator(".message-list")).toHaveCount(0);
 
@@ -593,7 +600,8 @@ test("existing-agent wait links keep their original identity after deletion and 
     if (!await targetLink.isVisible()) await recent.click();
     await expect(targetLink).toBeVisible();
     await targetLink.click();
-    await expect(page.getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Agent conversation", exact: true })
+      .getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();
     expect(provider.failures).toEqual([]);
   } finally {
     await testInfo.attach("scripted-provider-tools", {
