@@ -36,6 +36,7 @@ struct HolonDaemonStatus: Codable, Equatable, Sendable {
     var configFingerprintMatch: Bool?
     var message: String
     var processCreated: Bool? = nil
+    var desiredServe: HolonDesiredServeProfile? = nil
 
     var webURL: URL? {
         HolonURLBuilder.webURL(from: webUrl ?? httpAddr)
@@ -46,6 +47,12 @@ struct HolonDaemonStatus: Codable, Equatable, Sendable {
             .appendingPathComponent("run")
             .appendingPathComponent("daemon.log")
     }
+}
+
+// Read-only status projection; the daemon owns the full persisted profile.
+struct HolonDesiredServeProfile: Codable, Equatable, Sendable {
+    var source: String?
+    var desktopIntegration: Bool?
 }
 
 struct HolonDaemonLogs: Codable, Equatable, Sendable {
@@ -242,9 +249,9 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
     var token: String?
     var tokenFilePath: String?
     var webDistPath: String?
-    var desktopIntegration: Bool? = true
+    var desktopIntegration: Bool?
 
-    static let `default` = HolonDaemonLaunchOptions(desktopIntegration: true)
+    static let `default` = HolonDaemonLaunchOptions()
 
     func arguments() -> [String] {
         var arguments: [String] = []

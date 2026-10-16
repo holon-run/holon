@@ -58,6 +58,237 @@ fn set_prepare_hook(
     PrepareHookGuard
 }
 
+fn serve_profile_fixture() -> super::DaemonServeProfile {
+    super::DaemonServeProfile {
+        schema_version: 1,
+        access: super::ServeProfileAccess::Local,
+        host: None,
+        listen: Some("127.0.0.1:8787".into()),
+        port: None,
+        advertise: None,
+        desktop_integration: false,
+        web_dist: None,
+        authentication: super::ServeProfileAuthentication::ExternalRequired,
+        control_auth_mode: RuntimeControlAuthMode::Required,
+    }
+}
+
+#[test]
+fn serve_profile_roundtrip_is_independent_of_runtime_cleanup() {
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    assert_eq!(super::load_serve_profile(&config).unwrap(), None);
+    super::persist_serve_profile(&config, &profile).unwrap();
+    super::cleanup_daemon_state(&config).unwrap();
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+    assert!(!super::serve_profile_path(&config).starts_with(config.run_dir()));
+}
+
+#[test]
+fn serve_profile_roundtrip_preserves_ephemeral_port_intent() {
+    let config = test_config();
+    let mut profile = serve_profile_fixture();
+    profile.listen = Some("127.0.0.1:0".into());
+    super::persist_serve_profile(&config, &profile).unwrap();
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+}
+
+#[cfg(unix)]
+#[test]
+fn serve_profile_atomic_replacement_has_private_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let config = test_config();
+    let mut profile = serve_profile_fixture();
+    super::persist_serve_profile(&config, &profile).unwrap();
+    profile.desktop_integration = true;
+    super::persist_serve_profile(&config, &profile).unwrap();
+    let path = super::serve_profile_path(&config);
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+}
+
+#[cfg(unix)]
+#[test]
+fn serve_profile_rejects_symlink_file_and_directory_without_touching_target() {
+    use std::os::unix::fs::symlink;
+    let config = test_config();
+    let target = tempdir().unwrap();
+    fs::create_dir_all(config.home_dir.join("daemon")).unwrap();
+    let sentinel = target.path().join("sentinel");
+    fs::write(&sentinel, b"untouched").unwrap();
+    symlink(&sentinel, super::serve_profile_path(&config)).unwrap();
+    assert!(super::load_serve_profile(&config).is_err());
+    assert!(super::persist_serve_profile(&config, &serve_profile_fixture()).is_err());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
+    fs::remove_file(super::serve_profile_path(&config)).unwrap();
+    fs::remove_dir(config.home_dir.join("daemon")).unwrap();
+    symlink(target.path(), config.home_dir.join("daemon")).unwrap();
+    assert!(super::load_serve_profile(&config).is_err());
+    assert!(super::persist_serve_profile(&config, &serve_profile_fixture()).is_err());
+    assert_eq!(fs::read_dir(target.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn serve_profile_rejects_invalid_versions_shapes_and_relative_paths() {
+    let config = test_config();
+    let mut profile = serve_profile_fixture();
+    profile.schema_version = 99;
+    assert!(super::persist_serve_profile(&config, &profile).is_err());
+    profile.schema_version = 1;
+    profile.port = Some(7878);
+    assert!(profile.validate().is_err());
+    profile.port = None;
+    profile.authentication = super::ServeProfileAuthentication::TokenFile {
+        path: "relative.token".into(),
+    };
+    assert!(profile.validate().is_err());
+    super::persist_serve_profile(&config, &serve_profile_fixture()).unwrap();
+    fs::write(super::serve_profile_path(&config), b"{broken").unwrap();
+    assert!(super::load_serve_profile(&config).is_err());
+}
+
+#[tokio::test]
+async fn serve_profile_status_reads_stopped_intent_and_rejects_corruption() {
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    super::persist_serve_profile(&config, &profile).unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(
+        status.desired_serve,
+        Some(super::DaemonDesiredServe::Profile {
+            profile: profile.clone()
+        })
+    );
+    let encoded = serde_json::to_value(&status).unwrap();
+    assert_eq!(encoded["desired_serve"]["source"], "profile");
+    assert_eq!(encoded["desired_serve"]["listen"], profile.listen.unwrap());
+    assert!(encoded.get("desired_serve_source").is_none());
+    fs::write(super::serve_profile_path(&config), b"null").unwrap();
+    assert!(daemon_status(&config).await.is_err());
+}
+
+#[tokio::test]
+async fn serve_profile_status_distinguishes_defaults_legacy_and_unknown() {
+    let config = test_config();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(status).unwrap()["desired_serve"]["source"],
+        "defaults"
+    );
+    let metadata = replacement_metadata(&config, 999_999, std::env::current_exe().unwrap());
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let path = config.run_dir().join("daemon.json");
+    fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    let encoded = serde_json::to_value(status).unwrap();
+    assert_eq!(encoded["desired_serve"]["source"], "legacy");
+    assert_eq!(encoded["desired_serve"]["listen"], config.http_addr);
+    fs::write(&path, b"{broken").unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert!(status.desired_serve.is_none());
+    assert!(!super::serve_profile_path(&config).exists());
+}
+
+#[tokio::test]
+async fn serve_profile_failed_resolution_keeps_profile_and_running_intent() {
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    super::persist_serve_profile(&config, &profile).unwrap();
+    persist_daemon_desired_running(&config, false).unwrap();
+    let error = super::daemon_launch_with_profile(
+        &config,
+        true,
+        false,
+        None,
+        |_, _| anyhow::bail!("invalid requested token file"),
+        |_, _| unreachable!("failed resolution must not inspect running serve options"),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("invalid requested"));
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+    assert_eq!(load_daemon_desired_running(&config).unwrap(), Some(false));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_profile_foreign_socket_does_not_accept_new_intent() {
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    super::persist_serve_profile(&config, &profile).unwrap();
+    persist_daemon_desired_running(&config, false).unwrap();
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let _listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    let result = super::daemon_launch_with_profile(
+        &config,
+        true,
+        false,
+        None,
+        |_, _| {
+            let mut updated = profile.clone();
+            updated.listen = Some("127.0.0.1:9999".into());
+            Ok(super::ResolvedDaemonServePlan {
+                config: config.clone(),
+                profile: updated,
+                serve_args: vec![],
+                control_token_env: None,
+                startup_summary: String::new(),
+            })
+        },
+        |_, _| unreachable!("foreign sockets must not be adopted"),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+    assert_eq!(load_daemon_desired_running(&config).unwrap(), Some(false));
+    assert!(config.socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_profile_foreground_retains_lock_until_runtime_registration() {
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    let (plan, registration_lock) = super::prepare_serve_with_profile(&config, false, |_, _| {
+        Ok(super::ResolvedDaemonServePlan {
+            config: config.clone(),
+            profile: profile.clone(),
+            serve_args: vec![],
+            control_token_env: None,
+            startup_summary: String::new(),
+        })
+    })
+    .await
+    .unwrap();
+
+    let lock_path = daemon_paths(&config).lifecycle_lock_path;
+    assert!(RuntimeDbLock::try_lock(&lock_path).is_err());
+    assert!(!config.socket_path.exists());
+    assert!(!daemon_paths(&config).metadata_path.exists());
+
+    let _listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    let service = super::RuntimeServiceHandle::new_starting(&plan.config).unwrap();
+    service.write_state_files(&plan.config).unwrap();
+    assert!(RuntimeDbLock::try_lock(&lock_path).is_err());
+    drop(registration_lock);
+    let next_lock = RuntimeDbLock::try_lock(&lock_path).unwrap();
+    assert!(daemon_paths(&config).metadata_path.exists());
+    assert_eq!(super::load_serve_profile(&config).unwrap(), Some(profile));
+    drop(next_lock);
+}
+
 fn test_config() -> AppConfig {
     let home = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1218,6 +1449,24 @@ async fn daemon_stop_refuses_foreign_socket_cleanup() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn serve_profile_corruption_does_not_relax_foreign_socket_stop_guard() {
+    let config = test_config();
+    super::persist_serve_profile(&config, &serve_profile_fixture()).unwrap();
+    fs::write(super::serve_profile_path(&config), b"{broken").unwrap();
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let _listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+
+    let error = daemon_stop(&config).await.unwrap_err();
+    assert!(error.to_string().contains("refusing to clean it up"));
+    assert!(config.socket_path.exists());
+    assert_eq!(
+        fs::read(super::serve_profile_path(&config)).unwrap(),
+        b"{broken"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
     let config = test_config();
     let paths = daemon_paths(&config);
@@ -1251,12 +1500,35 @@ async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
 #[cfg(unix)]
 #[tokio::test]
 async fn daemon_stop_uses_recorded_runtime_http_addr_when_socket_is_missing() {
+    assert_shutdown_with_recorded_runtime_addr(false, false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_profile_corruption_does_not_block_running_daemon_stop() {
+    assert_shutdown_with_recorded_runtime_addr(false, true).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_profile_corruption_does_not_block_running_prepare_update() {
+    assert_shutdown_with_recorded_runtime_addr(true, true).await;
+}
+
+#[cfg(unix)]
+async fn assert_shutdown_with_recorded_runtime_addr(prepare_update: bool, corrupt_profile: bool) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut config = test_config();
     config.http_addr = "127.0.0.1:9".into();
     let paths = daemon_paths(&config);
     fs::create_dir_all(config.run_dir()).unwrap();
+    if corrupt_profile {
+        super::persist_serve_profile(&config, &serve_profile_fixture()).unwrap();
+        fs::write(super::serve_profile_path(&config), b"{broken").unwrap();
+        persist_daemon_desired_running(&config, true).unwrap();
+        assert!(daemon_status(&config).await.is_err());
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let metadata_http = listener.local_addr().unwrap().to_string();
@@ -1302,13 +1574,37 @@ async fn daemon_stop_uses_recorded_runtime_http_addr_when_socket_is_missing() {
         stream.flush().await.unwrap();
     });
 
-    let stopped = daemon_stop(&config).await.unwrap();
+    let stopped = if prepare_update {
+        daemon_prepare_update(&config).await.unwrap()
+    } else {
+        daemon_stop(&config).await.unwrap()
+    };
     server.await.unwrap();
 
-    assert_eq!(stopped.action, crate::daemon::DaemonLifecycleAction::Stop);
+    assert_eq!(
+        stopped.action,
+        if prepare_update {
+            DaemonLifecycleAction::PrepareUpdate
+        } else {
+            DaemonLifecycleAction::Stop
+        }
+    );
     assert_eq!(stopped.status.state, DaemonLifecycleState::Stopped);
     assert!(!paths.metadata_path.exists());
     assert!(!paths.pid_path.exists());
+    if corrupt_profile {
+        assert_eq!(stopped.status.desired_running, prepare_update);
+        assert_eq!(
+            load_daemon_desired_running(&config).unwrap(),
+            Some(prepare_update)
+        );
+        assert!(stopped.status.desired_serve.is_none());
+        assert_eq!(
+            fs::read(super::serve_profile_path(&config)).unwrap(),
+            b"{broken"
+        );
+        assert!(daemon_status(&config).await.is_err());
+    }
 }
 
 #[cfg(unix)]
@@ -1321,14 +1617,12 @@ async fn daemon_stop_surfaces_incompatible_status_probe_guidance() {
     let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
     let socket_path = config.socket_path.clone();
     let server = tokio::spawn(async move {
-        for _ in 0..2 {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).await.unwrap();
-            let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"ok\": invalid}";
-            stream.write_all(response).await.unwrap();
-            stream.flush().await.unwrap();
-        }
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request).await.unwrap();
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"ok\": invalid}";
+        stream.write_all(response).await.unwrap();
+        stream.flush().await.unwrap();
     });
 
     let err = daemon_stop(&config).await.unwrap_err().to_string();

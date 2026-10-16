@@ -20,6 +20,15 @@ Holon 在设计上是无头的。HTTP 和事件驱动的集成接口应当保留
 只读路由（agent 状态、事件、任务）在远程访问时也要求该头。没有 control token
 时，服务端运行在 **local 模式**，信任本地进程边界。
 
+daemon 的启动意图独立保存在 `HOLON_HOME/daemon/serve_profile.json`，
+不是 HTTP 监听配置的热更新接口。显式 CLI 优先于明确的启动环境输入，
+然后是 profile 与默认值（有效旧 metadata 仅用于迁移）。
+启动日志说明这些来源，不输出 token 值。profile 仅存 token-file 路径
+或 `external_required` 标记，不存凭据。保存的认证依赖无法满足时，
+即使监听 loopback 也拒绝启动，绝不静默降级为无认证 local 模式。
+stop 和运行文件清理保留该意图；reset、失败保存与降级限制见
+[CLI 参数参考](cli.md#holon-serve-参数)。
+
 从 v0.36.0 开始，Holon 支持**优先 Session（Session-first）**的认证架构。除 Bearer Token 外，浏览器和 Web UI 客户端还支持通过 HTTP-only Session Cookie 进行认证：
 
 - **`GET /api/auth/method`** — 返回当前认证模式（`"local"` 或 `"oidc"`）。

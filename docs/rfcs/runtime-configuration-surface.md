@@ -20,8 +20,8 @@ The runtime should use three distinct layers:
 
 The core contract is:
 
-- startup settings are provided only through environment variables and CLI
-  flags
+- startup settings are supplied through environment variables and CLI flags;
+  daemon serve intent may be inherited from its lifecycle-owned profile
 - `config.json` stores only runtime-mutable configuration
 - agent-specific overrides and behavior state belong to agent state, not to
   `config.json`
@@ -55,7 +55,8 @@ Startup settings are not part of Holon's runtime mutation surface.
 
 ### Contract
 
-- startup settings are supplied through environment variables and CLI flags
+- startup settings are supplied through environment variables and CLI flags;
+  daemon serve intent persists separately from runtime-mutable configuration
 - startup settings are read during process startup
 - Holon does not provide a config-mutation command surface for them
 - changing startup settings requires restarting the affected process
@@ -131,7 +132,7 @@ This keeps the file's meaning stable:
 
 Holon should keep mutation surfaces aligned with lifecycle class:
 
-- startup settings: env vars and CLI flags only
+- startup settings: env vars and CLI flags, with daemon-owned serve inheritance
 - runtime-mutable config: runtime control API and matching CLI surface
 - agent state: agent control API and matching CLI surface
 
@@ -221,10 +222,12 @@ This does not change the separate `ViewImage` tool's input limit.
 - do not define every startup flag in this RFC
 - do not define the final CLI syntax for runtime-config mutation
 - do not redesign agent profile or instruction-loading behavior here
-- do not require startup settings to be persisted in a second config file
+- do not define general startup persistence here; daemon serve intent has the
+  focused lifecycle contract in `daemon-serve-profile-persistence.md`
 
 ## Related RFCs
 
+- `daemon-serve-profile-persistence.md`
 - `agent-control-plane-model.md`
 - `agent-profile-model.md`
 - `instruction-loading.md`

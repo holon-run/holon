@@ -1,4 +1,5 @@
 mod lifecycle;
+mod profile;
 mod service;
 mod state;
 
@@ -6,10 +7,14 @@ mod state;
 mod tests;
 
 pub use lifecycle::{
-    daemon_prepare_update, daemon_restart, daemon_restart_with_timeout, daemon_start,
-    daemon_start_with_timeout, daemon_status, daemon_stop, ensure_serve_preflight,
-    graceful_runtime_shutdown, prepare_runtime_before_server, DAEMON_SERVE_ARGS_ENV,
-    PRE_SERVER_PREPARED_ENV,
+    daemon_launch_with_profile, daemon_prepare_update, daemon_restart, daemon_restart_with_timeout,
+    daemon_start, daemon_start_with_timeout, daemon_status, daemon_stop, ensure_serve_preflight,
+    graceful_runtime_shutdown, prepare_runtime_before_server, prepare_serve_with_profile,
+    DAEMON_SERVE_ARGS_ENV, DAEMON_SERVE_RESOLUTION_ENV, PRE_SERVER_PREPARED_ENV,
+};
+pub use profile::{
+    load_serve_profile, persist_serve_profile, serve_profile_path, DaemonServeProfile,
+    ResolvedDaemonServePlan, ServeProfileAccess, ServeProfileAuthentication,
 };
 pub(crate) use service::runtime_activity_message;
 pub use service::{
@@ -20,8 +25,8 @@ pub use service::{
 };
 pub use state::{
     cleanup_daemon_state, config_fingerprint, daemon_logs, daemon_paths, load_daemon_metadata,
-    load_last_runtime_failure, DaemonLifecycleAction, DaemonLifecycleOwner, DaemonLifecycleResult,
-    DaemonLifecycleState, DaemonLogsView, DaemonPaths, DaemonStatusView,
+    load_last_runtime_failure, DaemonDesiredServe, DaemonLifecycleAction, DaemonLifecycleOwner,
+    DaemonLifecycleResult, DaemonLifecycleState, DaemonLogsView, DaemonPaths, DaemonStatusView,
 };
 pub(crate) use state::{
     clear_persisted_daemon_lifecycle_failures, daemon_log_hint, load_daemon_desired_running,

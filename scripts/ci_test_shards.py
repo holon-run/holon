@@ -46,6 +46,7 @@ CONTROL_SHARD = (
 # CLI contracts, snapshot gates, and the `holon run` end-to-end suite.
 CLI_SHARD = (
     "cli_json_contract",
+    "daemon_serve_profile",
     "run_once",
     "cli_snapshot",
     "openapi_snapshot",

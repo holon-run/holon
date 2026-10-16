@@ -720,6 +720,16 @@
         "required": false
       },
       {
+        "long": "desktop-integration-if-unconfigured",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "host",
         "short": null,
         "default_value": null,
@@ -738,6 +748,16 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "reset-serve-options",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
         "required": false
       },
       {
@@ -805,6 +825,16 @@
         "required": false
       },
       {
+        "long": "desktop-integration-if-unconfigured",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "host",
         "short": null,
         "default_value": null,
@@ -823,6 +853,16 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "reset-serve-options",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
         "required": false
       },
       {
@@ -1833,6 +1873,16 @@
         "required": false
       },
       {
+        "long": "desktop-integration-if-unconfigured",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "host",
         "short": null,
         "default_value": null,
@@ -1851,6 +1901,16 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "reset-serve-options",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
         "required": false
       },
       {
