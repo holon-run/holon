@@ -161,6 +161,7 @@ export function classifyConversationError(
     return "unsupported";
   }
   if (error instanceof ConversationResetError) {
+    if (error.reason === "agent_identity_changed") return "terminal";
     return error.reason === "agent_not_found" ? "recoverable" : "retryable";
   }
   if (error instanceof ConversationTimeoutError) {
@@ -1061,7 +1062,8 @@ export class ConversationController {
         // in-stream reset_required message receives.
         if (
           error instanceof ConversationResetError &&
-          error.reason !== "agent_not_found"
+          error.reason !== "agent_not_found" &&
+          error.reason !== "agent_identity_changed"
         ) {
           this.#applyStreamReset(error.reason);
         }
@@ -1236,6 +1238,9 @@ export class ConversationController {
         return;
       }
       if (item.type === "reset_required") {
+        if (item.reset.reason === "agent_identity_changed" || item.reset.reason === "agent_not_found") {
+          throw ConversationResetError.fromStream(item.reset);
+        }
         this.#applyStreamReset(item.reset.reason);
         return;
       }
@@ -1307,9 +1312,12 @@ export class ConversationController {
   }
 
   #discardUnauthorizedCache(error: unknown, includeNotFound = false): void {
-    if (!(error instanceof ConversationHttpError) ||
-        !([401, 403].includes(error.status) || (includeNotFound && error.status === 404) ||
-          error.body.code === "conversation_identity_changed")) return;
+    const identityReset = error instanceof ConversationResetError &&
+      (error.reason === "agent_identity_changed" || error.reason === "agent_not_found");
+    const accessRejected = error instanceof ConversationHttpError &&
+      ([401, 403].includes(error.status) || (includeNotFound && error.status === 404) ||
+        error.body.code === "conversation_identity_changed");
+    if (!identityReset && !accessRejected) return;
     this.#cancelSnapshotTimer();
     this.#runToken += 1;
     this.#runAbort?.abort(abortError("conversation access revoked"));
@@ -1320,7 +1328,7 @@ export class ConversationController {
     this.#clearBrowse();
     this.#snapshotBase = undefined;
     this.#pendingRevalidate = undefined;
-    this.#state.reset("stream_recovery_failed");
+    this.#state.reset(identityReset ? error.reason : "stream_recovery_failed");
     this.#briefStates.clear();
     this.#briefOrder.length = 0;
     this.#detailStates.clear();

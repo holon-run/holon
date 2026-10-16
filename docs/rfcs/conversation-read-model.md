@@ -29,9 +29,16 @@ A stream binds to its initial transaction's identity, even for legacy callers.
 Every SSE data frame, including batch begin, changes, checkpoint and reset,
 carries `agent_id` and `agent_incarnation`. Each recovered transaction must match
 that binding before any of its units are queued. Replacement/deletion terminates
-the stream with `agent_identity_changed`; an idle stream also checks lifecycle
+the stream with `agent_identity_changed` for callers negotiating the binding via
+`x-holon-expected-incarnation`; unnegotiated callers receive the existing
+`agent_not_found` reset instead. An idle stream also checks lifecycle
 on its recovery timer. It never follows a new incarnation. Queued old data stays
 old-labelled; incomplete batches never advance a checkpoint.
+
+The SDK decodes both reset reasons. Its Controller stops rather than re-bootstrap
+across an identity loss, clearing turns, checkpoint, details, Briefs, and persistent
+caches even without `expectedIdentity`. A bound client remains invalidated and
+cannot accept the replacement identity.
 
 The SDK validates HTTP bindings after decoding and each stream frame before
 assembly/controller delivery, retaining cancellation and terminal invalidation.

@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import {
-  ConversationClient, ConversationHttpError, CONVERSATION_INCARNATION_CAPABILITY,
+  ConversationClient, ConversationController, ConversationHttpError, ConversationResetError,
+  CONVERSATION_INCARNATION_CAPABILITY,
 } from "../dist/index.js";
 
 const baseUrl = process.env.HOLON_CONVERSATION_E2E_BASE_URL;
 assert.ok(baseUrl);
-const source = new ConversationClient({ baseUrl });
+let unboundStreams = 0;
+const source = new ConversationClient({
+  baseUrl,
+  fetch: async (url, init) => {
+    const response = await fetch(url, init);
+    if (new URL(url).pathname.endsWith("/stream") &&
+        !new Headers(init.headers).has("x-holon-expected-incarnation")) unboundStreams++;
+    return response;
+  },
+});
 assert.ok((await source.requireCapability()).capabilities.includes(CONVERSATION_INCARNATION_CAPABILITY));
 const bound = () => source.withIncarnationFence({ agentId: "web", incarnation: 1 });
 const client = bound();
@@ -20,6 +30,38 @@ await client.locateSource("web", "brief:brief-one", { contextLimit: 1 });
 const abort = new AbortController();
 const stream = client.stream("web", { after: snapshot.summary.snapshot_cursor, signal: abort.signal });
 assert.equal((await stream.next()).value.type, "batch");
+
+// Unnegotiated clients must receive the legacy reset, not a new enum value.
+const legacyStream = source.stream("web", { after: snapshot.summary.snapshot_cursor, signal: abort.signal });
+assert.equal((await legacyStream.next()).value.type, "batch");
+let cachedSnapshot = { summary: snapshot.summary, etag: snapshot.etag };
+const cachedBriefs = new Map();
+let cacheClears = 0;
+const controller = new ConversationController({
+  client: source, agentId: "web",
+  snapshotCache: {
+    async load() { return cachedSnapshot; },
+    async store(value) { cachedSnapshot = value; },
+    async clear() { cachedSnapshot = null; cacheClears++; },
+  },
+  briefCache: {
+    async get(id) { return cachedBriefs.get(id); },
+    async put(id, value) { cachedBriefs.set(id, value); },
+    async clear() { cachedBriefs.clear(); cacheClears++; },
+  },
+});
+const until = async (predicate, label) => {
+  const deadline = Date.now() + 20_000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, label);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+controller.start();
+await until(() => unboundStreams === 2, "unbound Controller did not attach");
+await controller.loadBrief("brief-one");
+assert.ok(controller.view().turns.length > 0);
+assert.equal(cachedBriefs.size, 1);
 
 const request = async (path, method, body) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -41,6 +83,20 @@ try {
     error.body.code === "conversation_identity_changed" && error.body.retryable === false;
   // The old live stream terminates; it cannot recover under the replacement identity.
   await assert.rejects(stream.next(), isIdentityError);
+  const legacyReset = await legacyStream.next();
+  assert.equal(legacyReset.value.type, "reset_required");
+  assert.equal(legacyReset.value.reset.reason, "agent_not_found");
+  assert.equal((await legacyStream.next()).done, true);
+  await until(() => cacheClears === 2, "unbound Controller did not clear deleted identity");
+  assert.equal(controller.status.kind, "recoverable_error");
+  assert.ok(controller.status.error instanceof ConversationResetError);
+  assert.equal(controller.status.error.reason, "agent_not_found");
+  assert.deepEqual(controller.view().turns, []);
+  assert.equal(controller.view().checkpoint, null);
+  assert.equal(controller.briefState("brief-one"), null);
+  assert.equal(cachedSnapshot, null);
+  assert.equal(cachedBriefs.size, 0);
+  assert.equal(unboundStreams, 2, "an unbound Controller must not follow the replacement");
   for (const operation of [
     (pinned) => pinned.summary("web"),
     (pinned) => pinned.summary("web", { ifNoneMatch: snapshot.etag }),
@@ -63,7 +119,9 @@ try {
     (error) => error instanceof ConversationHttpError &&
       error.body.code === "conversation_cursor_scope_mismatch");
 } finally {
+  controller.dispose();
   abort.abort();
   await stream.return();
+  await legacyStream.return();
 }
-console.log("incarnation-bound HTTP/304/stream/resume/delete/recreate passed without identity requests");
+console.log("incarnation-bound HTTP/304/stream/resume/delete/recreate and legacy Controller cache invalidation passed without identity requests");

@@ -74,6 +74,7 @@ const resetReasons = new Set<ConversationResetReason>([
   "event_log_epoch_mismatch",
   "cursor_rejected",
   "agent_not_found",
+  "agent_identity_changed",
   "stream_recovery_failed",
   "slow_consumer",
 ]);

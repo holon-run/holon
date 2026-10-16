@@ -247,6 +247,7 @@ pub(crate) enum ConversationStreamResetReason {
     QueryVersionMismatch,
     EventLogEpochMismatch,
     CursorRejected,
+    AgentNotFound,
     AgentIdentityChanged,
     StreamRecoveryFailed,
     SlowConsumer,
@@ -374,6 +375,7 @@ pub async fn stream(
     let tx = BoundStreamSender {
         tx,
         identity: identity.clone(),
+        identity_bound: expected_incarnation.is_some(),
     };
     let host = state.host.clone();
     tokio::spawn(async move {
@@ -434,12 +436,7 @@ pub async fn stream(
                             );
                             let _ = send_stream_message(
                                 &tx,
-                                ConversationStreamMessage::ResetRequired {
-                                    reason: ConversationStreamResetReason::AgentIdentityChanged,
-                                    oldest_retained_seq: None,
-                                    event_head_seq: None,
-                                    hint: "bootstrap a fresh conversation snapshot".to_string(),
-                                },
+                                identity_changed_reset(tx.identity_bound),
                                 None,
                             )
                             .await;
@@ -447,8 +444,12 @@ pub async fn stream(
                         }
                         Ok(Err(error)) => {
                             record_background_stream_error(&error);
-                            let _ = send_stream_message(&tx, reset_message_for_error(&error), None)
-                                .await;
+                            let _ = send_stream_message(
+                                &tx,
+                                reset_message_for_error(&error, tx.identity_bound),
+                                None,
+                            )
+                            .await;
                             return;
                         }
                         Err(BoundedBlockingReadError::Join(error)) => {
@@ -516,6 +517,7 @@ pub async fn stream(
 struct BoundStreamSender {
     tx: tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
     identity: ConversationIdentity,
+    identity_bound: bool,
 }
 
 async fn send_change_batch(tx: &BoundStreamSender, batch: ConversationChangeBatch) -> bool {
@@ -528,17 +530,7 @@ async fn send_change_batch_with_timeout(
     send_timeout: Duration,
 ) -> bool {
     if batch.identity != tx.identity {
-        let _ = send_stream_message(
-            tx,
-            ConversationStreamMessage::ResetRequired {
-                reason: ConversationStreamResetReason::AgentIdentityChanged,
-                oldest_retained_seq: None,
-                event_head_seq: None,
-                hint: "resolve the agent identity before opening another conversation".into(),
-            },
-            None,
-        )
-        .await;
+        let _ = send_stream_message(tx, identity_changed_reset(tx.identity_bound), None).await;
         return false;
     }
     let batch_id = format!("conversation:{}:{}", batch.from_seq, batch.through_seq);
@@ -664,17 +656,28 @@ fn stream_reset_reason(reason: ConversationResetReason) -> ConversationStreamRes
     }
 }
 
-fn reset_message_for_error(error: &anyhow::Error) -> ConversationStreamMessage {
+fn identity_changed_reset(identity_bound: bool) -> ConversationStreamMessage {
+    ConversationStreamMessage::ResetRequired {
+        reason: if identity_bound {
+            ConversationStreamResetReason::AgentIdentityChanged
+        } else {
+            ConversationStreamResetReason::AgentNotFound
+        },
+        oldest_retained_seq: None,
+        event_head_seq: None,
+        hint: "resolve the agent identity before opening another conversation".into(),
+    }
+}
+
+fn reset_message_for_error(
+    error: &anyhow::Error,
+    identity_bound: bool,
+) -> ConversationStreamMessage {
     if matches!(
         error.downcast_ref::<ConversationReadError>(),
         Some(ConversationReadError::IdentityChanged)
     ) {
-        return ConversationStreamMessage::ResetRequired {
-            reason: ConversationStreamResetReason::AgentIdentityChanged,
-            oldest_retained_seq: None,
-            event_head_seq: None,
-            hint: "resolve the agent identity before opening another conversation".into(),
-        };
+        return identity_changed_reset(identity_bound);
     }
     if let Some(ConversationReadError::ResetRequired {
         reason,
@@ -2654,6 +2657,7 @@ mod tests {
         let tx = BoundStreamSender {
             tx,
             identity: stream_batch().identity,
+            identity_bound: true,
         };
         assert!(send_change_batch(&tx, batch).await);
         drop(tx);
@@ -2678,6 +2682,7 @@ mod tests {
         let tx = BoundStreamSender {
             tx,
             identity: stream_batch().identity,
+            identity_bound: true,
         };
         let sender = tokio::spawn(async move { send_change_batch(&tx, stream_batch()).await });
         let first = rx
@@ -2692,6 +2697,55 @@ mod tests {
         assert!(body.contains("event: batch_begin"));
         assert!(!body.contains("event: checkpoint"));
         assert!(!body.contains("id: "));
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_identity_reset_preserves_legacy_compatibility() {
+        for (identity_bound, reason) in
+            [(false, "agent_not_found"), (true, "agent_identity_changed")]
+        {
+            for source in ["missing", "replaced", "mismatched_batch"] {
+                let (tx, rx) = tokio::sync::mpsc::channel(8);
+                let tx = BoundStreamSender {
+                    tx,
+                    identity: stream_batch().identity,
+                    identity_bound,
+                };
+                match source {
+                    "missing" => {
+                        assert!(
+                            send_stream_message(&tx, identity_changed_reset(identity_bound), None)
+                                .await
+                        );
+                    }
+                    "replaced" => {
+                        let error = anyhow::Error::new(ConversationReadError::IdentityChanged);
+                        assert!(
+                            send_stream_message(
+                                &tx,
+                                reset_message_for_error(&error, identity_bound),
+                                None,
+                            )
+                            .await
+                        );
+                    }
+                    _ => {
+                        let mut batch = stream_batch();
+                        batch.identity.agent_incarnation += 1;
+                        assert!(!send_change_batch(&tx, batch).await);
+                    }
+                }
+                drop(tx);
+                let response = Sse::new(ReceiverStream::new(rx)).into_response();
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let body = String::from_utf8(body.to_vec()).unwrap();
+                assert_eq!(body.matches("event: reset_required").count(), 1, "{source}");
+                assert!(body.contains(&format!("\"reason\":\"{reason}\"")), "{body}");
+                assert!(body.contains("\"agent_incarnation\":1"), "{body}");
+                assert!(!body.contains("event: batch_begin"), "{body}");
+                assert!(!body.contains("id: "), "{body}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -2732,6 +2786,7 @@ mod tests {
         let tx = BoundStreamSender {
             tx,
             identity: stream_batch().identity,
+            identity_bound: true,
         };
         let started = std::time::Instant::now();
         assert!(

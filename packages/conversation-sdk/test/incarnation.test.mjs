@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  ConversationClient, ConversationHttpError, ConversationCapabilityError,
+  ConversationClient, ConversationController, ConversationResetError,
+  ConversationHttpError, ConversationCapabilityError,
   CONVERSATION_INCARNATION_CAPABILITY,
 } from "../dist/index.js";
 import { summary, detail, batch } from "./helpers.mjs";
@@ -125,7 +126,88 @@ test("identity-changed reset is terminal, even with the old valid binding", asyn
     oldest_retained_seq: null, event_head_seq: null,
   })]));
   await assert.rejects(client.stream("web").next(), ConversationHttpError);
+  await assert.rejects(client.summary("web"), ConversationHttpError);
 });
+
+for (const reason of ["agent_identity_changed", "agent_not_found"]) {
+  test(`unbound Controller clears all cached state and stops on ${reason}`, async () => {
+    let streamWriter;
+    let summaryReads = 0;
+    let streamReads = 0;
+    let snapshot = { summary: summary(), etag: "old" };
+    const briefs = new Map();
+    let cleared = 0;
+    const client = new ConversationClient({
+      baseUrl: "http://runtime.test/api",
+      fetch: async (url, init) => {
+        assert.equal(new Headers(init.headers).has("x-holon-expected-incarnation"), false);
+        const path = new URL(url).pathname;
+        if (path.endsWith("/handshake")) return Response.json(handshake());
+        if (path.endsWith("/stream")) {
+          streamReads++;
+          return new Response(new ReadableStream({ start(writer) { streamWriter = writer; } }));
+        }
+        if (path.endsWith("/briefs/brief")) return Response.json(brief);
+        if (path.endsWith("/activities")) return Response.json(detail());
+        summaryReads++;
+        return Response.json(summary(), { headers });
+      },
+    });
+    const controller = new ConversationController({
+      client, agentId: "web",
+      snapshotCache: {
+        async load() { return snapshot; },
+        async store(value) { snapshot = value; },
+        async clear() { snapshot = null; cleared++; },
+      },
+      briefCache: {
+        async get(id) { return briefs.get(id); },
+        async put(id, value) { briefs.set(id, value); },
+        async clear() { briefs.clear(); cleared++; },
+      },
+    });
+    const until = async (predicate) => {
+      for (let i = 0; i < 200; i++) {
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      assert.fail(`Controller did not settle: ${controller.status.kind}`);
+    };
+    try {
+      controller.start();
+      await until(() => streamReads === 1 && controller.view().turns.length > 0);
+      await controller.loadBrief("brief");
+      await controller.loadDetail("turn-10");
+      assert.equal(briefs.size, 1);
+      assert.ok(controller.view().checkpoint);
+      assert.ok(controller.view().details.length > 0);
+      const reset = {
+        type: "reset_required", reason, hint: "resolve identity",
+        oldest_retained_seq: null, event_head_seq: null,
+      };
+      streamWriter.enqueue(new TextEncoder().encode(
+        `event: reset_required\ndata: ${JSON.stringify(reset)}\n\n`,
+      ));
+      streamWriter.close();
+      await until(() => cleared === 2);
+      assert.equal(controller.status.kind, reason === "agent_identity_changed" ? "terminal_error" : "recoverable_error");
+      assert.ok(controller.status.error instanceof ConversationResetError);
+      assert.equal(controller.status.error.reason, reason);
+      assert.equal(controller.view().reset_reason, reason);
+      assert.deepEqual(controller.view().turns, []);
+      assert.deepEqual(controller.view().pending_inputs, []);
+      assert.deepEqual(controller.view().details, []);
+      assert.equal(controller.view().checkpoint, null);
+      assert.equal(controller.briefState("brief"), null);
+      assert.equal(snapshot, null);
+      assert.equal(briefs.size, 0);
+      assert.equal(summaryReads, 1);
+      assert.equal(streamReads, 1);
+    } finally {
+      controller.dispose();
+    }
+  });
+}
 test("aborted decoding and concurrent invalidation cannot release a result", async () => {
   let release;
   const abort = new AbortController();
