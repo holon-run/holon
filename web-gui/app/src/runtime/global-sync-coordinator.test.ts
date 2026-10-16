@@ -5,6 +5,7 @@ import {
   retryDelayWithServerHintMs,
 } from "./global-sync-coordinator";
 import { createRuntimeClient } from "./client";
+import { AgentSessionRepository } from "./agent-session-repository";
 import { useRuntimeStore, type AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState } from "./session-projection";
 
@@ -14,6 +15,16 @@ const OBSERVER_SYNC_CAPABILITIES = [
   "events.projection-effect.v1",
   "briefs.atomic-created-event.v1",
 ];
+
+function stubAuthenticatedFetch(fetchMock: typeof fetch): void {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/auth/session/me")) {
+      return Promise.resolve(Response.json({ user_id: "test-user", auth_method: "token" }));
+    }
+    return fetchMock(input, init);
+  });
+}
 
 function listEntry(agentId: string): Record<string, unknown> {
   return {
@@ -140,7 +151,7 @@ describe("global event stream recovery", () => {
       if (url.pathname.endsWith("/agents/agent-a/events")) return backfill;
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
     useRuntimeStore.setState({
@@ -268,7 +279,7 @@ describe("global event stream recovery", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -343,7 +354,7 @@ describe("global event stream auth rejection", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -396,7 +407,7 @@ describe("global event stream auth rejection", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -461,7 +472,7 @@ describe("global event stream auth rejection", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -532,7 +543,7 @@ describe("global event stream auth rejection", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -712,7 +723,7 @@ describe("authoritative discovery cutover", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
     useRuntimeStore.setState({
@@ -785,7 +796,7 @@ describe("authoritative discovery cutover", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -852,7 +863,7 @@ describe("authoritative discovery cutover", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -919,7 +930,7 @@ describe("authoritative discovery cutover", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -980,7 +991,7 @@ describe("authoritative discovery cutover", () => {
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
 
     useRuntimeStore.getState().registerAgentForEvents("agent-a");
@@ -1054,7 +1065,7 @@ describe("authoritative discovery cutover", () => {
       }
 throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -1066,8 +1077,8 @@ throw new Error(`Unexpected request: ${url}`);
     const discovery = useRuntimeStore.getState().discovery;
     expect(discovery.unauthorizedReason).toContain("control token required");
     expect(discovery.retryAt).toBeUndefined();
-    // The cached roster stays visible but is not purged and not retried.
-    expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a", "agent-b"]);
+    // Auth rejection revokes private presentation, unlike a transient failure.
+    expect(useRuntimeStore.getState().bootstrap.agents).toEqual([]);
     expect(snapshotRequests).toBe(1);
     // Firing every captured timer must still not retry an unauthorized roster.
     for (const timer of timers.splice(0)) timer();
@@ -1105,7 +1116,7 @@ throw new Error(`Unexpected request: ${url}`);
       }
 throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     expect(useRuntimeStore.getState().bootstrapError).toContain(
       "missing capabilities: agents.roster-snapshot.v1",
@@ -1152,7 +1163,7 @@ throw new Error(`Unexpected request: ${url}`);
       }
       throw new Error(`Unexpected request: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
 
@@ -1188,7 +1199,81 @@ throw new Error(`Unexpected request: ${url}`);
       .filter((value): value is string => value != null);
   }
 
-  function headWindowFetchMock(): ReturnType<typeof vi.fn> {
+  it("discards an old discovery continuation after the authenticated subject changes", async () => {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(), sessionStorage: new MemoryStorage(),
+      setTimeout, clearTimeout, location: { hostname: "localhost", protocol: "http:" },
+    });
+    let releaseCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const clearLedger = vi.spyOn(AgentSessionRepository.prototype, "clearLedgerScopesNotMatching")
+      .mockReturnValue(cleanup);
+    let releaseBobRoster!: (response: Response) => void;
+    const bobRoster = new Promise<Response>((resolve) => { releaseBobRoster = resolve; });
+    let user = "alice";
+    let snapshots = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/auth/session/me")) {
+        return Promise.resolve(jsonResponse({ user_id: user, auth_method: "token" }));
+      }
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return user === "bob" ? bobRoster
+          : Promise.resolve(jsonResponse([listEntry("agent-a"), listEntry("agent-b")]));
+      }
+      if (url.pathname.endsWith("/agents/snapshot")) {
+        snapshots++;
+        return Promise.resolve(jsonResponse(snapshots === 1
+          ? rosterSnapshot(["agent-a", "agent-b"])
+          : rosterSnapshot(["agent-a"], { event_log_epoch: "epoch-2" })));
+      }
+      if (url.pathname.endsWith("/projection-snapshot")) {
+        return Promise.resolve(errorJsonResponse(503, { error: "unavailable", code: "capability_unavailable" }));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        return Promise.resolve(sseResponse(init, () => undefined));
+      }
+      if (/\/agents\/agent-[ab]\/events$/.test(url.pathname)) {
+        const agentId = url.pathname.split("/").at(-2)!;
+        return Promise.resolve(jsonResponse(url.searchParams.get("order") === "desc"
+          ? baselinePage(agentId) : emptyEventsPage(agentId)));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let refreshBob: Promise<void> | undefined;
+    try {
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+      await vi.waitFor(() => {
+        expect(useRuntimeStore.getState().discovery).toMatchObject({
+          freshness: "fresh", identity: { eventLogEpoch: "epoch-1" },
+        });
+      });
+      // The next A snapshot applies its roster, then suspends in ledger cleanup.
+      await useRuntimeStore.getState().refreshBootstrap();
+      await vi.waitFor(() => expect(clearLedger).toHaveBeenCalledTimes(1));
+      user = "bob";
+      refreshBob = useRuntimeStore.getState().refreshBootstrap({ syncEvents: false });
+      await vi.waitFor(() => expect(useRuntimeStore.getState().currentUser?.userId).toBe("bob"));
+      releaseCleanup();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(useRuntimeStore.getState().discovery).toMatchObject({ mode: "pending" });
+      expect(useRuntimeStore.getState().discovery.identity).toBeUndefined();
+      releaseBobRoster(jsonResponse([listEntry("agent-b")]));
+      await refreshBob;
+      expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-b"]);
+    } finally {
+      releaseCleanup();
+      releaseBobRoster(jsonResponse([listEntry("agent-b")]));
+      await refreshBob;
+      clearLedger.mockRestore();
+    }
+  });
+
+  function headWindowFetchMock() {
     return vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) {
@@ -1241,7 +1326,7 @@ throw new Error(`Unexpected request: ${url}`);
       location: { hostname: "localhost", protocol: "http:" },
     });
     const fetchMock = headWindowFetchMock();
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
     // A gap record left over from an earlier daemon restart must not drag a
@@ -1283,7 +1368,7 @@ throw new Error(`Unexpected request: ${url}`);
       },
     }));
     const fetchMock = headWindowFetchMock();
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
     useRuntimeStore.setState({
@@ -1323,7 +1408,7 @@ throw new Error(`Unexpected request: ${url}`);
       },
     }));
     const fetchMock = headWindowFetchMock();
-    vi.stubGlobal("fetch", fetchMock);
+    stubAuthenticatedFetch(fetchMock);
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     fetchMock.mockClear();
     useRuntimeStore.setState({

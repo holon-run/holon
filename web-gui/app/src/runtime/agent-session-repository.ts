@@ -295,12 +295,14 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     runtimeId: string;
     visibilityScopeId: string;
     eventLogEpoch: string;
-  }): Promise<void> {
+  }, isCurrent: () => boolean = () => true): Promise<void> {
     await this.initializeLedgerIngestion();
+    if (!isCurrent()) return;
     const pipeline = this.ledgerPipeline;
     if (!pipeline) return;
     const remoteKey = currentRemoteKey(this.dependencies.getConnectionConfig());
     for (const scope of await pipeline.listKnownScopes(remoteKey)) {
+      if (!isCurrent()) return;
       if (
         scope.runtimeId === identity.runtimeId &&
         scope.visibilityScopeId === identity.visibilityScopeId &&
@@ -314,6 +316,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
         visibilityScopeId: scope.visibilityScopeId,
         eventLogEpoch: scope.eventLogEpoch,
       });
+      if (!isCurrent()) return;
       const registeredScope = this.recoveryScopeRegistry.get(scope.agentId);
       if (
         registeredScope?.remoteKey === scope.remoteKey &&

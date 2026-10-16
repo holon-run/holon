@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   user: { authMethod: "token", userId: "alice" },
   userLoaded: true,
   token: undefined as string | undefined,
+  cached: vi.fn(),
+  persist: vi.fn(),
+  remove: vi.fn(),
 }));
 vi.mock("./runtime-store", () => ({
   getRuntimeConnectionConfig: () => ({ mode: "local", token: mocks.token }),
@@ -18,6 +21,10 @@ vi.mock("./runtime-store", () => ({
 vi.mock("./client", async (original) => ({
   ...await original<typeof import("./client")>(),
   createRuntimeClient: () => ({ getAgentIdentity: mocks.identity, getAgentState: mocks.state }),
+}));
+vi.mock("./agent-presentation-cache", async (original) => ({
+  ...await original<typeof import("./agent-presentation-cache")>(),
+  readCachedAgents: mocks.cached, writeCachedAgents: mocks.persist, removeCachedAgent: mocks.remove,
 }));
 
 import { RuntimeHttpError } from "./client";
@@ -73,6 +80,9 @@ beforeEach(() => {
   mocks.userLoaded = true;
   mocks.connection = { mode: "local", baseUrl: "/api" };
   mocks.token = undefined;
+  mocks.cached.mockReset().mockResolvedValue([]);
+  mocks.persist.mockReset().mockResolvedValue(undefined);
+  mocks.remove.mockReset().mockResolvedValue(undefined);
   useConversationScopeStore.setState({ scopes: {} });
   mocks.identity.mockReset();
   withChild(childDetail());
@@ -89,6 +99,129 @@ afterEach(() => {
 });
 
 describe("route-selected agent admission", () => {
+  it.each([429, 503, "timeout", "network"] as const)(
+    "retains only continuous online admission through a transient background %s and clears its notice on recovery",
+    async (failure) => {
+      await render();
+      expect(current.status).toBe("available");
+      const error = typeof failure === "number" ? new RuntimeHttpError("GET", "/state", failure)
+        : failure === "timeout" ? new DOMException("Request timed out", "AbortError") : new TypeError("Failed to fetch");
+      mocks.state.mockRejectedValue(error);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(current.status).toBe("available");
+      expect(current.agent?.acceptsInput).toBe(true);
+      expect(current.error).toBeTruthy();
+      mocks.state.mockResolvedValue({ id: "private-child", incarnation: 1, acceptsInput: true });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      expect(current.status).toBe("available");
+      expect(current.error).toBeUndefined();
+    },
+  );
+
+  it("never grants initial admission from cached presentation after a transient state failure", async () => {
+    mocks.cached.mockResolvedValue([{ id: "private-child", incarnation: 1, acceptsInput: false }]);
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 503));
+    await render();
+    expect(current.status).toBe("error");
+    expect(current.agent?.acceptsInput).toBe(false);
+  });
+
+  it("does not retain admission across route reentry even for a transient refresh error", async () => {
+    await render();
+    await render("other");
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 503));
+    await render();
+    expect(current.status).toBe("error");
+  });
+
+  it("does not disguise an invalid identity response as a transient background refresh failure", async () => {
+    await render();
+    mocks.identity.mockResolvedValue({ identity: { agent_id: "private-child", incarnation: 0, status: "active" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(current.status).toBe("error");
+  });
+
+  it.each([401, 403, 404])("revokes previously admitted access immediately after a background HTTP %s", async (status) => {
+    await render();
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", status));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(current.status).toBe(status === 404 ? "missing" : "unauthorized");
+    expect(current.agent).toBeUndefined();
+    expect(mocks.remove).toHaveBeenCalledTimes(2);
+    const calls = mocks.state.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.state).toHaveBeenCalledTimes(calls);
+  });
+
+  it("backs off consecutive transient failures instead of polling every five seconds", async () => {
+    await render();
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 503));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(mocks.state).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
+    expect(mocks.state).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(mocks.state).toHaveBeenCalledTimes(4);
+  });
+
+  it("restores a persisted pinned summary without a warm in-memory scope or online responses", async () => {
+    mocks.cached.mockResolvedValue([{ id: "private-child", incarnation: 1, name: "Cached child", acceptsInput: false }]);
+    mocks.identity.mockReturnValue(new Promise(() => {}));
+    mocks.state.mockReturnValue(new Promise(() => {}));
+    await render();
+    expect(current.status).toBe("revalidating");
+    expect(current.agent?.name).toBe("Cached child");
+    expect(current.agent?.acceptsInput).toBe(false);
+    expect(mocks.identity).toHaveBeenCalledTimes(1);
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a summary from another explicitly linked incarnation", async () => {
+    mocks.cached.mockResolvedValue([{ id: "private-child", incarnation: 1 }]);
+    mocks.identity.mockReturnValue(new Promise(() => {}));
+    mocks.state.mockReturnValue(new Promise(() => {}));
+    await render("private-child", 2);
+    expect(current.status).toBe("loading");
+    expect(current.agent).toBeUndefined();
+  });
+
+  it("ignores cached presentation that arrives after online admission", async () => {
+    const cached = deferred();
+    mocks.cached.mockReturnValue(cached.promise);
+    await render();
+    expect(current.status).toBe("available");
+    await act(async () => { cached.resolve([{ id: "private-child", incarnation: 1, name: "Stale" }]); });
+    expect(current.status).toBe("available");
+    expect(current.agent?.name).not.toBe("Stale");
+    expect(mocks.persist).toHaveBeenCalled();
+  });
+
+  it.each([401, 403, 404])("ignores late cached presentation after HTTP %s and purges both summary buckets", async (status) => {
+    const cached = deferred();
+    mocks.cached.mockReturnValue(cached.promise);
+    mocks.identity.mockRejectedValue(new RuntimeHttpError("GET", "/detail", status, "denied"));
+    mocks.state.mockReturnValue(new Promise(() => {}));
+    await render();
+    await act(async () => { cached.resolve([{ id: "private-child", incarnation: 1 }]); });
+    expect(current.agent).toBeUndefined();
+    expect(current.status).toBe(status === 404 ? "missing" : "unauthorized");
+    expect(mocks.remove).toHaveBeenCalledTimes(2);
+  });
+
+  it("pins cached incarnation before state resolves and revokes it on replacement", async () => {
+    const identity = deferred();
+    mocks.cached.mockResolvedValue([{ id: "private-child", incarnation: 1 }]);
+    mocks.identity.mockReturnValue(identity.promise);
+    mocks.state.mockReturnValue(new Promise(() => {}));
+    await render();
+    expect(current.status).toBe("revalidating");
+    await act(async () => { identity.resolve({ identity: { agent_id: "private-child", incarnation: 2, status: "active" } }); });
+    expect(current.status).toBe("replaced");
+    expect(current.agent).toBeUndefined();
+    expect(mocks.remove).toHaveBeenCalledTimes(2);
+  });
+
   it("revokes admission immediately when the conversation identity fence rejects", async () => {
     await render();
     act(() => {

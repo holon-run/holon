@@ -707,6 +707,48 @@ test("brief cache entries bound to another agent or id are ignored", async () =>
   controller.dispose();
 });
 
+test("cache-only restoration paints without network or online readiness", async () => {
+  const client = fakeClient({ summary: () => ({ summary: null, etag: "etag-10" }), hub: new StreamQueue() });
+  const controller = new ConversationController({
+    client, agentId: identity.agent_id,
+    snapshotCache: { async load() { return { etag: "etag-10", summary: summary() }; }, async store() {} },
+  });
+  await controller.restoreCachedSnapshot();
+  assert.equal(controller.view().turns.length, 1);
+  assert.equal(controller.status.kind, "idle");
+  assert.equal(client.calls.capability, 0);
+  assert.equal(client.calls.summary.length, 0);
+  assert.equal(client.calls.stream.length, 0);
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready");
+  assert.equal(client.calls.capability, 1);
+  assert.equal(client.calls.summary[0].ifNoneMatch, "etag-10");
+  assert.equal(client.calls.stream[0].after, "checkpoint-10");
+  controller.dispose();
+});
+
+for (const transition of ["pause", "dispose", "start"]) {
+  test(`late cache-only restoration cannot cross ${transition}`, async () => {
+    let release;
+    const cached = new Promise((resolve) => { release = resolve; });
+    const client = fakeClient({
+      summary: () => ({ summary: summary({ snapshot_cursor: "fresh-checkpoint" }), etag: "fresh" }),
+      hub: new StreamQueue(),
+    });
+    const controller = new ConversationController({
+      client, agentId: identity.agent_id,
+      snapshotCache: { load() { return cached; }, async store() {} },
+    });
+    const restored = controller.restoreCachedSnapshot();
+    controller[transition]();
+    if (transition === "start") await waitFor(() => controller.status.kind === "ready");
+    release({ etag: "old", summary: summary() });
+    await restored;
+    assert.equal(controller.view().checkpoint, transition === "start" ? "fresh-checkpoint" : null);
+    controller.dispose();
+  });
+}
+
 test("snapshot cache hydrates instantly and a 304 revalidation skips refetch", async () => {
   const hub = new StreamQueue();
   const client = fakeClient({

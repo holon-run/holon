@@ -348,6 +348,14 @@ describe("createRuntimeClient", () => {
     await expect(client.getCurrentUser()).resolves.toBeNull();
   });
 
+  it.each([401, 403, 503])("preserves HTTP %s for strict subject confirmation instead of treating it as a logout", async (status) => {
+    const client = createRuntimeClient({
+      mode: "remote", baseUrl: "http://example.test:7878",
+      fetchImpl: (async () => Response.json({ error: "unavailable" }, { status })) as typeof fetch,
+    });
+    await expect(client.getCurrentUser({ strict: true })).rejects.toMatchObject({ status });
+  });
+
   it("omits the display name for the local control identity", async () => {
     const client = createRuntimeClient({
       mode: "remote",

@@ -1,6 +1,6 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { _resetDbPromise, cacheGetConversationSnapshot, cachePutConversationSnapshot, cachePutConversationBrief,
+import { _resetDbPromise, CACHE_SCHEMA_VERSION, cacheGetSession, cacheGetConversationSnapshot, cachePutConversationSnapshot, cachePutConversationBrief,
   cacheGetConversationBrief, cacheClearRemote, pruneConversationCaches, CONVERSATION_CACHE_MAX_ENTRIES,
   CONVERSATION_CACHE_MAX_AGE_MS, CONVERSATION_CACHE_MAX_BYTES } from "./idb-cache";
 
@@ -27,11 +27,62 @@ describe("conversation cache lifecycle", () => {
   it("closes its connection when another tab upgrades the database", async () => {
     await cacheGetConversationSnapshot("local", "agent");
     const next = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("holon-webgui-cache", 6);
+      const request = indexedDB.open("holon-webgui-cache", 7);
       request.onsuccess = () => resolve(request.result);
       request.onblocked = () => reject(new Error("old connection did not close"));
     });
     next.close();
+  });
+  it("preserves v5 sessions, briefs and snapshots while adding the presentation store", async () => {
+    const old = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("holon-webgui-cache", 5);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        db.createObjectStore("sessions", { keyPath: ["remoteKey", "agentId"] })
+          .createIndex("byRemoteKey", "remoteKey");
+        db.createObjectStore("meta", { keyPath: "remoteKey" });
+        db.createObjectStore("modelCatalog", { keyPath: "remoteKey" });
+        db.createObjectStore("briefs", { keyPath: ["remoteKey", "agentId", "briefId"] });
+        db.createObjectStore("snapshots", { keyPath: ["remoteKey", "agentId"] });
+      };
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    const cachedSnapshot = snapshot();
+    const cachedBrief = { remoteKey: "local#user-A", agentId: "agent", briefId: "brief", schemaVersion: 1, cachedAt: Date.now(), brief: {} };
+    const cachedSession = { remoteKey: "local#user-A", agentId: "agent", schemaVersion: 5, cachedAt: Date.now() };
+    await new Promise<void>((resolve, reject) => {
+      const tx = old.transaction(["sessions", "briefs", "snapshots"], "readwrite");
+      tx.objectStore("sessions").put(cachedSession);
+      tx.objectStore("briefs").put(cachedBrief);
+      tx.objectStore("snapshots").put(cachedSnapshot);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error);
+    });
+    old.close();
+    expect(CACHE_SCHEMA_VERSION).toBe(5);
+    expect(await cacheGetSession("local#user-A", "agent")).toEqual(cachedSession);
+    expect(await cacheGetConversationBrief("local#user-A", "agent", "brief")).toEqual(cachedBrief);
+    expect(await cacheGetConversationSnapshot("local#user-A", "agent")).toEqual(cachedSnapshot);
+  });
+  it("still retires briefs and snapshots from before authenticated namespaces", async () => {
+    const old = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open("holon-webgui-cache", 4);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("briefs", { keyPath: ["remoteKey", "agentId", "briefId"] });
+        request.result.createObjectStore("snapshots", { keyPath: ["remoteKey", "agentId"] });
+      };
+      request.onsuccess = () => resolve(request.result);
+    });
+    await new Promise<void>((resolve) => {
+      const tx = old.transaction(["briefs", "snapshots"], "readwrite");
+      tx.objectStore("briefs").put({ remoteKey: "local#user-A", agentId: "agent", briefId: "brief", cachedAt: Date.now() });
+      tx.objectStore("snapshots").put(snapshot());
+      tx.oncomplete = () => resolve();
+    });
+    old.close();
+    expect(await cacheGetConversationBrief("local#user-A", "agent", "brief")).toBeUndefined();
+    expect(await cacheGetConversationSnapshot("local#user-A", "agent")).toBeUndefined();
   });
   it("clears both caches and identity namespaces without touching other remotes", async () => {
     await cachePutConversationSnapshot(snapshot());

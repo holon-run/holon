@@ -850,6 +850,30 @@ than left as a fallback:
   imported; connection config, read markers, and diagnostics ledger storage
   are untouched.
 
+### 9.2 Reload-time cached presentation (2026-10 follow-up)
+
+Agent roster/summary presentation and conversation snapshots may be restored
+after `/auth/session/me` confirms the current subject, independently of a slow
+bootstrap, identity, or state projection. Persisted presentation is namespaced
+by remote and authenticated subject and pinned to an agent incarnation. It
+does not carry input permission or authoritative roster membership.
+
+The SDK's `restoreCachedSnapshot()` restores a controller's persisted snapshot
+without network I/O or a `ready` transition. Starting the controller still
+requires the GUI's online agent admission and performs the normal capability,
+identity, and snapshot revalidation before streaming. Lifecycle generations
+fence cache results that arrive after start, pause, or disposal. Authentication
+rejection, deletion, and incarnation replacement revoke presentation and its
+persisted entries; logout/connection changes clear private caches. A cache
+schema upgrade must retain compatible authenticated conversation snapshots.
+
+For a continuously mounted route already admitted by online identity/state,
+a transient background projection timeout, transport failure, `429`, or `5xx`
+is degraded freshness, not an authorization denial. Keep that admission,
+display a non-error refresh-delay notice, and retry with bounded backoff.
+Route reentry always revalidates read-only; persisted summaries cannot grant
+admission. Definitive access/identity rejections still revoke immediately.
+
 ## 10. Acceptance evidence required for implementation
 
 1. Initial/older requests contain no historical verbose/transcript/tool output.

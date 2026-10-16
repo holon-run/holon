@@ -2642,6 +2642,10 @@ code {
   font-size: 12px;
 }
 
+.composer-status.is-pending {
+  color: var(--muted);
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;

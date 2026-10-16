@@ -1543,6 +1543,9 @@ describe("runtime client generation", () => {
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/agents/agent-a/work-items")) return oldWorkItems;
+      if (url.endsWith("/auth/session/me")) {
+        return Promise.resolve(jsonResponse({ user_id: "test-user", auth_method: "token" }));
+      }
       if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) {
         return Promise.resolve(jsonResponse([{ id: "agent-a", lifecycle: "asleep" }]));

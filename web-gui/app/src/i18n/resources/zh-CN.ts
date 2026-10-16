@@ -8,7 +8,8 @@ const zh: Record<string, any> = {
   agentAccess: {
     loading: "正在加载智能体…",
     revalidating: "正在验证访问权限，缓存历史仅供只读预览。",
-    cachedOffline: "暂时无法验证访问权限，离线历史仅供只读预览。",
+    cachedOffline: "智能体刷新暂时延迟，正在重试；缓存历史暂为只读。",
+    refreshDelayed: "智能体状态刷新暂时延迟，正在后台重试。",
     available: "智能体会话",
     unauthorized: "请先认证再打开此智能体",
     missing: "未找到智能体",

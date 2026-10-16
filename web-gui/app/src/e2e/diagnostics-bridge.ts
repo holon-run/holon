@@ -99,9 +99,10 @@ function snapshot(): HolonE2eSnapshot {
   const state = useRuntimeStore.getState();
   const config = getRuntimeConnectionConfig();
   const connection = state.bootstrap.connection;
+  const authRejected = state.discovery?.freshness === "unauthorized" || state.globalStreamStatus === "unauthorized";
   const contextKey = JSON.stringify([
     connection.mode, connection.baseUrl, config.token, state.currentUserLoaded,
-    connection.authRequired, state.currentUser?.authMethod, state.currentUser?.userId,
+    connection.authRequired, authRejected, state.currentUser?.authMethod, state.currentUser?.userId,
   ]);
   const identityKey = JSON.stringify([contextKey, state.selectedAgentId]);
   const incarnationParam = new URLSearchParams(window.location.search).get("incarnation");
