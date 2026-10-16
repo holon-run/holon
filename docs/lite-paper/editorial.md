@@ -146,7 +146,7 @@
 - [Skills：技能库与按 Agent 启用](../website/reference/skills.md)
 - [多工作区与 worktree](../website/reference/workspaces.md)
 - [持续工作流程](../website/guides/run-long-lived-task.md)
-- [Webhook 与定时触发](../website/concepts/external-triggers.md)
+- [事件与等待](../website/concepts/events-and-waits.md)
 - [定时器 CLI：延时与周期任务](../website/reference/cli.md)
 - [WorkItem](../website/reference/work-items.md)
 - [子 Agent 与监督](../website/guides/delegate-work.md)

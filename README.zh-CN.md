@@ -161,7 +161,7 @@ Holon 正在积极开发中。当前推荐版本为
 ## 文档
 
 - [Website docs](https://holon.run) — 安装、入门、概念、指南和参考
-- [Documentation layers](docs/website/concepts/documentation-layers.md)
+- [Documentation layers](docs/website/maintainers/documentation-layers.md)
 - [Architecture overview](docs/architecture-overview.md)
 - [RFCs](docs/rfcs/README.md)
 - [Implementation decisions](docs/implementation-decisions/README.md)
