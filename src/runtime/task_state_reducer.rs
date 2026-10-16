@@ -13,6 +13,7 @@ pub(super) struct TaskTransitionSnapshotPause {
         tokio::sync::oneshot::Sender<()>,
     )>,
     audit_events: tokio::sync::mpsc::UnboundedSender<AuditEvent>,
+    commits: tokio::sync::mpsc::UnboundedSender<()>,
 }
 
 #[derive(Debug)]
@@ -159,6 +160,13 @@ impl RuntimeHandle {
         emit_event: bool,
     ) -> Result<()> {
         let task = transition.task;
+        let agent_id = self.agent_id().await?;
+        // Serialize the task snapshot with result admission and its commit.
+        let mut agent_guard = if transition.admit_result_message {
+            Some(self.inner.agent.lock().await)
+        } else {
+            None
+        };
         let latest_task = self.inner.runtime_db.tasks().latest(&task.id)?;
         if should_ignore_task_update(latest_task.clone(), task) {
             return Ok(());
@@ -205,12 +213,6 @@ impl RuntimeHandle {
             resume.await.expect("snapshot release must remain alive");
         }
 
-        let agent_id = self.agent_id().await?;
-        let mut agent_guard = if transition.admit_result_message {
-            Some(self.inner.agent.lock().await)
-        } else {
-            None
-        };
         let (mut state, expected_state) = if let Some(guard) = agent_guard.as_ref() {
             (guard.state.clone(), guard.last_persisted_state.clone())
         } else {
@@ -401,6 +403,13 @@ impl RuntimeHandle {
                     && is_terminal_task_status(&task.status),
                 fault: self.take_transition_fault(),
             })?;
+        #[cfg(test)]
+        if let Some(pause) = snapshot_pause.as_ref() {
+            pause
+                .commits
+                .send(())
+                .expect("commit observer must remain alive");
+        }
         let mut commit = commit;
         if let (Some(guard), Some(message)) = (
             agent_guard.as_mut(),
@@ -1827,7 +1836,6 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_terminal_snapshots_do_not_emit_conflicting_audit_event() {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         let runtime = runtime();
         let running = task_with_kind(
             "task-terminal-race",
@@ -1852,13 +1860,17 @@ mod tests {
 
         let (snapshots, mut observed_snapshots) = tokio::sync::mpsc::unbounded_channel();
         let (audit_events, mut observed_events) = tokio::sync::mpsc::unbounded_channel();
+        let (commits, mut observed_commits) = tokio::sync::mpsc::unbounded_channel();
         *runtime.inner.task_transition_snapshot_pause.lock().unwrap() =
             Some(Arc::new(TaskTransitionSnapshotPause {
                 task_id: running.id.clone(),
                 snapshots,
                 audit_events,
+                commits,
             }));
 
+        // Bound the concurrent protocol, not synchronous database setup.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         let first_writer = {
             let runtime = runtime.runtime.clone();
             let task = first.clone();
@@ -1876,12 +1888,12 @@ mod tests {
         let (first_latest, first_candidate, release_first) =
             tokio::time::timeout_at(deadline, observed_snapshots.recv())
                 .await
-                .expect("first reducer must reach the pre-lock snapshot pause")
+                .expect("first reducer must reach the snapshot pause")
                 .unwrap();
         let second_writer = {
             let runtime = runtime.runtime.clone();
             let task = second.clone();
-            tokio::spawn(async move {
+            Box::pin(async move {
                 runtime
                     .commit_terminal_task_result(
                         &task,
@@ -1891,25 +1903,40 @@ mod tests {
                     .await
             })
         };
+        let mut second_writer = second_writer;
+        // Drive the contender until its first suspension while the first
+        // snapshot is held. With the lock boundary fixed, this waits for the
+        // agent lock; without it, this computes and pauses a stale snapshot.
+        assert!(futures_util::poll!(second_writer.as_mut()).is_pending());
+        assert_eq!(first_latest, Some(running.clone()));
+        assert_eq!(first_candidate, first);
+
+        // No sleeps, raw SQL mutation, or synthetic database error injection.
+        release_first.send(()).unwrap();
+        // Wait for the database commit, not all post-commit effects: those
+        // may need the agent lock already queued for the contender.
+        tokio::time::timeout_at(deadline, observed_commits.recv())
+            .await
+            .expect("first database commit must finish while the second remains paused")
+            .unwrap();
+        let second_writer = tokio::spawn(second_writer);
         let (second_latest, second_candidate, release_second) =
             tokio::time::timeout_at(deadline, observed_snapshots.recv())
                 .await
-                .expect("second reducer must reach the pre-lock snapshot pause")
+                .expect("second reducer must reach the snapshot pause after the first commits")
                 .unwrap();
-        assert_eq!(first_latest, Some(running.clone()));
-        assert_eq!(second_latest, Some(running.clone()));
-        assert_eq!(first_candidate, first);
-        assert_eq!(second_candidate, second);
-
-        // Both reducers have read running and computed repeated_terminal=false.
-        // Release and join the first commit before releasing the stale reader.
-        // No sleeps, raw SQL mutation, or synthetic database error injection.
-        release_first.send(()).unwrap();
+        release_second.send(()).unwrap();
+        let second_result = tokio::time::timeout_at(deadline, second_writer)
+            .await
+            .expect("second commit must finish after release")
+            .unwrap();
         tokio::time::timeout_at(deadline, first_writer)
             .await
-            .expect("first commit must finish while the second remains paused")
+            .expect("first post-commit effects must finish after contender release")
             .unwrap()
             .unwrap();
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
+
         let existing = runtime
             .recent_events(20)
             .await
@@ -1917,13 +1944,6 @@ mod tests {
             .into_iter()
             .find(|event| event.kind == "task_agent_message_wait_completed")
             .unwrap();
-        release_second.send(()).unwrap();
-        let second_result = tokio::time::timeout_at(deadline, second_writer)
-            .await
-            .expect("second commit must finish after release")
-            .unwrap();
-        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
-
         let first_emission = observed_events.try_recv().unwrap();
         let incoming = observed_events.try_recv().ok();
         assert_eq!(first_emission.id, existing.id);
@@ -1977,6 +1997,12 @@ mod tests {
         assert!(
             second_result.is_ok(),
             "same terminal result must be idempotent after a concurrent commit: {second_result:?}",
+        );
+        assert_eq!(second_latest, Some(first.clone()));
+        assert_eq!(second_candidate, first);
+        assert!(
+            incoming.is_none(),
+            "duplicate terminal audit must be skipped"
         );
     }
 
