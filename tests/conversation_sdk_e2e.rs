@@ -32,6 +32,75 @@ use tokio::{net::TcpListener, process::Command, sync::oneshot};
 
 const AGENT_ID: &str = "web";
 
+#[tokio::test]
+#[ignore = "run through `make conversation-sdk-e2e` after building the TypeScript SDK"]
+async fn incarnation_bound_sdk_survives_real_delete_and_recreate_without_identity_requests(
+) -> Result<()> {
+    let retained_config = support::TestConfigBuilder::new()
+        .with_control_auth_mode(ControlAuthMode::Auto)
+        .build();
+    let host = RuntimeHost::new_with_provider(
+        retained_config.config().clone(),
+        Arc::new(StubProvider::new("unused")),
+    )?;
+    host.create_named_agent(AGENT_ID, None).await?;
+    seed_conversation(&host)?;
+    host.spawn_daemon_deletion_coordinator();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let request_log = Arc::clone(&requests);
+    let app = http::router(AppState::for_tcp(host.clone())).layer(middleware::from_fn(
+        move |request: Request, next: Next| {
+            let request_log = Arc::clone(&request_log);
+            async move {
+                request_log
+                    .lock()
+                    .expect("request log")
+                    .push(request.uri().path().to_owned());
+                next.run(request).await
+            }
+        },
+    ));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+    let output = Command::new("node")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("packages/conversation-sdk/e2e/incarnation-server.mjs"),
+        )
+        .env(
+            "HOLON_CONVERSATION_E2E_BASE_URL",
+            format!("http://{addr}/api"),
+        )
+        .output()
+        .await?;
+    let _ = shutdown_tx.send(());
+    server.await??;
+    host.shutdown().await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "incarnation SDK E2E failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        requests
+            .lock()
+            .expect("request log")
+            .iter()
+            .all(|path| !path.ends_with("/identity") && !path.ends_with("/detail")),
+        "conversation validation must not request agent identity"
+    );
+    Ok(())
+}
+
 #[derive(Clone)]
 struct ControlState {
     host: RuntimeHost,

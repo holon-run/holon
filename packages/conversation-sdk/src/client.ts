@@ -19,6 +19,8 @@ import {
 import { ConversationBatchAssembler, parseSseStream } from "./sse.js";
 import {
   CONVERSATION_CAPABILITY,
+  CONVERSATION_INCARNATION_CAPABILITY,
+  type ConversationIdentity,
   CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
   CONVERSATION_LOCATE_CAPABILITY,
   HOLON_CONTROL_PROTOCOL_NAME,
@@ -63,6 +65,8 @@ export interface ConversationClientOptions {
    * hanging the supervise loop. 0 disables the timeout. Default: 30s.
    */
   readonly requestTimeoutMs?: number;
+  /** Require the negotiated incarnation binding on every decoded delivery. */
+  readonly expectedIdentity?: ConversationIdentity;
 }
 
 export interface ConversationPageOptions {
@@ -98,8 +102,20 @@ export class ConversationClient {
   readonly #headers: ConversationHeadersProvider | undefined;
   readonly #bearerToken: ConversationBearerTokenProvider | undefined;
   readonly #requestTimeoutMs: number;
+  readonly #options: ConversationClientOptions;
+  readonly #identity: ConversationIdentity | undefined;
+  #invalid: ConversationHttpError | undefined;
+  #bindingVerified = false;
+  #handshake: ConversationHandshake | undefined;
 
   constructor(options: ConversationClientOptions) {
+    this.#options = options;
+    this.#identity = options.expectedIdentity === undefined ? undefined : { ...options.expectedIdentity };
+    if (this.#identity !== undefined &&
+        (!Number.isSafeInteger(this.#identity.incarnation) || this.#identity.incarnation < 1 ||
+          this.#identity.agentId.length === 0)) {
+      throw new ConversationProtocolError("invalid conversation identity");
+    }
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     if (this.baseUrl.length === 0) {
       throw new ConversationProtocolError("baseUrl must not be empty");
@@ -125,6 +141,13 @@ export class ConversationClient {
     );
   }
 
+  /** Create an independently invalidatable client for one immutable identity. */
+  withIncarnationFence(identity: ConversationIdentity): ConversationClient {
+    const client = new ConversationClient({ ...this.#options, expectedIdentity: identity });
+    client.#bindingVerified = this.#handshake?.capabilities.includes(CONVERSATION_INCARNATION_CAPABILITY) === true;
+    return client;
+  }
+
   async requireCapability(signal?: AbortSignal): Promise<ConversationHandshake> {
     const handshake = await this.handshake(signal);
     if (
@@ -139,6 +162,12 @@ export class ConversationClient {
     if (!handshake.capabilities.includes(CONVERSATION_CAPABILITY)) {
       throw new ConversationCapabilityError(CONVERSATION_CAPABILITY);
     }
+    if (this.#identity !== undefined &&
+        !handshake.capabilities.includes(CONVERSATION_INCARNATION_CAPABILITY)) {
+      throw new ConversationCapabilityError(CONVERSATION_INCARNATION_CAPABILITY);
+    }
+    this.#handshake = handshake;
+    this.#bindingVerified = this.#identity !== undefined;
     return handshake;
   }
 
@@ -146,6 +175,7 @@ export class ConversationClient {
     agentId: string,
     options: ConversationPageOptions = {},
   ): Promise<ConversationSummaryResult> {
+    await this.#ensureBindingCapability(options.signal);
     if (options.before !== undefined && options.after !== undefined) {
       throw new ConversationProtocolError("before and after are mutually exclusive");
     }
@@ -180,6 +210,7 @@ export class ConversationClient {
       });
       const etag = response.headers.get("etag");
       if (response.status === 304) {
+        this.#verifyResponse(response, options.signal);
         return { summary: null, etag };
       }
       if (!response.ok) {
@@ -193,7 +224,9 @@ export class ConversationClient {
           cause: error,
         });
       }
-      return { summary: decodeConversationSummaryResponse(value), etag };
+      const summary = decodeConversationSummaryResponse(value);
+      this.#verifyResponse(response, options.signal);
+      return { summary, etag };
     });
   }
 
@@ -219,7 +252,9 @@ export class ConversationClient {
       let value: unknown;
       try { value = await response.json(); }
       catch (error) { throw new ConversationDecodeError("$response", "invalid JSON", { cause: error }); }
-      return decodeConversationLocateResponse(value);
+      const result = decodeConversationLocateResponse(value);
+      this.#verifyResponse(response, options.signal);
+      return result;
     });
   }
 
@@ -261,6 +296,7 @@ export class ConversationClient {
     agentId: string,
     options: ConversationStreamOptions = {},
   ): AsyncGenerator<ConversationStreamItem> {
+    await this.#ensureBindingCapability(options.signal);
     const query = new URLSearchParams();
     const cursorTransport = options.cursorTransport ?? "header";
     if (options.after !== undefined && cursorTransport === "query") {
@@ -299,11 +335,16 @@ export class ConversationClient {
         "response has no readable body",
       );
     }
+    this.#verifyResponse(response, options.signal);
     const assembler = new ConversationBatchAssembler();
     try {
       for await (const frame of parseSseStream(response.body)) {
+        options.signal?.throwIfAborted();
+        if (this.#identity !== undefined) this.#verifyFrame(JSON.parse(frame.data));
         const item = assembler.push(frame);
         if (item !== null) {
+          options.signal?.throwIfAborted();
+          if (this.#invalid) throw this.#invalid;
           yield item;
           if (item.type === "reset_required") {
             return;
@@ -316,6 +357,8 @@ export class ConversationClient {
   }
 
   #agentPath(agentId: string, suffix: string): string {
+    if (this.#invalid) throw this.#invalid;
+    if (this.#identity !== undefined && agentId !== this.#identity.agentId) this.#rejectIdentity();
     if (agentId.length === 0) {
       throw new ConversationProtocolError("agentId must not be empty");
     }
@@ -332,6 +375,9 @@ export class ConversationClient {
         ? await this.#headers()
         : this.#headers;
     const headers = new Headers(provided);
+    if (this.#identity !== undefined) {
+      headers.set("x-holon-expected-incarnation", String(this.#identity.incarnation));
+    }
     if (this.#bearerToken !== undefined) {
       const token =
         typeof this.#bearerToken === "function"
@@ -353,6 +399,7 @@ export class ConversationClient {
     signal: AbortSignal | undefined,
     decode: (value: unknown) => T,
   ): Promise<T> {
+    if (path !== "/handshake") await this.#ensureBindingCapability(signal);
     const headers = await this.#requestHeaders();
     headers.set("accept", "application/json");
     return await this.#withRequestTimeout(signal, (inner) =>
@@ -439,7 +486,47 @@ export class ConversationClient {
         cause: error,
       });
     }
-    return decode(value);
+    const decoded = decode(value);
+    if (path !== "/handshake") this.#verifyResponse(response, signal);
+    signal?.throwIfAborted();
+    return decoded;
+  }
+
+  #rejectIdentity(): never {
+    this.#invalid ??= new ConversationHttpError(409, {
+      ok: false, code: "conversation_identity_changed",
+      error: "The conversation identity binding is missing or no longer valid.",
+      retryable: false,
+    });
+    throw this.#invalid;
+  }
+
+  async #ensureBindingCapability(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.#invalid) throw this.#invalid;
+    if (this.#identity !== undefined && !this.#bindingVerified) await this.requireCapability(signal);
+    signal?.throwIfAborted();
+  }
+
+  #verifyResponse(response: Response, signal?: AbortSignal): void {
+    signal?.throwIfAborted();
+    if (this.#invalid) throw this.#invalid;
+    if (this.#identity === undefined) return;
+    if (response.headers.get("x-holon-agent-id") !== this.#identity.agentId ||
+        response.headers.get("x-holon-agent-incarnation") !== String(this.#identity.incarnation)) {
+      this.#rejectIdentity();
+    }
+  }
+
+  #verifyFrame(value: unknown): void {
+    if (this.#invalid) throw this.#invalid;
+    const frame = value as Record<string, unknown> | null;
+    if (frame === null || typeof frame !== "object" ||
+        frame.agent_id !== this.#identity!.agentId ||
+        frame.agent_incarnation !== this.#identity!.incarnation ||
+        (frame.type === "reset_required" && frame.reason === "agent_identity_changed")) {
+      this.#rejectIdentity();
+    }
   }
 
   async #throwResponseError(response: Response): Promise<never> {
@@ -453,6 +540,11 @@ export class ConversationClient {
       );
     }
     const body = decodeConversationHttpError(value, "$response");
+    if (this.#identity !== undefined &&
+        ([401, 403].includes(response.status) || body.code === "agent_not_found" || body.code === "conversation_identity_changed")) {
+      this.#invalid ??= new ConversationHttpError(response.status, { ...body, retryable: false });
+      throw this.#invalid;
+    }
     if (body.code === "capability_unavailable") {
       throw new ConversationCapabilityError(CONVERSATION_CAPABILITY);
     }

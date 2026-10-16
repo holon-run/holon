@@ -425,6 +425,8 @@ pub struct ActivityKey {
 pub struct CursorBinding {
     pub runtime_id: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub agent_incarnation: u64,
     pub event_log_epoch: String,
     pub visibility_scope_id: String,
     pub schema_version: u32,
@@ -628,6 +630,7 @@ fn validate_binding(
     }
     if actual.runtime_id != expected.runtime_id
         || actual.agent_id != expected.agent_id
+        || actual.agent_incarnation != expected.agent_incarnation
         || actual.visibility_scope_id != expected.visibility_scope_id
     {
         return Err(CursorDecodeError::BindingMismatch);
@@ -655,6 +658,7 @@ mod tests {
         CursorBinding {
             runtime_id: "runtime".into(),
             agent_id: "agent".into(),
+            agent_incarnation: 1,
             event_log_epoch: "epoch".into(),
             visibility_scope_id: "scope".into(),
             schema_version: CONVERSATION_SCHEMA_VERSION,
@@ -793,6 +797,10 @@ mod tests {
         );
 
         for other in [
+            CursorBinding {
+                agent_incarnation: 2,
+                ..binding()
+            },
             CursorBinding {
                 runtime_id: "other".into(),
                 ..binding()

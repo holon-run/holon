@@ -1197,27 +1197,34 @@ pub async fn brief(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let storage = state
+    let Some((identity, brief)) = state
         .host
-        .operator_agent_read_storage(&agent_id)
-        .map_err(agent_access_error)?;
-    let Some(brief) = storage
-        .read_brief_by_id(&brief_id)
-        .map_err(error_response)?
-        .filter(|brief| brief.agent_id == agent_id)
+        .runtime_db()
+        .conversation()
+        .with_expected_incarnation(conversation::request_incarnation(&headers)?)
+        .brief_snapshot(&agent_id, &brief_id)
+        .map_err(conversation::conversation_error)?
     else {
         return Err(not_found(format!("brief {brief_id} not found")));
     };
     let bytes = serde_json::to_vec(&brief).map_err(|err| error_response(err.into()))?;
     let etag = etag_for_bytes(&bytes);
     if if_none_match_satisfied(&headers, &etag) {
-        return Ok(not_modified_response(etag));
+        return Ok(conversation::bind_response(
+            &headers,
+            &identity,
+            not_modified_response(etag),
+        ));
     }
-    Ok((
-        [(CONTENT_TYPE, "application/json"), (ETAG, etag.as_str())],
-        Bytes::from(bytes),
-    )
-        .into_response())
+    Ok(conversation::bind_response(
+        &headers,
+        &identity,
+        (
+            [(CONTENT_TYPE, "application/json"), (ETAG, etag.as_str())],
+            Bytes::from(bytes),
+        )
+            .into_response(),
+    ))
 }
 
 pub async fn briefs_batch_get(

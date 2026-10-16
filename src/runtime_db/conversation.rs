@@ -38,6 +38,7 @@ pub const MAX_ACTIVITIES_PAGE_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationSnapshot<T> {
+    pub identity: ConversationIdentity,
     pub runtime_id: String,
     pub event_log_epoch: String,
     pub visibility_scope_id: String,
@@ -51,6 +52,7 @@ pub struct ConversationSnapshot<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationChangeBatch {
+    pub identity: ConversationIdentity,
     pub runtime_id: String,
     pub event_log_epoch: String,
     pub visibility_scope_id: String,
@@ -59,6 +61,13 @@ pub struct ConversationChangeBatch {
     pub oldest_retained_seq: u64,
     pub checkpoint: String,
     pub changes: Vec<ConversationChange>,
+}
+
+/// Captured with the projected data in one SQLite read snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+pub struct ConversationIdentity {
+    pub agent_id: String,
+    pub agent_incarnation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +79,8 @@ pub enum ConversationResetReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationReadError {
+    #[error("conversation agent identity changed")]
+    IdentityChanged,
     #[error("{0}")]
     InvalidRequest(String),
     #[error("conversation source not found")]
@@ -496,6 +507,58 @@ fn assigned_turn_ids_tx(
 }
 
 impl ConversationRepository<'_> {
+    /// Fence protocol snapshots in their read transaction, before cursor decoding.
+    pub fn with_expected_incarnation(mut self, expected_incarnation: Option<u64>) -> Self {
+        self.expected_incarnation = expected_incarnation;
+        self
+    }
+
+    fn snapshot_context(
+        &self,
+        connection: &Connection,
+        agent_id: &str,
+        principal: &str,
+        entitlement: &str,
+    ) -> Result<Option<ConversationSnapshotContext>> {
+        let context = conversation_snapshot_context(connection, agent_id, principal, entitlement)?;
+        if context.is_none() && self.expected_incarnation.is_some() {
+            return Err(ConversationReadError::IdentityChanged.into());
+        }
+        if let Some(context) = &context {
+            if self
+                .expected_incarnation
+                .is_some_and(|expected| expected != context.identity.agent_incarnation)
+            {
+                return Err(ConversationReadError::IdentityChanged.into());
+            }
+        }
+        Ok(context)
+    }
+
+    pub fn brief_snapshot(
+        &self,
+        agent_id: &str,
+        brief_id: &str,
+    ) -> Result<Option<(ConversationIdentity, crate::types::BriefRecord)>> {
+        let mut connection = self.db.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let Some(context) = self.snapshot_context(&tx, agent_id, "", "")? else {
+            return Ok(None);
+        };
+        let payload: Option<String> = tx
+            .query_row(
+                "SELECT payload_json FROM briefs WHERE evidence_id = ?1 AND agent_id = ?2",
+                params![brief_id, agent_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let brief = payload
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?;
+        tx.commit()?;
+        Ok(brief.map(|brief| (context.identity, brief)))
+    }
+
     pub fn summary_page(
         &self,
         agent_id: &str,
@@ -549,12 +612,8 @@ impl ConversationRepository<'_> {
         )?;
         let mut connection = self.db.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = conversation_snapshot_context(
-            &transaction,
-            agent_id,
-            scope_principal,
-            scope_entitlement,
-        )?
+        let Some(context) =
+            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
         else {
             transaction.commit()?;
             return Ok(None);
@@ -583,12 +642,8 @@ impl ConversationRepository<'_> {
         validate_limit("conversation history", limit, MAX_HISTORY_PAGE_LIMIT)?;
         let mut connection = self.db.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = conversation_snapshot_context(
-            &transaction,
-            agent_id,
-            scope_principal,
-            scope_entitlement,
-        )?
+        let Some(context) =
+            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
         else {
             transaction.commit()?;
             return Ok(None);
@@ -623,6 +678,7 @@ impl ConversationRepository<'_> {
         });
         transaction.commit()?;
         Ok(Some(ConversationSnapshot {
+            identity: context.identity,
             runtime_id: context.runtime_id,
             event_log_epoch: context.event_log_epoch,
             visibility_scope_id: context.visibility_scope_id,
@@ -670,12 +726,8 @@ impl ConversationRepository<'_> {
         validate_limit("conversation activity", limit, MAX_ACTIVITIES_PAGE_LIMIT)?;
         let mut connection = self.db.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = conversation_snapshot_context(
-            &transaction,
-            agent_id,
-            scope_principal,
-            scope_entitlement,
-        )?
+        let Some(context) =
+            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
         else {
             transaction.commit()?;
             return Ok(None);
@@ -719,6 +771,7 @@ impl ConversationRepository<'_> {
         });
         transaction.commit()?;
         Ok(Some(ConversationSnapshot {
+            identity: context.identity,
             runtime_id: context.runtime_id,
             event_log_epoch: context.event_log_epoch,
             visibility_scope_id: context.visibility_scope_id,
@@ -752,12 +805,8 @@ impl ConversationRepository<'_> {
         )?;
         let mut connection = self.db.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = conversation_snapshot_context(
-            &transaction,
-            agent_id,
-            scope_principal,
-            scope_entitlement,
-        )?
+        let Some(context) =
+            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
         else {
             transaction.commit()?;
             return Ok(None);
@@ -886,6 +935,7 @@ impl ConversationRepository<'_> {
         });
         transaction.commit()?;
         Ok(Some(ConversationChangeBatch {
+            identity: context.identity,
             runtime_id: context.runtime_id,
             event_log_epoch: context.event_log_epoch,
             visibility_scope_id: context.visibility_scope_id,
@@ -995,6 +1045,7 @@ fn source_revision(
 }
 
 struct ConversationSnapshotContext {
+    identity: ConversationIdentity,
     runtime_id: String,
     event_log_epoch: String,
     visibility_scope_id: String,
@@ -1008,6 +1059,7 @@ impl ConversationSnapshotContext {
         CursorBinding {
             runtime_id: self.runtime_id.clone(),
             agent_id: agent_id.to_string(),
+            agent_incarnation: self.identity.agent_incarnation,
             event_log_epoch: self.event_log_epoch.clone(),
             visibility_scope_id: self.visibility_scope_id.clone(),
             schema_version: CONVERSATION_SCHEMA_VERSION,
@@ -1548,18 +1600,18 @@ fn conversation_snapshot_context(
     scope_principal: &str,
     scope_entitlement: &str,
 ) -> Result<Option<ConversationSnapshotContext>> {
-    let visible = connection
+    let incarnation: Option<u64> = connection
         .query_row(
-            "SELECT 1 FROM agent_identities
+            "SELECT COALESCE(json_extract(payload_json, '$.incarnation'), 1)
+             FROM agent_identities
              WHERE agent_id = ?1 AND status = 'active'",
             [agent_id],
-            |_| Ok(()),
+            |row| row.get(0),
         )
-        .optional()?
-        .is_some();
-    if !visible {
+        .optional()?;
+    let Some(incarnation) = incarnation else {
         return Ok(None);
-    }
+    };
     let metadata = |key: &str| -> Result<String> {
         connection
             .query_row(
@@ -1590,6 +1642,10 @@ fn conversation_snapshot_context(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     Ok(Some(ConversationSnapshotContext {
+        identity: ConversationIdentity {
+            agent_id: agent_id.to_owned(),
+            agent_incarnation: incarnation,
+        },
         visibility_scope_id: crate::ids::visibility_scope_id(
             &runtime_id,
             scope_principal,

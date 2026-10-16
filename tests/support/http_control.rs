@@ -3820,7 +3820,10 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
             )
             .header("origin", origin)
             .header("access-control-request-method", "GET")
-            .header("access-control-request-headers", "authorization")
+            .header(
+                "access-control-request-headers",
+                "authorization,x-holon-expected-incarnation",
+            )
             .send()
             .await?;
         assert!(allowed.status().is_success());
@@ -3859,7 +3862,7 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
             .headers()
             .get("access-control-expose-headers")
             .and_then(|value| value.to_str().ok()),
-        Some("etag,x-holon-event-contract-version")
+        Some("etag,x-holon-agent-id,x-holon-agent-incarnation,x-holon-event-contract-version")
     );
 
     server.abort();

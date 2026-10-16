@@ -62,6 +62,103 @@ fn register_public_agent(db: &RuntimeDb) -> Result<()> {
     db.agent_identities().upsert(&identity)
 }
 
+#[test]
+fn incarnation_binding_and_data_share_the_snapshot_during_replacement_and_deletion() -> Result<()> {
+    for status in ["active", "deleting"] {
+        let (_home, db_path, lock_path, db) = runtime_db()?;
+        register_public_agent(&db)?;
+        let old_turn = turn("turn-identity-race", 1);
+        db.turn_records().upsert(&old_turn)?;
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_barrier = Arc::clone(&barrier);
+        let writer = std::thread::spawn(move || -> Result<()> {
+            let writer_db = RuntimeDb::open_and_migrate(db_path, lock_path)?;
+            let mut replacement_turn = old_turn;
+            replacement_turn.created_at = timestamp(100);
+            writer_barrier.wait();
+            writer_db.transaction(|tx| {
+                tx.execute(
+                    "UPDATE agent_identities SET status = ?1,
+                     payload_json = json_set(payload_json, '$.incarnation', 2, '$.status', ?1)
+                     WHERE agent_id = ?2",
+                    params![status, AGENT_ID],
+                )?;
+                tx.execute(
+                    "UPDATE turn_records SET payload_json = ?1 WHERE agent_id = ?2",
+                    params![serde_json::to_string(&replacement_turn)?, AGENT_ID],
+                )?;
+                Ok(())
+            })?;
+            writer_barrier.wait();
+            Ok(())
+        });
+        let during = db
+            .conversation()
+            .summary_snapshot_after_context(AGENT_ID, 10, None, "principal", "public", || {
+                barrier.wait();
+                barrier.wait();
+            })?
+            .expect("admitted old snapshot");
+        writer.join().expect("replacement writer")?;
+        assert_eq!(during.identity.agent_id, AGENT_ID);
+        assert_eq!(during.identity.agent_incarnation, 1);
+        assert_eq!(during.value.turns[0].started_at, timestamp(1));
+        let after =
+            db.conversation()
+                .summary_snapshot(AGENT_ID, 10, None, "principal", "public")?;
+        if status == "deleting" {
+            assert!(after.is_none());
+            assert!(db
+                .conversation()
+                .with_expected_incarnation(Some(1))
+                .change_batch(
+                    AGENT_ID,
+                    Some(&during.snapshot_cursor),
+                    10,
+                    10,
+                    "principal",
+                    "public",
+                )
+                .is_err());
+        } else {
+            let after = after.expect("replacement snapshot");
+            assert_eq!(after.identity.agent_incarnation, 2);
+            assert_eq!(after.value.turns[0].started_at, timestamp(100));
+            assert_eq!(after.visibility_scope_id, during.visibility_scope_id);
+            let error = db
+                .conversation()
+                .with_expected_incarnation(Some(1))
+                .change_batch(
+                    AGENT_ID,
+                    Some(&during.snapshot_cursor),
+                    10,
+                    10,
+                    "principal",
+                    "public",
+                )
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<ConversationReadError>(),
+                Some(ConversationReadError::IdentityChanged)
+            ));
+            assert!(
+                db.conversation()
+                    .change_batch(
+                        AGENT_ID,
+                        Some(&during.snapshot_cursor),
+                        10,
+                        10,
+                        "principal",
+                        "public",
+                    )
+                    .is_err(),
+                "unbound resume also cannot cross incarnation"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn append_turn_event(db: &RuntimeDb, event_id: &str, turn_id: &str, offset: i64) -> Result<u64> {
     let mut event = AuditEvent::legacy(
         "conversation_test_change",
@@ -2092,6 +2189,7 @@ fn change_batch_returns_typed_replay_retention_epoch_and_query_resets() -> Resul
     let binding = CursorBinding {
         runtime_id: snapshot.runtime_id.clone(),
         agent_id: AGENT_ID.into(),
+        agent_incarnation: snapshot.identity.agent_incarnation,
         event_log_epoch: snapshot.event_log_epoch.clone(),
         visibility_scope_id: snapshot.visibility_scope_id.clone(),
         schema_version: CONVERSATION_SCHEMA_VERSION,

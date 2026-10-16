@@ -9,6 +9,12 @@ export type ConversationDetailCursor = OpaqueToken<"conversation-detail-cursor">
 export type ConversationCheckpoint = OpaqueToken<"conversation-checkpoint">;
 
 export const CONVERSATION_CAPABILITY = "agents.conversation-read.v1";
+export const CONVERSATION_INCARNATION_CAPABILITY = "agents.conversation-incarnation.v1";
+
+export interface ConversationIdentity {
+  readonly agentId: string;
+  readonly incarnation: number;
+}
 export const CONVERSATION_LOCATE_CAPABILITY = "agents.conversation-locate.v1";
 export const CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY = "agents.conversation-history-bidirectional.v1";
 export const CONVERSATION_SCHEMA_VERSION = 2;
@@ -299,6 +305,7 @@ export type ConversationResetReason =
   | "event_log_epoch_mismatch"
   | "cursor_rejected"
   | "agent_not_found"
+  | "agent_identity_changed"
   | "stream_recovery_failed"
   | "slow_consumer";
 

@@ -933,21 +933,23 @@ test("streamed terminal state is persisted with its checkpoint and without the o
   controller.dispose();
 });
 
-test("forbidden revalidation clears cached content and persistent stores", async () => {
+for (const [status, code] of [[403, undefined], [409, "conversation_identity_changed"]]) {
+test(`identity/access rejection ${status} clears cached content and persistent stores`, async () => {
   const { ConversationHttpError } = await import("../dist/index.js");
-  const client = fakeClient({ summary() { throw new ConversationHttpError(403, { ok: false, error: "forbidden" }); } });
+  const client = fakeClient({ summary() { throw new ConversationHttpError(status, { ok: false, error: "forbidden", code }); } });
   let cleared = 0;
   const controller = new ConversationController({ client, agentId: identity.agent_id,
     snapshotCache: { async load() { return { summary: summary(), etag: "old" }; }, async store() {}, async clear() { cleared++; } },
     briefCache: { async get() {}, async put() {}, async clear() { cleared++; } },
   });
   controller.start();
-  await waitFor(() => controller.status.kind === "recoverable_error" && cleared === 2);
+  await waitFor(() => controller.status.kind === (status === 409 ? "terminal_error" : "recoverable_error") && cleared === 2);
   assert.deepEqual(controller.view().turns, []);
   assert.equal(controller.view().checkpoint, null);
   assert.equal(client.calls.openStreams, 0);
   controller.dispose();
 });
+}
 
 test("a hung cache read cannot prevent a network bootstrap", async () => {
   const client = fakeClient({ hub: new StreamQueue() });
