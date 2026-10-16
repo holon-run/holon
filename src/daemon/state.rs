@@ -15,7 +15,7 @@ use crate::{
     types::{AgentRegistryStatus, AgentVisibility, RuntimeFailurePhase, RuntimeFailureSummary},
 };
 
-use super::{RuntimeActivitySummary, RuntimeServiceMetadata};
+use super::{DaemonServeProfile, RuntimeActivitySummary, RuntimeServiceMetadata};
 
 pub(crate) const DAEMON_LOG_TAIL_READ_BYTE_LIMIT: usize = 128 * 1024;
 pub(crate) const DAEMON_LOG_TAIL_LINE_CHAR_LIMIT: usize = 8 * 1024;
@@ -50,6 +50,19 @@ pub enum DaemonLifecycleOwner {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum DaemonDesiredServe {
+    Profile {
+        #[serde(flatten)]
+        profile: DaemonServeProfile,
+    },
+    Legacy {
+        listen: String,
+    },
+    Defaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaemonStatusView {
     pub ok: bool,
     pub state: DaemonLifecycleState,
@@ -67,6 +80,8 @@ pub struct DaemonStatusView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable_path: Option<PathBuf>,
     pub desired_running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_serve: Option<DaemonDesiredServe>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub control_connectivity: bool,

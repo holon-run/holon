@@ -11,6 +11,7 @@ MAKEFILE = Path(__file__).resolve().parent.parent / "Makefile"
 FAKE_TARGETS = [
     "cli_exit_codes",
     "cli_json_contract",
+    "daemon_serve_profile",
     "http_callback",
     "http_control",
     "http_operator_transport",

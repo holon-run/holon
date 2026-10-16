@@ -24,9 +24,11 @@ use holon::{
     },
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
-        daemon_logs, daemon_prepare_update, daemon_restart_with_timeout, daemon_start_with_timeout,
-        daemon_status, daemon_stop, ensure_serve_preflight, prepare_runtime_before_server,
-        RuntimeServiceHandle, DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
+        daemon_launch_with_profile, daemon_logs, daemon_prepare_update, daemon_status, daemon_stop,
+        prepare_runtime_before_server, prepare_serve_with_profile, DaemonServeProfile,
+        ResolvedDaemonServePlan, RuntimeControlAuthMode, RuntimeServiceHandle, ServeProfileAccess,
+        ServeProfileAuthentication, DAEMON_SERVE_ARGS_ENV, DAEMON_SERVE_RESOLUTION_ENV,
+        PRE_SERVER_PREPARED_ENV,
     },
     diagnostics_store::DiagnosticsWriter,
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
@@ -806,6 +808,8 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
     let clear_inherited_advertise =
         explicit_access || explicit_host || explicit_listen || explicit_port;
     ServeOptions {
+        reset_serve_options: false,
+        desktop_integration_if_unconfigured: false,
         desktop_integration: explicit
             .desktop_integration
             .or(inherited.desktop_integration),
@@ -854,37 +858,297 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
     }
 }
 
+#[cfg(test)]
 fn restart_serve_launch_options(
     config: &mut AppConfig,
     options: ServeOptions,
     metadata: Option<&holon::daemon::RuntimeServiceMetadata>,
 ) -> Result<DaemonServeLaunchOptions> {
-    let options = if let Some(metadata) = metadata {
-        let inherited = parse_serve_options_from_args(
+    let plan = resolve_daemon_serve_plan_with_inputs(
+        config.clone(),
+        options,
+        None,
+        metadata,
+        parse_serve_options_from_args(&[])?,
+        false,
+    )?;
+    *config = plan.config;
+    Ok(DaemonServeLaunchOptions {
+        args: plan.serve_args,
+        control_token_env: plan.control_token_env,
+    })
+}
+
+fn options_from_profile(profile: &DaemonServeProfile) -> ServeOptions {
+    ServeOptions {
+        reset_serve_options: false,
+        desktop_integration_if_unconfigured: false,
+        access: Some(match profile.access {
+            ServeProfileAccess::Local => ServeAccess::Local,
+            ServeProfileAccess::Tunnel => ServeAccess::Tunnel,
+            ServeProfileAccess::Lan => ServeAccess::Lan,
+            ServeProfileAccess::Tailnet => ServeAccess::Tailnet,
+        }),
+        host: profile.host.clone(),
+        listen: profile.listen.clone(),
+        port: profile.port,
+        advertise: profile.advertise.clone(),
+        token: None,
+        token_file: match &profile.authentication {
+            ServeProfileAuthentication::TokenFile { path } => Some(path.clone()),
+            _ => None,
+        },
+        desktop_integration: Some(profile.desktop_integration),
+        web_dist: profile.web_dist.clone(),
+    }
+}
+
+fn explicit_serve_fields(options: &ServeOptions) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    for (present, field) in [
+        (options.access.is_some(), "access"),
+        (options.host.is_some(), "host"),
+        (options.listen.is_some(), "listen"),
+        (options.port.is_some(), "port"),
+        (options.advertise.is_some(), "advertise"),
+        (options.token.is_some(), "authentication(--token)"),
+        (options.token_file.is_some(), "authentication(--token-file)"),
+        (options.desktop_integration.is_some(), "desktop_integration"),
+        (options.web_dist.is_some(), "web_dist"),
+        (options.reset_serve_options, "reset_serve_options"),
+    ] {
+        if present {
+            fields.push(field);
+        }
+    }
+    fields
+}
+
+fn resolve_daemon_serve_plan(
+    config: AppConfig,
+    explicit: ServeOptions,
+    profile: Option<&DaemonServeProfile>,
+    metadata: Option<&holon::daemon::RuntimeServiceMetadata>,
+) -> Result<ResolvedDaemonServePlan> {
+    let mut environment = parse_serve_options_from_args(&[])?;
+    if let Some(value) = std::env::var_os("HOLON_HTTP_ADDR") {
+        environment.listen = Some(
+            value
+                .into_string()
+                .map_err(|_| anyhow!("HOLON_HTTP_ADDR is not UTF-8"))?,
+        );
+    }
+    if let Some(value) = std::env::var_os("HOLON_CONTROL_TOKEN") {
+        environment.token = Some(
+            value
+                .into_string()
+                .map_err(|_| anyhow!("HOLON_CONTROL_TOKEN is not UTF-8"))?,
+        );
+    }
+    let explicit_auth_mode = std::env::var_os("HOLON_CONTROL_AUTH_MODE").is_some();
+    let plan = resolve_daemon_serve_plan_with_inputs(
+        config,
+        explicit,
+        profile,
+        metadata,
+        environment,
+        explicit_auth_mode,
+    )?;
+    eprintln!("{}", plan.startup_summary);
+    Ok(plan)
+}
+
+fn resolve_daemon_serve_plan_with_inputs(
+    mut config: AppConfig,
+    explicit: ServeOptions,
+    profile: Option<&DaemonServeProfile>,
+    metadata: Option<&holon::daemon::RuntimeServiceMetadata>,
+    environment: ServeOptions,
+    explicit_auth_mode: bool,
+) -> Result<ResolvedDaemonServePlan> {
+    if explicit.reset_serve_options && explicit.desktop_integration_if_unconfigured {
+        anyhow::bail!(
+            "--desktop-integration-if-unconfigured cannot be combined with --reset-serve-options"
+        );
+    }
+    let initialize_desktop = explicit.desktop_integration_if_unconfigured
+        && explicit.desktop_integration.is_none()
+        && profile.is_none()
+        && metadata.is_none();
+    if explicit.listen.is_some() && explicit.port.is_some() {
+        anyhow::bail!("use only one of --listen or --port");
+    }
+    if explicit.token.is_some() && explicit.token_file.is_some() {
+        anyhow::bail!("use only one of --token or --token-file");
+    }
+    let cli_fields = explicit_serve_fields(&explicit);
+    let mut env_fields = Vec::new();
+    if environment.listen.is_some() {
+        env_fields.push("HOLON_HTTP_ADDR(listen)");
+    }
+    if environment.token.is_some() {
+        env_fields.push("HOLON_CONTROL_TOKEN(authentication)");
+    }
+    if explicit_auth_mode {
+        env_fields.push("HOLON_CONTROL_AUTH_MODE(control_auth_mode)");
+    } else if let Some(profile) = profile {
+        config.control_auth_mode = match profile.control_auth_mode {
+            RuntimeControlAuthMode::Auto => ControlAuthMode::Auto,
+            RuntimeControlAuthMode::Required => ControlAuthMode::Required,
+            RuntimeControlAuthMode::Disabled => ControlAuthMode::Disabled,
+        };
+    }
+    let (base, inherited, external_required) = if let Some(profile) = profile {
+        profile.validate()?;
+        (
+            "profile",
+            options_from_profile(profile),
+            matches!(
+                profile.authentication,
+                ServeProfileAuthentication::ExternalRequired
+            ),
+        )
+    } else if let Some(metadata) = metadata {
+        let mut inherited = parse_serve_options_from_args(
             &metadata
                 .serve_args
                 .iter()
                 .map(OsString::from)
                 .collect::<Vec<_>>(),
-        )?;
-        let merged = merge_serve_options(inherited, options);
-        apply_serve_options(config, merged.clone())?;
-        if metadata.control_token_env_configured
-            && config
-                .control_token
-                .as_deref()
-                .is_none_or(|token| token.trim().is_empty())
-        {
-            return Err(anyhow!(
-                "the previous daemon start used an inline --token, which is not persisted; restart with --token or --token-file"
-            ));
+        )
+        .map_err(|_| anyhow!("invalid legacy daemon serve options"))?;
+        if inherited.token.is_some() || inherited.reset_serve_options {
+            anyhow::bail!("legacy daemon metadata must not contain token material or reset flags");
         }
-        merged
+        if inherited.desktop_integration_if_unconfigured {
+            anyhow::bail!(
+                "legacy daemon metadata must not contain --desktop-integration-if-unconfigured"
+            );
+        }
+        if inherited.listen.is_none() && inherited.port.is_none() {
+            inherited.listen = Some(metadata.http_addr.clone());
+        }
+        (
+            "legacy_metadata",
+            inherited,
+            metadata.control_token_env_configured,
+        )
     } else {
-        apply_serve_options(config, options.clone())?;
-        options
+        let mut defaults = parse_serve_options_from_args(&[])?;
+        defaults.access = Some(ServeAccess::Local);
+        ("defaults(no historical serve options)", defaults, false)
     };
-    Ok(serve_args_for_options(&options))
+    let access_override = explicit.access.is_some()
+        && explicit.listen.is_none()
+        && explicit.port.is_none()
+        && environment.listen.is_none();
+    let mut options = merge_serve_options(merge_serve_options(inherited, environment), explicit);
+    if initialize_desktop {
+        options.desktop_integration = Some(true);
+    }
+    if access_override {
+        let inherited_port = options
+            .listen
+            .as_deref()
+            .and_then(|listen| listen.rsplit_once(':'))
+            .and_then(|(_, port)| port.parse::<u16>().ok());
+        options.listen = None;
+        options.port = options.port.or(inherited_port).or(Some(7878));
+    }
+    let cwd = std::env::current_dir().context("cannot resolve serve option paths")?;
+    for path in [&mut options.token_file, &mut options.web_dist]
+        .into_iter()
+        .flatten()
+    {
+        if path.is_relative() {
+            *path = cwd.join(&*path);
+        }
+    }
+    // A stored requirement is not downgraded just because this listener is local.
+    if external_required && options.token.is_none() && options.token_file.is_none() {
+        anyhow::bail!("saved daemon authentication requires --token, --token-file, or HOLON_CONTROL_TOKEN; use --reset-serve-options to explicitly reset all serve intent");
+    }
+    config.http_addr = "127.0.0.1:7878".into();
+    config.control_token = None;
+    let advertise = apply_serve_options(&mut config, options.clone())?;
+    let listener: SocketAddr = config
+        .http_addr
+        .parse()
+        .context("invalid serve listen address")?;
+    if listener.port() == 0 {
+        anyhow::bail!("serve listen port must not be zero");
+    }
+    if config.control_auth_mode == ControlAuthMode::Required && config.control_token.is_none() {
+        anyhow::bail!(
+            "required daemon authentication needs --token, --token-file, or HOLON_CONTROL_TOKEN"
+        );
+    }
+    if options.desktop_integration == Some(true) && !cfg!(target_os = "macos") {
+        anyhow::bail!("desktop integration requires macOS");
+    }
+    if let Some(path) = &options.web_dist {
+        if !path.is_dir() {
+            anyhow::bail!("--web-dist must point to a directory: {}", path.display());
+        }
+    }
+    if let Some(advertise) = &advertise {
+        let url = reqwest::Url::parse(advertise).context("invalid advertise URL")?;
+        if !url.username().is_empty() || url.password().is_some() {
+            anyhow::bail!("advertise URL must not contain credentials");
+        }
+    }
+    // Fill the default binding while retaining the user's listen-versus-port choice.
+    if options.listen.is_none() && options.port.is_none() {
+        options.listen = Some(config.http_addr.clone());
+    }
+    options.access = Some(options.access.unwrap_or(ServeAccess::Local));
+    options.desktop_integration = Some(options.desktop_integration.unwrap_or(false));
+    options.advertise = advertise;
+    let profile = DaemonServeProfile {
+        schema_version: 1,
+        access: match options.access.unwrap_or(ServeAccess::Local) {
+            ServeAccess::Local => ServeProfileAccess::Local,
+            ServeAccess::Tunnel => ServeProfileAccess::Tunnel,
+            ServeAccess::Lan => ServeProfileAccess::Lan,
+            ServeAccess::Tailnet => ServeProfileAccess::Tailnet,
+        },
+        host: options.host.clone(),
+        listen: options.listen.clone(),
+        port: options.port,
+        advertise: options.advertise.clone(),
+        desktop_integration: options.desktop_integration.unwrap_or(false),
+        web_dist: options.web_dist.clone(),
+        authentication: if let Some(path) = &options.token_file {
+            ServeProfileAuthentication::TokenFile { path: path.clone() }
+        } else if config.control_token.is_some() {
+            ServeProfileAuthentication::ExternalRequired
+        } else {
+            ServeProfileAuthentication::None
+        },
+        control_auth_mode: config.control_auth_mode.into(),
+    };
+    profile.validate()?;
+    // Logs explain even equal-valued explicit overrides, never credential values or argv.
+    let startup_summary = format!(
+        "daemon serve intent: base={base}; CLI overrides={}; env overrides={}; authentication={}",
+        cli_fields.join(","),
+        env_fields.join(","),
+        match &profile.authentication {
+            ServeProfileAuthentication::None => "none",
+            ServeProfileAuthentication::TokenFile { .. } => "token_file",
+            ServeProfileAuthentication::ExternalRequired => "external_required",
+        }
+    );
+    let mut launch = serve_args_for_options(&options);
+    // Pass the already resolved secret through the environment, including token-file input.
+    launch.control_token_env = config.control_token.clone();
+    Ok(ResolvedDaemonServePlan {
+        config,
+        profile,
+        serve_args: launch.args,
+        control_token_env: launch.control_token_env,
+        startup_summary,
+    })
 }
 
 async fn emit_first_run_intro(config: &AppConfig, runtime: &holon::runtime::RuntimeHandle) {
@@ -893,7 +1157,55 @@ async fn emit_first_run_intro(config: &AppConfig, runtime: &holon::runtime::Runt
     }
 }
 
+fn resolve_recorded_daemon_serve_plan(
+    config: &AppConfig,
+    metadata: &holon::daemon::RuntimeServiceMetadata,
+) -> Result<ResolvedDaemonServePlan> {
+    let mut environment = parse_serve_options_from_args(&[])?;
+    let recorded = parse_serve_options_from_args(
+        &metadata
+            .serve_args
+            .iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>(),
+    )?;
+    if metadata.control_token_env_configured && recorded.token_file.is_none() {
+        environment.token = config.control_token.clone();
+    }
+    resolve_daemon_serve_plan_with_inputs(
+        config.clone(),
+        parse_serve_options_from_args(&[])?,
+        None,
+        Some(metadata),
+        environment,
+        true,
+    )
+}
+
 async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
+    let (options, registration_lock) = if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_some() {
+        // The lifecycle parent holds the lock and already accepted this exact plan.
+        if let Ok(summary) = std::env::var(DAEMON_SERVE_RESOLUTION_ENV) {
+            eprintln!("{summary}");
+        }
+        (options, None)
+    } else {
+        let (plan, lock) = prepare_serve_with_profile(
+            &config,
+            options.reset_serve_options,
+            |profile, metadata| {
+                resolve_daemon_serve_plan(config.clone(), options, profile, metadata)
+            },
+        )
+        .await?;
+        let options = options_from_profile(&plan.profile);
+        config = plan.config;
+        std::env::set_var(
+            DAEMON_SERVE_ARGS_ENV,
+            serde_json::to_string(&safe_serve_args_for_metadata(&plan.serve_args))?,
+        );
+        (options, Some(lock))
+    };
     let serve_args = serve_args_for_options(&options).args;
     let desktop_integration = options.desktop_integration.unwrap_or(false);
     let web_dist = options.web_dist.clone();
@@ -920,7 +1232,6 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     if let Some(report) = startup_report() {
         println!("{}", report.startup_summary());
     }
-    ensure_serve_preflight(&config).await?;
     if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
         prepare_runtime_before_server(&config)?;
     }
@@ -945,6 +1256,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         exporter.install();
     }
     let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
+    // Internal launch handoff must not leak into commands spawned by this runtime.
+    std::env::remove_var(PRE_SERVER_PREPARED_ENV);
+    std::env::remove_var(DAEMON_SERVE_ARGS_ENV);
+    std::env::remove_var(DAEMON_SERVE_RESOLUTION_ENV);
     host.recover_orphaned_queue_claims_at_startup().await?;
     let runtime = if host.configured_default_agent_id()?.is_some() {
         Some(host.default_runtime().await?)
@@ -1013,6 +1328,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             runtime_service.shutdown_signal(),
         ))
     };
+    #[cfg(not(unix))]
+    runtime_service.write_state_files(&config)?;
+    drop(registration_lock);
 
     // The advertised address and the localhost alias are one daemon-wide HTTP
     // state: one-time pairing tickets are minted over loopback and redeemed from
@@ -1072,7 +1390,6 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
 
     #[cfg(not(unix))]
     {
-        runtime_service.write_state_files(&config)?;
         if let Some(local) = local_listener {
             let local_router = tcp_router.clone();
             let local_server = axum::serve(
@@ -1228,6 +1545,400 @@ async fn dump_prompt(
 
 #[cfg(test)]
 mod tests {
+    fn serve_profile_plan(
+        cli: &[&str],
+        environment: &[&str],
+        profile: Option<&DaemonServeProfile>,
+    ) -> Result<ResolvedDaemonServePlan> {
+        let parse = |args: &[&str]| {
+            parse_serve_options_from_args(&args.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        resolve_daemon_serve_plan_with_inputs(
+            test_config(),
+            parse(cli)?,
+            profile,
+            None,
+            parse(environment)?,
+            false,
+        )
+    }
+
+    #[test]
+    fn serve_profile_cli_env_and_inheritance_preserve_field_groups() {
+        let initial = serve_profile_plan(
+            &["--listen", "0.0.0.0:8787", "--token", "first-secret"],
+            &[],
+            None,
+        )
+        .unwrap();
+        let inherited =
+            serve_profile_plan(&[], &["--token", "second-secret"], Some(&initial.profile)).unwrap();
+        assert_eq!(inherited.config.http_addr, "0.0.0.0:8787");
+        assert_eq!(inherited.profile.listen, initial.profile.listen);
+        let overridden = serve_profile_plan(
+            &["--port", "9898"],
+            &["--listen", "127.0.0.1:9797", "--token", "second-secret"],
+            Some(&initial.profile),
+        )
+        .unwrap();
+        assert_eq!(overridden.config.http_addr, "127.0.0.1:9898");
+        assert_eq!(overridden.profile.listen, None);
+        assert_eq!(overridden.profile.port, Some(9898));
+        let encoded = serde_json::to_string(&overridden.profile).unwrap();
+        assert!(!encoded.contains("first-secret"));
+        assert!(!encoded.contains("second-secret"));
+        assert!(overridden.startup_summary.contains("base=profile"));
+        assert!(overridden.startup_summary.contains("CLI overrides=port"));
+        assert!(overridden
+            .startup_summary
+            .contains("HOLON_CONTROL_TOKEN(authentication)"));
+        assert!(!overridden.startup_summary.contains("second-secret"));
+        assert!(!overridden
+            .serve_args
+            .iter()
+            .any(|arg| arg == "second-secret"));
+    }
+
+    #[test]
+    fn serve_profile_external_authentication_never_downgrades_on_loopback() {
+        let initial = serve_profile_plan(&["--token", "initial-secret"], &[], None).unwrap();
+        assert_eq!(initial.config.http_addr, "127.0.0.1:7878");
+        let error = serve_profile_plan(&[], &[], Some(&initial.profile))
+            .err()
+            .unwrap();
+        assert!(error
+            .to_string()
+            .contains("saved daemon authentication requires"));
+        let reset = serve_profile_plan(&["--reset-serve-options"], &[], None).unwrap();
+        assert_eq!(
+            reset.profile.authentication,
+            ServeProfileAuthentication::None
+        );
+        assert_eq!(reset.config.control_token, None);
+    }
+
+    #[test]
+    fn serve_profile_relative_paths_and_auth_only_override_are_stable() {
+        let directory = tempfile::tempdir_in(".").unwrap();
+        let token_file = directory.path().join("token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let initial = serve_profile_plan(
+            &[
+                "--access",
+                "lan",
+                "--host",
+                "lab.example.test",
+                "--listen",
+                "0.0.0.0:8787",
+                "--advertise",
+                "https://lab.example.test",
+                "--token-file",
+                token_file.to_str().unwrap(),
+                "--web-dist",
+                ".",
+            ],
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(initial.profile.web_dist.as_ref().unwrap().is_absolute());
+        let ServeProfileAuthentication::TokenFile { path } = &initial.profile.authentication else {
+            panic!("expected token-file authentication");
+        };
+        assert!(path.is_absolute());
+        let next =
+            serve_profile_plan(&["--token", "inline-secret"], &[], Some(&initial.profile)).unwrap();
+        assert_eq!(next.config.http_addr, initial.config.http_addr);
+        assert_eq!(next.profile.advertise, initial.profile.advertise);
+        assert_eq!(next.profile.web_dist, initial.profile.web_dist);
+        assert_eq!(
+            next.profile.desktop_integration,
+            initial.profile.desktop_integration
+        );
+        assert_eq!(
+            next.profile.authentication,
+            ServeProfileAuthentication::ExternalRequired
+        );
+    }
+
+    #[test]
+    fn serve_profile_explicit_local_access_closes_inherited_wildcard() {
+        let initial = serve_profile_plan(
+            &[
+                "--access",
+                "lan",
+                "--host",
+                "lab.example.test",
+                "--listen",
+                "0.0.0.0:8787",
+                "--token",
+                "secret",
+            ],
+            &[],
+            None,
+        )
+        .unwrap();
+        for access in ["local", "tunnel"] {
+            let next = serve_profile_plan(
+                &["--access", access, "--token", "secret"],
+                &[],
+                Some(&initial.profile),
+            )
+            .unwrap();
+            assert_eq!(next.config.http_addr, "127.0.0.1:8787");
+            assert_eq!(next.profile.advertise, None);
+        }
+    }
+
+    #[test]
+    fn serve_profile_bind_overrides_invalidate_inherited_advertise() {
+        let initial = serve_profile_plan(
+            &[
+                "--access",
+                "lan",
+                "--host",
+                "lab.example.test",
+                "--port",
+                "8787",
+                "--advertise",
+                "https://old.example.test",
+                "--token",
+                "secret",
+            ],
+            &[],
+            None,
+        )
+        .unwrap();
+        let next = serve_profile_plan(
+            &[],
+            &["--listen", "0.0.0.0:9898", "--token", "secret"],
+            Some(&initial.profile),
+        )
+        .unwrap();
+        assert_eq!(
+            next.profile.advertise.as_deref(),
+            Some("http://lab.example.test:9898")
+        );
+        let explicit = serve_profile_plan(
+            &["--advertise", "https://explicit.example.test"],
+            &["--listen", "0.0.0.0:9898", "--token", "secret"],
+            Some(&initial.profile),
+        )
+        .unwrap();
+        assert_eq!(
+            explicit.profile.advertise.as_deref(),
+            Some("https://explicit.example.test")
+        );
+    }
+
+    #[test]
+    fn serve_profile_invalid_inputs_are_rejected_before_acceptance() {
+        for args in [
+            vec!["--token", ""],
+            vec!["--listen", "127.0.0.1:8787", "--port", "9898"],
+            vec!["--listen", "not-an-address"],
+            vec!["--advertise", "https://user:password@example.test"],
+            vec!["--token", "secret", "--token-file", "/missing"],
+        ] {
+            assert!(serve_profile_plan(&args, &[], None).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn serve_profile_desktop_false_and_required_policy_are_preserved() {
+        let mut initial = serve_profile_plan(&[], &[], None).unwrap().profile;
+        initial.desktop_integration = true;
+        let next =
+            serve_profile_plan(&["--desktop-integration=false"], &[], Some(&initial)).unwrap();
+        assert!(!next.profile.desktop_integration);
+        initial.desktop_integration = false;
+        initial.control_auth_mode = RuntimeControlAuthMode::Required;
+        assert!(serve_profile_plan(&[], &[], Some(&initial)).is_err());
+    }
+
+    #[test]
+    fn serve_profile_desktop_hint_only_initializes_without_history() {
+        let hint = "--desktop-integration-if-unconfigured";
+        let fresh = serve_profile_plan(&[hint], &[], None);
+        if cfg!(target_os = "macos") {
+            assert!(fresh.unwrap().profile.desktop_integration);
+        } else {
+            assert!(fresh
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("desktop integration requires macOS"));
+        }
+        let mut saved = serve_profile_plan(&[], &[], None).unwrap().profile;
+        let inherited = serve_profile_plan(&[hint], &[], Some(&saved)).unwrap();
+        assert!(!inherited.profile.desktop_integration);
+        assert_eq!(inherited.profile, saved);
+        saved.desktop_integration = true;
+        for profile in [None, Some(&saved)] {
+            let explicit =
+                serve_profile_plan(&[hint, "--desktop-integration=false"], &[], profile).unwrap();
+            assert!(!explicit.profile.desktop_integration);
+        }
+        let explicit = serve_profile_plan(&[hint, "--desktop-integration=true"], &[], None);
+        if cfg!(target_os = "macos") {
+            assert!(explicit.unwrap().profile.desktop_integration);
+        } else {
+            assert!(explicit
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("desktop integration requires macOS"));
+        }
+        for args in [vec![], vec!["--desktop-integration=false"]] {
+            let config = test_config();
+            let metadata = runtime_metadata_with_serve_args(&config, args, false);
+            let plan = resolve_daemon_serve_plan_with_inputs(
+                config,
+                parse_serve_options_from_args(&[hint.into()]).unwrap(),
+                None,
+                Some(&metadata),
+                parse_serve_options_from_args(&[]).unwrap(),
+                false,
+            )
+            .unwrap();
+            assert!(!plan.profile.desktop_integration);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_profile_desktop_hint_observes_profile_created_while_waiting_for_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.home_dir = home.path().to_path_buf();
+        config.data_dir = config.home_dir.clone();
+        config.socket_path = config.home_dir.join("run/holon.sock");
+        let lock =
+            RuntimeDbLock::try_lock(holon::daemon::daemon_paths(&config).lifecycle_lock_path)
+                .unwrap();
+        assert!(holon::daemon::load_serve_profile(&config)
+            .unwrap()
+            .is_none());
+        let request =
+            parse_serve_options_from_args(&["--desktop-integration-if-unconfigured".into()])
+                .unwrap();
+        let pending = prepare_serve_with_profile(&config, false, |profile, metadata| {
+            resolve_daemon_serve_plan_with_inputs(
+                config.clone(),
+                request,
+                profile,
+                metadata,
+                parse_serve_options_from_args(&[])?,
+                false,
+            )
+        });
+        tokio::pin!(pending);
+        tokio::select! {
+            biased;
+            _ = &mut pending => panic!("request must wait for the lifecycle lock"),
+            _ = std::future::ready(()) => {}
+        }
+        let saved = serve_profile_plan(&["--desktop-integration=false"], &[], None)
+            .unwrap()
+            .profile;
+        holon::daemon::persist_serve_profile(&config, &saved).unwrap();
+        drop(lock);
+        let (plan, registration_lock) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), &mut pending)
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(!plan.profile.desktop_integration);
+        assert_eq!(plan.profile, saved);
+        assert_eq!(
+            holon::daemon::load_serve_profile(&config).unwrap(),
+            Some(saved)
+        );
+        drop(registration_lock);
+    }
+
+    #[test]
+    fn serve_profile_desktop_hint_rejects_reset_and_legacy_replay() {
+        let hint = OsString::from("--desktop-integration-if-unconfigured");
+        assert!(
+            parse_serve_options_from_args(&[hint.clone(), "--reset-serve-options".into(),])
+                .is_err()
+        );
+        let mut request = parse_serve_options_from_args(&[hint]).unwrap();
+        request.reset_serve_options = true;
+        let error = resolve_daemon_serve_plan_with_inputs(
+            test_config(),
+            request,
+            None,
+            None,
+            parse_serve_options_from_args(&[]).unwrap(),
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("cannot be combined"));
+        let config = test_config();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec!["--desktop-integration-if-unconfigured"],
+            false,
+        );
+        let error = resolve_recorded_daemon_serve_plan(&config, &metadata)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains(
+            "legacy daemon metadata must not contain --desktop-integration-if-unconfigured"
+        ));
+    }
+
+    #[test]
+    fn serve_profile_desktop_hint_is_request_only() {
+        for command in [
+            vec!["serve"],
+            vec!["daemon", "start"],
+            vec!["daemon", "restart"],
+        ] {
+            let cli = Cli::try_parse_from(
+                ["holon"]
+                    .into_iter()
+                    .chain(command)
+                    .chain(["--desktop-integration-if-unconfigured"]),
+            )
+            .unwrap();
+            let options = match cli.command {
+                Commands::Serve { options }
+                | Commands::Daemon {
+                    command:
+                        DaemonCommands::Start { options, .. } | DaemonCommands::Restart { options, .. },
+                } => options,
+                _ => panic!("expected lifecycle request"),
+            };
+            assert!(options.desktop_integration_if_unconfigured);
+            assert_eq!(options.desktop_integration, None);
+            assert!(!explicit_serve_fields(&options).contains(&"desktop_integration"));
+            let launch = serve_args_for_options(&options);
+            assert!(launch.args.is_empty());
+            let recorded = safe_serve_args_for_metadata(&launch.args);
+            assert!(recorded.is_empty());
+            let replayed = parse_serve_options_from_args(&launch.args).unwrap();
+            assert!(!replayed.desktop_integration_if_unconfigured);
+            let merged = merge_serve_options(replayed, options);
+            assert!(!merged.desktop_integration_if_unconfigured);
+        }
+        let plan = serve_profile_plan(
+            &[
+                "--desktop-integration-if-unconfigured",
+                "--desktop-integration=false",
+            ],
+            &[],
+            None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(&plan.profile).unwrap();
+        assert!(json.get("desktop_integration_if_unconfigured").is_none());
+        assert!(!options_from_profile(&plan.profile).desktop_integration_if_unconfigured);
+    }
+
     #[test]
     fn desktop_serve_option_roundtrips_and_can_be_disabled_on_restart() {
         let enabled =
@@ -1338,6 +2049,8 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: Some(ServeAccess::Tailnet),
                 host: Some("lab.tailnet.ts.net".into()),
                 listen: None,
@@ -1363,6 +2076,8 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: Some(ServeAccess::Lan),
                 host: Some("192.168.1.10".into()),
                 listen: None,
@@ -2578,6 +3293,8 @@ mod tests {
     #[test]
     fn daemon_start_passes_inline_token_through_env_not_argv() {
         let options = ServeOptions {
+            reset_serve_options: false,
+            desktop_integration_if_unconfigured: false,
             access: Some(ServeAccess::Lan),
             host: Some("192.168.1.10".into()),
             listen: None,
@@ -2600,6 +3317,94 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg == &token_flag || arg == &token_value));
+    }
+
+    #[test]
+    fn serve_profile_recorded_token_file_survives_child_token_environment() {
+        let home = tempfile::tempdir().unwrap();
+        let token_path = home.path().join("control-token");
+        fs::write(&token_path, "recorded-file-token").unwrap();
+        let config = test_config();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec!["--token-file", token_path.to_str().unwrap()],
+            true,
+        );
+        let recorded = resolve_recorded_daemon_serve_plan(&config, &metadata).unwrap();
+        assert_eq!(
+            recorded.profile.authentication,
+            ServeProfileAuthentication::TokenFile { path: token_path }
+        );
+        assert_eq!(
+            recorded.config.control_token.as_deref(),
+            Some("recorded-file-token")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_profile_running_legacy_start_compares_effective_options() {
+        for recorded_args in [vec![], vec!["--listen", "127.0.0.1:9"], vec!["--port", "9"]] {
+            let home = tempfile::tempdir().unwrap();
+            let mut config = test_config();
+            config.home_dir = home.path().to_path_buf();
+            config.data_dir = config.home_dir.clone();
+            config.socket_path = config.home_dir.join("run/holon.sock");
+            config.http_addr = "127.0.0.1:9".into();
+            config.control_token = None;
+            let mut metadata = runtime_metadata_with_serve_args(&config, recorded_args, false);
+            metadata.pid = std::process::id();
+            let initial = resolve_recorded_daemon_serve_plan(&config, &metadata).unwrap();
+            metadata.config_fingerprint =
+                holon::daemon::config_fingerprint(&initial.config).unwrap();
+            let paths = holon::daemon::daemon_paths(&config);
+            fs::create_dir_all(config.run_dir()).unwrap();
+            fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+            assert!(!holon::daemon::serve_profile_path(&config).exists());
+
+            let start = |explicit: &[OsString]| {
+                let options = parse_serve_options_from_args(explicit).unwrap();
+                let input_config = config.clone();
+                daemon_launch_with_profile(
+                    &config,
+                    false,
+                    false,
+                    None,
+                    move |profile, metadata| {
+                        resolve_daemon_serve_plan_with_inputs(
+                            input_config,
+                            options,
+                            profile,
+                            metadata,
+                            parse_serve_options_from_args(&[])?,
+                            false,
+                        )
+                    },
+                    resolve_recorded_daemon_serve_plan,
+                )
+            };
+            let result = start(&[]).await.unwrap();
+            assert!(!result.process_created);
+            assert_eq!(result.status.pid, Some(metadata.pid));
+            assert_eq!(
+                holon::daemon::load_serve_profile(&config).unwrap(),
+                Some(initial.profile)
+            );
+            let result = start(&["--listen".into(), "127.0.0.1:9".into()])
+                .await
+                .unwrap();
+            assert!(!result.process_created);
+            assert_eq!(result.status.pid, Some(metadata.pid));
+            let accepted = holon::daemon::load_serve_profile(&config).unwrap();
+            let error = start(&["--advertise".into(), "http://127.0.0.1:9999".into()])
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("different serve options"));
+            assert_eq!(
+                holon::daemon::load_serve_profile(&config).unwrap(),
+                accepted
+            );
+        }
     }
 
     fn runtime_metadata_with_serve_args(
@@ -2640,13 +3445,15 @@ mod tests {
                 "0.0.0.0:8787",
                 "--advertise",
                 "https://custom.example.test",
-                "--desktop-integration=true",
+                "--desktop-integration=false",
             ],
             false,
         );
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: None,
                 host: None,
                 listen: None,
@@ -2677,10 +3484,10 @@ mod tests {
                 OsString::from("https://custom.example.test"),
                 OsString::from("--token-file"),
                 token_file.into_os_string(),
-                OsString::from("--desktop-integration=true"),
+                OsString::from("--desktop-integration=false"),
             ]
         );
-        assert_eq!(launch.control_token_env, None);
+        assert_eq!(launch.control_token_env.as_deref(), Some("file-secret"));
     }
 
     #[test]
@@ -2709,6 +3516,8 @@ mod tests {
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: None,
                 host: Some("192.168.1.11".into()),
                 listen: None,
@@ -2735,12 +3544,14 @@ mod tests {
                 OsString::from("192.168.1.11"),
                 OsString::from("--port"),
                 OsString::from("8787"),
+                OsString::from("--advertise"),
+                OsString::from("http://192.168.1.11:8787"),
                 OsString::from("--token-file"),
                 token_file.as_os_str().to_os_string(),
+                OsString::from("--desktop-integration=false"),
             ]
         );
-        assert_eq!(launch.control_token_env, None);
-        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert_eq!(launch.control_token_env.as_deref(), Some("file-secret"));
         assert!(!launch
             .args
             .iter()
@@ -2773,6 +3584,8 @@ mod tests {
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: Some(ServeAccess::Local),
                 host: None,
                 listen: None,
@@ -2823,6 +3636,8 @@ mod tests {
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: Some(ServeAccess::Tunnel),
                 host: None,
                 listen: None,
@@ -2870,6 +3685,8 @@ mod tests {
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: None,
                 host: None,
                 listen: Some("0.0.0.0:8989".into()),
@@ -2907,6 +3724,8 @@ mod tests {
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: None,
                 host: None,
                 listen: None,
@@ -2949,6 +3768,8 @@ mod tests {
         let launch = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: None,
                 host: None,
                 listen: None,
@@ -2981,6 +3802,8 @@ mod tests {
         let error = restart_serve_launch_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: None,
                 host: None,
                 listen: None,
@@ -2997,7 +3820,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("previous daemon start used an inline --token"));
+            .contains("saved daemon authentication requires"));
     }
 
     #[test]
@@ -3087,6 +3910,8 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: Some(ServeAccess::Lan),
                 host: None,
                 listen: Some("0.0.0.0:7878".into()),
@@ -3114,6 +3939,8 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
+                reset_serve_options: false,
+                desktop_integration_if_unconfigured: false,
                 access: Some(ServeAccess::Local),
                 host: None,
                 listen: None,
@@ -4996,20 +5823,19 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
         DaemonCommands::Start {
             options,
             start_timeout,
-        } => {
-            let mut config = config;
-            let serve_launch = serve_args_for_options(&options);
-            apply_serve_options(&mut config, options)?;
-            serde_json::to_value(
-                daemon_start_with_timeout(
-                    &config,
-                    &serve_launch.args,
-                    serve_launch.control_token_env.as_deref(),
-                    start_timeout,
-                )
-                .await?,
-            )?
-        }
+        } => serde_json::to_value(
+            daemon_launch_with_profile(
+                &config,
+                false,
+                options.reset_serve_options,
+                start_timeout,
+                |profile, metadata| {
+                    resolve_daemon_serve_plan(config.clone(), options, profile, metadata)
+                },
+                resolve_recorded_daemon_serve_plan,
+            )
+            .await?,
+        )?,
         DaemonCommands::Stop => serde_json::to_value(daemon_stop(&config).await?)?,
         DaemonCommands::PrepareUpdate => {
             serde_json::to_value(daemon_prepare_update(&config).await?)?
@@ -5018,21 +5844,19 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
         DaemonCommands::Restart {
             options,
             start_timeout,
-        } => {
-            let mut config = config;
-            let metadata = holon::daemon::load_daemon_metadata(&config)?;
-            let serve_launch =
-                restart_serve_launch_options(&mut config, options, metadata.as_ref())?;
-            serde_json::to_value(
-                daemon_restart_with_timeout(
-                    &config,
-                    &serve_launch.args,
-                    serve_launch.control_token_env.as_deref(),
-                    start_timeout,
-                )
-                .await?,
-            )?
-        }
+        } => serde_json::to_value(
+            daemon_launch_with_profile(
+                &config,
+                true,
+                options.reset_serve_options,
+                start_timeout,
+                |profile, metadata| {
+                    resolve_daemon_serve_plan(config.clone(), options, profile, metadata)
+                },
+                resolve_recorded_daemon_serve_plan,
+            )
+            .await?,
+        )?,
         DaemonCommands::Logs { tail } => serde_json::to_value(daemon_logs(&config, tail)?)?,
     };
     print_json(&value)

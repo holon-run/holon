@@ -11,10 +11,14 @@ final class HolonNetworkPolicyTests: XCTestCase {
         let arguments = options.arguments()
         XCTAssertFalse(arguments.contains("--port"))
         XCTAssertTrue(arguments.contains("--desktop-integration=false"))
-        XCTAssertEqual(HolonDaemonLaunchOptions(access: "lan").arguments().last, "--desktop-integration")
+        XCTAssertEqual(HolonDaemonLaunchOptions(access: "lan").arguments(), ["--access", "lan"])
+        XCTAssertEqual(
+            HolonDaemonLaunchOptions(desktopIntegration: true).arguments(),
+            ["--desktop-integration"]
+        )
         XCTAssertFalse(HolonDaemonLaunchOptions(desktopIntegration: nil).arguments()
             .contains(where: { $0.hasPrefix("--desktop-integration") }))
-        XCTAssertTrue(HolonDaemonLaunchOptions.default.arguments().contains("--desktop-integration"))
+        XCTAssertTrue(HolonDaemonLaunchOptions.default.arguments().isEmpty)
     }
 
     @MainActor

@@ -298,6 +298,43 @@ Lifecycle command JSON includes `process_created`: true only when the command
 created the returned daemon process. An idempotent Start that reuses an existing
 daemon reports false; success alone does not establish process ownership.
 
+#### Persistent serve options
+
+`serve`, `daemon start`, and `daemon restart` inherit accepted serve options
+from `HOLON_HOME/daemon/serve_profile.json`, even after clean shutdown removes
+`run/daemon.json`. Stop and prepare-update do not remove this profile.
+Explicit CLI options take precedence over explicit startup environment inputs,
+then the profile, validated legacy metadata (migration only), and defaults.
+`HOLON_HTTP_ADDR` and `HOLON_CONTROL_TOKEN` are explicit environment overrides;
+an unset variable is not an override. Startup logs name the configuration source
+and overridden fields / environment variables without printing credential values.
+Service managers that keep passing flags or environment inputs keep overriding
+the saved configuration; inspect these diagnostics when troubleshooting.
+
+Token-file and web-dist paths are saved as absolute paths. Token contents are
+never saved. Inline or environment tokens save only an `external_required`
+authentication marker: subsequent startup requires an explicit token or token
+file, even for loopback. A missing or empty token file fails instead of falling
+back to unauthenticated access. Authentication-only overrides preserve the
+network and desktop settings.
+
+Use `--reset-serve-options` on serve/start/restart to explicitly discard
+inherited options and resolve CLI, environment and defaults again:
+
+```bash
+holon daemon restart --reset-serve-options --access local
+```
+
+Invalid options, credential reads, foreign runtime identity, or conflicting
+idempotent Start do not replace the profile or stop the current daemon.
+Once valid intent is accepted, a later bind/readiness failure retains that
+intent; it does not mean startup succeeded. Inspect daemon status and logs.
+A corrupt or unsupported profile fails rather than silently selecting defaults.
+Stop and prepare-update can still safely stop an identified daemon without
+reading or replacing that profile.
+Old binaries cannot inherit this profile; supply explicit flags and credentials
+when downgrading. Options already deleted by an old version cannot be recovered.
+
 ### Onboarding
 
 `holon onboard` is the fastest way to configure Holon for the first time or
@@ -488,7 +525,10 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | Bearer token for auth |
 | `--token-file <PATH>` | Read token from file |
 | `--advertise <URL>` | Advertised URL |
+| `--web-dist <PATH>` | Web assets directory; persisted as an absolute path |
+| `--reset-serve-options` | Discard inherited serve intent; resolve explicit CLI/env and defaults |
 | `--desktop-integration[=true\|false]` | Allow authorized Finder actions on the daemon host; macOS only, independent of LAN/Serve; default off |
+| `--desktop-integration-if-unconfigured` | Enable desktop integration only if no profile or valid legacy intent exists when accepted under the lifecycle lock; explicit desktop options win; cannot combine with reset |
 
 ### `holon daemon start` options
 
@@ -499,7 +539,12 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--host <HOST>` | Bind host |
 | `--listen <ADDR>` | Listen address |
 | `--token <TOKEN>` | Auth token |
+| `--token-file <PATH>` | Read token from a file; persist only its absolute path |
+| `--advertise <URL>` | Advertised URL |
+| `--web-dist <PATH>` | Web assets directory |
+| `--reset-serve-options` | Same as serve; also available on daemon restart |
 | `--desktop-integration[=true\|false]` | Same as serve; restart inherits the setting unless explicitly overridden |
+| `--desktop-integration-if-unconfigured` | Same as serve; also available on restart; a request-only first-launch hint, not a persistent override |
 
 ### `holon agent create` options
 

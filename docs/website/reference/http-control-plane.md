@@ -25,6 +25,18 @@ and read-only routes (agent state, events, tasks) require it for remote
 access as well. Without a control token, the server runs in **local mode**
 and trusts the local process boundary.
 
+Daemon startup intent is persisted separately in
+`HOLON_HOME/daemon/serve_profile.json`; it is not a live HTTP listener
+configuration API. CLI overrides win over explicit startup environment inputs,
+then the profile and defaults (validated legacy metadata is migration-only).
+Startup diagnostics report these sources without token values.
+The profile stores only a token-file path or an `external_required` marker, not
+credentials. If saved authentication cannot be supplied, startup fails even on
+loopback; it never silently downgrades to local unauthenticated mode.
+Stop / runtime cleanup preserves this intent. See
+[Persistent serve options](cli.md#persistent-serve-options) for reset, failure
+and downgrade behavior.
+
 Starting in v0.36.0, Holon supports a **session-first authentication** architecture. Browser and Web UI clients can authenticate using HTTP-only session cookies in addition to bearer tokens:
 
 - **`GET /api/auth/method`** — Returns current auth mode (`"local"` or `"oidc"`).

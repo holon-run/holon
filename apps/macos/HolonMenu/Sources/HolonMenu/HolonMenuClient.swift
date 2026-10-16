@@ -193,7 +193,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     func start() async throws -> HolonDaemonStatus {
         createdDaemon.set(nil)
-        let started = try await run(["daemon", "start"] + launchOptionsForCurrentAccess().arguments(), as: HolonDaemonStatus.self)
+        let started = try await run(["daemon", "start"] + launchArguments(), as: HolonDaemonStatus.self)
         // Older CLIs and reused processes do not grant ownership.
         if started.processCreated == true {
             recordManagedDaemon(started)
@@ -208,24 +208,22 @@ final class HolonCLIClient: HolonDesiredStateClient {
 
     func restart() async throws -> HolonDaemonStatus {
         createdDaemon.set(nil)
-        let restarted = try await run(["daemon", "restart"] + launchOptionsForCurrentAccess().arguments(), as: HolonDaemonStatus.self)
+        let restarted = try await run(["daemon", "restart"] + launchArguments(), as: HolonDaemonStatus.self)
         recordManagedDaemon(restarted)
         return restarted
     }
 
-    private func launchOptionsForCurrentAccess() async throws -> HolonDaemonLaunchOptions {
-        var options = launchOptions
-        let currentStatus = try await status()
-        if currentStatus.httpAddr.hasPrefix("0.0.0.0:") {
-            options.access = "lan"
-            options.host = try await localNetworkHost()
-            options.listen = "0.0.0.0:\(port(from: currentStatus.httpAddr))"
-            options.port = nil
+    private func launchArguments() async throws -> [String] {
+        var arguments = launchOptions.arguments()
+        if launchOptions.desktopIntegration == nil {
+            let daemon = try await status()
+            // The daemon rechecks configuration under its lifecycle lock.
+            // Missing fields on older CLIs do not prove support for this hint.
+            if daemon.desiredServe?.source == "defaults" {
+                arguments.append("--desktop-integration-if-unconfigured")
+            }
         }
-        if canReuseApprovedAuthentication(currentStatus) {
-            try loadApprovedAuthentication(&options, homeDir: currentStatus.homeDir)
-        }
-        return options
+        return arguments
     }
 
     func webURL() async throws -> URL {
@@ -377,8 +375,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
                 )
             }
             var options = HolonDaemonLaunchOptions()
-            // Authentication-only restart inherits network and desktop configuration.
-            options.desktopIntegration = nil
+            // Authentication-only restart inherits all non-authentication configuration.
             try prepareRemoteAuthentication(&options, homeDir: daemon.homeDir)
             recordAuthenticationApproval(options, homeDir: daemon.homeDir)
             createdDaemon.set(nil)

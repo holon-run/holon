@@ -298,6 +298,9 @@ pub enum ServeAccess {
 
 #[derive(Debug, Clone, Args)]
 pub struct ServeOptions {
+    /// Discard all inherited serve options before applying explicit inputs.
+    #[arg(long)]
+    pub reset_serve_options: bool,
     #[arg(long, value_enum)]
     pub access: Option<ServeAccess>,
     #[arg(long)]
@@ -317,6 +320,9 @@ pub struct ServeOptions {
     /// Enable authorized Finder operations on the macOS daemon host.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub desktop_integration: Option<bool>,
+    /// Enable desktop integration only when no saved or legacy serve options exist.
+    #[arg(long, conflicts_with = "reset_serve_options")]
+    pub desktop_integration_if_unconfigured: bool,
 }
 
 // ---------------------------------------------------------------------------

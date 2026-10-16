@@ -138,6 +138,25 @@ contract.
 
 Quitting the menu app does not stop Holon.
 
+### Persistent serve intent
+
+The daemon owns `daemon/serve_profile.json`, separately from the
+`desired_running` boolean and ephemeral runtime metadata. See
+[Daemon Serve Profile Persistence](daemon-serve-profile-persistence.md).
+Ordinary Start, Restart, login recovery and update recovery inherit this intent;
+the menu does not derive listener settings from `http_addr` or inject desktop
+and authentication defaults. For a first startup it sends the request-only
+`--desktop-integration-if-unconfigured` hint; the daemon confirms the absence
+of profile and legacy intent under its lifecycle lock before enabling desktop
+integration. A status snapshot is not sufficient: intent accepted between
+Status and Start / Restart must be inherited, not overwritten. Explicit network
+or credential changes submit a patch through the Rust lifecycle contract.
+
+This profile does not grant process ownership, credential approval or a session.
+CLI and explicit environment overrides remain higher priority and are reported
+in startup diagnostics. Old binaries that do not read the profile are outside
+the inheritance guarantee.
+
 ## Network controls
 
 LAN, Tailscale Serve, and Finder opt-in are independent. The menu's LAN preset

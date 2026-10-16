@@ -32,6 +32,10 @@ use super::{
     DaemonLifecycleResult, DaemonLifecycleState, DaemonStatusView, RuntimeServiceHandle,
     RuntimeServiceMetadata, RuntimeStatusResponse, DAEMON_CONTROL_PROTOCOL_VERSION,
 };
+use super::{
+    load_serve_profile, persist_serve_profile, DaemonDesiredServe, DaemonServeProfile,
+    ResolvedDaemonServePlan,
+};
 
 const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_START_TIMEOUT_SECS: u64 = 24 * 60 * 60;
@@ -40,6 +44,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const PRE_SERVER_PREPARED_ENV: &str = "HOLON_PRE_SERVER_RUNTIME_PREPARED";
 pub const DAEMON_SERVE_ARGS_ENV: &str = "HOLON_DAEMON_SERVE_ARGS";
+pub const DAEMON_SERVE_RESOLUTION_ENV: &str = "HOLON_DAEMON_SERVE_RESOLUTION";
 pub const DAEMON_START_TIMEOUT_ENV: &str = "HOLON_DAEMON_START_TIMEOUT_SECS";
 const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -90,10 +95,20 @@ pub(crate) async fn daemon_status_with_probe_timeout(
     config: &AppConfig,
     probe_timeout: Duration,
 ) -> Result<DaemonStatusView> {
+    let desired_serve = desired_serve_status(config)?;
+    let probe = probe_runtime_with_timeout(config, probe_timeout).await;
+    daemon_status_from_probe(config, &probe, desired_serve)
+}
+
+fn daemon_status_from_probe(
+    config: &AppConfig,
+    probe: &ProbeRuntime,
+    desired_serve: Option<DaemonDesiredServe>,
+) -> Result<DaemonStatusView> {
     let fingerprint = config_fingerprint(config)?;
     let metadata = load_daemon_metadata(config).ok().flatten();
     let persisted_failure = latest_known_runtime_failure(config).ok().flatten();
-    match probe_runtime_with_timeout(config, probe_timeout).await {
+    match probe {
         ProbeRuntime::Running(status) => Ok(DaemonStatusView {
             ok: true,
             state: if status.healthy {
@@ -111,6 +126,7 @@ pub(crate) async fn daemon_status_with_probe_timeout(
             lifecycle_owner: Some(status.lifecycle_owner),
             executable_path: optional_path(status.executable_path.clone()),
             desired_running: load_daemon_desired_running(config)?.unwrap_or(true),
+            desired_serve: desired_serve.clone(),
             pid: Some(status.pid),
             control_connectivity: true,
             runtime_config_fingerprint: Some(status.config_fingerprint.clone()),
@@ -132,12 +148,12 @@ pub(crate) async fn daemon_status_with_probe_timeout(
         ProbeRuntime::Stopped { occupied_socket } => {
             let stale_files = stale_files(config);
             let pid = metadata.as_ref().map(|record| record.pid);
-            let state = if stale_files.is_empty() && !occupied_socket {
+            let state = if stale_files.is_empty() && !*occupied_socket {
                 DaemonLifecycleState::Stopped
             } else {
                 DaemonLifecycleState::Stale
             };
-            let message = if occupied_socket {
+            let message = if *occupied_socket {
                 "control socket is occupied by a non-Holon process".into()
             } else if stale_files.is_empty() {
                 "runtime is not running".into()
@@ -163,6 +179,7 @@ pub(crate) async fn daemon_status_with_probe_timeout(
                     .as_ref()
                     .and_then(|record| optional_path(record.executable_path.clone())),
                 desired_running: load_daemon_desired_running(config)?.unwrap_or(false),
+                desired_serve: desired_serve.clone(),
                 pid,
                 control_connectivity: false,
                 runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
@@ -192,6 +209,7 @@ pub(crate) async fn daemon_status_with_probe_timeout(
                 .as_ref()
                 .and_then(|record| optional_path(record.executable_path.clone())),
             desired_running: load_daemon_desired_running(config)?.unwrap_or(false),
+            desired_serve: desired_serve.clone(),
             pid: metadata.as_ref().map(|record| record.pid),
             control_connectivity: false,
             runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
@@ -199,7 +217,7 @@ pub(crate) async fn daemon_status_with_probe_timeout(
             activity: None,
             last_failure: persisted_failure,
             stale_files: stale_files(config),
-            message: details,
+            message: details.clone(),
         }),
         ProbeRuntime::Incompatible { details } => Ok(DaemonStatusView {
             ok: true,
@@ -220,6 +238,7 @@ pub(crate) async fn daemon_status_with_probe_timeout(
                 .as_ref()
                 .and_then(|record| optional_path(record.executable_path.clone())),
             desired_running: load_daemon_desired_running(config)?.unwrap_or(false),
+            desired_serve: desired_serve.clone(),
             pid: metadata.as_ref().map(|record| record.pid),
             control_connectivity: false,
             runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
@@ -232,6 +251,179 @@ pub(crate) async fn daemon_status_with_probe_timeout(
             ),
         }),
     }
+}
+
+fn validated_legacy_metadata(config: &AppConfig) -> Result<Option<RuntimeServiceMetadata>> {
+    let Some(metadata) = load_daemon_metadata(config)? else {
+        return Ok(None);
+    };
+    if metadata.home_dir != config.home_dir
+        || metadata.socket_path != config.socket_path
+        || !paths_refer_to_same_file(&metadata.executable_path, &std::env::current_exe()?)
+    {
+        return Err(anyhow!(
+            "refusing serve options from daemon metadata with a different identity"
+        ));
+    }
+    Ok(Some(metadata))
+}
+
+fn desired_serve_status(config: &AppConfig) -> Result<Option<DaemonDesiredServe>> {
+    if let Some(profile) = load_serve_profile(config)? {
+        return Ok(Some(DaemonDesiredServe::Profile { profile }));
+    }
+    Ok(match validated_legacy_metadata(config) {
+        Ok(Some(metadata)) => {
+            metadata
+                .http_addr
+                .parse::<std::net::SocketAddr>()
+                .ok()
+                .map(|listen| DaemonDesiredServe::Legacy {
+                    listen: listen.to_string(),
+                })
+        }
+        Ok(None) => Some(DaemonDesiredServe::Defaults),
+        Err(_) => None,
+    })
+}
+
+/// Resolve and validate before committing intent or touching the current process.
+pub async fn daemon_launch_with_profile<F, N>(
+    config: &AppConfig,
+    restart: bool,
+    reset: bool,
+    start_timeout_secs: Option<u64>,
+    resolve: F,
+    resolve_recorded: N,
+) -> Result<DaemonLifecycleResult>
+where
+    F: FnOnce(
+        Option<&DaemonServeProfile>,
+        Option<&RuntimeServiceMetadata>,
+    ) -> Result<ResolvedDaemonServePlan>,
+    N: FnOnce(&AppConfig, &RuntimeServiceMetadata) -> Result<ResolvedDaemonServePlan>,
+{
+    let _lock = lifecycle_lock(config).await?;
+    let timeout = resolve_start_timeout(start_timeout_secs)?;
+    let profile = if reset {
+        None
+    } else {
+        load_serve_profile(config)?
+    };
+    let metadata = if profile.is_none() && !reset {
+        validated_legacy_metadata(config)?
+    } else {
+        None
+    };
+    let plan = resolve(profile.as_ref(), metadata.as_ref())?;
+    let probe = probe_runtime(&plan.config).await;
+    match &probe {
+        ProbeRuntime::Running(status) => {
+            if status.home_dir != config.home_dir || status.socket_path != config.socket_path {
+                return Err(anyhow!("runtime belongs to a different home or control socket"));
+            }
+            if restart {
+                let metadata = load_daemon_metadata(config)?
+                    .ok_or_else(|| anyhow!("cannot replace runtime without identity metadata"))?;
+                if !runtime_status_matches_metadata(status, &metadata) {
+                    return Err(anyhow!("runtime identity does not match daemon metadata"));
+                }
+                validate_incompatible_runtime_identity(config, &metadata)?;
+            }
+            if !restart {
+                let saved = load_daemon_metadata(config)?;
+                let serve_options_match = if let Some(metadata) = &saved {
+                    let recorded = resolve_recorded(&plan.config, metadata)?;
+                    plan.matches_effective_serve_options(&recorded)
+                } else {
+                    profile.as_ref().is_none_or(|profile| *profile == plan.profile)
+                };
+                if status.config_fingerprint != config_fingerprint(&plan.config)?
+                    || !serve_options_match
+                {
+                    return Err(anyhow!("runtime is already running with different serve options; use 'holon daemon restart'"));
+                }
+                if plan.config.control_token_required(crate::config::ControlTransportKind::Tcp) {
+                    if let Some(token) = &plan.config.control_token {
+                        let client = LocalClient::remote(
+                            plan.config.clone(), web_url(&status.http_addr), token.clone(),
+                        )?;
+                        let authenticated = tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_status()).await;
+                        if !matches!(authenticated, Ok(Ok(ref observed))
+                            if observed.pid == status.pid
+                                && observed.home_dir == status.home_dir
+                                && observed.socket_path == status.socket_path
+                                && observed.config_fingerprint == status.config_fingerprint)
+                        {
+                            return Err(anyhow!("runtime authentication does not match the requested serve options; use 'holon daemon restart'"));
+                        }
+                    }
+                }
+            }
+        }
+        ProbeRuntime::Stopped { occupied_socket: false } => {}
+        ProbeRuntime::Incompatible { .. } if restart => {
+            let metadata = load_daemon_metadata(config)?
+                .ok_or_else(|| anyhow!("cannot replace incompatible runtime without identity metadata"))?;
+            validate_incompatible_runtime_identity(config, &metadata)?;
+        }
+        _ => return Err(anyhow!("cannot accept serve intent for an occupied, foreign, incompatible or unresponsive control surface")),
+    }
+    persist_serve_profile(config, &plan.profile)?;
+    persist_daemon_desired_running(config, true)?;
+    if restart {
+        match probe {
+            ProbeRuntime::Incompatible { details } => {
+                replace_incompatible_runtime_unlocked(&plan.config, &details).await?;
+            }
+            _ => {
+                daemon_stop_unlocked(&plan.config).await?;
+            }
+        }
+    }
+    let mut started = daemon_start_unlocked(
+        &plan.config,
+        &plan.serve_args,
+        plan.control_token_env.as_deref(),
+        timeout,
+        Some(&plan.startup_summary),
+    )
+    .await?;
+    if restart {
+        started.action = DaemonLifecycleAction::Restart;
+    }
+    started.status.desired_running = true;
+    Ok(started)
+}
+
+pub async fn prepare_serve_with_profile<F>(
+    config: &AppConfig,
+    reset: bool,
+    resolve: F,
+) -> Result<(ResolvedDaemonServePlan, RuntimeDbLock)>
+where
+    F: FnOnce(
+        Option<&DaemonServeProfile>,
+        Option<&RuntimeServiceMetadata>,
+    ) -> Result<ResolvedDaemonServePlan>,
+{
+    let lock = lifecycle_lock(config).await?;
+    let profile = if reset {
+        None
+    } else {
+        load_serve_profile(config)?
+    };
+    let metadata = if profile.is_none() && !reset {
+        validated_legacy_metadata(config)?
+    } else {
+        None
+    };
+    let plan = resolve(profile.as_ref(), metadata.as_ref())?;
+    ensure_serve_preflight(&plan.config).await?;
+    persist_serve_profile(config, &plan.profile)?;
+    persist_daemon_desired_running(config, true)?;
+    // The foreground caller releases this only after binding control and publishing metadata.
+    Ok((plan, lock))
 }
 
 pub async fn daemon_start(
@@ -252,7 +444,7 @@ pub async fn daemon_start_with_timeout(
     persist_daemon_desired_running(config, true)?;
     let start_timeout = resolve_start_timeout(start_timeout_secs)?;
     let mut result =
-        daemon_start_unlocked(config, serve_args, control_token_env, start_timeout).await?;
+        daemon_start_unlocked(config, serve_args, control_token_env, start_timeout, None).await?;
     result.status.desired_running = true;
     Ok(result)
 }
@@ -262,6 +454,7 @@ async fn daemon_start_unlocked(
     serve_args: &[OsString],
     control_token_env: Option<&str>,
     start_timeout: Duration,
+    startup_summary: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
     let current_fingerprint = config_fingerprint(config)?;
     match probe_runtime(config).await {
@@ -343,7 +536,20 @@ async fn daemon_start_unlocked(
     if let Some(token) = control_token_env {
         command.env("HOLON_CONTROL_TOKEN", token);
     }
+    command.env(
+        "HOLON_CONTROL_AUTH_MODE",
+        match config.control_auth_mode {
+            crate::config::ControlAuthMode::Auto => "auto",
+            crate::config::ControlAuthMode::Required => "required",
+            crate::config::ControlAuthMode::Disabled => "disabled",
+        },
+    );
     command.env(PRE_SERVER_PREPARED_ENV, "1");
+    if let Some(summary) = startup_summary {
+        command.env(DAEMON_SERVE_RESOLUTION_ENV, summary);
+    } else {
+        command.env_remove(DAEMON_SERVE_RESOLUTION_ENV);
+    }
     let mut child = command.spawn().context("failed to spawn 'holon serve'")?;
 
     let deadline = tokio::time::Instant::now() + start_timeout;
@@ -553,9 +759,20 @@ pub async fn daemon_prepare_update(config: &AppConfig) -> Result<DaemonLifecycle
 }
 
 async fn daemon_stop_unlocked(config: &AppConfig) -> Result<DaemonLifecycleResult> {
-    let before = daemon_status(config).await?;
     let stop_probe = probe_runtime(config).await;
+    let before = daemon_status_from_probe(
+        config,
+        &stop_probe,
+        desired_serve_status(config).ok().flatten(),
+    )?;
     match &stop_probe {
+        ProbeRuntime::Running(status)
+            if status.home_dir != config.home_dir || status.socket_path != config.socket_path =>
+        {
+            return Err(anyhow!(
+                "runtime belongs to a different home or control socket; refusing to stop it"
+            ));
+        }
         ProbeRuntime::Stopped {
             occupied_socket: true,
         } => {
@@ -704,6 +921,8 @@ fn config_for_runtime_status(config: &AppConfig, status: &RuntimeStatusResponse)
 }
 
 fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
+    // Invalid desired configuration must not prevent safe shutdown or update preparation.
+    let desired_serve = desired_serve_status(config).ok().flatten();
     Ok(DaemonStatusView {
         ok: true,
         state: DaemonLifecycleState::Stopped,
@@ -717,6 +936,7 @@ fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
         lifecycle_owner: Some(DaemonLifecycleOwner::Standalone),
         executable_path: None,
         desired_running: load_daemon_desired_running(config)?.unwrap_or(false),
+        desired_serve: desired_serve.clone(),
         pid: None,
         control_connectivity: false,
         runtime_config_fingerprint: None,
@@ -754,7 +974,7 @@ pub async fn daemon_restart_with_timeout(
     }
     let start_timeout = resolve_start_timeout(start_timeout_secs)?;
     let mut started =
-        daemon_start_unlocked(config, serve_args, control_token_env, start_timeout).await?;
+        daemon_start_unlocked(config, serve_args, control_token_env, start_timeout, None).await?;
     started.status.desired_running = true;
     Ok(DaemonLifecycleResult {
         ok: true,

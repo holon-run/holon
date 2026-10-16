@@ -457,6 +457,34 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 
 ### `holon serve` 参数
 
+`serve`、`daemon start` 和 `daemon restart` 会从
+`HOLON_HOME/daemon/serve_profile.json` 继承已接受的启动配置，干净退出删除
+`run/daemon.json` 不影响它；stop 和 prepare-update 也不清除该文件。
+优先级为：显式 CLI > 明确提供的启动环境变量 > profile >
+仅迁移时使用的有效旧 metadata > 默认。`HOLON_HTTP_ADDR` 和
+`HOLON_CONTROL_TOKEN` 可显式覆盖；环境变量未设置不算覆盖。
+启动日志说明来源、覆盖字段及变量名，不输出凭据值。服务管理器持续传入的
+CLI/env 仍会覆盖保存值，排查时先看这些诊断。
+
+token-file、web-dist 路径保存为绝对路径，token 内容永不落盘。内联或环境
+token 只保存 `external_required` 标记；下次即使监听 loopback，也必须明确
+提供 token 或 token-file。文件缺失或内容为空会拒绝启动，不降级为无认证。
+只覆盖认证字段不会改变网络、桌面等设置。
+
+serve/start/restart 的 `--reset-serve-options` 显式丢弃继承配置，再按当前
+CLI/env/默认解析，例如：
+
+```bash
+holon daemon restart --reset-serve-options --access local
+```
+
+参数、凭据读取、进程身份或幂等 start 配置冲突等校验失败，不覆盖 profile
+也不停旧进程。合法意图一旦接受，后续 bind/readiness 失败仍保留该意图，
+但不代表启动成功；请查看 daemon status 和日志。损坏或不支持的 profile
+会报错，不静默使用默认值；stop 和 prepare-update 仍可在核验运行身份后
+安全停机，不读取或替换损坏的 profile。旧 binary 不读新 profile，降级需显式传入
+参数与凭据；旧版本已经删除的历史参数无法恢复。
+
 | 参数 | 说明 |
 |--------|-------------|
 | `--port <PORT>` | 监听端口 |
@@ -466,7 +494,10 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | 用于鉴权的 Bearer token |
 | `--token-file <PATH>` | 从文件读取 token |
 | `--advertise <URL>` | 对外公布的 URL |
+| `--web-dist <PATH>` | Web 静态资源目录，保存为绝对路径 |
+| `--reset-serve-options` | 丢弃继承配置，使用明确的 CLI/env 与默认值 |
 | `--desktop-integration[=true\|false]` | 允许已授权调用操作 daemon 主机 Finder；仅支持 macOS，与 LAN/Serve 无关，默认关闭 |
+| `--desktop-integration-if-unconfigured` | 仅在生命周期锁内接受请求时仍无 profile 或有效旧配置才开启桌面集成；显式 desktop 参数优先，不能与 reset 组合 |
 
 ### `holon daemon start` 参数
 
@@ -477,7 +508,12 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--host <HOST>` | 绑定主机 |
 | `--listen <ADDR>` | 监听地址 |
 | `--token <TOKEN>` | 鉴权 token |
+| `--token-file <PATH>` | 从文件读取 token，仅保存绝对路径 |
+| `--advertise <URL>` | 对外公布的 URL |
+| `--web-dist <PATH>` | Web 静态资源目录 |
+| `--reset-serve-options` | 与 serve 相同；daemon restart 也支持 |
 | `--desktop-integration[=true\|false]` | 与 serve 相同；restart 继承设置，除非显式覆盖 |
+| `--desktop-integration-if-unconfigured` | 与 serve 相同，restart 也支持；仅为首次启动请求提示，不持久化为覆盖参数 |
 
 ### `holon agent create` 参数
 
