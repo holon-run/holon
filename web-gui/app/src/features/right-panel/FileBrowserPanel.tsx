@@ -1,4 +1,5 @@
 import { useCopyText } from "../../components/ClipboardProvider";
+import { FileBrowserPopover } from "./FileBrowserPopover";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   ArrowLeft,
@@ -756,9 +757,9 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
           <button type="button" className="file-browser-crumb" onClick={() => void loadDir("")}>{t("fileBrowser.root")}</button>
           {breadcrumbParts.length > 1 ? <div className="file-browser-popover" ref={ancestorsRef}>
             <button type="button" aria-label={t("fileBrowser.parentFolders")} aria-expanded={ancestorsOpen} onClick={() => setAncestorsOpen(!ancestorsOpen)}>…</button>
-            {ancestorsOpen ? <div className="file-browser-popover-content file-browser-ancestors">
+            {ancestorsOpen ? <FileBrowserPopover anchorRef={ancestorsRef} className="file-browser-ancestors">
               {breadcrumbParts.slice(0, -1).map((part, i) => <button type="button" key={i} title={breadcrumbParts.slice(0, i + 1).join("/")} onClick={() => { setAncestorsOpen(false); navigateToBreadcrumb(i); }}>{part}</button>)}
-            </div> : null}
+            </FileBrowserPopover> : null}
           </div> : null}
           {breadcrumbParts.length > 0 ? <><span className="file-browser-sep">/</span><button type="button" className="file-browser-crumb file-browser-current-folder" title={currentPath} onClick={() => navigateToBreadcrumb(breadcrumbParts.length - 1)}>{breadcrumbParts.at(-1)}</button></> : null}
         </nav>
@@ -781,7 +782,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
           {selectedFile && (viewMode === "preview" || split) ? <button type="button" aria-label={t("fileBrowser.openInNewTab")} title={t("fileBrowser.openInNewTab")} disabled={!selectedWebUrl} onClick={openSelectedFileInNewTab}><ExternalLink size={16} /></button> : null}
           <div className="file-browser-popover" ref={menuRef}>
             <button type="button" aria-label={t("fileBrowser.fileActions")} aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={18} /></button>
-            {menuOpen ? <div className="file-browser-popover-content">
+            {menuOpen ? <FileBrowserPopover anchorRef={menuRef}>
               {selectedFile && (viewMode === "preview" || split) ? <>
                 {browserIsLocal && canReveal ? <button type="button" disabled={revealing || selectedFile.loading || Boolean(selectedFile.error) || !effectiveRootId} onClick={() => {
                   setActionError(undefined); setRevealing(true);
@@ -795,7 +796,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
                 <button type="button" onClick={() => { setMenuOpen(false); void downloadSelectedFile(); }}>{t("fileBrowser.download")}</button>
               </> : null}
               <button type="button" onClick={() => { setMenuOpen(false); void (viewMode === "preview" && selectedFile ? reloadFile() : loadDir(currentPath)); }}>{viewMode === "preview" && selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}</button>
-            </div> : null}
+            </FileBrowserPopover> : null}
           </div>
         </div>
       </div>

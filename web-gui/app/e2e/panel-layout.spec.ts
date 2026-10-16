@@ -322,6 +322,60 @@ for (const enabled of [false, true]) {
   });
 }
 
+for (const entries of [1, 2]) {
+  test(`file actions escape a short binary preview (${entries} files)`, async ({ page }, info) => {
+    await page.route("**/api/desktop/capabilities", (route) => route.fulfill({ json: { reveal_in_finder: true } }));
+    let reads = 0;
+    await page.route("**/api/workspaces/files-test/files**", async (route) => {
+      const path = new URL(route.request().url()).pathname.split("/files/")[1] ?? "";
+      if (path) reads++;
+      await route.fulfill({ json: {
+        type: path ? "file" : "directory", kind: path ? "file" : "directory",
+        workspace_id: "files-test", execution_root_id: "root-test", root_kind: "canonical_root",
+        absolute_path: `/test/${path}`, path, mime_type: "application/vnd.android.package-archive", size: 100,
+        entries: Array.from({ length: entries }, (_, i) => ({ name: `app-${i}.apk`, type: "file", size: 100 })),
+      } });
+    });
+    const panel = page.locator(".side-panel");
+    await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
+    await panel.getByRole("button", { name: "app-0.apk", exact: false }).click();
+    await expect(panel.locator(".file-browser-viewer")).toContainText("Binary file");
+    const trigger = panel.getByRole("button", { name: "File actions", exact: true });
+    const menu = panel.locator(".file-browser-popover-content");
+    const refresh = menu.getByRole("button", { name: "Refresh file content", exact: true });
+    await trigger.click();
+    await expect(menu.getByRole("button", { name: "Show in Holon host Finder", exact: true })).toBeVisible();
+    await expect(menu.getByRole("button", { name: "Download", exact: true })).toBeVisible();
+    const assertUnclipped = async () => {
+      await expect(refresh).toBeInViewport();
+      await expect.poll(() => refresh.evaluate((button) => {
+        const rect = button.getBoundingClientRect();
+        return button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+      })).toBe(true);
+    };
+    await assertUnclipped();
+    await panel.screenshot({ path: info.outputPath(`binary-menu-${entries}.png`) });
+    // An open menu follows the trigger when the panel or viewport changes.
+    await page.setViewportSize({ width: 1100, height: 420 });
+    await assertUnclipped();
+    const menuBox = (await menu.boundingBox())!;
+    const triggerBox = (await trigger.boundingBox())!;
+    expect(Math.abs(menuBox.x + menuBox.width - triggerBox.x - triggerBox.width)).toBeLessThan(2);
+    const previousReads = reads;
+    await refresh.click();
+    await expect.poll(() => reads).toBeGreaterThan(previousReads);
+    await expect(menu).toHaveCount(0);
+    await trigger.click();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expect(panel).toBeVisible();
+    await trigger.click();
+    await panel.locator(".panel-header strong").click();
+    await expect(menu).toHaveCount(0);
+  });
+}
+
 for (const language of ["en", "zh-CN"]) {
   test(`long file locations stay compact (${language})`, async ({ page }, info) => {
     const directory = "work-items/work_very_long_identifier_1234567890abcdefghijklmnop";
@@ -348,6 +402,7 @@ for (const language of ["en", "zh-CN"]) {
       expect((await browser.locator(".file-browser-markdown").boundingBox())!.y).toBeLessThan(230);
       await browser.getByRole("button", { name: parentLabel, exact: true }).click();
       await expect(browser.locator(".file-browser-ancestors").getByRole("button", { name: "work-items", exact: true })).toBeVisible();
+      await browser.locator(".file-browser-ancestors").getByRole("button", { name: "work-items", exact: true }).click({ trial: true });
       await page.keyboard.press("Escape");
       await browser.getByRole("button", { name: infoLabel, exact: true }).click();
       await expect(browser.getByRole("region", { name: infoLabel })).toContainText(path);
