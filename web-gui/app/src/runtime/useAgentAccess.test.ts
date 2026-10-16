@@ -124,12 +124,71 @@ describe("route-selected agent admission", () => {
     }
   });
 
-  it("handles terminal state failure without waiting for a hung identity", async () => {
-    mocks.identity.mockReturnValue(new Promise(() => {}));
-    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 403));
+  it.each([[401, "unauthorized"], [403, "unauthorized"], [404, "missing"]] as const)(
+    "handles terminal state HTTP %s without waiting for a hung identity", async (code, status) => {
+      mocks.identity.mockReturnValue(new Promise(() => {}));
+      mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", code));
+      await render();
+      expect(current.status).toBe(status);
+      expect(mocks.identity.mock.calls[0][1].aborted).toBe(true);
+    },
+  );
+
+  it.each([
+    [false, "deleting", 409], [false, "deleted", 410], [false, "replaced", 410],
+    [true, "deleting", 409], [true, "deleted", 410], [true, "replaced", 410],
+    [false, "deleted", 500],
+  ] as const)("resolves state failure through identity (warm=%s, %s, HTTP %s)", async (isWarm, status, code) => {
+    let key: string | undefined;
+    if (isWarm) {
+      await render();
+      act(() => { key = warm(); });
+      await render("other");
+    }
+    const identity = deferred();
+    mocks.identity.mockImplementation(async (id: string) => id === "parent"
+      ? { identity: { agent_id: "parent", status: "active" } } : identity.promise);
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", code));
+    await render("private-child", 1);
+    expect(current.status).toBe(isWarm ? "revalidating" : "loading");
+    const signal = mocks.state.mock.calls.at(-1)?.[1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    const detail = childDetail({ state: "cleanup_required" });
+    detail.identity.status = status === "replaced" ? "active" : status;
+    detail.identity.incarnation = status === "replaced" ? 2 : 1;
+    await act(async () => identity.resolve(detail));
+    expect(current.status).toBe(status);
+    expect(current.agent).toBeUndefined();
+    expect(current.parentAgentId).toBe(status === "replaced" ? undefined : "parent");
+    expect(signal.aborted).toBe(true);
+    if (key) expect(useConversationScopeStore.getState().scopes[key]?.displayView).toBeUndefined();
+    const childCalls = () => mocks.identity.mock.calls.filter(([id]) => id === "private-child").length;
+    const count = childCalls();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(childCalls()).toBe(count);
+  });
+
+  it.each([[401, "unauthorized"], [403, "unauthorized"], [404, "missing"]] as const)(
+    "preserves identity HTTP %s after state 410 as %s", async (code, status) => {
+      const identity = deferred();
+      mocks.identity.mockReturnValue(identity.promise);
+      mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 410));
+      await render();
+      await act(async () => identity.reject(new RuntimeHttpError("GET", "/detail", code)));
+      expect(current.status).toBe(status);
+      expect(current.agent).toBeUndefined();
+    },
+  );
+
+  it("does not infer a deleted identity from state 410 alone", async () => {
+    const identity = deferred();
+    mocks.identity.mockReturnValue(identity.promise);
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", 410));
     await render();
-    expect(current.status).toBe("unauthorized");
-    expect(mocks.identity.mock.calls[0][1].aborted).toBe(true);
+    expect(current.status).toBe("loading");
+    await act(async () => identity.resolve(childDetail()));
+    expect(current.status).toBe("error");
+    expect(current.agent).toBeUndefined();
   });
 
   it.each([undefined, 0, -1, NaN, 1.5])("does not admit a malformed incarnation %s", async (incarnation) => {

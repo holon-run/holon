@@ -170,7 +170,10 @@ function load(record: AccessRecord, preview: boolean): Promise<void> {
     try {
       const identityRequest = client.getAgentIdentity(agentId, abort.signal);
       const detail = await Promise.race([identityRequest, stateResult.then((result) => {
-        if ("error" in result) throw result.error;
+        // Only definitive access denials may preempt identity; state 409/410
+        // cannot distinguish lifecycle tombstones from an incarnation change.
+        if ("error" in result && result.error instanceof RuntimeHttpError
+          && [401, 403, 404].includes(result.error.status)) throw result.error;
         return identityRequest;
       })]);
       if (!live()) return;
