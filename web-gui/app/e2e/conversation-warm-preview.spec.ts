@@ -16,6 +16,10 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
     await context.addCookies([{
       name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/",
     }]);
+    // Warm previews require a verified user; the generic fixture is anonymous.
+    await page.route("**/api/auth/session/me", (route) => route.fulfill({
+      json: { user_id: "warm-preview-user", auth_method: "static_token" },
+    }));
     await request.post(control("/__e2e__/configure"), { data: {
       visibleAgentIds: [agentId, buddyId],
       briefsById: { cached: {

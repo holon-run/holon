@@ -283,9 +283,10 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await cold.reload();
     await expect(cold).toHaveURL(`${daemon.baseUrl}${childPath}`);
     await expect(cold.locator(".message-list")).toContainText(CHILD_INPUT);
-    await expect(cold.getByRole("link", { name: "Back to parent agent", exact: true }))
-      .toHaveAttribute("href", `/agents/${daemon.agentId}/conversation`);
-    await expect(cold.locator('.conversation-sync-status[role="note"]')).toContainText(task!.id);
+    // A historical "default" supervisor is not a verified parent navigation
+    // target; do not remap it to whichever agent owns today's default route.
+    await expect(cold.getByRole("link", { name: "Back to parent agent", exact: true })).toHaveCount(0);
+    await expect(cold.locator('.conversation-sync-status[role="note"]')).toHaveCount(0);
 
     // A stale identity link must not silently open the current child or home.
     const stale = await page.context().newPage();

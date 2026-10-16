@@ -2,7 +2,7 @@ import { expect, test } from "./daemon-fixture";
 
 test("warm history is visible before real identity/state responses and stays read-only", async ({
   daemonFactory, page,
-}) => {
+}, testInfo) => {
   const daemon = await daemonFactory({ webDist: "dist-e2e" });
   await page.addInitScript((token) => {
     sessionStorage.setItem("holon.webGui.activeRuntimeConnection.v1", JSON.stringify({
@@ -15,11 +15,13 @@ test("warm history is visible before real identity/state responses and stays rea
     body: JSON.stringify({ authority_class: "operator_instruction", template: null }),
   });
   expect(created.ok).toBe(true);
-  await page.goto(`${daemon.baseUrl}/agents/default/conversation`);
-  await expect(page.locator(".composer textarea")).toBeEnabled();
   const marker = "real daemon warm-cache revalidation marker";
   await daemon.enqueue(marker);
+  const coldStarted = performance.now();
+  await page.goto(`${daemon.baseUrl}/agents/default/conversation`);
   await expect(page.locator(".message-list")).toContainText(marker);
+  const coldHistoryVisibleMs = performance.now() - coldStarted;
+  await expect(page.locator(".composer textarea")).toBeEnabled();
   await expect.poll(() => page.evaluate(
     () => window.__HOLON_E2E__?.snapshot().conversationStatus?.kind,
   )).toBe("ready");
@@ -49,8 +51,10 @@ test("warm history is visible before real identity/state responses and stays rea
     await route.continue();
   });
   try {
+    const warmStarted = performance.now();
     await page.locator('.agent-row[title*="default"]').click();
     await expect(page.locator(".message-list")).toContainText(marker);
+    const warmHistoryVisibleMs = performance.now() - warmStarted;
     await expect(page.getByText("Loading agent…", { exact: true })).toHaveCount(0);
     await expect(page.locator(".composer textarea")).toBeDisabled();
     // Real responses have not been substituted: only their delivery is held.
@@ -58,6 +62,15 @@ test("warm history is visible before real identity/state responses and stays rea
     await expect.poll(() => identityRequests).toBeGreaterThan(0);
     await expect.poll(() => stateRequests).toBeGreaterThan(0);
     expect(readWrites).toEqual([]);
+    await testInfo.attach("warm-preview-measurements", {
+      body: JSON.stringify({
+        coldHistoryVisibleMs, warmHistoryVisibleMs,
+        identityRequests, stateRequests, readMarkerWrites: readWrites.length,
+        // Local fixture and assertion overhead are included; this is not an SLA.
+        responsesHeldUntilAfterHistoryVisible: true,
+      }, null, 2),
+      contentType: "application/json",
+    });
     preview = false;
     release();
     await expect(page.locator(".composer textarea")).toBeEnabled();
