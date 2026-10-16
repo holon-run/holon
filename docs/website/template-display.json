@@ -2,7 +2,11 @@
   "schema": 1,
   "templates": {
     "code-health-steward": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "代码健康管家",
+        "summary": "持续发现代码可维护性风险，确定适度改进的优先级，并推进已授权重构的实现与验证，降低仓库的长期维护成本；不替代变更审阅或决定合并。"
+      }
     },
     "code-reviewer": {
       "category": "engineering",
@@ -13,22 +17,46 @@
       }
     },
     "community-steward": {
-      "category": "operations"
+      "category": "operations",
+      "zh-CN": {
+        "name": "社区管家",
+        "summary": "持续维护贡献者体验、社区状况记录、升级处理队列和可审阅的社区健康简报；不代表维护者发言或执行社区管理操作。"
+      }
     },
     "dependency-steward": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "依赖管家",
+        "summary": "持续维护依赖更新策略、兼容性证据和优先级建议；不评定漏洞等级，也不替代实现工作或合并审阅。"
+      }
     },
     "docs-steward": {
-      "category": "content"
+      "category": "content",
+      "zh-CN": {
+        "name": "文档管家",
+        "summary": "持续检测文档与实际情况的偏差、跟进缺口并完成纯文档变更；不实现产品功能，也不负责发布。"
+      }
     },
     "github-solver": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "GitHub 任务助手",
+        "summary": "由 holon solve 命令管理、用于一次性 GitHub 任务的预设。"
+      }
     },
     "holon-ops": {
-      "category": "operations"
+      "category": "operations",
+      "zh-CN": {
+        "name": "Holon 运维",
+        "summary": "持续负责 Holon 运行时的运维工作。"
+      }
     },
     "issue-triager": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "议题分诊员",
+        "summary": "持续整理 GitHub 议题收件箱，负责分类、识别疑似重复项、补充缺失信息和分派；不执行实现或验证。"
+      }
     },
     "knowledge-steward": {
       "category": "productivity",
@@ -47,10 +75,18 @@
       }
     },
     "legal-ops-steward": {
-      "category": "operations"
+      "category": "operations",
+      "zh-CN": {
+        "name": "法务管家",
+        "summary": "持续将合同、法律研究和法规变化整理为附有来源、可供审阅的草稿；不提供法律意见，也不执行外部操作。"
+      }
     },
     "marketing-steward": {
-      "category": "content"
+      "category": "content",
+      "zh-CN": {
+        "name": "营销管家",
+        "summary": "持续维护产品定位、内容计划、文案草稿、审查记录和可审阅的营销活动简报；不发布内容或支出费用。"
+      }
     },
     "office-assistant": {
       "category": "productivity",
@@ -61,22 +97,46 @@
       }
     },
     "product-manager": {
-      "category": "productivity"
+      "category": "productivity",
+      "zh-CN": {
+        "name": "产品经理",
+        "summary": "持续将目标、议题和反馈转化为可审阅的需求规格与可测试的验收标准，并提出优先级建议。"
+      }
     },
     "qa-engineer": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "质量工程师",
+        "summary": "持续负责验收与质量工作，维护覆盖情况、分层质量门禁、验证证据并排查不稳定测试；不实现产品功能。"
+      }
     },
     "release-manager": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "发布经理",
+        "summary": "持续负责软件发布与交付工作。"
+      }
     },
     "reverse-engineer": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "逆向工程师",
+        "summary": "以证据为依据，持续对已获授权的软件、协议、文件格式和运行时行为开展逆向分析。"
+      }
     },
     "security-reviewer": {
-      "category": "engineering"
+      "category": "engineering",
+      "zh-CN": {
+        "name": "安全审阅员",
+        "summary": "持续开展防御性安全审阅，负责安全发现和告警分诊；不实现产品功能、不制作漏洞利用，也不替代合并审阅、验收或运维。"
+      }
     },
     "server-ops": {
-      "category": "operations"
+      "category": "operations",
+      "zh-CN": {
+        "name": "服务器运维",
+        "summary": "持续负责服务器与服务的运维工作。"
+      }
     },
     "software-developer": {
       "category": "engineering",
