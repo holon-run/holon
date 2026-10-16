@@ -6,7 +6,7 @@ order: 100
 
 # Holon Mobile Privacy Policy
 
-Updated: October 9, 2026
+Updated: October 16, 2026
 
 [中文](/zh-CN/privacy)
 
@@ -48,10 +48,40 @@ brief data, and pending outgoing messages locally.
 
 On iOS, session credentials and pending browser-login proof material are stored
 in Keychain; connection profiles and preferences use UserDefaults. Pending
-messages and attachments are stored locally. The app and its share extension
+messages, attachments, and bounded conversation and brief caches are stored
+locally so previously loaded content can be read offline. The app and its share extension
 use an App Group container for imported content and sharing state, and a shared
 Keychain access group for the session used to send from the extension. These
 are local app/extension storage mechanisms, not a central developer database.
+
+## Developer-operated demo hosts and content reports
+
+If you choose our developer-operated demo or App Review host, we act as that
+host's operator. It receives and stores messages, selected attachments
+(including photos, videos and audio files), session information, and content
+reports to provide the requested features and handle reported content.
+These records can be associated with the host session or account and the
+relevant agent or response; they are not promised to be anonymous.
+The demo uses Railway hosting and a configured AI provider, currently DeepSeek.
+Messages and attachments needed for AI requests are processed by that provider.
+Their infrastructure and provider policies also apply; this is not a description
+of every self-hosted installation.
+
+We do not use this content for advertising, cross-app tracking, or training
+our own models. This does not override the processing rules of a provider
+configured by a host operator. Demo records are periodically cleaned up;
+we do not promise immediate deletion or a fixed retention period for all
+records, logs, backups or provider copies. For access or deletion requests
+concerning our demo, contact **hello@holon.run** and identify the relevant demo
+and records without sending passwords or tokens.
+
+On iOS, reporting AI content requires a separate confirmation. The app sends
+the selected response's identifiers, a reason, and your optional explanation
+to the connected host. The host stores a bounded snapshot of that response,
+not an automatic copy of the whole conversation. A receipt means the host
+accepted the report, not that moderation has finished. Reporting to your own
+host does not automatically send a report to the client developer; contact
+that host's operator about handling and retention.
 
 ## Files, camera and diagnostics
 
@@ -78,6 +108,13 @@ choose to export diagnostics through Android's share sheet; inspect exports
 before sharing. Holon Android has no ads. No advertising or analytics SDK is
 declared in the Android app's build dependencies. This is not a claim that
 your host, browser, Google Play services, or external providers collect no data.
+
+On iOS, **Settings → Diagnostics** prepares a local, allowlisted report of
+status values, counts, schema/platform information and its creation time,
+not arbitrary logs, credentials, profile addresses or conversation text.
+You can inspect it before sharing. Sending it to an agent requires a separate
+confirmation and sends it to the selected host as message content; this is
+not automatic telemetry. The iOS client has no ads or advertising/analytics SDK.
 
 ## Retention and deletion
 
