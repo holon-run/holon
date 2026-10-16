@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Keep documentation directory links in one managed catalog per page."""
 
+import argparse
 from collections import Counter
 from pathlib import Path
 import posixpath
@@ -51,11 +52,14 @@ def check_page(text, page):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=ROOT, help="Website content root")
+    root = parser.parse_args().root.resolve()
     errors = []
     for locale in ("", "zh-CN"):
         for section in SECTIONS:
             page = Path(locale) / section / "README.md"
-            for error in check_page((ROOT / page).read_text(), page):
+            for error in check_page((root / page).read_text(), page):
                 errors.append(f"{page}: {error}")
     if errors:
         print("\n".join(errors), file=sys.stderr)

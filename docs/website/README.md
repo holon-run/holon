@@ -94,6 +94,10 @@ Keep project files and outputs in separate workspaces. Agents work in the backgr
 <p class="home-product__caption">Ongoing work requires the computer or server and the Holon background service to stay running. Your configuration determines which files and tools agents can use.</p>
 </section>
 
+<!-- TEMPLATES:START -->
+<!-- Template cards are generated from agent_templates and template-display.json. -->
+<!-- TEMPLATES:END -->
+
 <section class="home-section home-proof">
 <div class="home-proof__intro">
 <p class="home-kicker">Featured articles</p>

@@ -13,6 +13,7 @@ Run from the repository root:
     python3 docs/website/.tools/check-links.py
 """
 
+import argparse
 import json
 import os
 import re
@@ -22,6 +23,12 @@ REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 WEBSITE_DIR = os.path.join(REPO_ROOT, "docs/website")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--root", default=WEBSITE_DIR, help="Website content root")
+args = parser.parse_args()
+WEBSITE_DIR = os.path.abspath(args.root)
+if not os.path.isfile(os.path.join(WEBSITE_DIR, "mdorigin.config.json")):
+    parser.error(f"not a website content root: {WEBSITE_DIR}")
 LINK_RE = re.compile(r'\[([^\]]*)\]\(([^)]*\.md[^)]*)\)')
 
 broken = 0
@@ -61,7 +68,7 @@ def collect_dir_pages():
     for root, subdirs, files in os.walk(WEBSITE_DIR):
         if '.tools/node_modules' in root:
             continue
-        subdirs[:] = [d for d in subdirs if d != 'node_modules']
+        subdirs[:] = [d for d in subdirs if d not in ('.tools', 'node_modules')]
         for f in files:
             if f in ('README.md', 'index.md'):
                 rel = os.path.relpath(root, WEBSITE_DIR).replace('\\', '/')
@@ -77,7 +84,7 @@ def check_trailing_slashes():
     for root, subdirs, files in os.walk(WEBSITE_DIR):
         if '.tools/node_modules' in root:
             continue
-        subdirs[:] = [d for d in subdirs if d != 'node_modules']
+        subdirs[:] = [d for d in subdirs if d not in ('.tools', 'node_modules')]
         for f in files:
             if not f.endswith('.md'):
                 continue
@@ -153,7 +160,7 @@ for root, dirs, files in os.walk(WEBSITE_DIR):
     if '.tools/node_modules' in root:
         dirs[:] = []
         continue
-    dirs[:] = [d for d in dirs if d != 'node_modules']
+    dirs[:] = [d for d in dirs if d not in ('.tools', 'node_modules')]
     for f in files:
         if f.endswith('.md'):
             check_file(os.path.join(root, f), WEBSITE_DIR)
