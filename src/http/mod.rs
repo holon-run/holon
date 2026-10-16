@@ -1088,6 +1088,8 @@ fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
         // exposing it, cross-origin clients silently degrade to full 200s.
         .expose_headers([
             ETAG,
+            HeaderName::from_static("x-holon-agent-id"),
+            HeaderName::from_static("x-holon-agent-incarnation"),
             HeaderName::from_static(crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER),
         ])
         .allow_methods(methods)

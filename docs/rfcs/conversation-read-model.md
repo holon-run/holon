@@ -6,6 +6,47 @@ status: accepted
 
 # RFC: Conversation Read Model
 
+## Incarnation-bound delivery (2026-10-16)
+
+`agents.conversation-incarnation.v1` explicitly negotiates incarnation-bound
+reads. Clients send `x-holon-expected-incarnation` on summary, activities, Brief,
+locate and stream requests. Successful responses (including conditional 304)
+carry `x-holon-agent-id` and `x-holon-agent-incarnation`. Missing or mismatched
+bindings are terminal protocol errors for a negotiated client, not permission
+to fall back to an unbound result.
+
+The binding comes from the **same SQLite read transaction** as the projected
+data, not an identity lookup before or after it. Admission compares the expected
+incarnation with that transaction's binding before returning any data or 304.
+An already admitted old snapshot may finish after replacement; it remains
+labelled with its old identity and can never contain the replacement's data.
+Cursor bindings include incarnation separately from the shared visibility scope,
+so old history/detail/resume cursors cannot be reused for a replacement.
+Pre-capability cursors require one fresh bootstrap after upgrade; an absent
+incarnation decodes as zero and fails binding validation.
+
+A stream binds to its initial transaction's identity, even for legacy callers.
+Every SSE data frame, including batch begin, changes, checkpoint and reset,
+carries `agent_id` and `agent_incarnation`. Each recovered transaction must match
+that binding before any of its units are queued. Replacement/deletion terminates
+the stream with `agent_identity_changed`; an idle stream also checks lifecycle
+on its recovery timer. It never follows a new incarnation. Queued old data stays
+old-labelled; incomplete batches never advance a checkpoint.
+
+The SDK validates HTTP bindings after decoding and each stream frame before
+assembly/controller delivery, retaining cancellation and terminal invalidation.
+The GUI removes post-decode identity requests only after exact capability
+negotiation and use of this validating SDK client. Legacy servers retain strict
+post-decode identity checking; unknown capabilities do not enable this path.
+This does not change operator-input `expected_incarnation` admission, cache
+authorization, or the existing runtime/epoch/visibility fences.
+
+This binding identifies the admitted read, not the creation identity of every
+historical record. Deletion currently retains durable history keyed by agent id;
+a newly admitted replacement can therefore project retained history. The fence
+does not permit old clients or cursors to follow that replacement, and does not
+introduce per-incarnation history partitioning or deletion.
+
 ## Canonical source location and bidirectional history (2026-10-14)
 
 The read model also serves `agents.conversation-locate.v1` and

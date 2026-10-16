@@ -31,6 +31,7 @@ use axum::http::{HeaderMap, StatusCode};
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
 pub(crate) const PROJECTION_SNAPSHOT_CAPABILITY: &str = "agents.projection-snapshot.v1";
 pub(crate) const CONVERSATION_READ_CAPABILITY: &str = "agents.conversation-read.v1";
+pub(crate) const CONVERSATION_INCARNATION_CAPABILITY: &str = "agents.conversation-incarnation.v1";
 pub(crate) const CONVERSATION_LOCATE_CAPABILITY: &str = "agents.conversation-locate.v1";
 pub(crate) const CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY: &str =
     "agents.conversation-history-bidirectional.v1";
@@ -102,6 +103,7 @@ pub(crate) fn advertised_observer_sync_capabilities(
         capabilities.push(ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY);
     }
     capabilities.push(CONVERSATION_READ_CAPABILITY);
+    capabilities.push(CONVERSATION_INCARNATION_CAPABILITY);
     capabilities.push(CONVERSATION_LOCATE_CAPABILITY);
     capabilities.push(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
     capabilities
@@ -706,6 +708,7 @@ mod tests {
             advertised,
             vec![
                 CONVERSATION_READ_CAPABILITY,
+                CONVERSATION_INCARNATION_CAPABILITY,
                 CONVERSATION_LOCATE_CAPABILITY,
                 CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
             ]
@@ -743,6 +746,7 @@ mod tests {
             vec![
                 ROSTER_SNAPSHOT_CAPABILITY,
                 CONVERSATION_READ_CAPABILITY,
+                CONVERSATION_INCARNATION_CAPABILITY,
                 CONVERSATION_LOCATE_CAPABILITY,
                 CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
             ]
@@ -759,6 +763,7 @@ mod tests {
             vec![
                 PROJECTION_SNAPSHOT_CAPABILITY,
                 CONVERSATION_READ_CAPABILITY,
+                CONVERSATION_INCARNATION_CAPABILITY,
                 CONVERSATION_LOCATE_CAPABILITY,
                 CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY,
             ]

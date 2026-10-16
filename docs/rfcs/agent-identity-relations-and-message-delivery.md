@@ -456,7 +456,13 @@ an agent conversation, not an exclusive conversation log or a retention pin.
 The Web GUI pins a loaded conversation to its resolved incarnation. Controller
 scopes and persistent caches include that incarnation, and decoded conversation
 responses and stream items are checked against the identity before they enter
-the controller. Identity replacement or removal stops automatic retries and
+the controller. With `agents.conversation-incarnation.v1`, the server captures
+the identity in the same SQLite snapshot as the data and the SDK validates
+HTTP/304 headers and every SSE frame locally. The pinned stream terminates on
+replacement/deletion; cursors are incarnation-scoped. Without this exact
+capability the GUI retains strict post-decode identity requests. See the
+[conversation protocol](conversation-read-model.md#incarnation-bound-delivery-2026-10-16).
+Identity replacement or removal stops automatic retries and
 clears the controller's cached presentation. A task link to an older incarnation
 never silently switches to the replacement's conversation.
 

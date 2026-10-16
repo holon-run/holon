@@ -7,8 +7,8 @@ use crate::domain::conversation::{
     CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::conversation::{
-    ConversationChangeBatch, ConversationReadError, ConversationResetReason, ConversationSnapshot,
-    MAX_CONVERSATION_CHANGE_ACTIVITIES, MAX_CONVERSATION_CHANGE_EVENTS,
+    ConversationChangeBatch, ConversationIdentity, ConversationReadError, ConversationResetReason,
+    ConversationSnapshot, MAX_CONVERSATION_CHANGE_ACTIVITIES, MAX_CONVERSATION_CHANGE_EVENTS,
 };
 
 pub(crate) const CONVERSATION_SUMMARY_DEFAULT_LIMIT: usize = 30;
@@ -21,6 +21,60 @@ pub(crate) const CONVERSATION_ACTIVITY_MAX_SERIALIZED_BYTES: usize = 4 * 1024 * 
 pub(crate) const CONVERSATION_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const CONVERSATION_STREAM_QUEUE_CAPACITY: usize = 32;
 const CONVERSATION_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(crate) fn identity_changed() -> (StatusCode, Json<Value>) {
+    http_error(
+        StatusCode::CONFLICT,
+        HttpErrorEnvelope::new(
+            "conversation_identity_changed",
+            "The conversation agent identity is no longer available.",
+        )
+        .retryable(false),
+    )
+}
+
+pub(crate) fn request_incarnation(
+    headers: &HeaderMap,
+) -> Result<Option<u64>, (StatusCode, Json<Value>)> {
+    headers
+        .get("x-holon-expected-incarnation")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(identity_changed)
+        })
+        .transpose()
+}
+
+/// Admission is against the identity captured with the data, never a second read.
+pub(crate) fn bind_response(
+    request: &HeaderMap,
+    identity: &ConversationIdentity,
+    mut response: AxumResponse,
+) -> AxumResponse {
+    if let Some(expected) = request.get("x-holon-expected-incarnation") {
+        if expected
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            != Some(identity.agent_incarnation)
+        {
+            return identity_changed().into_response();
+        }
+    }
+    let Ok(agent_id) = HeaderValue::from_str(&identity.agent_id) else {
+        return identity_changed().into_response();
+    };
+    response.headers_mut().insert("x-holon-agent-id", agent_id);
+    response.headers_mut().insert(
+        "x-holon-agent-incarnation",
+        HeaderValue::from(identity.agent_incarnation),
+    );
+    response
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationReadLimits {
@@ -193,7 +247,7 @@ pub(crate) enum ConversationStreamResetReason {
     QueryVersionMismatch,
     EventLogEpochMismatch,
     CursorRejected,
-    AgentNotFound,
+    AgentIdentityChanged,
     StreamRecoveryFailed,
     SlowConsumer,
 }
@@ -243,6 +297,10 @@ pub async fn stream(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    let expected_incarnation = match request_incarnation(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     let header_cursor = match headers.get("last-event-id") {
         Some(value) => match value.to_str() {
             Ok(value) if !value.is_empty() => Some(value.to_string()),
@@ -279,14 +337,17 @@ pub async fn stream(
     let read_timeout = state.conversation_read_limits.timeout;
     let recovery_started_at = std::time::Instant::now();
     let initial = match bounded_blocking_read(read_timeout, move || {
-        host.runtime_db().conversation().change_batch(
-            &initial_agent_id,
-            initial_after.as_deref(),
-            event_limit,
-            activity_limit,
-            &initial_principal,
-            scope_entitlement,
-        )
+        host.runtime_db()
+            .conversation()
+            .with_expected_incarnation(expected_incarnation)
+            .change_batch(
+                &initial_agent_id,
+                initial_after.as_deref(),
+                event_limit,
+                activity_limit,
+                &initial_principal,
+                scope_entitlement,
+            )
     })
     .await
     {
@@ -304,7 +365,16 @@ pub async fn stream(
         }
     };
 
+    let identity = initial.identity.clone();
+    let admission = bind_response(&headers, &identity, StatusCode::OK.into_response());
+    if admission.status() != StatusCode::OK {
+        return admission;
+    }
     let (tx, rx) = tokio::sync::mpsc::channel(CONVERSATION_STREAM_QUEUE_CAPACITY);
+    let tx = BoundStreamSender {
+        tx,
+        identity: identity.clone(),
+    };
     let host = state.host.clone();
     tokio::spawn(async move {
         let mut checkpoint = initial.checkpoint.clone();
@@ -312,30 +382,36 @@ pub async fn stream(
         if !send_change_batch(&tx, initial).await {
             return;
         }
+        let expected_incarnation = tx.identity.agent_incarnation;
+        let mut lifecycle_check = tokio::time::interval(EVENT_STREAM_HEARTBEAT_INTERVAL);
+        lifecycle_check.tick().await;
         loop {
             let published = tokio::select! {
-                _ = tx.closed() => return,
-                published = live_rx.recv() => published,
+                _ = tx.tx.closed() => return,
+                _ = lifecycle_check.tick() => Ok(true),
+                published = live_rx.recv() => published.map(|published|
+                    published.agent_id.as_deref() == Some(agent_id.as_str())
+                        && published.event.event_seq > through_seq),
             };
             match published {
-                Ok(published)
-                    if published.agent_id.as_deref() == Some(agent_id.as_str())
-                        && published.event.event_seq > through_seq =>
-                {
+                Ok(true) => {
                     let host = host.clone();
                     let agent_id_for_read = agent_id.clone();
                     let after = checkpoint.clone();
                     let scope_principal = scope_principal.clone();
                     let recovery_started_at = std::time::Instant::now();
                     let batch = bounded_blocking_read(read_timeout, move || {
-                        host.runtime_db().conversation().change_batch(
-                            &agent_id_for_read,
-                            Some(&after),
-                            event_limit,
-                            activity_limit,
-                            &scope_principal,
-                            scope_entitlement,
-                        )
+                        host.runtime_db()
+                            .conversation()
+                            .with_expected_incarnation(Some(expected_incarnation))
+                            .change_batch(
+                                &agent_id_for_read,
+                                Some(&after),
+                                event_limit,
+                                activity_limit,
+                                &scope_principal,
+                                scope_entitlement,
+                            )
                     })
                     .await;
                     match batch {
@@ -343,6 +419,9 @@ pub async fn stream(
                             crate::diagnostics::record_conversation_stream_recovery(
                                 recovery_started_at.elapsed(),
                             );
+                            if batch.through_seq == through_seq && batch.changes.is_empty() {
+                                continue;
+                            }
                             checkpoint = batch.checkpoint.clone();
                             through_seq = batch.through_seq;
                             if !send_change_batch(&tx, batch).await {
@@ -356,7 +435,7 @@ pub async fn stream(
                             let _ = send_stream_message(
                                 &tx,
                                 ConversationStreamMessage::ResetRequired {
-                                    reason: ConversationStreamResetReason::AgentNotFound,
+                                    reason: ConversationStreamResetReason::AgentIdentityChanged,
                                     oldest_retained_seq: None,
                                     event_head_seq: None,
                                     hint: "bootstrap a fresh conversation snapshot".to_string(),
@@ -397,7 +476,7 @@ pub async fn stream(
                         }
                     }
                 }
-                Ok(_) => {}
+                Ok(false) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(skipped, %agent_id, "conversation stream receiver lagged");
                     crate::diagnostics::record_conversation_slow_consumer();
@@ -421,27 +500,47 @@ pub async fn stream(
             }
         }
     });
-    Sse::new(ReceiverStream::new(rx))
-        .keep_alive(
-            KeepAlive::new()
-                .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
-                .text("heartbeat"),
-        )
-        .into_response()
+    bind_response(
+        &headers,
+        &identity,
+        Sse::new(ReceiverStream::new(rx))
+            .keep_alive(
+                KeepAlive::new()
+                    .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
+                    .text("heartbeat"),
+            )
+            .into_response(),
+    )
 }
 
-async fn send_change_batch(
-    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
-    batch: ConversationChangeBatch,
-) -> bool {
+struct BoundStreamSender {
+    tx: tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    identity: ConversationIdentity,
+}
+
+async fn send_change_batch(tx: &BoundStreamSender, batch: ConversationChangeBatch) -> bool {
     send_change_batch_with_timeout(tx, batch, CONVERSATION_STREAM_SEND_TIMEOUT).await
 }
 
 async fn send_change_batch_with_timeout(
-    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    tx: &BoundStreamSender,
     batch: ConversationChangeBatch,
     send_timeout: Duration,
 ) -> bool {
+    if batch.identity != tx.identity {
+        let _ = send_stream_message(
+            tx,
+            ConversationStreamMessage::ResetRequired {
+                reason: ConversationStreamResetReason::AgentIdentityChanged,
+                oldest_retained_seq: None,
+                event_head_seq: None,
+                hint: "resolve the agent identity before opening another conversation".into(),
+            },
+            None,
+        )
+        .await;
+        return false;
+    }
     let batch_id = format!("conversation:{}:{}", batch.from_seq, batch.through_seq);
     if !send_stream_message_with_timeout(
         tx,
@@ -509,7 +608,7 @@ async fn send_change_batch_with_timeout(
 }
 
 async fn send_stream_message(
-    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    tx: &BoundStreamSender,
     message: ConversationStreamMessage,
     id: Option<String>,
 ) -> bool {
@@ -517,13 +616,23 @@ async fn send_stream_message(
 }
 
 async fn send_stream_message_with_timeout(
-    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    tx: &BoundStreamSender,
     message: ConversationStreamMessage,
     id: Option<String>,
     send_timeout: Duration,
 ) -> bool {
     let event_name = message.event_name();
-    let mut event = match Event::default().event(event_name).json_data(message) {
+    #[derive(Serialize)]
+    struct BoundMessage<'a> {
+        #[serde(flatten)]
+        identity: &'a ConversationIdentity,
+        #[serde(flatten)]
+        message: ConversationStreamMessage,
+    }
+    let mut event = match Event::default().event(event_name).json_data(BoundMessage {
+        identity: &tx.identity,
+        message,
+    }) {
         Ok(event) => event,
         Err(error) => {
             warn!(%error, event_name, "failed to serialize conversation stream message");
@@ -533,7 +642,7 @@ async fn send_stream_message_with_timeout(
     if let Some(id) = id {
         event = event.id(id);
     }
-    match tokio::time::timeout(send_timeout, tx.send(Ok(event))).await {
+    match tokio::time::timeout(send_timeout, tx.tx.send(Ok(event))).await {
         Ok(Ok(())) => true,
         Ok(Err(_)) => false,
         Err(_) => {
@@ -556,6 +665,17 @@ fn stream_reset_reason(reason: ConversationResetReason) -> ConversationStreamRes
 }
 
 fn reset_message_for_error(error: &anyhow::Error) -> ConversationStreamMessage {
+    if matches!(
+        error.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::IdentityChanged)
+    ) {
+        return ConversationStreamMessage::ResetRequired {
+            reason: ConversationStreamResetReason::AgentIdentityChanged,
+            oldest_retained_seq: None,
+            event_head_seq: None,
+            hint: "resolve the agent identity before opening another conversation".into(),
+        };
+    }
     if let Some(ConversationReadError::ResetRequired {
         reason,
         oldest_retained_seq,
@@ -610,6 +730,10 @@ pub async fn locate(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    let expected_incarnation = match request_incarnation(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     let (principal, entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(authority) => authority,
@@ -621,13 +745,16 @@ pub async fn locate(
     let result = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
-            host.runtime_db().conversation().locate_source(
-                &agent_id,
-                &request.source_ref,
-                request.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT),
-                &principal,
-                entitlement,
-            )
+            host.runtime_db()
+                .conversation()
+                .with_expected_incarnation(expected_incarnation)
+                .locate_source(
+                    &agent_id,
+                    &request.source_ref,
+                    request.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT),
+                    &principal,
+                    entitlement,
+                )
         }),
     )
     .await
@@ -638,6 +765,7 @@ pub async fn locate(
         Ok(Err(error)) => return error_response(error.into()).into_response(),
         Err(_) => return timeout_error("locate", limits.timeout).into_response(),
     };
+    let identity = result.identity.clone();
     let response = ConversationLocateResponse {
         schema_version: CONVERSATION_SCHEMA_VERSION,
         query_version: CONVERSATION_QUERY_VERSION,
@@ -672,7 +800,11 @@ pub async fn locate(
         )
         .into_response();
     }
-    traced_json_bytes("/agents/{agent_id}/conversation/locate", started_at, bytes)
+    bind_response(
+        &headers,
+        &identity,
+        traced_json_bytes("/agents/{agent_id}/conversation/locate", started_at, bytes),
+    )
 }
 
 pub async fn summary(
@@ -685,6 +817,10 @@ pub async fn summary(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    let expected_incarnation = match request_incarnation(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     let limits = state.conversation_read_limits.clone();
     let limit = query.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT);
     let before = query.before;
@@ -698,14 +834,17 @@ pub async fn summary(
     let snapshot = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
-            host.runtime_db().conversation().summary_window_snapshot(
-                &agent_id,
-                limit,
-                before.as_deref(),
-                after.as_deref(),
-                &scope_principal,
-                scope_entitlement,
-            )
+            host.runtime_db()
+                .conversation()
+                .with_expected_incarnation(expected_incarnation)
+                .summary_window_snapshot(
+                    &agent_id,
+                    limit,
+                    before.as_deref(),
+                    after.as_deref(),
+                    &scope_principal,
+                    scope_entitlement,
+                )
         }),
     )
     .await
@@ -716,6 +855,7 @@ pub async fn summary(
         Ok(Err(error)) => return error_response(error.into()).into_response(),
         Err(_) => return timeout_error("summary", limits.timeout).into_response(),
     };
+    let identity = snapshot.identity.clone();
     let response = summary_response(snapshot);
     if let Some(error) = oversized_turn(
         response.turns.iter().chain(response.active_turns.iter()),
@@ -738,10 +878,14 @@ pub async fn summary(
     }
     let etag = etag_for_bytes(&bytes);
     if if_none_match_satisfied(&headers, &etag) {
-        return not_modified_response(etag);
+        return bind_response(&headers, &identity, not_modified_response(etag));
     }
     crate::diagnostics::record_conversation_summary(started_at.elapsed(), bytes.len());
-    traced_json_bytes_with_etag("/agents/{agent_id}/conversation", started_at, bytes, etag)
+    bind_response(
+        &headers,
+        &identity,
+        traced_json_bytes_with_etag("/agents/{agent_id}/conversation", started_at, bytes, etag),
+    )
 }
 
 pub async fn activities(
@@ -754,6 +898,10 @@ pub async fn activities(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    let expected_incarnation = match request_incarnation(&headers) {
+        Ok(expected) => expected,
+        Err(error) => return error.into_response(),
+    };
     if query.after.is_some() {
         return conversation_error(
             ConversationReadError::InvalidRequest(
@@ -775,14 +923,17 @@ pub async fn activities(
     let snapshot = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {
-            host.runtime_db().conversation().activity_snapshot(
-                &agent_id,
-                &turn_id,
-                limit,
-                before.as_deref(),
-                &scope_principal,
-                scope_entitlement,
-            )
+            host.runtime_db()
+                .conversation()
+                .with_expected_incarnation(expected_incarnation)
+                .activity_snapshot(
+                    &agent_id,
+                    &turn_id,
+                    limit,
+                    before.as_deref(),
+                    &scope_principal,
+                    scope_entitlement,
+                )
         }),
     )
     .await
@@ -793,6 +944,7 @@ pub async fn activities(
         Ok(Err(error)) => return error_response(error.into()).into_response(),
         Err(_) => return timeout_error("activity", limits.timeout).into_response(),
     };
+    let identity = snapshot.identity.clone();
     let Some(response) = activity_response(snapshot) else {
         return http_error(
             StatusCode::NOT_FOUND,
@@ -838,10 +990,14 @@ pub async fn activities(
         .into_response();
     }
     crate::diagnostics::record_conversation_activity(started_at.elapsed(), bytes.len());
-    traced_json_bytes(
-        "/agents/{agent_id}/turns/{turn_id}/activities",
-        started_at,
-        bytes,
+    bind_response(
+        &headers,
+        &identity,
+        traced_json_bytes(
+            "/agents/{agent_id}/turns/{turn_id}/activities",
+            started_at,
+            bytes,
+        ),
     )
 }
 
@@ -978,12 +1134,13 @@ fn agent_not_found() -> (StatusCode, Json<Value>) {
     )
 }
 
-fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+pub(crate) fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     let Some(error) = error.downcast_ref::<ConversationReadError>() else {
         return error_response(error);
     };
     record_conversation_read_error(error);
     match error {
+        ConversationReadError::IdentityChanged => identity_changed(),
         ConversationReadError::InvalidRequest(_) => http_error(
             StatusCode::BAD_REQUEST,
             HttpErrorEnvelope::new("conversation_invalid_request", error.to_string()),
@@ -1106,7 +1263,9 @@ fn conversation_stream_error(error: anyhow::Error) -> (StatusCode, Json<Value>) 
 
 fn record_conversation_read_error(error: &ConversationReadError) {
     match error {
-        ConversationReadError::InvalidRequest(_) | ConversationReadError::SourceNotFound => {}
+        ConversationReadError::IdentityChanged
+        | ConversationReadError::InvalidRequest(_)
+        | ConversationReadError::SourceNotFound => {}
         ConversationReadError::InvalidLimit { .. }
         | ConversationReadError::CountLimitExceeded { .. } => {
             crate::diagnostics::record_conversation_limit_failure();
@@ -1704,6 +1863,97 @@ mod tests {
         assert_eq!(located["status"], "located");
     }
 
+    #[tokio::test]
+    async fn incarnation_binding_covers_http_conditional_reads_and_admission() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let state = AppState::for_tcp(host.clone());
+        for path in [
+            "/api/agents/web/conversation",
+            "/api/agents/web/turns/turn-active/activities",
+            "/api/agents/web/briefs/brief-one",
+            "/api/agents/web/conversation/stream",
+        ] {
+            let response = crate::http::router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("x-holon-expected-incarnation", "1")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()["x-holon-agent-id"], "web");
+            assert_eq!(response.headers()["x-holon-agent-incarnation"], "1");
+            let etag = response.headers().get(ETAG).cloned();
+            drop(response);
+            if let Some(etag) = etag {
+                let response = crate::http::router(state.clone())
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header("x-holon-expected-incarnation", "1")
+                            .header("if-none-match", etag.clone())
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_MODIFIED, "{path}");
+                assert_eq!(response.headers()["x-holon-agent-incarnation"], "1");
+                let response = crate::http::router(state.clone())
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header("x-holon-expected-incarnation", "2")
+                            .header("if-none-match", etag)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::CONFLICT,
+                    "304 cannot bypass admission"
+                );
+            }
+            for expected in ["2", "invalid"] {
+                let (status, _, body) = get_with_headers(
+                    state.clone(),
+                    path,
+                    &[("x-holon-expected-incarnation", expected)],
+                )
+                .await;
+                assert_eq!(status, StatusCode::CONFLICT, "{path}");
+                assert_eq!(body["code"], "conversation_identity_changed");
+                assert_eq!(body["retryable"], false);
+            }
+        }
+        for expected in ["1", "2"] {
+            let response = crate::http::router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/agents/web/conversation/locate")
+                        .header("content-type", "application/json")
+                        .header("x-holon-expected-incarnation", expected)
+                        .body(Body::from(r#"{"source_ref":"brief:brief-one","limit":1}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if expected == "1" {
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()["x-holon-agent-incarnation"], "1");
+            } else {
+                assert_eq!(response.status(), StatusCode::CONFLICT);
+            }
+        }
+    }
+
     async fn get_with_headers(
         state: AppState,
         uri: &str,
@@ -1730,6 +1980,10 @@ mod tests {
 
     fn stream_batch() -> ConversationChangeBatch {
         ConversationChangeBatch {
+            identity: ConversationIdentity {
+                agent_id: "web".into(),
+                agent_incarnation: 1,
+            },
             runtime_id: "runtime-test".into(),
             event_log_epoch: "epoch-test".into(),
             visibility_scope_id: "scope-test".into(),
@@ -2317,6 +2571,7 @@ mod tests {
         let binding = crate::domain::conversation::CursorBinding {
             runtime_id: snapshot["runtime_id"].as_str().unwrap().into(),
             agent_id: "web".into(),
+            agent_incarnation: 1,
             event_log_epoch: snapshot["event_log_epoch"].as_str().unwrap().into(),
             visibility_scope_id: snapshot["visibility_scope_id"].as_str().unwrap().into(),
             schema_version: u32::try_from(snapshot["schema_version"].as_u64().unwrap()).unwrap(),
@@ -2396,6 +2651,10 @@ mod tests {
         let batch = stream_batch();
         let checkpoint = batch.checkpoint.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let tx = BoundStreamSender {
+            tx,
+            identity: stream_batch().identity,
+        };
         assert!(send_change_batch(&tx, batch).await);
         drop(tx);
 
@@ -2416,6 +2675,10 @@ mod tests {
     #[tokio::test]
     async fn conversation_stream_disconnect_before_checkpoint_exposes_no_resumable_id() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let tx = BoundStreamSender {
+            tx,
+            identity: stream_batch().identity,
+        };
         let sender = tokio::spawn(async move { send_change_batch(&tx, stream_batch()).await });
         let first = rx
             .recv()
@@ -2466,6 +2729,10 @@ mod tests {
     #[tokio::test]
     async fn conversation_stream_slow_consumer_hits_the_bounded_send_timeout() {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let tx = BoundStreamSender {
+            tx,
+            identity: stream_batch().identity,
+        };
         let started = std::time::Instant::now();
         assert!(
             !send_change_batch_with_timeout(&tx, stream_batch(), Duration::from_millis(20)).await
@@ -2534,6 +2801,7 @@ mod tests {
         let mut binding = crate::domain::conversation::CursorBinding {
             runtime_id: snapshot["runtime_id"].as_str().unwrap().into(),
             agent_id: "web".into(),
+            agent_incarnation: 1,
             event_log_epoch: snapshot["event_log_epoch"].as_str().unwrap().into(),
             visibility_scope_id: snapshot["visibility_scope_id"].as_str().unwrap().into(),
             schema_version: u32::try_from(snapshot["schema_version"].as_u64().unwrap()).unwrap(),

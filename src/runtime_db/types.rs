@@ -91,6 +91,7 @@ pub struct TurnRecordRepository<'a> {
 
 pub struct ConversationRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
+    pub(crate) expected_incarnation: Option<u64>,
 }
 
 pub struct ContentReportRepository<'a> {

@@ -27,6 +27,7 @@ pub enum ConversationLocateTarget {
 
 #[derive(Debug, Clone)]
 pub struct ConversationLocateResult {
+    pub identity: ConversationIdentity,
     pub status: &'static str,
     pub source_ref: String,
     pub target: Option<ConversationLocateTarget>,
@@ -56,8 +57,7 @@ impl ConversationRepository<'_> {
         }
         let mut connection = self.db.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = conversation_snapshot_context(&tx, agent_id, principal, entitlement)?
-        else {
+        let Some(context) = self.snapshot_context(&tx, agent_id, principal, entitlement)? else {
             return Ok(None);
         };
         let binding = context.binding(agent_id);
@@ -117,11 +117,11 @@ impl ConversationRepository<'_> {
         })?;
         let mut connection = self.db.connection()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = conversation_snapshot_context(&tx, agent_id, principal, entitlement)?
-        else {
+        let Some(context) = self.snapshot_context(&tx, agent_id, principal, entitlement)? else {
             return Ok(None);
         };
         let mut result = ConversationLocateResult {
+            identity: context.identity.clone(),
             status: "source_only",
             source_ref: source.source_ref(),
             target: None,
@@ -312,6 +312,7 @@ fn window_snapshot(
         page.next_before = older.then(|| first.key.clone());
     }
     Ok(ConversationSnapshot {
+        identity: context.identity,
         runtime_id: context.runtime_id,
         event_log_epoch: context.event_log_epoch,
         visibility_scope_id: context.visibility_scope_id,

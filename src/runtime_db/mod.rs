@@ -1013,7 +1013,10 @@ impl RuntimeDb {
     }
 
     pub fn conversation(&self) -> ConversationRepository<'_> {
-        ConversationRepository { db: self }
+        ConversationRepository {
+            db: self,
+            expected_incarnation: None,
+        }
     }
 
     pub fn content_reports(&self) -> ContentReportRepository<'_> {

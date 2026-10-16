@@ -41,6 +41,8 @@ import {
  */
 export interface ConversationClientLike {
   readonly baseUrl: string;
+  /** SDK-owned validator; only use after exact capability negotiation. */
+  withIncarnationFence?(identity: import("./types.js").ConversationIdentity): ConversationClientLike;
   requireCapability(signal?: AbortSignal): Promise<unknown>;
   summary(
     agentId: string,
@@ -1305,7 +1307,9 @@ export class ConversationController {
   }
 
   #discardUnauthorizedCache(error: unknown, includeNotFound = false): void {
-    if (!(error instanceof ConversationHttpError) || !([401, 403].includes(error.status) || (includeNotFound && error.status === 404))) return;
+    if (!(error instanceof ConversationHttpError) ||
+        !([401, 403].includes(error.status) || (includeNotFound && error.status === 404) ||
+          error.body.code === "conversation_identity_changed")) return;
     this.#cancelSnapshotTimer();
     this.#runToken += 1;
     this.#runAbort?.abort(abortError("conversation access revoked"));

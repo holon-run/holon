@@ -293,10 +293,14 @@ pub(crate) fn default_api_cors_allowed_methods() -> Vec<String> {
 }
 
 pub(crate) fn default_api_cors_allowed_headers() -> Vec<String> {
-    ["content-type", "authorization"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    [
+        "content-type",
+        "authorization",
+        "x-holon-expected-incarnation",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
