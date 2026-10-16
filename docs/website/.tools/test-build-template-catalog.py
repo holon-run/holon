@@ -244,7 +244,67 @@ class TemplateCatalogTests(unittest.TestCase):
     def test_skills_manifest_is_optional(self):
         catalog = self.build()
         self.assertTrue(all(entry["skills"] == [] for entry in catalog["templates"]))
-        self.assertIn("0 declared skill references", (self.output / "README.md").read_text())
+        self.assertIn("0 skill references", (self.output / "README.md").read_text())
+
+    def test_directory_is_a_progressively_enhanced_role_gallery(self):
+        self.build()
+        for locale in ("", "zh-CN/"):
+            page = (self.output / locale / "templates/README.md").read_text()
+            with self.subTest(locale=locale):
+                self.assertIn('data-template-search hidden', page)
+                self.assertIn('aria-controls="template-catalog"', page)
+                self.assertIn('href="#engineering" data-template-filter="engineering"', page)
+                self.assertIn('data-template-results hidden', page)
+                self.assertIn('data-template-empty hidden', page)
+                self.assertIn('<script src="/assets/template-catalog.js" defer></script>', page)
+                self.assertEqual(page.count('<details class="template-details">'), 6)
+                self.assertNotIn('<details open', page)
+                self.assertEqual(page.count('data-template-copy hidden'), 6)
+                overviews = re.findall(
+                    r'<div class="template-overview"[\s\S]*?</p></div>', page,
+                )
+                self.assertEqual(len(overviews), 6)
+                for overview in overviews:
+                    self.assertIn('class="template-summary"', overview)
+                    self.assertNotIn("holon agent create", overview)
+                    self.assertNotIn(SHA, overview)
+                details = re.findall(
+                    r'<details class="template-details">([\s\S]*?)</details>', page,
+                )
+                self.assertEqual(len(details), 6)
+                for detail in details:
+                    self.assertIn("holon agent create", detail)
+                    self.assertIn(SHA, detail)
+                    self.assertIn("AGENTS.md", detail)
+                    self.assertIn("Holon", detail)
+                self.assertIn(
+                    "检查角色契约、技能依赖、环境与权限" if locale else
+                    "check the role contract, skills, environment and permissions", page,
+                )
+
+    def test_gallery_controls_are_localized_and_snapshot_is_secondary(self):
+        catalog = self.catalog()
+        for locale, labels in (
+            ("en", ("Search roles", "View details", "Copy command", "About this catalog and snapshot")),
+            ("zh-CN", ("搜索角色", "查看详情", "复制命令", "关于目录与构建快照")),
+        ):
+            page = BUILDER.render_directory(catalog, locale)
+            for label in labels:
+                self.assertIn(label, page)
+            self.assertGreater(page.index(SHA), page.index('class="template-catalog"'))
+            source = page.split('<details class="template-source">')[1]
+            self.assertIn(SHA, source)
+            self.assertIn("未指定 ref" if locale == "zh-CN" else "without a ref", source)
+
+    def test_home_gallery_has_browse_link_without_creation_metadata(self):
+        catalog = self.catalog()
+        for locale, base in (("en", ""), ("zh-CN", "/zh-CN")):
+            page = BUILDER.render_home(catalog, locale)
+            self.assertIn(f'class="template-browse" href="{base}/templates/"', page)
+            self.assertEqual(page.count('class="template-card"'), 6)
+            self.assertEqual(page.count('aria-hidden="true" focusable="false"'), 6)
+            self.assertNotIn("holon agent create", page)
+            self.assertNotIn(SHA, page)
 
     def test_explicit_empty_skills_list_is_supported(self):
         self.write(self.templates / "role-1/skills.toml", "skills = []\n")
