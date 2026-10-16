@@ -237,6 +237,14 @@ Invocation result routing, follow-up correlation, and task completion belong to
 the separate `ActorInvocation` task. Lineage may outlive supervision.
 Supervision must not be reconstructed only from lineage or invocation history.
 
+The Web GUI's conversation return link uses resolved canonical supervision in
+`active` or `cleanup_required` state, not legacy identity labels or creation
+lineage. It verifies that the supervisor is an existing active identity before
+offering navigation; missing or inaccessible supervisors do not block the
+child's conversation. A historical `default` parent is not remapped to the
+current default route, which may point to an unrelated agent. Closed or
+unresolved supervision does not produce a return link.
+
 The first implementation allows at most one active lifecycle-owning supervision
 relation for a child. Additional observers may hold task or agent references,
 but they do not become lifecycle supervisors.

@@ -8,9 +8,12 @@ export type AgentAccessStatus = "loading" | "available" | "unauthorized" | "miss
 interface AgentAccess {
   status: AgentAccessStatus;
   agent?: AgentSummary;
-  parentAgentId?: string;
-  parentTaskId?: string;
   error?: string;
+}
+interface ParentCandidate {
+  agentId: string;
+  supervisionId: string;
+  taskId?: string;
 }
 
 /** Resolve a route independently of the public roster. Reads never start an agent. */
@@ -19,7 +22,8 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
   const config = getRuntimeConnectionConfig();
   const client = useMemo(() => createRuntimeClient(config), [connection.mode, connection.baseUrl, config.token]);
   const key = `${connection.mode}:${connection.baseUrl}:${agentId}:${expectedIncarnation}`;
-  const [result, setResult] = useState<{ key: string; access: AgentAccess }>();
+  const [result, setResult] = useState<{ key: string; access: AgentAccess; parent?: ParentCandidate }>();
+  const [verifiedParent, setVerifiedParent] = useState<{ key: string; agentId?: string }>();
   const [revision, setRevision] = useState(0);
   const pinnedIdentity = useRef<{ key: string; incarnation: number } | undefined>(undefined);
   const retry = useCallback(() => setRevision((value) => value + 1), []);
@@ -28,34 +32,39 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
     if (!agentId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    const commit = (access: AgentAccess) => {
-      if (!cancelled) setResult({ key, access });
+    const commit = (access: AgentAccess, parent?: ParentCandidate) => {
+      if (!cancelled) setResult({ key, access, parent });
     };
     const load = async () => {
       try {
         const detail = await client.getAgentIdentity(agentId);
         const identity = detail.identity;
-        const relation = {
-          parentAgentId: identity.parent_agent_id ?? identity.lineage_parent_agent_id ?? undefined,
-          parentTaskId: identity.delegated_from_task_id ?? undefined,
-        };
+        // Creation lineage and capability presets are not supervision.
+        const relations = detail.canonical_relations;
+        const supervision = relations?.resolution === "resolved" && relations.agent_id === agentId
+          ? relations.supervision : undefined;
+        const supervisorId = supervision?.supervisor_agent_id;
+        // Never remap a historical "default" parent to today's unrelated default route.
+        const parent = supervision && (supervision.state === "active" || supervision.state === "cleanup_required") && supervision.child_agent_id === agentId
+          && supervisorId && supervisorId !== agentId && supervisorId !== "default"
+          ? { agentId: supervisorId, supervisionId: supervision.supervision_id, taskId: supervision.delegated_from_task_id ?? undefined } : undefined;
         const pinnedIncarnation = expectedIncarnation
           ?? (pinnedIdentity.current?.key === key ? pinnedIdentity.current.incarnation : undefined);
         if (pinnedIncarnation !== undefined && identity.incarnation !== pinnedIncarnation) {
-          commit({ status: "replaced", ...relation });
+          commit({ status: "replaced" });
           return;
         }
         if (!cancelled) pinnedIdentity.current = { key, incarnation: identity.incarnation };
         if (identity.status === "deleting" || identity.status === "deleted") {
-          commit({ status: identity.status, ...relation });
+          commit({ status: identity.status }, parent);
           return;
         }
         const agent = await client.getAgentState(agentId);
         if (agent.incarnation !== identity.incarnation) {
-          commit({ status: "replaced", ...relation });
+          commit({ status: "replaced" });
           return;
         }
-        commit({ status: "available", agent, ...relation });
+        commit({ status: "available", agent }, parent);
       } catch (error) {
         const status = error instanceof RuntimeHttpError
           ? error.status === 401 || error.status === 403 ? "unauthorized" : error.status === 404 ? "missing" : "error"
@@ -69,5 +78,32 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
     return () => { cancelled = true; clearTimeout(timer); };
   }, [agentId, expectedIncarnation, client, key, revision]);
 
-  return { ...(result?.key === key ? result.access : { status: "loading" as const }), retry };
+  const access = result?.key === key ? result.access : { status: "loading" as const };
+  const parent = result?.key === key ? result.parent : undefined;
+  const parentKey = `${key}:${parent?.agentId}:${parent?.supervisionId}`;
+  useEffect(() => {
+    if (!parent) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      let agentId: string | undefined;
+      try {
+        const detail = await client.getAgentIdentity(parent.agentId);
+        if (detail.identity.agent_id === parent.agentId && detail.identity.status === "active") {
+          agentId = parent.agentId;
+        }
+      } catch {
+        // An unavailable parent must not block the child's conversation or input.
+      } finally {
+        if (!cancelled) {
+          setVerifiedParent({ key: parentKey, agentId });
+          timer = setTimeout(() => void load(), 5000);
+        }
+      }
+    };
+    void load();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [client, parent?.agentId, parentKey, revision]);
+  const parentAgentId = verifiedParent?.key === parentKey ? verifiedParent.agentId : undefined;
+  return { ...access, parentAgentId, parentTaskId: parentAgentId ? parent?.taskId : undefined, retry };
 }

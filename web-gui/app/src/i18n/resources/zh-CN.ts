@@ -18,8 +18,6 @@ const zh: Record<string, any> = {
     subagent: "子智能体会话",
     backToParent: "返回父智能体",
     parentTask: "父任务",
-    directInput: "消息将以 operator 身份直接发送给此子智能体。已接受仅表示入队，不保证立即响应，也不改变父任务。",
-    inputPlaceholder: "直接给此子智能体（{{id}}）发消息…",
   },
   clipboard: {
     copied: "已复制",

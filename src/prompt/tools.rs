@@ -348,6 +348,11 @@ mod tests {
                 .expect("collaboration guidance")
                 .content;
             for rule in [
+                "Creating a long-lived agent does not create a reporting obligation to its creator",
+                "Reply to the operator for operator work",
+                "to the actual delegator for delegated work",
+                "current task or message routing context, not from an identity or lineage parent",
+                "creation provenance is not delegation and grants no messaging authority",
                 "low-noise on both sides",
                 "blockers requiring the recipient's action",
                 "Keep routine progress",
@@ -368,6 +373,7 @@ mod tests {
                 "still requires a durable SendAgentMessage response",
                 "existing task-result channel",
                 "do not also SendAgentMessage the same final result",
+                "Use the actual delegator from the task context, not a guessed lineage parent",
             ] {
                 assert!(content.contains(rule), "{name} missing rule: {rule}");
             }
