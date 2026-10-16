@@ -471,6 +471,7 @@ internal object UiCopy {
         daemon 拒绝了兼容性握手|The daemon rejected the compatibility handshake
         daemon 未报告消息大小限制，请升级 daemon|The daemon did not report a message size limit. Upgrade the daemon.
         daemon 未报告附件大小限制，请升级 daemon|The daemon did not report attachment size limits. Upgrade the daemon.
+        当前离线，消息已保存，恢复连接后自动重试|Offline; message saved and will retry automatically after reconnecting.
         会话暂时离线，显示缓存|Conversation offline; showing cached content
         会话实时同步恢复中；发送不受影响，回复将通过快照刷新|Restoring live conversation sync; messages can still be submitted and replies will refresh through snapshots
         正在通过会话快照同步，实时连接恢复后自动切换|Syncing conversation snapshots; live updates will resume automatically

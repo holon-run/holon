@@ -2,13 +2,73 @@ package run.holon.android.app
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlinx.serialization.json.Json
 import run.holon.android.sdk.HolonConversationSnapshot
+import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonJsonDocument
+import run.holon.android.sdk.HolonServerInfo
+import run.holon.android.sdk.HolonServerLimits
 
 class HolonRepositoryTest {
+    @Test
+    fun `offline sends have a dedicated retryable error message`() {
+        val error = OfflineSessionException()
+        assertEquals("当前离线，消息已保存，恢复连接后自动重试", humanError(error))
+        assertEquals(true, error.isTransientNetworkFailure())
+    }
+
+    @Test
+    fun `offline cached session accepts text and attachments without handshake limits`() {
+        val session = promptSession().copy(isOffline = true)
+        val attachment = StagedAttachment("file", "notes.txt", "text/plain", "/unused", 128)
+
+        session.validatePromptBody("queued offline", emptyList(), "text-request")
+        session.validatePromptBody("with file", listOf(attachment), "file-request")
+        assertNull(session.attachmentLimit("file"))
+        assertNull(session.attachmentLimit("image"))
+        assertFailsWith<IllegalArgumentException> { session.attachmentLimit("unsupported") }
+    }
+
+    @Test
+    fun `online session without limits still requires daemon upgrade`() {
+        val session = promptSession()
+
+        assertEquals(
+            "daemon 未报告消息大小限制，请升级 daemon",
+            assertFailsWith<IllegalArgumentException> {
+                session.validatePromptBody("hello", emptyList(), "request")
+            }.message,
+        )
+        assertEquals(
+            "daemon 未报告附件大小限制，请升级 daemon",
+            assertFailsWith<IllegalArgumentException> { session.attachmentLimit("file") }.message,
+        )
+    }
+
+    @Test
+    fun `online size limits still apply at the encoded body boundary`() {
+        val attachment = StagedAttachment("image", "photo.png", "image/png", "/unused", 3)
+        val bodySize = encodedPromptBodySize("hello", listOf(attachment), "request")
+        val session = promptSession(HolonServerLimits(bodySize, 8, 3))
+
+        session.validatePromptBody("hello", listOf(attachment), "request")
+        assertFailsWith<IllegalArgumentException> {
+            session.validatePromptBody("hello!", listOf(attachment), "request")
+        }
+        assertEquals(8L, session.attachmentLimit("file"))
+        assertEquals(3L, session.attachmentLimit("image"))
+    }
+
+    private fun promptSession(limits: HolonServerLimits? = null) =
+        ActiveSession(
+            "network", "https://example.test/api/", HolonCurrentUser("user", null, "session"),
+            "runtime", "visibility", HolonServerInfo("", "local", true, emptySet(), limits),
+        )
+
     @Test
     fun `conversation cache keeps loaded older turns while using incoming pagination state`() {
         val cached = snapshot(

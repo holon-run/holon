@@ -62,6 +62,8 @@ internal val REQUIRED_CAPABILITIES =
 
 private const val READ_BRIEF_BASELINE_AGENT_ID = "__android_brief_baseline_v1__"
 
+internal class OfflineSessionException : IOException()
+
 internal data class ActiveSession(
     val networkId: String,
     val baseUrl: String,
@@ -69,6 +71,7 @@ internal data class ActiveSession(
     val runtimeId: String,
     val visibilityScopeId: String,
     val server: HolonServerInfo,
+    val isOffline: Boolean = false,
 ) {
     val scopeKey =
         scopeKeyForNetwork(
@@ -78,6 +81,27 @@ internal data class ActiveSession(
             user.userId,
             visibilityScopeId,
         )
+
+    fun attachmentLimit(kind: String): Long? {
+        require(kind == "image" || kind == "file") { "不支持的附件类型：$kind" }
+        if (isOffline) return null
+        val limits = requireNotNull(server.limits) {
+            "daemon 未报告附件大小限制，请升级 daemon"
+        }
+        return if (kind == "image") limits.promptImageAttachmentMaxBytes else limits.promptFileAttachmentMaxBytes
+    }
+
+    fun validatePromptBody(text: String, attachments: List<StagedAttachment>, requestId: String) {
+        // Cached sessions have no handshake limits. Persist first and let the
+        // daemon enforce its current limits when the outbox is retried online.
+        if (isOffline) return
+        val maxBytes = requireNotNull(server.limits) {
+            "daemon 未报告消息大小限制，请升级 daemon"
+        }.promptBodyMaxBytes
+        require(encodedPromptBodySize(text, attachments, requestId) <= maxBytes) {
+            "消息和附件编码后不能超过 ${formatBytes(maxBytes)}"
+        }
+    }
 }
 
 @Serializable
@@ -618,9 +642,12 @@ internal class HolonRepository(
         val mediaType = resolver.getType(uri) ?: "application/octet-stream"
         val name = metadata?.first?.takeIf(String::isNotBlank) ?: "attachment"
         val kind = preferredKind ?: if (mediaType.startsWith("image/")) "image" else "file"
-        val maxBytes = attachmentLimit(kind)
+        val session = requireSession()
+        val maxBytes = session.attachmentLimit(kind)
         metadata?.second?.let {
-            require(it <= maxBytes) { "${attachmentLabel(kind)}不能超过 ${formatBytes(maxBytes)}" }
+            if (maxBytes != null) {
+                require(it <= maxBytes) { "${attachmentLabel(kind)}不能超过 ${formatBytes(maxBytes)}" }
+            }
         }
         val directory = File(context.filesDir, "outbox").apply { mkdirs() }
         val target = File(directory, "${UUID.randomUUID()}-${safeFileName(name)}")
@@ -633,8 +660,10 @@ internal class HolonRepository(
                         val read = input.read(buffer)
                         if (read < 0) break
                         total += read
-                        require(total <= maxBytes) {
-                            "${attachmentLabel(kind)}不能超过 ${formatBytes(maxBytes)}"
+                        if (maxBytes != null) {
+                            require(total <= maxBytes) {
+                                "${attachmentLabel(kind)}不能超过 ${formatBytes(maxBytes)}"
+                            }
                         }
                         output.write(buffer, 0, read)
                     }
@@ -649,7 +678,7 @@ internal class HolonRepository(
                     localPath = target.absolutePath,
                     size = copied,
                 )
-            validatePromptBody(promptText, existingAttachments + staged, SAMPLE_REQUEST_ID)
+            session.validatePromptBody(promptText, existingAttachments + staged, SAMPLE_REQUEST_ID)
             staged
         } catch (error: Throwable) {
             target.delete()
@@ -665,7 +694,7 @@ internal class HolonRepository(
         clearComposer: Boolean = true,
     ): OutboxEntity {
         val session = requireSession()
-        validatePromptBody(text, attachments, requestId)
+        session.validatePromptBody(text, attachments, requestId)
         val now = System.currentTimeMillis()
         val entry =
             OutboxEntity(
@@ -847,6 +876,9 @@ internal class HolonRepository(
     private fun sendOutbox(entry: OutboxEntity): run.holon.android.sdk.HolonPromptReceipt {
         val lease = sessions.capture()
         require(entry.scopeKey == lease.session.scopeKey) { "消息不属于当前登录身份" }
+        if (lease.session.isOffline) {
+            throw OfflineSessionException()
+        }
         val attachments = json.decodeFromString(ListSerializer(StagedAttachment.serializer()), entry.attachmentsJson)
         val payload = attachments.map { staged ->
             val file = File(staged.localPath)
@@ -953,6 +985,7 @@ internal class HolonRepository(
                         authRequired = true,
                         capabilities = emptySet(),
                     ),
+                isOffline = true,
             )
         sessions.activate(session, candidate)
         return ResumeResult.Offline(session, dao.conversations(saved.scopeKey))
@@ -1030,31 +1063,6 @@ internal class HolonRepository(
 
     private fun <T> readScoped(read: (HolonHttpClient) -> T): T {
         return sessions.read(read)
-    }
-
-    private fun attachmentLimit(kind: String): Long {
-        val limits = requireNotNull(requireSession().server.limits) {
-            "daemon 未报告附件大小限制，请升级 daemon"
-        }
-        return when (kind) {
-            "image" -> limits.promptImageAttachmentMaxBytes
-            "file" -> limits.promptFileAttachmentMaxBytes
-            else -> throw IllegalArgumentException("不支持的附件类型：$kind")
-        }
-    }
-
-    private fun validatePromptBody(
-        text: String,
-        attachments: List<StagedAttachment>,
-        requestId: String,
-    ) {
-        val maxBytes = requireNotNull(requireSession().server.limits) {
-            "daemon 未报告消息大小限制，请升级 daemon"
-        }.promptBodyMaxBytes
-        val actualBytes = encodedPromptBodySize(text, attachments, requestId)
-        require(actualBytes <= maxBytes) {
-            "消息和附件编码后不能超过 ${formatBytes(maxBytes)}"
-        }
     }
 
     private suspend fun deleteOutboxFiles(entry: OutboxEntity) {
@@ -1159,6 +1167,7 @@ private fun HolonProtocolException.isCompatibilityFailure(): Boolean =
 
 internal fun humanError(error: Throwable): String =
     when (error) {
+        is OfflineSessionException -> "当前离线，消息已保存，恢复连接后自动重试"
         is HolonHttpException ->
             when (error.statusCode) {
                 401, 403 -> "登录已失效，请重新登录"
