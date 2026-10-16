@@ -41,6 +41,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
+import { AgentOverviewPlaceholder } from "../features/right-panel/AgentOverviewPlaceholder";
 import { usePanelLayout } from "../features/right-panel/usePanelLayout";
 import { NAV_WIDTH } from "../features/right-panel/panel-layout";
 import { SearchPage } from "../features/search/SearchPage";
@@ -1060,6 +1061,17 @@ export function App() {
             });
           }}
           onClose={() => setRightPanelOpen(false)}
+        />
+      ) : route === "agent" && selectedAgentId ? (
+        <AgentOverviewPlaceholder
+          status={agentAccess.status}
+          error={agentAccess.error}
+          open={rightPanelOpen}
+          mode={rightPanelMode}
+          full={panelLayout.full}
+          onClose={() => setRightPanelOpen(false)}
+          onToggleMode={toggleRightPanelExpanded}
+          onRetry={agentAccess.retry}
         />
       ) : null}
 
