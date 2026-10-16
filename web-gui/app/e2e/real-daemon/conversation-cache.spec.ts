@@ -125,7 +125,9 @@ test("conversation caches cut refetches across agent switches, reloads, and reva
   await expect.poll(() => conversationStatus(page)).toBe("reconnecting");
 
   blocked = false;
-  await page.unroute(SUMMARY_URL);
+  // Keep the pass-through route so Playwright disables the browser HTTP cache.
+  // Otherwise Chromium may merge a wire 304 into a cached 200, obscuring the
+  // SDK's explicit persisted-snapshot revalidation below.
   await expect.poll(() => conversationStatus(page)).toBe("ready");
 
   // P3 — conditional revalidation: an idle conversation reload answers

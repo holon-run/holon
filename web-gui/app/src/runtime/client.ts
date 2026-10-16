@@ -188,7 +188,7 @@ async function fetchAgentState(
     fetchImpl,
     baseUrl,
     `/agents/${encodedAgentId}/state`,
-    { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal },
+    { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal, cache: "no-store" },
   );
   return projectAgent({ identity: state.agent?.identity ?? { agent_id: agentId } }, state);
 }
@@ -1017,7 +1017,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) throw new Error("Agent identity requires a runtime connection.");
       return getJson<AgentDetailDto>(
         fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/detail`,
-        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal },
+        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal, cache: "no-store" },
       );
     },
     async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
@@ -2341,12 +2341,14 @@ async function getJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
-  options: { timeoutMs?: number; headers?: Record<string, string>; signal?: AbortSignal } = {},
+  options: { timeoutMs?: number; headers?: Record<string, string>; signal?: AbortSignal; cache?: RequestCache } = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "application/json", ...options.headers },
+    // Access validation must not reuse a cached 404/410 from an older identity.
+    ...(options.cache === undefined ? {} : { cache: options.cache }),
     signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {

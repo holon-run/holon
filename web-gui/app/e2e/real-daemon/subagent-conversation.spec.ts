@@ -562,6 +562,9 @@ test("existing-agent wait links keep their original identity after deletion and 
     const recreated = await createTarget();
     expect(recreated.identity.incarnation).toBeGreaterThan(original.identity.incarnation);
     await prompt(daemon, targetId, OPERATOR_INPUT);
+    // Check the uncached API independently of the browser's earlier 410.
+    const recreatedState = await daemon.api(`/agents/${targetId}/state`);
+    expect(recreatedState.status, await recreatedState.text()).toBe(200);
     await page.reload();
     await expect(page).toHaveURL(`${daemon.baseUrl}${targetPath}`);
     await expect(page.getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();

@@ -567,6 +567,27 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent-one/state"]);
   });
 
+  it("bypasses HTTP caches when validating agent identity and state", async () => {
+    const seen: Array<{ url: string; cache: RequestCache | undefined }> = [];
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        seen.push({ url, cache: init?.cache });
+        return Response.json(url.endsWith("/state")
+          ? agentStateFixture("agent-one")
+          : { identity: { agent_id: "agent-one", incarnation: 2, status: "active" } });
+      }) as typeof fetch,
+    });
+    await client.getAgentIdentity("agent-one");
+    await client.getAgentState("agent-one");
+    expect(seen).toEqual([
+      { url: "http://example.test:7878/api/control/agents/agent-one/detail", cache: "no-store" },
+      { url: "http://example.test:7878/api/agents/agent-one/state", cache: "no-store" },
+    ]);
+  });
+
   it("surfaces projection saturation instead of replacing agent state with a disconnected fixture", async () => {
     const client = createRuntimeClient({
       mode: "remote",
