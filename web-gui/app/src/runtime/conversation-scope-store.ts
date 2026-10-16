@@ -247,6 +247,9 @@ export function acquireConversationScope(
   if (!options.readOnly && isPageVisible()) {
     network.resume();
     controller.start();
+  } else if (options.readOnly) {
+    // Restore presentation without making requests before online admission.
+    void controller.restoreCachedSnapshot();
   }
   evictIdleScopes();
   return { key: options.key, controller };

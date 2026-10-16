@@ -9,15 +9,17 @@
 import type { BriefRecord } from "@holon/conversation-sdk";
 
 const DB_NAME = "holon-webgui-cache";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 export const CACHE_SCHEMA_VERSION = 5;
 export const BRIEF_CACHE_SCHEMA_VERSION = 1;
 export const SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
+export const AGENT_PRESENTATION_CACHE_SCHEMA_VERSION = 1;
 const SESSIONS_STORE = "sessions";
 const META_STORE = "meta";
 const MODEL_CATALOG_STORE = "modelCatalog";
 const BRIEFS_STORE = "briefs";
 const SNAPSHOTS_STORE = "snapshots";
+const AGENT_PRESENTATIONS_STORE = "agentPresentations";
 const CACHE_TIMEOUT_MS = 500;
 export const CONVERSATION_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export const CONVERSATION_CACHE_MAX_BYTES = 20 * 1024 * 1024;
@@ -63,6 +65,13 @@ export interface CachedModelCatalog {
   remoteKey: string;
   schemaVersion: number;
   options: unknown[];
+  cachedAt: number;
+}
+
+export interface CachedAgentPresentations {
+  remoteKey: string;
+  schemaVersion: number;
+  agents: unknown[];
   cachedAt: number;
 }
 
@@ -112,11 +121,13 @@ function openDB(): Promise<IDBDatabase | null> {
       return;
     }
     request.onblocked = () => finish(null);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       // Retire snapshots/briefs written before authenticated cache namespaces.
-      for (const name of [BRIEFS_STORE, SNAPSHOTS_STORE]) {
-        if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
+      if (event.oldVersion < 5) {
+        for (const name of [BRIEFS_STORE, SNAPSHOTS_STORE]) {
+          if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
+        }
       }
       if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
         const store = db.createObjectStore(SESSIONS_STORE, { keyPath: ["remoteKey", "agentId"] });
@@ -133,6 +144,9 @@ function openDB(): Promise<IDBDatabase | null> {
       }
       if (!db.objectStoreNames.contains(SNAPSHOTS_STORE)) {
         db.createObjectStore(SNAPSHOTS_STORE, { keyPath: ["remoteKey", "agentId"] });
+      }
+      if (!db.objectStoreNames.contains(AGENT_PRESENTATIONS_STORE)) {
+        db.createObjectStore(AGENT_PRESENTATIONS_STORE, { keyPath: "remoteKey" });
       }
     };
     request.onsuccess = () => {
@@ -280,6 +294,48 @@ export async function cacheGetModelCatalog(remoteKey: string): Promise<CachedMod
   }
 }
 
+export async function cachePutAgentPresentations(entry: CachedAgentPresentations): Promise<void> {
+  const generation = clearGeneration;
+  const db = await openDB();
+  if (!db || generation !== clearGeneration) return;
+  try {
+    await runRequest(db, AGENT_PRESENTATIONS_STORE, "readwrite", (store) => store.put(entry));
+  } catch { /* storage unavailable */ }
+}
+
+export async function cacheGetAgentPresentations(remoteKey: string): Promise<unknown> {
+  const generation = clearGeneration;
+  const db = await openDB();
+  if (!db || generation !== clearGeneration) return undefined;
+  try {
+    const entry = await runRequest(db, AGENT_PRESENTATIONS_STORE, "readonly", (store) => store.get(remoteKey));
+    return generation === clearGeneration ? entry : undefined;
+  } catch { return undefined; }
+}
+
+/** Keep read/modify/write atomic so concurrent list updates cannot be overwritten. */
+export async function cacheRemoveAgentPresentation(remoteKey: string, agentId: string): Promise<void> {
+  const generation = clearGeneration;
+  const db = await openDB();
+  if (!db || generation !== clearGeneration) return;
+  try {
+    await runRequest(db, AGENT_PRESENTATIONS_STORE, "readwrite", (store) => {
+      const request = store.get(remoteKey);
+      request.addEventListener("success", () => {
+        if (generation !== clearGeneration) return;
+        const entry = request.result;
+        if (!entry || !Array.isArray(entry.agents)) return;
+        store.put({
+          ...entry,
+          agents: entry.agents.filter((agent: unknown) =>
+            !agent || typeof agent !== "object" || !("id" in agent) || agent.id !== agentId),
+        });
+      });
+      return request;
+    });
+  } catch { /* storage unavailable */ }
+}
+
 export async function cachePutConversationBrief(
   entry: CachedConversationBrief,
 ): Promise<void> {
@@ -380,13 +436,13 @@ export async function cacheClearRemoteSnapshots(remoteKey: string): Promise<void
 }
 
 export async function cacheClearRemote(remoteKey: string): Promise<void> {
-  await deleteMatching([SESSIONS_STORE, MODEL_CATALOG_STORE, BRIEFS_STORE, SNAPSHOTS_STORE],
+  await deleteMatching([SESSIONS_STORE, MODEL_CATALOG_STORE, BRIEFS_STORE, SNAPSHOTS_STORE, AGENT_PRESENTATIONS_STORE],
     (entry) => belongsToRemote(entry.remoteKey, remoteKey));
 }
 
 /** Logout clears this origin's cache, including legacy namespaces. */
 export async function cacheClearAll(): Promise<void> {
-  await deleteMatching([SESSIONS_STORE, MODEL_CATALOG_STORE, BRIEFS_STORE, SNAPSHOTS_STORE], () => true);
+  await deleteMatching([SESSIONS_STORE, MODEL_CATALOG_STORE, BRIEFS_STORE, SNAPSHOTS_STORE, AGENT_PRESENTATIONS_STORE], () => true);
 }
 
 function scheduleConversationPrune(): void {

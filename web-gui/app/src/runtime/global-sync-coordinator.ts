@@ -369,6 +369,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
           snapshot,
           { previousIdentity: this.rosterIdentity, request },
         );
+        if (!this.dependencies.isCurrentClientRequest(request)) return;
         this.rosterIdentity = identity;
         for (const agentId of omittedAgentIds) {
           this.unregister(agentId);
@@ -392,6 +393,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       // firing while the stream is down and reconnecting) must not mark
       // discovery fresh; the previous stale state stays authoritative
       // until a real snapshot settles.
+      if (!this.dependencies.isCurrentClientRequest(request)) return;
       if (!settledFromSnapshot) {
         span.end("skipped", { reason: "stream_unavailable" });
         return;

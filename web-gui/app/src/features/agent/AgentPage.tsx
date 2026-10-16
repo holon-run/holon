@@ -51,6 +51,7 @@ export interface ConversationTimelineBundle extends ConversationTimelineActions 
   model: ConversationSessionModel;
   scopeKey?: string;
   readOnlyNotice?: string;
+  accessRefreshNotice?: string;
   onRetryAccess?: () => void;
   onLoadOlderHistory: () => void;
   location?: ConversationLocation;
@@ -67,6 +68,7 @@ interface AgentPageProps {
   parentAgentId?: string;
   parentTaskId?: string;
   inputDisabledReason?: string;
+  inputStatusTone?: "neutral" | "error";
   /** Canonical conversation read-model projection; replaces the raw timeline. */
   conversation?: ConversationTimelineBundle;
   detail: AgentDetail | null;
@@ -174,6 +176,7 @@ export function AgentPage({
   parentAgentId,
   parentTaskId,
   inputDisabledReason,
+  inputStatusTone = "error",
   conversation,
   detail,
   sendingPrompt,
@@ -770,9 +773,9 @@ export function AgentPage({
                 {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
               </div>
             ) : null}
-            {conversation?.readOnlyNotice ? (
+            {conversation?.readOnlyNotice || conversation?.accessRefreshNotice ? (
               <div className="conversation-sync-status" role="status">
-                {conversation.readOnlyNotice}
+                {conversation.readOnlyNotice ?? conversation.accessRefreshNotice}
                 {conversation.onRetryAccess ? <Button variant="secondary" onClick={conversation.onRetryAccess}>{t("agentPage.retry")}</Button> : null}
               </div>
             ) : conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
@@ -878,7 +881,7 @@ export function AgentPage({
 
           <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
             conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
-          {inputDisabledReason ? <div className="composer-status" role="status">{inputDisabledReason}</div> : null}
+          {inputDisabledReason ? <div className={`composer-status${inputStatusTone === "neutral" ? " is-pending" : ""}`} role="status">{inputDisabledReason}</div> : null}
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}
             aria-label={t("agent.sendInputAria", { id: activeAgent.id })}

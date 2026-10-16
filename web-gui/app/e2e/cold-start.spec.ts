@@ -9,6 +9,28 @@ interface DiagnosticsSnapshot {
   agentIds: string[];
 }
 
+for (const failure of [404, 503, "network"] as const) {
+  test(`subject lookup ${failure} is visible and automatically recovers before bootstrap`, async ({ page, context }, info) => {
+    await context.addCookies([{
+      name: "holon_e2e_session", value: sessionFor(info, "subject-retry"), domain: "127.0.0.1", path: "/",
+    }]);
+    let fail = true;
+    await page.route("**/api/auth/session/me", async (route) => {
+      if (!fail) return route.continue();
+      if (failure === "network") return route.abort("failed");
+      return route.fulfill({ status: failure, json: { error: "Session lookup unavailable" } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => window.__HOLON_E2E__?.snapshot().bootstrapError)).toBeTruthy();
+    await expect(page.locator(".connection-status")).toHaveAttribute("aria-label", /Disconnected/);
+    expect(await page.evaluate(() => window.__HOLON_E2E__?.snapshot().agentIds)).toEqual([]);
+    fail = false;
+    await expect(page.getByText("1 agents · all clear", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect.poll(() => page.evaluate(() => window.__HOLON_E2E__?.snapshot().bootstrapError)).toBeFalsy();
+    await expect(page.locator(".connection-status")).toHaveAttribute("aria-label", /Connected/);
+  });
+}
+
 test("cold start bootstraps and applies a live roster event", async ({ page, request }, testInfo) => {
   const session = sessionFor(testInfo);
   const controlPath = (path: string) => `${path}?session=${encodeURIComponent(session)}`;

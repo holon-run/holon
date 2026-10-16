@@ -498,6 +498,13 @@ async function handleApi(req, res, url) {
       return true;
     }
   }
+  if (url.pathname === "/api/auth/session/me") {
+    json(res, {
+      user_id: `e2e-${sessionId(req, url)}`,
+      auth_method: "none",
+    });
+    return true;
+  }
   if (url.pathname === "/api/handshake") {
     json(res, {
       ok: true,

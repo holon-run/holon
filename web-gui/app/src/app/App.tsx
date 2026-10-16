@@ -820,6 +820,7 @@ export function App() {
             inputDisabledReason={agentAccess.status !== "available"
               ? t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating")
               : activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
+            inputStatusTone={agentAccess.status !== "available" ? "neutral" : "error"}
             parentAgentId={agentAccess.parentAgentId}
             parentTaskId={agentAccess.parentTaskId}
             conversation={
@@ -830,6 +831,8 @@ export function App() {
                     scopeKey: conversationSession.scopeKey,
                     readOnlyNotice: agentAccess.status === "available" ? undefined
                       : t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating"),
+                    accessRefreshNotice: agentAccess.status === "available" && agentAccess.error
+                      ? t("agentAccess.refreshDelayed") : undefined,
                     onRetryAccess: agentAccess.status === "error" ? agentAccess.retry : undefined,
                     location: conversationSession.location,
                     browsing: conversationSession.browsing,

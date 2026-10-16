@@ -971,7 +971,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { timeoutMs: USER_ACTION_TIMEOUT_MS },
       );
     },
-    async getCurrentUser(): Promise<CurrentUser | null> {
+    async getCurrentUser(options: { strict?: boolean } = {}): Promise<CurrentUser | null> {
       if (!baseUrl) {
         return null;
       }
@@ -985,7 +985,8 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
           displayName: payload.display_name?.trim() ? payload.display_name : undefined,
           authMethod: payload.auth_method ?? "unknown",
         };
-      } catch {
+      } catch (error) {
+        if (options.strict) throw error;
         // The current user is advisory metadata for message attribution; auth
         // or connectivity failures leave it unset rather than failing the app.
         return null;

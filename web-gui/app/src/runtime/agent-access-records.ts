@@ -1,7 +1,8 @@
-import { RuntimeHttpError, type createRuntimeClient } from "./client";
+import { RuntimeHttpError, isTimeoutAbortError, type createRuntimeClient } from "./client";
 import { ConversationHttpError } from "@holon/conversation-sdk";
 import { disposeAllConversationScopes, disposeConversationScope } from "./conversation-scope-store";
 import { cacheClearConversationScope } from "./idb-cache";
+import { readCachedAgents, removeCachedAgent, writeCachedAgents } from "./agent-presentation-cache";
 import type { AgentSummary } from "./types";
 
 export type AgentAccessStatus = "loading" | "revalidating" | "available" | "unauthorized" | "missing" | "deleting" | "deleted" | "replaced" | "error";
@@ -32,6 +33,7 @@ interface AccessRecord {
   parentAbort?: AbortController;
   parentTimer?: ReturnType<typeof setTimeout>;
   parentGeneration: number;
+  retryAttempt: number;
 }
 export interface AccessOptions {
   key: string;
@@ -41,6 +43,8 @@ export interface AccessOptions {
   client: Pick<ReturnType<typeof createRuntimeClient>, "getAgentIdentity" | "getAgentState">;
   scopeKey: (incarnation: number) => string;
   cacheKey: (incarnation: number) => string | undefined;
+  presentationCacheKey?: string;
+  rosterCacheKey?: string;
 }
 
 // Only idle records count toward the bound; mounted readers are never evicted.
@@ -103,6 +107,13 @@ function terminal(status: AgentAccessStatus): boolean {
 function retryable(status: AgentAccessStatus): boolean {
   return !terminal(status) || status === "missing" || status === "unauthorized";
 }
+function transientRefreshFailure(error: unknown): boolean {
+  if (error instanceof RuntimeHttpError) {
+    return [408, 425, 429].includes(error.status) || error.status >= 500 && error.status <= 599;
+  }
+  return isTimeoutAbortError(error)
+    || error instanceof TypeError && /fetch|network|load failed/i.test(error.message);
+}
 function commit(record: AccessRecord, access: AgentAccess): void {
   const previous = record.access.parent;
   const sameParent = previous?.agentId === access.parent?.agentId && previous?.supervisionId === access.parent?.supervisionId;
@@ -149,6 +160,9 @@ function loadParent(record: AccessRecord, parent: ParentCandidate): void {
 function revoke(record: AccessRecord): void {
   const incarnation = record.pinnedIncarnation;
   record.lastAgent = undefined;
+  for (const key of [record.options.presentationCacheKey, record.options.rosterCacheKey]) {
+    if (key !== undefined) void removeCachedAgent(key, record.options.agentId);
+  }
   if (incarnation === undefined) return;
   disposeConversationScope(record.options.scopeKey(incarnation), false);
   const cacheKey = record.options.cacheKey(incarnation);
@@ -157,6 +171,10 @@ function revoke(record: AccessRecord): void {
 
 function load(record: AccessRecord, preview: boolean): Promise<void> {
   if (record.inFlight) return record.inFlight;
+  // Only a continuously mounted, online-admitted route retains permission
+  // through transient background refresh failures. Cache is never admission.
+  const retainAdmission = !preview && record.access.status === "available";
+  let retryDelay = 5000;
   if (preview) commit(record, {
     status: record.lastAgent ? "revalidating" : "loading", agent: record.lastAgent,
     parent: record.access.parent,
@@ -217,20 +235,32 @@ function load(record: AccessRecord, preview: boolean): Promise<void> {
         return;
       }
       record.lastAgent = agent;
+      record.retryAttempt = 0;
       commit(record, { status: "available", agent, parent });
+      if (record.options.presentationCacheKey) {
+        void writeCachedAgents(record.options.presentationCacheKey, [agent]);
+      }
     } catch (error) {
       if (!live()) return;
       const status = error instanceof RuntimeHttpError
         ? error.status === 401 || error.status === 403 ? "unauthorized" : error.status === 404 ? "missing" : "error"
         : "error";
       if (terminal(status)) revoke(record);
-      commit(record, { status, agent: status === "error" ? record.lastAgent : undefined,
+      const keepAvailable = status === "error" && retainAdmission && transientRefreshFailure(error);
+      record.retryAttempt += 1;
+      retryDelay = Math.max(
+        Math.min(30_000, 5000 * 2 ** Math.min(record.retryAttempt - 1, 3)),
+        error instanceof RuntimeHttpError ? (error.retryAfterSeconds ?? 0) * 1000 : 0,
+      );
+      commit(record, { status: keepAvailable ? "available" : status,
+        agent: status === "error" ? record.lastAgent : undefined,
+        parent: record.access.parent,
         error: error instanceof Error ? error.message : String(error) });
     } finally {
       if (live()) {
         abort.abort();
         record.inFlight = undefined;
-        if (!terminal(record.access.status)) record.timer = setTimeout(() => { void load(record, false); }, 5000);
+        if (!terminal(record.access.status)) record.timer = setTimeout(() => { void load(record, false); }, retryDelay);
       }
     }
   };
@@ -238,11 +268,29 @@ function load(record: AccessRecord, preview: boolean): Promise<void> {
   return record.inFlight;
 }
 
+/** Presentation may arrive before online admission, never after its revocation. */
+async function hydratePresentation(record: AccessRecord): Promise<void> {
+  const generation = record.generation;
+  const keys = [record.options.presentationCacheKey, record.options.rosterCacheKey]
+    .filter((key): key is string => key !== undefined);
+  if (!keys.length) return;
+  const cached = (await Promise.all(keys.map(readCachedAgents))).flatMap((agents) => agents ?? []);
+  if (record.users === 0 || records.get(record.key) !== record || record.generation !== generation
+    || record.lastAgent || terminal(record.access.status)) return;
+  const agent = cached.filter((candidate) => candidate.id === record.options.agentId
+    && (record.pinnedIncarnation === undefined || candidate.incarnation === record.pinnedIncarnation))
+    .sort((a, b) => (b.incarnation ?? 0) - (a.incarnation ?? 0))[0];
+  if (!agent) return;
+  record.pinnedIncarnation = agent.incarnation;
+  record.lastAgent = agent;
+  commit(record, { ...record.access, status: record.access.status === "error" ? "error" : "revalidating", agent });
+}
+
 export function acquireAgentAccess(options: AccessOptions): () => void {
   let record = records.get(options.key);
   if (!record) {
     record = { key: options.key, options, access: LOADING, idleAccess: LOADING,
-      pinnedIncarnation: options.expectedIncarnation, users: 0, generation: 0, parentGeneration: 0 };
+      pinnedIncarnation: options.expectedIncarnation, users: 0, generation: 0, parentGeneration: 0, retryAttempt: 0 };
   }
   // Map order is the idle-record LRU.
   records.delete(options.key);
@@ -250,6 +298,7 @@ export function acquireAgentAccess(options: AccessOptions): () => void {
   record.users += 1;
   if (record.users === 1 && record.access.parent) loadParent(record, record.access.parent);
   if (record.users === 1 && retryable(record.access.status)) void load(record, true);
+  if (record.users === 1 && !record.lastAgent && !terminal(record.access.status)) void hydratePresentation(record);
   publish();
   const retained = record;
   return () => {

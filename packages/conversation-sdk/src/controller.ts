@@ -548,6 +548,18 @@ export class ConversationController {
   }
 
   /**
+   * Restore presentation while the owner is still validating online access.
+   * Performs no network requests and does not mark the controller ready.
+   * start(), pause(), and dispose() fence late cache results as usual.
+   */
+  async restoreCachedSnapshot(): Promise<void> {
+    if (this.#disposed || this.#starting || this.#hydrateAttempted
+      || this.#state.reconnectCheckpoint() !== null) return;
+    this.#hydrateAttempted = true;
+    await this.#hydrateCachedSnapshot(this.#runToken);
+  }
+
+  /**
    * Begin the lifecycle. Idempotent while a run is active; throws after
    * dispose.
    */

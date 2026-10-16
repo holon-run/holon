@@ -55,7 +55,9 @@ import {
 } from "./idb-cache";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import { currentRemoteKey } from "./session-cache";
-import { resolveConversationScopeKey, conversationScopeSnapshot } from "./conversation-scope-store";
+import { agentPresentationCacheKey, readCachedAgents, writeCachedAgents } from "./agent-presentation-cache";
+import { resolveConversationScopeKey, conversationScopeSnapshot, disposeAllConversationScopes } from "./conversation-scope-store";
+import { clearAgentAccessRecords } from "./agent-access-records";
 import {
   createRuntimeTrace,
   installRuntimeTraceDebugApi,
@@ -297,6 +299,8 @@ export interface RuntimeStoreState {
 
   bootstrap: RuntimeBootstrap;
   bootstrapLoading: boolean;
+  /** Persisted summaries are presentation only, not an authoritative roster. */
+  agentRosterSource?: "cache" | "http";
   /** Identity behind the current session, used to attribute pending operator prompts. */
   currentUser?: CurrentUser;
   currentUserLoaded: boolean;
@@ -561,8 +565,9 @@ const agentDetailRetryAttempts = new Map<string, number>();
 const agentSkillCatalogRetryTimers = new Map<string, number>();
 const agentSkillCatalogRetryAttempts = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
-let bootstrapRefreshTimer: number | undefined;
+let bootstrapRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let clientGeneration = 0;
+let confirmedPresentationSubjectKey: string | undefined;
 let resumeReconciliationInFlight: Promise<void> | undefined;
 let resumeReconciliationCoordinator: ResumeReconciliationCoordinator | undefined;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
@@ -626,7 +631,7 @@ async function observeRuntimeConfigReload(
 function cancelClientGenerationWork(): void {
   bootstrapRefreshInFlight = undefined;
   if (bootstrapRefreshTimer != null) {
-    window.clearTimeout(bootstrapRefreshTimer);
+    globalThis.clearTimeout(bootstrapRefreshTimer);
     bootstrapRefreshTimer = undefined;
   }
   agentStateRefreshInFlight.clear();
@@ -878,8 +883,9 @@ function filterDismissedDiagnostics(
 async function applyRosterSnapshotToStore(
   set: StoreSet,
   snapshot: AgentRosterSnapshotDto,
-  context: { previousIdentity?: RosterDiscoveryIdentity },
+  context: { previousIdentity?: RosterDiscoveryIdentity; request: ClientRequest },
 ): Promise<string[]> {
+  if (!isCurrentClientRequest(context.request)) return [];
   const identity: RosterDiscoveryIdentity = {
     runtimeId: snapshot.runtime_id,
     visibilityScopeId: snapshot.visibility_scope_id,
@@ -940,6 +946,7 @@ async function applyRosterSnapshotToStore(
         mode: "authoritative",
         identity,
       },
+      agentRosterSource: "http",
       sessionsByAgentId,
       rosterActivityByAgentId,
       briefReadStateByAgentId,
@@ -949,11 +956,15 @@ async function applyRosterSnapshotToStore(
   if (identityReset) {
     // Old-identity ledger scopes must never join the new scope's data.
     try {
-      await agentSessionRepository.clearLedgerScopesNotMatching(identity);
+      await agentSessionRepository.clearLedgerScopesNotMatching(
+        identity,
+        () => isCurrentClientRequest(context.request),
+      );
     } catch (error) {
       console.warn("Failed to clear old ledger scopes.", error);
     }
   }
+  if (!isCurrentClientRequest(context.request)) return [];
   for (const agentId of omittedAgentIds) {
     stopAgentEventStream(agentId, set);
     void agentSessionRepository
@@ -973,9 +984,7 @@ const globalSyncCoordinator = new GlobalSyncCoordinator<RuntimeStoreState>({
     return request.client.getAgentRosterSnapshot();
   },
   applyRosterSnapshot: (set, snapshot, context) =>
-    applyRosterSnapshotToStore(set, snapshot, {
-      previousIdentity: context.previousIdentity,
-    }),
+    applyRosterSnapshotToStore(set, snapshot, context),
   registerAgentRecovery: (agentId, hint) => {
     void agentSessionRepository
       .syncAgentRecovery(agentId, hint)
@@ -1342,6 +1351,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
+  agentRosterSource: undefined,
   currentUser: undefined,
   currentUserLoaded: false,
   globalStreamStatus: "idle",
@@ -1734,10 +1744,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
   setRuntimeConnection: async (config) => {
-    await clearConversationCaches();
     nextClientGeneration();
     const generation = clientGeneration;
     cancelClientGenerationWork();
+    await clearConversationCaches();
+    if (!isCurrentClientGeneration(generation)) return;
     const normalizedConfig = sameOriginConnection(config);
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
@@ -1759,6 +1770,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     set({
       currentUser: undefined,
       currentUserLoaded: false,
+      agentRosterSource: undefined,
       bootstrap: pendingBootstrap(normalizedConfig),
       bootstrapLoading: true,
       bootstrapError: undefined,
@@ -1822,7 +1834,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   refreshBootstrap: async (options = {}) => {
     if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;
-    const generation = clientGeneration;
+    if (bootstrapRefreshTimer != null) {
+      globalThis.clearTimeout(bootstrapRefreshTimer);
+      bootstrapRefreshTimer = undefined;
+    }
+    let generation = clientGeneration;
+    confirmedPresentationSubjectKey = undefined;
     const trace =
       options.trace ??
       createRuntimeTrace("bootstrap.refresh", { trigger: options.trigger ?? "bootstrap" });
@@ -1836,19 +1853,91 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
 
     const request = (async () => {
-      try {
-        const bootstrap = await runtimeClient.getBootstrap();
-        if (!isCurrentClientGeneration(generation)) return;
-        // Current-user identity is advisory: resolve it in the background so
-        // pending prompts can be attributed without blocking the bootstrap.
-        void runtimeClient.getCurrentUser().then((currentUser) => {
-          if (!isCurrentClientGeneration(generation)) return;
-          set({ currentUser: currentUser ?? undefined, currentUserLoaded: true });
-        });
-        set((state) => {
-          if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
+      // Confirm the subject independently of a potentially slow roster/state
+      // projection. Private caches remain hidden until this request succeeds.
+      const subjectRequest = runtimeClient.getCurrentUser({ strict: true }).then((currentUser) => {
+        if (!isCurrentClientGeneration(generation) || presentationAuthRejected(get())) return;
+        const key = agentPresentationCacheKey(currentRemoteKey(runtimeConnectionConfig), currentUser ?? undefined);
+        const previous = get();
+        const previousKey = agentPresentationCacheKey(currentRemoteKey(runtimeConnectionConfig), previous.currentUser);
+        const subjectChanged = previous.currentUserLoaded && previousKey !== key;
+        if (subjectChanged) {
+          // Fence all old-subject requests and streams before publishing the
+          // new subject. Its roster must be requested only after this point.
+          generation = nextClientGeneration();
+          cancelClientGenerationWork();
+          bootstrapRefreshInFlight = request;
+          for (const subscription of activeEventStreams.values()) subscription.close();
+          activeEventStreams.clear();
+          globalSyncCoordinator.resetForClientChange();
+          clearAgentAccessRecords();
+          disposeAllConversationScopes(false);
+        }
+        confirmedPresentationSubjectKey = key;
+        set((state) => ({
+          currentUser: currentUser ?? undefined, currentUserLoaded: true,
+          ...(subjectChanged ? {
+            agentRosterSource: undefined,
+            discovery: { mode: "pending", freshness: "fresh", retryAttempt: 0 },
+            sessionsByAgentId: {},
+            bootstrap: { ...state.bootstrap, agents: [], attentionCount: 0, metrics: [] },
+          } : {}),
+        }));
+        if (!key || get().agentRosterSource === "http") return true;
+        void readCachedAgents(key).then((agents) => {
+          if (!agents?.length || !isCurrentClientGeneration(generation)) return;
+          set((state) => {
+            if (presentationAuthRejected(state) || state.agentRosterSource === "http"
+              || agentPresentationCacheKey(currentRemoteKey(runtimeConnectionConfig), state.currentUser) !== key) return {};
             return {
-              bootstrap: state.bootstrap,
+              agentRosterSource: "cache",
+              bootstrap: sortBootstrapAgents({
+                ...state.bootstrap, agents,
+                attentionCount: countAgentsNeedingAttention(agents), metrics: buildBootstrapMetrics(agents),
+              }, state.rosterActivityByAgentId),
+            };
+          });
+        }).catch(() => { /* best-effort presentation */ });
+        return true;
+      }).catch((error: unknown) => {
+        if (!isCurrentClientGeneration(generation) || presentationAuthRejected(get())) return;
+        if (error instanceof RuntimeHttpError && [401, 403].includes(error.status)) {
+          set((state) => ({ bootstrap: {
+            ...state.bootstrap, connection: { ...state.bootstrap.connection, authRequired: true },
+          } }));
+        } else {
+          // A transient subject lookup failure is not a logout and cannot
+          // authorize a new private cache read. Make the failed initialization
+          // visible and retry confirmation instead of leaving an empty shell.
+          const message = error instanceof Error ? error.message : String(error);
+          set((state) => ({
+            currentUserLoaded: true,
+            bootstrapError: message,
+            bootstrap: { ...state.bootstrap, connection: { ...state.bootstrap.connection, error: message } },
+          }));
+          scheduleBootstrapRefresh(get, 5_000, { syncEvents: options.syncEvents, trigger: "subject.retry" });
+        }
+      });
+      try {
+        // Never label a roster started under an earlier session with the
+        // newly confirmed subject. Cached presentation does not wait for it.
+        const subjectConfirmed = await subjectRequest;
+        if (!isCurrentClientGeneration(generation)) return;
+        if (!subjectConfirmed || presentationAuthRejected(get())) {
+          set({ bootstrapLoading: false });
+          return;
+        }
+        const bootstrap = await runtimeClient.getBootstrap();
+        if (!isCurrentClientGeneration(generation) || presentationAuthRejected(get())) return;
+        set((state) => {
+          if (bootstrap.connection.source === "fixture"
+            && (state.bootstrap.connection.source === "http" || state.agentRosterSource === "cache")) {
+            return {
+              bootstrap: {
+                ...state.bootstrap,
+                connection: bootstrap.connection.authRequired ? bootstrap.connection
+                  : { ...state.bootstrap.connection, error: bootstrap.connection.error },
+              },
               bootstrapLoading: false,
               bootstrapError: bootstrap.connection.error,
             };
@@ -1883,6 +1972,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             ),
             bootstrapLoading: false,
             bootstrapError: bootstrap.connection.error,
+            agentRosterSource: bootstrap.connection.source === "http" ? "http" : state.agentRosterSource,
           };
         });
         // After bootstrap agents are available, build provisional details
@@ -3977,11 +4067,11 @@ function setSessionModelError(set: StoreSet, agentId: string, error: string | un
   }));
 }
 
-function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000): void {
+function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000, options: BootstrapRefreshOptions = {}): void {
   if (bootstrapRefreshTimer != null) return;
-  bootstrapRefreshTimer = window.setTimeout(() => {
+  bootstrapRefreshTimer = globalThis.setTimeout(() => {
     bootstrapRefreshTimer = undefined;
-    void get().refreshBootstrap({ background: true });
+    void get().refreshBootstrap({ ...options, background: true });
   }, delayMs);
 }
 
@@ -4683,7 +4773,30 @@ function formatTime(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
+function presentationAuthRejected(state: RuntimeStoreState): boolean {
+  return Boolean(state.bootstrap.connection.authRequired)
+    || state.discovery.freshness === "unauthorized" || state.globalStreamStatus === "unauthorized";
+}
+
 useRuntimeStore.subscribe((state, previous) => {
+  if (presentationAuthRejected(state)) {
+    if (!presentationAuthRejected(previous)) {
+      // Auth rejection is terminal for both presentation and conversation
+      // caches, including async hydration still in flight.
+      void clearConversationCaches();
+    }
+    if (state.currentUser || !state.currentUserLoaded || state.bootstrap.agents.length > 0 || state.agentRosterSource !== undefined) {
+      useRuntimeStore.setState({
+        currentUser: undefined, currentUserLoaded: true, agentRosterSource: undefined,
+        bootstrap: { ...state.bootstrap, agents: [], attentionCount: 0, metrics: [] },
+      });
+    }
+  } else if (state.agentRosterSource === "http"
+    && (state.bootstrap.agents !== previous.bootstrap.agents
+      || state.currentUser !== previous.currentUser || state.agentRosterSource !== previous.agentRosterSource)) {
+    const key = agentPresentationCacheKey(currentRemoteKey(runtimeConnectionConfig), state.currentUser);
+    if (key && key === confirmedPresentationSubjectKey) void writeCachedAgents(key, state.bootstrap.agents);
+  }
   if (state.rightPanelView !== previous.rightPanelView) rememberPanelView(state.rightPanelView);
   if (state.rightPanelOpen !== previous.rightPanelOpen || state.rightPanelMode !== previous.rightPanelMode) {
     writePanelPreferences({ ...readPanelPreferences(), open: state.rightPanelOpen, mode: state.rightPanelMode });
