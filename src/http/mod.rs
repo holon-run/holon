@@ -2074,6 +2074,18 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
     if let Some(limit) = error.downcast_ref::<crate::github::RateLimit>() {
         return github_rate_limit_response(limit, "remote_skill_rate_limited");
     }
+    if let Some(failed) = error.downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>() {
+        return http_error(
+            StatusCode::BAD_GATEWAY,
+            HttpErrorEnvelope::new("remote_skill_install_failed", failed.to_string())
+                .retryable(failed.retryable())
+                .hint(failed.recovery_hint())
+                .extension("package", failed.package.clone())
+                .extension("exit_status", Value::Null)
+                .extension("stdout", "")
+                .extension("stderr", failed.cause.clone()),
+        );
+    }
     match error.downcast::<crate::skills::SkillInstallConflict>() {
         Ok(conflict) => http_error(
             StatusCode::CONFLICT,
@@ -3586,6 +3598,92 @@ mod tests {
         assert!(body.get("reset_at").is_none());
         assert!(body.get("retry_after_seconds").is_none());
         assert!(!body["hint"].as_str().unwrap().contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn archive_skill_failures_keep_compatibility_fields_and_recovery_policy() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://archive-user:archive-password@{}/api/callbacks/wake/callback-secret?token=query-secret#fragment-secret",
+            listener.local_addr().unwrap()
+        );
+        drop(listener);
+        let connection_error = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(url)
+            .send()
+            .unwrap_err();
+        assert!(connection_error.is_connect());
+        for (source, retryable) in [
+            (anyhow::Error::new(connection_error), true),
+            (
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "temporary archive file access denied",
+                )),
+                false,
+            ),
+            (anyhow::anyhow!("archive path validation failed"), false),
+        ] {
+            let failed =
+                crate::skills::RemoteSkillArchiveFetchFailed::new("owner/repo@skill", &source);
+            let cause = failed.cause.clone();
+            let hint = failed.recovery_hint();
+            let error = source
+                .context(failed)
+                .context("template skill setup failed");
+            let (status, axum::Json(body)) = super::skill_install_error_response(error);
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert_eq!(body["code"], "remote_skill_install_failed");
+            assert_eq!(body["package"], "owner/repo@skill");
+            assert_eq!(body["exit_status"], serde_json::Value::Null);
+            assert_eq!(body["stdout"], "");
+            assert_eq!(body["stderr"], cause);
+            assert_eq!(body["retryable"], retryable);
+            assert_eq!(body["hint"], hint);
+            assert!(body.get("recovery_hint").is_none());
+            assert!(body["error"].as_str().unwrap().contains("owner/repo@skill"));
+            assert!(body["error"].as_str().unwrap().contains(&cause));
+            assert!(!body.to_string().contains("before process exit"));
+            for secret in [
+                "archive-user",
+                "archive-password",
+                "callback-secret",
+                "query-secret",
+                "fragment-secret",
+            ] {
+                assert!(!body.to_string().contains(secret), "{secret}: {body}");
+            }
+        }
+    }
+
+    #[test]
+    fn archive_skill_http_errors_do_not_expose_sensitive_source_text() {
+        let source = anyhow::anyhow!(
+            "archive validation failed: Authorization: Bearer do-not-publish\nAuthorization: Bearer second line"
+        );
+        let failed = crate::skills::RemoteSkillArchiveFetchFailed::new(
+            "https://user:password@example.test/archive?token=private#fragment",
+            &source,
+        );
+        let (status, axum::Json(body)) =
+            super::skill_install_error_response(source.context(failed));
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["retryable"], false);
+        let serialized = body.to_string();
+        for secret in [
+            "do-not-publish",
+            "password",
+            "token=private",
+            "#fragment",
+            "second line",
+        ] {
+            assert!(!serialized.contains(secret), "{secret}");
+        }
+        assert!(!body["stderr"].as_str().unwrap().contains('\n'));
     }
 
     #[test]

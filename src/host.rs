@@ -306,6 +306,8 @@ pub(crate) struct HostInner {
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
+    #[cfg(test)]
+    spawn_child_error: Mutex<Option<anyhow::Error>>,
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
@@ -794,6 +796,8 @@ impl RuntimeHost {
                 runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider: Mutex::new(static_provider),
+                #[cfg(test)]
+                spawn_child_error: Mutex::new(None),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
@@ -7164,6 +7168,10 @@ impl RuntimeHostBridge {
         template: Option<String>,
         model_resolution: AgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
+        #[cfg(test)]
+        if let Some(error) = self.host()?.inner.spawn_child_error.lock().unwrap().take() {
+            return Err(error);
+        }
         self.host()?
             .spawn_child_task(
                 parent_runtime,
@@ -11043,6 +11051,147 @@ mod tests {
             .unwrap()
             .starts_with("# Official reviewer\n\nSynced reviewer template\n"));
         assert!(!spawned.task_handle.task_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_child_archive_failure_preserves_recovery_and_failed_task_artifact() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://archive-user:archive-password@{}/api/callbacks/wake/callback-secret?token=query-secret#fragment-secret",
+            listener.local_addr().unwrap()
+        );
+        drop(listener);
+        let connection_error = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(url)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(connection_error.is_connect());
+
+        for (source, retryable) in [
+            (anyhow::Error::new(connection_error), true),
+            (
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "temporary archive file access denied",
+                )),
+                false,
+            ),
+            (anyhow::anyhow!("archive path validation failed"), false),
+            (
+                anyhow::anyhow!(
+                    "Authorization: Bearer do-not-publish\nAuthorization: Bearer private second line"
+                ),
+                false,
+            ),
+        ] {
+            let (_home, host) = test_host();
+            let parent = host.default_runtime().await.unwrap();
+            let identities_before = host.agent_identity_records().unwrap().len();
+            let failed =
+                crate::skills::RemoteSkillArchiveFetchFailed::new("owner/repo@skill", &source);
+            let cause = failed.cause.clone();
+            let hint = failed.recovery_hint();
+            *host.inner.spawn_child_error.lock().unwrap() = Some(
+                source
+                    .context(failed)
+                    .context("template skill setup failed")
+                    .context("upstream context: Authorization: Bearer outer-secret"),
+            );
+
+            let error = invoke_new_subagent(
+                &parent,
+                "review the implementation".into(),
+                AuthorityClass::OperatorInstruction,
+                None,
+                None,
+            )
+            .await
+            .expect_err("archive admission failure must not return a successful TaskHandle");
+            let tool_error = crate::tool::ToolError::from_anyhow(&error);
+            assert_eq!(tool_error.kind, "agent_invocation_failed");
+            assert_eq!(
+                tool_error.domain,
+                Some(crate::runtime_error::RuntimeErrorDomain::Task)
+            );
+            assert_eq!(tool_error.retryable, retryable);
+            assert_eq!(tool_error.recovery_hint.as_deref(), Some(hint));
+            assert!(tool_error.message.contains("owner/repo@skill"));
+            assert!(tool_error.message.contains(&cause));
+            assert!(error
+                .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
+                .is_some());
+            let rendered = tool_error.render_for_model(Some("InvokeAgent"));
+            assert!(rendered.contains("owner/repo@skill"));
+            assert!(rendered.contains(&cause));
+            assert!(!rendered.contains("do-not-publish"));
+            assert!(!rendered.contains("private second line"));
+            assert!(!rendered.contains("before process exit"));
+
+            let task_id = tool_error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("task_id"))
+                .and_then(Value::as_str)
+                .expect("failed admission must identify its persisted task");
+            let task = parent
+                .storage()
+                .latest_task_record(task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(task.status, TaskStatus::Failed);
+            let detail = task.detail.as_ref().unwrap();
+            let persisted_cause = detail["error"].as_str().unwrap();
+            assert!(persisted_cause.contains("owner/repo@skill"));
+            assert!(persisted_cause.contains(&cause));
+            assert!(!persisted_cause.contains("do-not-publish"));
+            assert!(detail
+                .get("child_agent_id")
+                .and_then(Value::as_str)
+                .is_none());
+            let output = parent.task_output(task_id, false, 0).await.unwrap();
+            let failure = output
+                .task
+                .failure_artifact
+                .expect("failed admission must expose a failure artifact");
+            assert_eq!(failure.task_id.as_deref(), Some(task_id));
+            assert!(failure
+                .source_chain
+                .iter()
+                .any(|entry| entry.contains("owner/repo@skill") && entry.contains(&cause)));
+            assert!(!serde_json::to_string(&failure)
+                .unwrap()
+                .contains("do-not-publish"));
+            for serialized in [
+                rendered,
+                serde_json::to_string(&tool_error).unwrap(),
+                serde_json::to_string(&task).unwrap(),
+                serde_json::to_string(&failure).unwrap(),
+                serde_json::to_string(&crate::runtime_error::describe_runtime_error(&error))
+                    .unwrap(),
+            ] {
+                for secret in [
+                    "archive-user",
+                    "archive-password",
+                    "callback-secret",
+                    "query-secret",
+                    "fragment-secret",
+                    "do-not-publish",
+                    "private second line",
+                    "outer-secret",
+                ] {
+                    assert!(!serialized.contains(secret), "{secret}: {serialized}");
+                }
+            }
+            assert_eq!(
+                host.agent_identity_records().unwrap().len(),
+                identities_before
+            );
+        }
     }
 
     #[tokio::test]

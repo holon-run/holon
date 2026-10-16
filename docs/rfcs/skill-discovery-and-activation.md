@@ -177,6 +177,21 @@ a daemon-visible token or authenticated `gh`. Public limit errors never include
 upstream bodies, token material, or `gh` output. Other failure codes and statuses
 remain unchanged; CLI operational errors still exit with code 1.
 
+Unclassified remote skill archive failures retain typed archive context and the
+original source chain rather than impersonating an installer subprocess failure.
+Their public summaries include a bounded, single-line, redacted package and cause.
+Only typed request timeouts and connection failures are retryable; unclassified
+I/O, invalid archives, and archive safety/size limits are not assumed transient.
+Hints identify network recovery versus local-resource or source-content checks.
+This metadata does not introduce automatic retries or additional requests.
+
+For these failures, new-subagent admission keeps `agent_invocation_failed` and
+the failed task ID, while preserving the archive summary, retryability, and hint
+in tool and failed-task diagnostics. HTTP keeps `502/remote_skill_install_failed`,
+the package and empty exit status/stdout compatibility fields, with only a safe
+cause in stderr plus explicit retryability and recovery hint. Existing typed
+HTTP, rate-limit, and legacy installer status/timeout mappings remain unchanged.
+
 ## Related Historical Notes
 
 Supersedes and absorbs:

@@ -166,6 +166,20 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         return descriptor_from_tool_error(tool_error, source_chain);
     }
 
+    if let Some(archive_error) =
+        error.downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
+    {
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Io,
+            code: "remote_skill_archive_fetch_failed".into(),
+            retryable: archive_error.retryable(),
+            operator_message: archive_error.to_string(),
+            recovery_hint: Some(archive_error.recovery_hint().into()),
+            safe_context: BTreeMap::from([("package".into(), archive_error.package.clone())]),
+            source_chain,
+        };
+    }
+
     if let Some(provider_error) = error
         .chain()
         .find_map(|source| source.downcast_ref::<ProviderTransportError>())
@@ -605,6 +619,32 @@ fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_fetch_descriptor_keeps_safe_cause_with_long_package() {
+        let cause = AnyhowError::msg(
+            "wrapper\nfailed https://user:secret@example.com/archive?token=secret#secret",
+        );
+        let context = crate::skills::RemoteSkillArchiveFetchFailed::new(&"包".repeat(1000), &cause);
+        let error = cause
+            .context(context)
+            .context("template skill installation failed");
+        let descriptor = describe_runtime_error(&error);
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Io);
+        assert_eq!(descriptor.code, "remote_skill_archive_fetch_failed");
+        assert!(!descriptor.retryable);
+        assert!(descriptor.operator_message.contains("example.com/archive"));
+        assert!(descriptor.operator_message.chars().count() <= ERROR_TEXT_MAX_CHARS);
+        assert!(descriptor.safe_context["package"].chars().count() <= 96);
+        let json = serde_json::to_string(&descriptor).unwrap();
+        assert!(!json.contains("secret"), "{json}");
+        assert!(!json.contains("user:"), "{json}");
+        assert!(descriptor
+            .source_chain
+            .iter()
+            .any(|cause| cause.contains("archive fetch")));
+        assert!(descriptor.recovery_hint.unwrap().contains("archive"));
+    }
 
     #[test]
     fn typed_runtime_error_survives_anyhow_context() {
