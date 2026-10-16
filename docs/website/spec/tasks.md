@@ -12,7 +12,10 @@ terminal re-entry, and supervision surfaces.
 > **Last verified:** 2026-09-19 against `src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
 > implementations in `src/tool/tools/{exec_command,task_list,task_status,
-> task_output,task_input,task_stop,invoke_agent}.rs`.
+> task_input,task_stop,invoke_agent}.rs`.
+
+The output-observation contract was updated for #3534 M2; see
+[Agent output observation](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-output-observation.md).
 
 ## Source RFCs
 
@@ -91,8 +94,8 @@ scheduler blocking decisions.
 **Key contract:**
 
 - For background tasks, use `WaitFor(wake=task_result,
-  resource=<task_id>)` to wait for the terminal `TaskResult` instead of
-  polling `TaskOutput`.
+  resource=<task_id>, delivery=...)` for the terminal `TaskResult`, not status or
+  output polling. Choose `delivery=final` or `delivery=silent` explicitly.
 - Result-bearing terminal `TaskResult` events re-enter the agent as continuation
   context when they hold the matching wait or independent rejoin authority.
 - `InvokeAgent(existing_agent)` completes its observation handle when the first
@@ -100,9 +103,10 @@ scheduler blocking decisions.
   message/delivery references, not a copy of the reply or business completion.
   The original message carries the content and resumes an exact task wait once.
   A late `WaitFor` uses that same message; an already consumed reply continues
-  the current turn. `TaskOutput` dereferences the original reply for retrieval.
-- `TaskOutput(block=true)` is for explicit current-turn synchronous waiting,
-  not the default waiting strategy.
+  the current turn. Review the original delivered message and its references.
+- The former model tool `TaskOutput` and CLI `holon task output` are removed.
+  Their `block`/`timeout_ms` current-turn short wait is no longer provided.
+  Bounded `holon tail --agent` follow is observation, not a completion wait.
 
 ## Supervision tools
 
@@ -110,19 +114,40 @@ scheduler blocking decisions.
 |------|---------|
 | `ListTasks` | Compact active-task digest (non-terminal tasks only) with bounded output |
 | `TaskStatus` | Single-task lifecycle snapshot with metadata |
-| `TaskOutput` | Bounded output preview with optional `block=true` |
 | `TaskInput` | Send stdin/follow-up input to an interactive task |
 | `TaskStop` | Stop a running task (may transition through `Cancelling`) |
 
 **Key contract:**
 
 - `ListTasks` excludes terminal tasks; use `TaskStatus` for historical detail.
-- `TaskOutput` returns a bounded `output_preview` plus artifact refs for full
-  output; it is for inspection, not polling.
+- Inspect command output by reading only runtime-confirmed files in bounded
+  byte ranges. Do not construct a path from an agent home or task id. An absent
+  file is explicit unavailability, not permission to guess another path.
+- Use bounded `holon tail --agent <agent_id> --include-progress` observation
+  for assistant progress and briefs. It is agent-scoped, not task-exclusive;
+  it does not consume results, register a task waiter, or wake the producer.
 - `TaskInput` accepts input only for tasks created with interactive
   continuation enabled (`accepts_input=true`).
 - `TaskStop` sends a stop request; the task may first enter `Cancelling`
   before reaching `Cancelled`.
+
+### Output observation is not completion
+
+For a command file path confirmed by the runtime, a bounded read can use:
+
+```bash
+dd if="$CONFIRMED_OUTPUT_PATH" bs=1 skip=0 count=8192 status=none
+```
+
+Set `CONFIRMED_OUTPUT_PATH` to the exact returned host path, not an inferred
+location. Capture may retain only a head/tail and rewrite the artifact at
+termination; a running file is not a lossless append-only stream. Wait for
+termination before relying on a stable final log. File EOF, tail EOF, an `end`
+receipt, or an idle agent does not establish task completion.
+
+The underlying HTTP task-output route and runtime capture/result services remain
+available; only the model tool and CLI command are retired. See the
+[CLI observation reference](../reference/cli.md#agent-output-observation).
 
 ## Distinction from WorkItems and waiting
 
@@ -139,5 +164,6 @@ agents), but task lifecycle is independent of WorkItem lifecycle.
 
 - [Issue #1382](https://github.com/holon-run/holon/issues/1382) removed the
   unused `Blocking` task wait policy from the public/runtime contract. Waiting
-  is expressed with `WaitFor(wake=task_result)` plus terminal task re-entry, or
-  with a bounded `TaskOutput(block=true)` call inside the current turn.
+  is now expressed with `WaitFor(wake=task_result, resource=<task_id>,
+  delivery=...)` plus terminal task re-entry. The former model/CLI synchronous
+  output short wait was removed in #3534 M2.

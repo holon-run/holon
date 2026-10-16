@@ -621,7 +621,8 @@ main:has(.home-page) .catalog-page {
   transform: translateY(-50%);
 }
 
-.home-section {
+.home-section,
+.home-templates {
   padding: 0 clamp(0.25rem, 2vw, 1rem);
 }
 
@@ -1041,7 +1042,8 @@ img.article-architecture {
     grid-template-columns: 1fr;
   }
 
-  .home-section {
+  .home-section,
+  .home-templates {
     padding-inline: 0.25rem;
   }
 
@@ -1331,3 +1333,99 @@ main:has(.blog-page) .catalog-page {
 }
 
 .home-page h2 { text-wrap: balance; }
+
+/* Shared template cards on homepages and the full template catalog. */
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-block: 1.5rem;
+}
+
+.template-card,
+.template-entry {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 1.5rem;
+  border: 1px solid var(--home-line, #d8e4f2);
+  border-radius: 14px;
+  background: #f7faff;
+  color: var(--home-ink, #10233f);
+  overflow-wrap: anywhere;
+}
+
+.template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.template-card h3,
+.template-entry h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.4;
+}
+
+.template-card p,
+.template-entry p {
+  margin-block: 0.75rem;
+  line-height: 1.7;
+}
+
+.template-card p {
+  margin: 0;
+}
+
+.template-meta {
+  color: var(--home-muted, #5b6c82);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.template-card a,
+.template-entry a {
+  color: var(--home-blue, #1f63d5);
+  text-underline-offset: 0.2em;
+}
+
+.template-card a:focus-visible,
+.template-entry a:focus-visible {
+  outline: 2px solid var(--home-blue, #1f63d5);
+  outline-offset: 4px;
+}
+
+.template-catalog {
+  min-width: 0;
+  margin-block: 2rem;
+}
+
+.template-catalog .template-entry + .template-entry {
+  margin-top: 1.25rem;
+}
+
+.template-entry {
+  scroll-margin-top: 6rem;
+}
+
+.template-entry pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.template-source code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .template-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .template-card,
+  .template-entry {
+    padding: 1.25rem;
+  }
+}

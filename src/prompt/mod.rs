@@ -916,7 +916,7 @@ fn build_system_sections(
         section(
             "tool_use_contract",
             PromptStability::Stable,
-            "Tool startup input must contain only fields from that tool's input schema. Do not pass result metadata such as status, disposition, task_handle, truncation flags, previews, commentary, or prior tool receipts as startup fields. Treat structured tool results as evidence and use the smallest next tool call that answers the remaining question. Do not repeat reads, output fetches, or broad searches when current context already contains the needed evidence; refresh only the smallest relevant slice for a concrete changed-state question. For background command tasks or child task handles, use WaitFor(wake=task_result, resource=<task_id>) when ordinary completion is the only thing left; use task output/status tools only for active supervision or bounded current-turn inspection.".to_string(),
+            "Tool startup input must contain only fields from that tool's input schema. Do not pass result metadata such as status, disposition, task_handle, truncation flags, previews, commentary, or prior tool receipts as startup fields. Treat structured tool results as evidence and use the smallest next tool call that answers the remaining question. Do not repeat reads, output fetches, or broad searches when current context already contains the needed evidence; refresh only the smallest relevant slice for a concrete changed-state question. For background command tasks or child task handles, use WaitFor(wake=task_result, resource=<task_id>) when ordinary completion is the only thing left; use TaskStatus for exact task state and bounded output observation only for active supervision or bounded current-turn inspection. Confirm command runtime file paths and availability before reading command output, and use bounded read-only agent tail for agent progress, not GetAgent transcript inspection. No in-turn blocking output wait is provided.".to_string(),
         ),
         section(
             "engineering_guardrails",
@@ -1139,7 +1139,7 @@ fn agent_contract_section(identity: &AgentIdentityView) -> PromptSection {
         "agent_contract",
         PromptStability::Stable,
         format!(
-            "Current agent contract: stable identity `{}`; {}. Tool availability is determined by canonical capability policy. Lifecycle cleanup authority is determined by canonical lifecycle attachment and active supervision, not by identity labels.",
+            "Current agent contract: stable identity `{}`; {}. Creation provenance and lineage do not create reporting obligations. Reply to the operator for operator work and to the actual delegator for delegated work, using the current task or message routing context; never infer a reporting recipient from an identity or lineage parent. Tool availability is determined by canonical capability policy. Lifecycle cleanup authority is determined by canonical lifecycle attachment and active supervision, not by identity labels.",
             identity.agent_id,
             identity.relation_summary(),
         ),
@@ -1189,7 +1189,7 @@ fn delegated_task_section(identity: &AgentIdentityView) -> Option<PromptSection>
         section(
             "delegated_task",
             PromptStability::Stable,
-            "You are executing a bounded delegated task. Stay tightly scoped to the delegated work and do not create nested tasks. Return a concise final report the caller can integrate: state the conclusion first, then include relevant files or artifacts, verification performed, and any blockers. Do not include hidden reasoning, planning notes, pseudo-tool tags, exploration diaries, or narration of your internal process in the final answer.".to_string(),
+            "You are executing a bounded delegated task. Stay tightly scoped to the delegated work and do not create nested tasks. The actual delegator is determined by the current task or message routing context, not by creation provenance or lineage. Keep routine progress, compile/retry updates, unchanged test status, and self-resolved problems in observable output or work records, not unsolicited messages to the actual delegator. Send a message when the actual delegator must act on a blocker, a coordination-relevant contract change, or a dependency becoming ready; still honor explicit reply obligations. Return a concise final report the caller can integrate: state the conclusion first, then include relevant files or artifacts, verification performed, and any blockers. Your final report is delivered through the existing task-result channel; do not also SendAgentMessage the same final result. Do not include hidden reasoning, planning notes, pseudo-tool tags, exploration diaries, or narration of your internal process in the final answer.".to_string(),
         )
     })
 }
@@ -1796,6 +1796,23 @@ mod tests {
         assert!(delegated_task.content.contains("files or artifacts"));
         assert!(delegated_task.content.contains("verification performed"));
         assert!(delegated_task.content.contains("exploration diaries"));
+        assert!(delegated_task.content.contains("not unsolicited messages"));
+        assert!(delegated_task
+            .content
+            .contains("actual delegator must act on a blocker"));
+        assert!(delegated_task
+            .content
+            .contains("not by creation provenance or lineage"));
+        assert!(!delegated_task.content.contains("messages to the parent"));
+        assert!(delegated_task
+            .content
+            .contains("still honor explicit reply obligations"));
+        assert!(delegated_task
+            .content
+            .contains("existing task-result channel"));
+        assert!(delegated_task
+            .content
+            .contains("do not also SendAgentMessage the same final result"));
     }
 
     #[test]
@@ -1911,6 +1928,16 @@ mod tests {
             .contains("Treat structured tool results as evidence"));
         assert!(section.content.contains("Do not repeat reads"));
         assert!(section.content.contains("WaitFor(wake=task_result"));
+        assert!(section.content.contains("TaskStatus for exact task state"));
+        assert!(section
+            .content
+            .contains("Confirm command runtime file paths and availability"));
+        assert!(section
+            .content
+            .contains("bounded read-only agent tail for agent progress"));
+        assert!(section
+            .content
+            .contains("No in-turn blocking output wait is provided"));
         assert!(section
             .content
             .contains("only for active supervision or bounded current-turn inspection"));
@@ -2563,6 +2590,57 @@ mod tests {
             .contains("canonical lifecycle attachment and active supervision"));
         assert!(!section.content.contains("public_named"));
         assert!(!section.content.contains("private_child"));
+    }
+
+    #[test]
+    fn creation_lineage_does_not_imply_delegation_or_reporting() {
+        let mut named_identity = sample_identity();
+        named_identity.agent_id = "long_lived".into();
+        named_identity.kind = AgentKind::Named;
+        named_identity.is_default_agent = false;
+        named_identity.parent_agent_id = Some("creator".into());
+        named_identity.lineage_parent_agent_id = Some("creator".into());
+
+        for identity in [sample_identity(), named_identity, sample_child_identity()] {
+            let sections = build_system_sections(
+                &identity,
+                &sample_message(),
+                Path::new("."),
+                &LoadedAgentsMd::default(),
+                &LoadedAgentMemory::default(),
+                &SkillsRuntimeView::default(),
+                &[],
+                ToolPromptContext::default(),
+            );
+            let contract = &sections
+                .iter()
+                .find(|section| section.name == "agent_contract")
+                .expect("agent contract without invocation tools")
+                .content;
+            for rule in [
+                "Creation provenance and lineage do not create reporting obligations",
+                "Reply to the operator for operator work",
+                "to the actual delegator for delegated work",
+                "using the current task or message routing context",
+                "never infer a reporting recipient from an identity or lineage parent",
+                "Tool availability is determined by canonical capability policy",
+                "Lifecycle cleanup authority is determined by canonical lifecycle attachment",
+            ] {
+                assert!(
+                    contract.contains(rule),
+                    "{} missing rule: {rule}",
+                    identity.agent_id
+                );
+            }
+            assert_eq!(
+                sections
+                    .iter()
+                    .any(|section| section.name == "delegated_task"),
+                identity.delegated_from_task_id.is_some(),
+                "{} delegation must not follow creation lineage alone",
+                identity.agent_id,
+            );
+        }
     }
 
     #[test]

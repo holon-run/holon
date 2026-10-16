@@ -2383,6 +2383,15 @@ impl TaskRepository<'_> {
         )
     }
 
+    pub fn terminal_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
+        self.query_for_agent(
+            agent_id,
+            "owner_agent_id = ?1 AND status IN ('completed', 'failed', 'cancelled', 'interrupted')",
+            [agent_id],
+            limit,
+        )
+    }
+
     pub fn active_owner_agent_ids(&self) -> Result<Vec<String>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(

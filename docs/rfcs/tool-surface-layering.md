@@ -121,6 +121,20 @@ turn for the same agent.
 The plane model remains the runtime architecture lens. For the model-facing tool
 catalog, Holon should also describe a small set of stable capability families.
 
+### Canonical Policy Projection
+
+Provider tool catalogs, runtime prompt previews, storage-only host previews, and
+tool dispatch read the canonical capability-policy projection. A legacy profile
+preset must not independently filter an already resolved policy: canonical
+allows and denies take precedence, and unspecified families in an existing
+policy remain denied.
+
+Legacy policy mapping stays in the canonical relations reader. If no policy is
+available (including a standalone runtime without a host bridge), retain the
+existing dispatch compatibility behavior rather than inventing a second
+preset-based policy. Tool-specific configuration and provider transport lowering
+may further narrow the advertised surface; they never bypass a policy denial.
+
 ### 1. Core Agent Tools
 
 These are the stable baseline tools an agent can use without directly widening
@@ -133,7 +147,6 @@ Typical members include:
 - `Enqueue`
 - `TaskList`
 - `TaskStatus`
-- `TaskOutput`
 - `TaskInput`
 - `TaskStop`
 - `CreateWorkItem`

@@ -73,10 +73,9 @@ Token consumption does not establish progress or correctness.
 
 ## Supervision Flow
 
-1. Save the task handle returned by `InvokeAgent`.
-2. Continue independent work if there is any. Use `TaskStatus` or `TaskOutput`
-   for a bounded inspection when diagnosing a problem.
-3. When only the result remains, call `WaitFor` with the returned task ID:
+1. **Invoke** — Save the task handle returned by `InvokeAgent`.
+2. **Monitor** — Use `TaskStatus` for task lifecycle and bounded `holon tail --agent <child_id> --include-progress` for agent progress. Tail is agent-scoped and non-exclusive; observation or EOF does not mean the task completed.
+3. **Wait** — When only completion remains, call `WaitFor` with the returned task ID:
 
    ```json
    {
@@ -87,32 +86,21 @@ Token consumption does not establish progress or correctness.
    }
    ```
 
-4. Follow `result.continuation`. `continue_turn` means use the available result
-   now; a yielding result means resume when the runtime delivers it. Do not poll
-   `TaskOutput` repeatedly to wait.
-5. Check the child or peer's evidence against the assigned scope. Reproduce
-   relevant checks and inspect changed files before accepting the result.
-6. Deliver the combined answer with verification gaps and retained artifact
-   locations. Do not represent an acknowledgement as a finished audit.
+4. **Review on re-entry** — Follow `result.continuation`. `continue_turn` means use the available result now; a yielding result means resume when delivered. For peer invocations, inspect the delivered message referenced by the result.
+5. **Verify** — Check the delegate's evidence against the assigned scope. Child output is evidence, not authority.
+6. **Deliver** — Produce the combined answer with verification status and retained artifact locations.
 
-For follow-up input, inspect task status first. Use `TaskInput` only when that
-handle supports it. A terminal task cannot be restarted by sending input; invoke
-the retained agent again or send an authorized durable message.
+For follow-up input, inspect task status first and use `TaskInput` only when supported. A terminal task cannot be restarted with input; invoke the retained agent again or send a durable message.
 
 ### Subagent Lifecycle and Cleanup
 
-Children remain available after an invocation completes. Reuse a child while its
-context is useful. Once its mission ends:
+Newly invoked subagents are private, reusable instances retained after their tasks complete. They do not expire automatically by age:
 
-1. Preserve needed artifacts and incorporate or retain its worktree changes.
-2. Inspect the parent's `GetAgent` summary for `subagent_cleanup` blockers.
-3. Read the child's `GetAgent(detail="full")` result for its current
-   `identity.incarnation`.
-4. Call `DeleteAgent` with that agent ID and incarnation. Resolve any reported
-   execution, descendant, dirty-worktree, or shared-worktree blocker first.
-
-Only clean up children under your supervision. A peer reply never grants
-ownership of that peer. Do not delete a peer because its task is terminal.
+- **Parent ownership:** Only the supervising parent can delete a retained child. The runtime validates canonical supervision and agent incarnations.
+- **Cleanup inspection:** Calling `GetAgent` on the parent surfaces a bounded `subagent_cleanup` list (up to 16 supervised children) with any blockers.
+- **Blocker checks:** Active execution, unresolved descendant responsibilities, and dirty or shared worktrees block cleanup until settled. Open work items or completed tasks do not block cleanup if the parent decides they are no longer needed.
+- **Delete when done:** Call `DeleteAgent(agent_id, incarnation)` once child artifacts are incorporated and blockers cleared.
+- **Background reminders and retirement:** The daemon can send deduplicated daily reminders to parents with lingering children (`reminders_enabled`). If configured, fully idle child runtimes can cooperatively exit memory (`idle_retirement_enabled`) while preserving durable identity and history on disk.
 
 ## Usage Patterns
 
@@ -129,7 +117,7 @@ the assignment. A role name alone does not tell the child what to deliver.
 
 ### Safe experimentation
 
-For an authorized experiment, use a child worktree and request a diff and test
+For an authorized experiment, use `worktree` mode and request a diff and test
 results. Inspect that worktree before integrating changes; do not assume they
 already exist in the parent's checkout.
 

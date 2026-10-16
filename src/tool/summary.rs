@@ -27,7 +27,6 @@ pub(crate) fn tool_result_summary(envelope: &ToolResultEnvelope) -> String {
             .as_ref()
             .and_then(|result| match envelope.tool_name.as_str() {
                 tn::EXEC_COMMAND => Some(summarize_exec_command_result(result)),
-                tn::TASK_OUTPUT => Some(summarize_task_output_result(result)),
                 tn::CREATE_AGENT | tn::INVOKE_AGENT => summarize_agent_result(result),
                 tn::VIEW_IMAGE => summarize_view_image_result(result),
                 _ => None,
@@ -101,37 +100,6 @@ fn summarize_exec_command_result(result: &Value) -> String {
         }
         _ => format!("disposition={disposition}"),
     }
-}
-
-fn summarize_task_output_result(result: &Value) -> String {
-    let retrieval_status = result
-        .get("retrieval_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let task = result.get("task").unwrap_or(result);
-    let task_id = task
-        .get("task_id")
-        .or_else(|| task.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let truncated = task
-        .get("output_truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let exit_status = task
-        .get("exit_status")
-        .and_then(Value::as_i64)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "unknown".into());
-    let artifacts = artifact_paths(task);
-    let artifact_note = if artifacts.is_empty() {
-        String::new()
-    } else {
-        format!(" artifacts={}", artifacts.join(", "))
-    };
-    format!(
-        "retrieval_status={retrieval_status} task_id={task_id} output_truncated={truncated} exit_status={exit_status}{artifact_note}"
-    )
 }
 
 fn summarize_agent_result(result: &Value) -> Option<String> {
@@ -258,44 +226,6 @@ mod tests {
         assert_eq!(
             tool_result_summary(&result.envelope),
             "completed exit_status=2 truncated=false"
-        );
-    }
-
-    #[test]
-    fn task_output_summary_uses_task_id_and_keeps_legacy_id_compatibility() {
-        let result = ToolResult::success(
-            "TaskOutput",
-            json!({
-                "retrieval_status": "timeout",
-                "task": {
-                    "task_id": "task-current",
-                    "id": "task-legacy",
-                    "output_truncated": false,
-                    "exit_status": null
-                }
-            }),
-            None,
-        );
-        assert_eq!(
-            tool_result_summary(&result.envelope),
-            "retrieval_status=timeout task_id=task-current output_truncated=false exit_status=unknown"
-        );
-
-        let legacy = ToolResult::success(
-            "TaskOutput",
-            json!({
-                "retrieval_status": "success",
-                "task": {
-                    "id": "task-legacy",
-                    "output_truncated": true,
-                    "exit_status": 0
-                }
-            }),
-            None,
-        );
-        assert_eq!(
-            tool_result_summary(&legacy.envelope),
-            "retrieval_status=success task_id=task-legacy output_truncated=true exit_status=0"
         );
     }
 

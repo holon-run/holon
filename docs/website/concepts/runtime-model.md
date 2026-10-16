@@ -67,6 +67,15 @@ it what continuation the agent expects. Ending a reply or writing a reminder
 in a plan does not register a wait. See
 [Events, waits, and wakeups](./events-and-waits.md).
 
+Task lifecycle is independent of the agent's user-facing answer. You can:
+- Inspect status (`TaskStatus`)
+- Read runtime-confirmed command files in bounded ranges, or observe agent
+  progress with bounded `holon tail --agent <id> --include-progress`
+- Wait for completion and result re-entry (`WaitFor(wake=task_result,
+  resource=<task_id>, delivery=...)`); observation/EOF is not completion
+- Send continuation input (`TaskInput`)
+- Stop explicitly (`TaskStop`)
+
 ### External triggers
 
 External ingress can signal that outside state changed or deliver a message.

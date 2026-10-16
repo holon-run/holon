@@ -5,7 +5,9 @@
 #[cfg(test)]
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
+mod live_input_attachment;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
+pub(crate) use live_input_attachment::LiveInputAttachmentCommand;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;

@@ -94,6 +94,10 @@ order: 1
 <p class="home-product__caption">持续跟进需要运行 Holon 的电脑或服务器及后台服务保持开启。Agent 可使用的文件与工具取决于你的配置。</p>
 </section>
 
+<!-- TEMPLATES:START -->
+<!-- 模板卡片由 agent_templates 与 template-display.json 生成。 -->
+<!-- TEMPLATES:END -->
+
 <section class="home-section home-proof">
 <div class="home-proof__intro">
 <p class="home-kicker">精选文章</p>

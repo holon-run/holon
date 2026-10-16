@@ -4,13 +4,16 @@
   "type": "module",
   "scripts": {
     "sync:generated": "python3 sync-generated-pages.py",
-    "dev": "npm run sync:generated && mdorigin dev --root .. --config ../mdorigin.config.json",
-    "build:index": "mdorigin build index --root .. --config ../mdorigin.config.json",
-    "build:search": "mdorigin build search --root .. --config ../mdorigin.config.json --out ./dist/search",
-    "build:cloudflare": "mdorigin build cloudflare --root .. --config ../mdorigin.config.json --search ./dist/search --out ./dist/cloudflare",
+    "prepare:content": "npm run sync:generated && python3 build-template-catalog.py",
+    "dev": "npm run prepare:content && mdorigin dev --root ./dist/content --config ./dist/content/mdorigin.config.json",
+    "build:index": "mdorigin build index --root ./dist/content --config ./dist/content/mdorigin.config.json",
+    "build:search": "mdorigin build search --root ./dist/content --config ./dist/content/mdorigin.config.json --out ./dist/search",
+    "build:cloudflare": "mdorigin build cloudflare --root ./dist/content --config ./dist/content/mdorigin.config.json --search ./dist/search --out ./dist/cloudflare && node check-template-bundle.mjs",
+    "check:templates": "node check-template-bundle.mjs",
+    "check:content": "python3 check-links.py --root ./dist/content",
     "check:blog": "python3 check-blog.py",
-    "check:directories": "python3 test-check-directories.py && python3 check-directories.py",
-    "build": "npm run sync:generated && npm run build:index && npm run check:blog && npm run check:directories && npm run build:search && npm run build:cloudflare",
+    "check:directories": "python3 test-check-directories.py && python3 check-directories.py --root ./dist/content",
+    "build": "npm run prepare:content && npm run build:index && npm run check:content && npm run check:blog && npm run check:directories && npm run build:search && npm run build:cloudflare",
     "deploy": "wrangler deploy --config ../wrangler.jsonc"
   },
   "devDependencies": {

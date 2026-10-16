@@ -642,6 +642,90 @@ async fn wake_hint_when_awake_running_is_coalesced() {
 }
 
 #[tokio::test]
+async fn ordinary_wake_hints_coalesce_across_sources_into_one_pending_check() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-live".into());
+        guard.current_run_abort = Some(CurrentRunAbortHandle {
+            run_id: "run-live".into(),
+            token: CancellationToken::new(),
+            reason: Arc::new(StdMutex::new("operator_aborted".into())),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    for index in 0..16 {
+        let mut hint = wake_hint_smoke();
+        hint.reason = format!("check durable sources {index}");
+        hint.source = (index % 2 == 0).then(|| format!("source-{index}"));
+        hint.resource = Some(format!("resource-{index}"));
+        hint.correlation_id = Some(format!("hint-{index}"));
+        hint.body = None;
+        assert_eq!(
+            runtime.submit_wake_hint(hint).await.unwrap(),
+            WakeDisposition::Coalesced
+        );
+    }
+
+    let state = runtime.agent_state().await.unwrap();
+    let pending = state.pending_wake_hint.unwrap();
+    assert_eq!(pending.reason, "check durable sources 15");
+    assert_eq!(pending.source, None);
+    assert_eq!(pending.resource.as_deref(), Some("resource-15"));
+    assert_eq!(state.pending, 0);
+    assert!(runtime
+        .storage()
+        .read_recent_messages(20)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        runtime
+            .storage()
+            .read_agent()
+            .unwrap()
+            .unwrap()
+            .pending_wake_hint,
+        Some(pending)
+    );
+
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.state.current_run_id = None;
+        guard.current_run_abort = None;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    runtime.emit_recovered_pending_wake_hint().await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.pending_wake_hint.is_none());
+    assert_eq!(state.pending, 1);
+    assert_eq!(
+        runtime
+            .storage()
+            .read_recent_messages(20)
+            .unwrap()
+            .iter()
+            .filter(|message| message.kind == MessageKind::SystemTick)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn wake_hint_recovers_stale_awake_running_projection_and_triggers() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

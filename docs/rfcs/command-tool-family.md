@@ -24,7 +24,6 @@ The intended public family center is:
 - `ExecCommand`
 - `TaskList`
 - `TaskStatus`
-- `TaskOutput`
 - `TaskInput`
 - `TaskStop`
 
@@ -39,7 +38,7 @@ described across several overlapping documents and surfaces:
 
 - `ExecCommand` starts shell execution
 - long-running non-interactive commands become `command_task`
-- `TaskList` / `TaskStatus` / `TaskOutput` / `TaskStop` inspect and control
+- `TaskList` / `TaskStatus` / `TaskStop` inspect and control
   runtime task state
 - interactive command continuation has its own pending design
 
@@ -156,18 +155,22 @@ the same task-like operational semantics:
 For the command family, `TaskStatus` is the metadata inspection path rather than
 the raw-output path.
 
-## 4. `TaskOutput`
+## 4. Output observation and completion
 
-`TaskOutput` should be the heavyweight output path for managed command
-execution.
+The former model-facing `TaskOutput` and CLI `holon task output` surfaces,
+including their `block`/`timeout_ms` current-turn short wait, are removed by
+[Agent output observation](agent-output-observation.md).
 
-Its role in the command family is:
+- Use `TaskStatus` for lifecycle and runtime-confirmed command file locations.
+- Read retained command files in bounded ranges; never infer paths. Capture may
+  retain a head/tail and rewrite at termination, so wait for a terminal task
+  before relying on a stable final log.
+- Use bounded `holon tail --agent <id> --include-progress` for agent progress,
+  not task-exclusive output. Tail does not consume results or wake the producer.
+- Use `WaitFor(wake=task_result, resource=<task_id>, delivery=...)` for completion
+  and result re-entry. File/stream EOF and an `end` receipt are not completion.
 
-- wait for completion when appropriate
-- retrieve stable output content
-- surface command-family output in a form suitable for later reasoning
-
-For the command family, this is the main content path after startup.
+The underlying HTTP task-output route and runtime result/capture services remain.
 
 Command output should still use Holon's shared tool result envelope. The command
 family owns only the inner `result` payload, including command disposition,
@@ -259,7 +262,6 @@ So the intended family spelling is:
 - `ExecCommand`
 - `TaskList`
 - `TaskStatus`
-- `TaskOutput`
 - `TaskInput`
 - `TaskStop`
 
@@ -311,7 +313,6 @@ Its center should be:
 - `ExecCommand`
 - `TaskList`
 - `TaskStatus`
-- `TaskOutput`
 - `TaskInput`
 - `TaskStop`
 

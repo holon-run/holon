@@ -578,23 +578,24 @@ impl RuntimeModelCatalog {
         &self,
         model_ref: &ModelRef,
     ) -> Option<&ResolvedProviderEndpointConfig> {
-        let model_endpoint = self
-            .built_in_catalog
-            .preferred_route_for_model(model_ref)
-            .map(|route| route.endpoint);
-        match model_endpoint {
-            // Model declares a specific non-default endpoint: find by (provider, endpoint)
-            Some(endpoint) => self
-                .provider_endpoints
-                .iter()
-                .find(|e| e.provider == model_ref.provider && e.endpoint == endpoint),
-            // Default endpoint or no catalog metadata: resolve the canonical
-            // default endpoint explicitly.
-            None => self.provider_endpoints.iter().find(|endpoint| {
-                endpoint.provider == model_ref.provider
-                    && endpoint.endpoint == ProviderEndpointId::default_endpoint()
-            }),
-        }
+        let route = self.preferred_model_route(model_ref);
+        self.provider_endpoints.iter().find(|endpoint| {
+            endpoint.provider == route.provider && endpoint.endpoint == route.endpoint
+        })
+    }
+
+    fn preferred_model_route(&self, model_ref: &ModelRef) -> ModelRouteRef {
+        let model_ref = self.built_in_catalog.canonicalize_model_ref(model_ref);
+        self.built_in_catalog
+            .preferred_route_for_model(&model_ref)
+            .unwrap_or_else(|| {
+                let endpoint = self
+                    .discovered_models
+                    .get(&model_ref)
+                    .and_then(|metadata| metadata.endpoint.clone())
+                    .unwrap_or_else(ProviderEndpointId::default_endpoint);
+                ModelRouteRef::new(model_ref.provider, endpoint, model_ref.model)
+            })
     }
 
     pub fn provider_chain(&self, model_override: Option<&ModelRouteRef>) -> Vec<ModelRouteRef> {
@@ -729,7 +730,7 @@ impl RuntimeModelCatalog {
                 .iter()
                 .any(|route| route.model_ref() == model.model_ref)
             {
-                routes.push(ModelRouteRef::from_legacy_model_ref(&model.model_ref));
+                routes.push(self.preferred_model_route(&model.model_ref));
             }
         }
         routes.sort_by_key(ModelRouteRef::as_string);
@@ -787,7 +788,7 @@ impl RuntimeModelCatalog {
         let mut discovered = self
             .discovered_models
             .keys()
-            .map(ModelRouteRef::from_legacy_model_ref)
+            .map(|model_ref| self.preferred_model_route(model_ref))
             .collect::<Vec<_>>();
         discovered.sort_by_key(ModelRouteRef::as_string);
         for model_ref in discovered {
@@ -949,9 +950,7 @@ fn deepseek_responses_runtime_config(default: &ProviderRuntimeConfig) -> Provide
         originator: None,
         reasoning_effort: default.reasoning_effort.clone(),
         context_management: Default::default(),
-        builtin_web_search: Some(
-            super::builtin_providers::deepseek_responses_builtin_web_search_config(),
-        ),
+        builtin_web_search: None,
     }
 }
 

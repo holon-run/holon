@@ -717,7 +717,7 @@ mod tests {
         let models = resolved_model_availability(&fixture.config);
         let codex = models
             .iter()
-            .find(|entry| entry.model == "openai-codex/gpt-5.4")
+            .find(|entry| entry.model == "openai-codex/gpt-6-sol")
             .expect("openai codex model entry");
 
         assert!(codex.provider_configured);

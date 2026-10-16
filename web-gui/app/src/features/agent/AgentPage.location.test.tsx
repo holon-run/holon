@@ -71,7 +71,9 @@ function bundle(): ConversationTimelineBundle {
 }
 
 const onRead = vi.fn(() => true);
-async function render(conversation: ConversationTimelineBundle) {
+async function render(conversation: ConversationTimelineBundle, overrides: {
+  parentAgentId?: string; parentTaskId?: string; inputDisabledReason?: string; promptError?: string;
+} = {}) {
   await act(async () => root.render(<AgentPage
     agent={{ id: "alpha", model: "model" } as AgentSummary} conversation={conversation}
     detail={null} sendingPrompt={false} modelCatalog={{ source: "fixture", options: [] }}
@@ -79,6 +81,7 @@ async function render(conversation: ConversationTimelineBundle) {
     onRefreshModels={vi.fn()} onSetModel={vi.fn()} onClearModel={vi.fn()}
     onRetrySync={vi.fn()} onSendPrompt={vi.fn()} onAbortCurrentRun={vi.fn()}
     onConversationRead={onRead} onOpenWorkItem={vi.fn()} onOpenTask={vi.fn()}
+    {...overrides}
   />));
   return host.querySelector<HTMLDivElement>(".message-list")!;
 }
@@ -138,6 +141,17 @@ afterEach(async () => {
 });
 
 describe("AgentPage reading-position lifecycle", () => {
+  it.each([undefined, "supervisor"])("keeps real composer status without a permanent input warning (parent=%s)", async (parentAgentId) => {
+    await render(bundle(), { parentAgentId, inputDisabledReason: "Stopped by operator" });
+    expect(host.querySelector(".composer-status[role=note]")).toBeNull();
+    expect(host.querySelector(".composer-status[role=status]")?.textContent).toBe("Stopped by operator");
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(true);
+    await render(bundle(), { parentAgentId, promptError: "Prompt admission failed" });
+    expect(host.querySelector(".composer-status[role=alert]")?.textContent).toBe("Prompt admission failed");
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(false);
+    expect(host.textContent).not.toContain("Messages go directly to this subagent");
+  });
+
   it("keeps the initial located source fixed through same-turn hydration without a view commit", async () => {
     const list = await render(bundle());
     const target = host.querySelector<HTMLElement>('[data-conversation-anchor="brief:target"]')!;

@@ -60,11 +60,12 @@ import {
   useRuntimeStore,
 } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
+import { useAgentAccess, type AgentAccessStatus } from "../runtime/useAgentAccess";
 import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
-import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
+import { pathForRoute, pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
   { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
@@ -146,7 +147,17 @@ export function App() {
   const restoreRightPanelView = useRuntimeStore((state) => state.restoreRightPanelView);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
-  const selectedAgent = useRuntimeStore(selectSelectedAgent);
+  const rosterAgent = useRuntimeStore(selectSelectedAgent);
+  const incarnationParam = new URLSearchParams(window.location.search).get("incarnation");
+  const expectedIncarnation = incarnationParam === null ? undefined
+    : /^\d+$/.test(incarnationParam) && Number.isSafeInteger(Number(incarnationParam)) && Number(incarnationParam) > 0
+      ? Number(incarnationParam) : -1;
+  const agentAccess = useAgentAccess(route === "agent" ? selectedAgentId : undefined, expectedIncarnation);
+  const selectedAgent = route === "agent"
+    ? agentAccess.agent && rosterAgent?.id === agentAccess.agent.id && rosterAgent.incarnation === agentAccess.agent.incarnation
+      ? { ...rosterAgent, acceptsInput: agentAccess.agent.acceptsInput, inputDisabledReason: agentAccess.agent.inputDisabledReason }
+      : agentAccess.agent
+    : rosterAgent;
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const briefReadStateByAgentId = useRuntimeStore((state) => state.briefReadStateByAgentId);
   const discoveryFreshness = useRuntimeStore((state) => state.discovery.freshness);
@@ -260,15 +271,16 @@ export function App() {
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId);
   const conversationSession = useConversationSession(
-    route === "agent" ? activeAgentId : undefined,
+    route === "agent" && agentAccess.status === "available" && agentAccess.agent?.incarnation !== undefined ? activeAgentId : undefined,
     route === "agent" && agentNavigation && agentNavigation.agentId === activeAgentId ? agentNavigation.navigation : undefined,
+    agentAccess.agent?.incarnation,
   );
   const markSelectedAgentConversationRead = useCallback(() => {
     if (!activeAgentId || panelLayout.full || !conversationSession.conversationReady) return false;
     // Called only by a physically visible latest viewport, never by locating
     // or completing a page fetch. Joined history can now use the normal gate.
     if (conversationSession.scopeKey) setConversationNavigationActive(conversationSession.scopeKey, false);
-    markAgentConversationRead(activeAgentId);
+    markAgentConversationRead(activeAgentId, conversationSession.scopeKey ?? undefined);
     return true;
   }, [
     activeAgentId,
@@ -277,7 +289,7 @@ export function App() {
     conversationSession.conversationReady,
     conversationSession.scopeKey,
   ]);
-  const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
+  const activeAgent = selectedAgent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
@@ -431,16 +443,6 @@ export function App() {
       disableDeveloperDiagnosticsUi();
     }
   }, [developerDiagnosticsEnabled, disableDeveloperDiagnosticsUi, selectedAgentId]);
-
-  // Redirect to dashboard when the user opens a non-existent agent (e.g. typed
-  // a stale URL). Wait for both bootstrap and agent-detail loading to finish
-  // so we don't redirect during initial load.
-  useEffect(() => {
-    if (route === "agent" && !loading && !bootstrap.connection.error && !activeAgent && !agentDetailLoading) {
-      setRoute("dashboard");
-      replaceBrowserRoute("dashboard");
-    }
-  }, [route, loading, bootstrap.connection.error, activeAgent, agentDetailLoading, setRoute]);
 
   function navigateRoute(nextRoute: RouteKey) {
     if (route === "search") searchRouteQuery.current = searchQueryForLocation(window.location);
@@ -813,6 +815,9 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
+            inputDisabledReason={activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
+            parentAgentId={agentAccess.parentAgentId}
+            parentTaskId={agentAccess.parentTaskId}
             conversation={
               conversationSession.scopeKey === null
                 ? undefined
@@ -876,7 +881,7 @@ export function App() {
             onSetModel={(model, reasoningEffort, serviceTier) => setAgentModel(activeAgent.id, model, reasoningEffort, serviceTier)}
             onClearModel={() => clearAgentModel(activeAgent.id)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
-            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments)}
+            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments, activeAgent.incarnation)}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
             onOpenWorkItem={(work) => {
@@ -889,7 +894,7 @@ export function App() {
             }}
           />
         ) : null}
-        {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
+        {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} status={agentAccess.status} error={agentAccess.error} parentAgentId={agentAccess.parentAgentId} onRetry={agentAccess.retry} /> : null}
         {route === "search" ? (
           <SearchPage
             agents={bootstrap.agents}
@@ -993,12 +998,12 @@ export function App() {
           width={panelLayout.width}
           onResize={panelLayout.resizePanel}
           agent={selectedAgent}
-          onControlAgent={async (action) => { await controlAgent(selectedAgent.id, action); }}
-          onDeleteAgent={async (cascade) => {
+          onControlAgent={rosterAgent?.id === selectedAgent.id ? async (action) => { await controlAgent(selectedAgent.id, action); } : undefined}
+          onDeleteAgent={rosterAgent?.id === selectedAgent.id ? async (cascade) => {
             await deleteAgent(selectedAgent.id, cascade);
             pushBrowserRoute("dashboard");
-          }}
-          onRenameAgent={async (name) => { await renameAgentAction(selectedAgent.id, name); }}
+          } : undefined}
+          onRenameAgent={rosterAgent?.id === selectedAgent.id ? async (name) => { await renameAgentAction(selectedAgent.id, name); } : undefined}
           connection={bootstrap.connection}
           skillCatalog={agentSkillCatalog}
           availableSkillCatalog={skillCatalog}
@@ -1284,17 +1289,19 @@ function browserWindowTitle(): string {
   return host ? `${APP_WINDOW_TITLE} · ${host}` : APP_WINDOW_TITLE;
 }
 
-function MissingAgentPage({ agentId, loading }: { agentId: string; loading: boolean }) {
+function MissingAgentPage({ agentId, status, error, parentAgentId, onRetry }: { agentId: string; status: AgentAccessStatus; error?: string; parentAgentId?: string; onRetry: () => void }) {
   const { t } = useTranslation();
   return (
     <section className="page agent-page" aria-label="Agent conversation">
       <div className="agent-workbench">
-        <section className="conversation-pane">
+        <section className="conversation-pane conversation-access-state" aria-live="polite" aria-busy={status === "loading"}>
           <EmptyState
             className="conversation-empty"
-            title={loading ? t("app.loadingAgent") : t("app.agentNotFound")}
-            description={agentId ? agentId : t("app.noAgentId")}
+            title={t(`agentAccess.${status}`)}
+            description={error ?? (agentId || t("app.noAgentId"))}
           />
+          {status !== "loading" ? <Button onClick={onRetry}>{t("common.refresh")}</Button> : null}
+          {parentAgentId ? <a href={pathForRoute("agent", parentAgentId)}>{t("agentAccess.backToParent")}</a> : null}
         </section>
       </div>
     </section>

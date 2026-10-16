@@ -38,10 +38,10 @@ import { createSessionProjectionState, reduceSessionProjection } from "./session
 import type { AgentSummary } from "./types";
 
 /** Seeds the conversation scope mirror the read-marker gate consumes. */
-function seedReadyConversationScope(agentId: string, gate: { navigationActive?: boolean; browsing?: boolean } = {}): void {
+function seedReadyConversationScope(agentId: string, gate: { navigationActive?: boolean; browsing?: boolean } = {}, scopeKey?: string): void {
   useConversationScopeStore.setState({
     scopes: {
-      [resolveConversationScopeKey("local", agentId, useRuntimeStore.getState().currentUser)]: {
+      [scopeKey ?? resolveConversationScopeKey("local", agentId, useRuntimeStore.getState().currentUser)]: {
         status: { kind: "ready" },
         view: { scope: {}, reset_reason: null } as ConversationStateView,
         displayView: null,
@@ -1232,7 +1232,7 @@ describe("server brief read state", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/brief-read-cursor"))).toBe(false);
   });
 
-  it("does not optimistically clear unread state while hydration blocks the read gate", async () => {
+  it.each([undefined, 7])("gates reads and retries on the displayed scope (incarnation %s)", async (incarnation) => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/agents/brief-read-states")) {
@@ -1263,7 +1263,8 @@ describe("server brief read state", () => {
         freshness: "fresh",
       },
     });
-    seedReadyConversationScope("agent-a");
+    const scopeKey = resolveConversationScopeKey("local", "agent-a", useRuntimeStore.getState().currentUser, incarnation);
+    seedReadyConversationScope("agent-a", {}, scopeKey);
     vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
       readyThroughSeq: 1,
       ingestedThroughSeq: 3,
@@ -1272,7 +1273,7 @@ describe("server brief read state", () => {
     });
     vi.stubGlobal("document", { visibilityState: "visible" });
 
-    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    useRuntimeStore.getState().markAgentConversationRead("agent-a", scopeKey);
     await Promise.resolve();
 
     expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({

@@ -53,10 +53,8 @@ When they all live under one public task entry point, several things happen:
 
 - narrow the public meaning of task-oriented tools
 - reduce overload in `CreateTask`
-- make `TaskList` / `TaskStatus` / `TaskOutput` / `TaskStop` center on the cases
-- make `TaskList` / `TaskStatus` / `TaskOutput` / `TaskStop` center on the
-  cases
-  where task control is most natural
+- make `TaskList` / `TaskStatus` / `TaskStop` center on the
+  cases where task control is most natural
 - separate task semantics from agent-plane and waiting-plane semantics
 
 ## Non-goals
@@ -108,9 +106,7 @@ The intended public direction is:
 - `ExecCommand` starts command execution and returns a task handle when
   execution becomes managed
 - long-running command execution becomes managed task state
-- `TaskList` / `TaskStatus` / `TaskOutput` / `TaskStop` primarily inspect and
-  control that execution
-- `TaskList` / `TaskStatus` / `TaskOutput` / `TaskStop` / `TaskInput`
+- `TaskList` / `TaskStatus` / `TaskStop` / `TaskInput`
   primarily inspect and control that managed execution
 
 Meanwhile:
@@ -148,9 +144,16 @@ receipt is typed by the `disposition` discriminant: direct completion uses
 `disposition = promoted_to_task` and guarantees `task_handle` is present.
 For `SpawnAgent(private_child)`, the handle is a parent-supervision handle and
 is background by default; supervision does not imply parent scheduler blocking.
-`TaskStatus`, `TaskOutput`, `TaskStop`, and `TaskInput` still accept the
+`TaskStatus`, `TaskStop`, and `TaskInput` still accept the
 contained `task_id`; the wrapper exists to make the returned execution receipt
 self-describing.
+
+Output observation follows [Agent output observation](agent-output-observation.md):
+read runtime-confirmed command files in bounded ranges, observe agent-scoped
+progress with bounded `holon tail --agent`, and use `WaitFor(wake=task_result,
+resource=<task_id>, delivery=...)` for completion/re-entry. The former
+`TaskOutput` / `holon task output` short wait is removed, not replaced by tail.
+The HTTP output route and runtime capture/result services remain.
 
 This does not require `Task` to become shell-only as an internal truth. It
 only requires the public surface to stop pretending that all asynchronous

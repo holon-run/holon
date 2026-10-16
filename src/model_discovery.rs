@@ -866,19 +866,47 @@ impl OpenCodeGoModel {
     fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
         let id = self.id.trim();
         let endpoint = match id {
-            "deepseek-v4-pro" | "deepseek-v4-flash" | "glm-5.2" | "glm-5.1" | "kimi-k2.7-code"
-            | "kimi-k2.6" | "mimo-v2.5-pro" | "mimo-v2.5" => None,
-            "minimax-m3" | "minimax-m2.7" | "minimax-m2.5" | "qwen3.7-max" | "qwen3.7-plus"
-            | "qwen3.6-plus" => {
+            "deepseek-v4-pro"
+            | "deepseek-v4-flash"
+            | "deepseek-v4.1-flash"
+            | "glm-5.3"
+            | "glm-5.3-flash"
+            | "glm-5.2"
+            | "glm-5.1"
+            | "kimi-k3"
+            | "kimi-k2.7-code"
+            | "kimi-k2.6"
+            | "longcat-2.0"
+            | "longcat-2.5-preview-free"
+            | "mimo-v2.6-pro"
+            | "mimo-v2.6-flash"
+            | "mimo-v2.5-pro"
+            | "mimo-v2.5"
+            | "hy4-preview"
+            | "hy3"
+            | "space-bunny"
+            | "step-5-preview-free"
+            | "cat-jam-free" => None,
+            "claude-haiku-5-5" | "minimax-m3" | "minimax-m2.7" | "minimax-m2.5" | "qwen3.8-max"
+            | "qwen3.8-flash" | "qwen3.7-max" | "qwen3.7-plus" | "qwen3.6-plus" => {
                 Some(ProviderEndpointId::parse("messages").expect("valid OpenCode Go endpoint id"))
             }
+            "grok-4.7"
+            | "grok-4.6"
+            | "gpt-6-luna"
+            | "gpt-5.6-luna"
+            | "muse-spark-1.3-contributor"
+            | "muse-spark-1.2-contributor" => {
+                Some(ProviderEndpointId::parse("responses").expect("valid OpenCode Go endpoint id"))
+            }
+            // The official Gemini route uses Google's protocol, not OpenAI chat.
             _ => return None,
         };
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
             display_name: id.to_string(),
             description:
-                "Remote discovered OpenCode Go route confirmed by the official endpoint table."
+                "Remote discovered OpenCode Go route from the official endpoint table or retained legacy mapping."
                     .to_string(),
             context_window_tokens: None,
             effective_context_window_percent: 95,
@@ -1731,7 +1759,7 @@ mod tests {
             route_provider: ProviderId::parse("opencode-go").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
             transport: crate::config::ProviderTransportKind::OpenAiChatCompletions,
-            base_url: "https://opencode.ai/zen/go/v1".into(),
+            base_url: "https://opencode.ai/inference/go/openai/v1".into(),
             auth: crate::config::ProviderAuthConfig {
                 source: crate::config::CredentialSource::Env,
                 kind: crate::config::CredentialKind::ApiKey,
@@ -2259,49 +2287,101 @@ mod tests {
 
     #[test]
     fn maps_opencode_go_models_to_the_published_transport_endpoints() {
-        let payload: OpenCodeGoModelsResponse = serde_json::from_str(
-            r#"{"data":[
-                {"id":"minimax-m3"},
-                {"id":"kimi-k2.7-code"},
-                {"id":"qwen3.7-plus"},
-                {"id":"glm-5"},
-                {"id":"kimi-k2.5"},
-                {"id":" "}
-            ]}"#,
-        )
-        .unwrap();
-
-        let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
-        assert_eq!(
-            models
-                .iter()
-                .map(|model| model.model_ref.model.as_str())
-                .collect::<Vec<_>>(),
-            ["kimi-k2.7-code", "minimax-m3", "qwen3.7-plus"]
-        );
-        assert_eq!(
-            models
-                .iter()
-                .find(|model| model.model_ref.model == "kimi-k2.7-code")
-                .unwrap()
-                .endpoint,
-            None
-        );
-        for model in ["minimax-m3", "qwen3.7-plus"] {
-            assert_eq!(
-                models
-                    .iter()
-                    .find(|metadata| metadata.model_ref.model == model)
-                    .unwrap()
-                    .endpoint
-                    .as_ref()
-                    .map(ProviderEndpointId::as_str),
-                Some("messages")
-            );
-        }
-        assert!(models
+        let routes = [
+            (
+                None,
+                vec![
+                    "deepseek-v4.1-flash",
+                    "deepseek-v4-pro",
+                    "deepseek-v4-flash",
+                    "glm-5.3-flash",
+                    "glm-5.3",
+                    "glm-5.2",
+                    "glm-5.1",
+                    "kimi-k3",
+                    "kimi-k2.7-code",
+                    "kimi-k2.6",
+                    "longcat-2.0",
+                    "longcat-2.5-preview-free",
+                    "mimo-v2.6-flash",
+                    "mimo-v2.6-pro",
+                    "mimo-v2.5",
+                    "mimo-v2.5-pro",
+                    "hy4-preview",
+                    "hy3",
+                    "space-bunny",
+                    "step-5-preview-free",
+                    "cat-jam-free",
+                ],
+            ),
+            (
+                Some("messages"),
+                vec![
+                    "claude-haiku-5-5",
+                    "minimax-m3",
+                    "minimax-m2.7",
+                    "minimax-m2.5",
+                    "qwen3.8-max",
+                    "qwen3.8-flash",
+                    "qwen3.7-plus",
+                    "qwen3.7-max",
+                    "qwen3.6-plus",
+                ],
+            ),
+            (
+                Some("responses"),
+                vec![
+                    "grok-4.7",
+                    "grok-4.6",
+                    "gpt-6-luna",
+                    "gpt-5.6-luna",
+                    "muse-spark-1.3-contributor",
+                    "muse-spark-1.2-contributor",
+                ],
+            ),
+        ];
+        let mut data = routes
             .iter()
-            .all(|model| model.source == ModelMetadataSource::RemoteDiscovered));
+            .flat_map(|(_, ids)| ids)
+            .map(|id| serde_json::json!({"id": id}))
+            .collect::<Vec<_>>();
+        for id in [
+            "gemini-4-argon-contributor",
+            "omen-alpha",
+            "glm-5",
+            "kimi-k2.5",
+            " ",
+        ] {
+            data.push(serde_json::json!({"id": id}));
+        }
+        let payload: OpenCodeGoModelsResponse =
+            serde_json::from_value(serde_json::json!({"data": data})).unwrap();
+        let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
+        assert_eq!(models.len(), 36);
+        assert!(models
+            .windows(2)
+            .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));
+        for (endpoint, ids) in routes {
+            for id in ids {
+                assert_eq!(
+                    models
+                        .iter()
+                        .find(|metadata| metadata.model_ref.model == id)
+                        .unwrap()
+                        .endpoint
+                        .as_ref()
+                        .map(ProviderEndpointId::as_str),
+                    endpoint,
+                    "{id}"
+                );
+            }
+        }
+        assert!(models.iter().all(|model| {
+            model.source == ModelMetadataSource::RemoteDiscovered
+                && model.context_window_tokens.is_none()
+                && model.max_output_tokens_upper_limit.is_none()
+                && model.capabilities == ModelCapabilityFlags::default()
+        }));
     }
 
     #[test]
@@ -2503,7 +2583,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_go_discovery_is_public_and_uses_the_openai_models_endpoint() {
+    fn opencode_go_discovery_is_public_and_separate_from_inference() {
         let provider = opencode_go_provider();
         let cache = ModelDiscoveryCacheFile::default();
         let status =
@@ -2519,7 +2599,7 @@ mod tests {
         ));
         assert_eq!(
             provider_models_url(&provider).unwrap(),
-            "https://opencode.ai/zen/go/v1/models"
+            "https://opencode.ai/inference/go/v1/models"
         );
     }
 

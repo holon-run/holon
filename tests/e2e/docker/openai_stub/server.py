@@ -765,17 +765,11 @@ class Scenario:
                 self.markers.get(f"{prefix}_complete_b", f"{prefix}-complete-b"),
             )
         if self.phase == 8:
-            self.phase += 1
-            return 200, response(
-                [text_item("Completed deterministic interject WorkItem.")],
-                f"resp_{prefix}_interject_complete",
-            )
-        if self.phase == 9:
             return self.call(
                 "GetWorkItem",
                 {"work_item_id": self.work_ids[0], "include_todo_list": True},
             )
-        if self.phase == 10:
+        if self.phase == 9:
             return self.call(
                 "UpdateWorkItem",
                 {
@@ -786,7 +780,7 @@ class Scenario:
                     ],
                 },
             )
-        if self.phase == 11:
+        if self.phase == 10:
             return self.call(
                 "CompleteWorkItem",
                 {"work_item_id": self.work_ids[0]},
@@ -1051,7 +1045,7 @@ class Scenario:
             "scheduler-external": 6,
             "scheduler-operator": 6,
             "scheduler-concurrent": 10,
-            "scheduler-interject": 12,
+            "scheduler-interject": 11,
             "scheduler-compaction": 9,
             "scheduler-worktree": 11,
             "scheduler-spawn": 6,

@@ -40,6 +40,13 @@ Holon 是一个无头（Headless）Agent 运行时，支持超出单次聊天会
 
 任务跟踪某次具体的执行过程，例如后台命令或委托调用。其状态与输出为工作项目标提供事实证据。测试命令执行完成，并不会自动关闭创建该任务的工作项。
 
+任务生命周期独立于 Agent 面向用户的回答。你可以：
+- 查看状态（`TaskStatus`）
+- 从运行时确认的命令文件路径有界读取，或用有界的 `holon tail --agent <id> --include-progress` 观测 Agent 进度
+- 等待完成与结果重入（`WaitFor(wake=task_result, resource=<task_id>, delivery=...)`）；观测/EOF 不等于任务完成
+- 发送延续输入（`TaskInput`）
+- 显式停止（`TaskStop`）
+
 ### 队列与唤醒
 
 消息与事件让运行时能够合理调度 Agent。已登记的等待记录明确说明了 Agent 期望的后续条件。单纯在回复中提及或在计划中写下提醒，并不会在系统中建立等待。详见[事件、等待与唤醒](./events-and-waits.md)。

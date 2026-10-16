@@ -8,8 +8,7 @@
 
 use crate::tool::names as tn;
 use crate::types::{
-    EnqueueResult, GenerateImageResult, TaskInputResult, TaskOutputResult, TaskStatusResult,
-    TaskStopResult,
+    EnqueueResult, GenerateImageResult, TaskInputResult, TaskStatusResult, TaskStopResult,
 };
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -128,7 +127,6 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::SEND_AGENT_MESSAGE => "AgentMessageDeliveryReceipt",
         tn::TASK_INPUT => "TaskInputResult",
         tn::LIST_TASKS => "ListTasksResult",
-        tn::TASK_OUTPUT => "TaskOutputResult",
         tn::TASK_STATUS => "TaskStatusResult",
         tn::TASK_STOP => "TaskStopResult",
         tn::SWITCH_WORKSPACE => "SwitchWorkspaceResult",
@@ -156,7 +154,6 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
             schema::tool_result_schema::<crate::types::AgentMessageDeliveryReceipt>()?
         }
         tn::TASK_INPUT => schema::tool_result_schema::<TaskInputResult>()?,
-        tn::TASK_OUTPUT => schema::tool_result_schema::<TaskOutputResult>()?,
         tn::TASK_STATUS => schema::tool_result_schema::<TaskStatusResult>()?,
         tn::TASK_STOP => schema::tool_result_schema::<TaskStopResult>()?,
         _ => return Ok(None),
@@ -178,7 +175,6 @@ fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
         | tn::EXEC_COMMAND_BATCH
         | tn::TASK_INPUT
         | tn::LIST_TASKS
-        | tn::TASK_OUTPUT
         | tn::TASK_STATUS
         | tn::TASK_STOP => {
             vec!["CLI task/process wrappers", "HTTP control-plane task APIs"]

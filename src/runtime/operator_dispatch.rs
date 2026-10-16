@@ -5,6 +5,22 @@ use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
 use crate::types::ExecutionAdmissionProvenance;
 
+pub(super) fn idle_input_available_bytes(built: &EffectivePrompt) -> usize {
+    let non_input_bytes = built
+        .context_sections
+        .iter()
+        .filter(|section| section.name != "current_input")
+        .map(|section| crate::prompt::render_section(section).len() + 2)
+        .sum::<usize>();
+    // The planner has already reserved request-scoped runtime time.
+    built
+        .context_plan_evidence
+        .total_budget_estimated_tokens
+        .saturating_mul(4)
+        .saturating_sub(non_input_bytes)
+        .saturating_sub("[current_input]\n".len())
+}
+
 fn record_operator_span(
     parent: Option<&crate::observability::TraceContext>,
     name: &'static str,
@@ -177,7 +193,12 @@ impl RuntimeHandle {
             .latest(&default_external_ingress.external_trigger_id)?;
         let context_config = self.current_context_config().await;
 
-        let built = {
+        let live_recovered = Box::pin(self.recover_interrupted_live_inputs(message)).await?;
+        // Recovery restores the admitted snapshot; it must not select a new
+        // idle batch or reapply the per-batch limit to cumulative live evidence.
+        let mut idle_results_checked = live_recovered;
+        let mut idle_batch_checked = live_recovered;
+        let built = loop {
             let mut guard = self.inner.agent.lock().await;
             let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
             if agent_changed {
@@ -186,7 +207,7 @@ impl RuntimeHandle {
             let state = guard.state.clone();
             drop(guard);
             let (provider, available_tools, apply_patch_surface, _, _) = self
-                .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
+                .provider_tool_selection_for_turn(model_selection.fallback_model())
                 .await?;
             let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
@@ -200,23 +221,41 @@ impl RuntimeHandle {
             let skills = self
                 .skills_runtime_view_for_state(&state, &identity)
                 .await?;
-            build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
-                &self.inner.storage,
-                &state,
-                &execution,
-                message,
-                &context_config,
-                &execution.execution_root,
-                self.agent_home().as_path(),
-                &identity,
-                loaded_agents_md,
-                loaded_agent_memory,
-                &skills,
-                &prompt_tools,
-                apply_patch_surface,
-                continuation_resolution,
-                default_external_ingress.as_ref(),
-            )?
+            let built =
+                build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
+                    &self.inner.storage,
+                    &state,
+                    &execution,
+                    message,
+                    &context_config,
+                    &execution.execution_root,
+                    self.agent_home().as_path(),
+                    &identity,
+                    loaded_agents_md,
+                    loaded_agent_memory,
+                    &skills,
+                    &prompt_tools,
+                    apply_patch_surface,
+                    continuation_resolution,
+                    default_external_ingress.as_ref(),
+                )?;
+            if !idle_results_checked || !idle_batch_checked {
+                // Reserve the already planned non-input context before claiming
+                // followers. Rebuild once from the durable input evidence.
+                let available_bytes = idle_input_available_bytes(&built);
+                // Keep admission state off the already large turn future's stack.
+                if !idle_results_checked {
+                    idle_results_checked = true;
+                    if Box::pin(self.admit_idle_task_results(message, available_bytes)).await? {
+                        continue;
+                    }
+                }
+                idle_batch_checked = true;
+                if Box::pin(self.attach_idle_sender_inputs(message, available_bytes)).await? {
+                    continue;
+                }
+            }
+            break built;
         };
         let context_build_ms = context_build_started.elapsed().as_millis() as u64;
         let (turn_index, run_id) = {
@@ -426,30 +465,25 @@ impl RuntimeHandle {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn filtered_tool_specs(
-        &self,
-        identity: &AgentIdentityView,
-    ) -> Result<Vec<crate::tool::ToolSpec>> {
-        self.filtered_tool_specs_for_apply_patch_surface(
-            identity,
-            ApplyPatchSurface::UnifiedDiffJson,
-        )
+    pub(super) async fn filtered_tool_specs(&self) -> Result<Vec<crate::tool::ToolSpec>> {
+        self.filtered_tool_specs_for_apply_patch_surface(ApplyPatchSurface::UnifiedDiffJson)
+            .await
     }
 
-    fn filtered_tool_specs_for_apply_patch_surface(
+    async fn filtered_tool_specs_for_apply_patch_surface(
         &self,
-        identity: &AgentIdentityView,
         apply_patch_surface: ApplyPatchSurface,
     ) -> Result<Vec<crate::tool::ToolSpec>> {
+        let capability_policy = self.agent_capability_policy().await?;
         Ok(self
             .inner
             .tools
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
             .into_iter()
             .filter(|(family, _)| {
-                identity
-                    .profile_preset
-                    .allows_tool_capability_family(*family)
+                capability_policy
+                    .as_ref()
+                    .is_none_or(|policy| policy.allows(*family))
             })
             .filter(|(_, tool)| {
                 tool.name != crate::tool::names::X_SEARCH || self.x_search_config().is_some()
@@ -497,7 +531,7 @@ impl RuntimeHandle {
             .external_triggers()
             .latest(&default_external_ingress.external_trigger_id)?;
         let (provider, available_tools, apply_patch_surface, _, _) =
-            self.provider_tool_selection(&identity).await?;
+            self.provider_tool_selection().await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
@@ -620,7 +654,6 @@ impl RuntimeHandle {
 
     pub(super) async fn provider_tool_selection(
         &self,
-        identity: &AgentIdentityView,
     ) -> Result<(
         Arc<dyn AgentProvider>,
         Vec<ToolSpec>,
@@ -628,12 +661,11 @@ impl RuntimeHandle {
         Option<ProviderNativeWebSearchRequest>,
         BuiltinWebSearchSelectionDiagnostics,
     )> {
-        self.provider_tool_selection_for_turn(identity, None).await
+        self.provider_tool_selection_for_turn(None).await
     }
 
     pub(super) async fn provider_tool_selection_for_turn(
         &self,
-        identity: &AgentIdentityView,
         fallback_model: Option<&ModelRouteRef>,
     ) -> Result<(
         Arc<dyn AgentProvider>,
@@ -656,7 +688,8 @@ impl RuntimeHandle {
             self.apply_patch_surface_for_turn(&guard.state, fallback_model)
         };
         let available_tools = filter_native_web_search_tools(
-            self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
+            self.filtered_tool_specs_for_apply_patch_surface(apply_patch_surface)
+                .await?,
             native_web_search.is_some(),
         );
         Ok((

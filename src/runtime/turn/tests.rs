@@ -1198,6 +1198,13 @@ fn build_turn_local_projection_minimum_projection_can_hit_exact_budget() {
     let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
     )];
+    minimum_viable_conversation.extend(
+        rounds[..2]
+            .iter()
+            .flat_map(|round| &round.follow_up_user_texts)
+            .cloned()
+            .map(ConversationMessage::UserText),
+    );
     minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
@@ -1239,6 +1246,15 @@ fn build_turn_local_projection_minimum_projection_can_hit_exact_budget() {
     assert_eq!(
         compaction.projected_estimated_tokens,
         minimum_projection_estimated_tokens
+    );
+    assert_eq!(
+        projection
+            .conversation
+            .iter()
+            .filter(|message| matches!(message, ConversationMessage::UserText(text) if text == "continue"))
+            .count(),
+        3,
+        "prefix and exact-tail follow-ups must all remain"
     );
     assert!(compaction.strict_fallback_applied);
 }
@@ -1688,6 +1704,13 @@ fn build_turn_local_projection_tool_overhead_preserves_exact_tail() {
     let mut minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
         prompt_frame.context_blocks.clone(),
     )];
+    minimum_viable_conversation.extend(
+        rounds[..2]
+            .iter()
+            .flat_map(|round| &round.follow_up_user_texts)
+            .cloned()
+            .map(ConversationMessage::UserText),
+    );
     minimum_viable_conversation.extend(exact_round_messages(&rounds[2]));
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
@@ -1716,6 +1739,15 @@ fn build_turn_local_projection_tool_overhead_preserves_exact_tail() {
     assert_eq!(
         compaction.compacted_rounds + compaction.exact_tail_rounds,
         rounds.len()
+    );
+    assert_eq!(
+        projection
+            .conversation
+            .iter()
+            .filter(|message| matches!(message, ConversationMessage::UserText(text) if text == "continue"))
+            .count(),
+        2,
+        "prefix and exact-tail follow-ups must all remain"
     );
 }
 

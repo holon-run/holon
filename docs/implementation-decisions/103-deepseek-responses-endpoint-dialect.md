@@ -11,7 +11,7 @@ The Responses route uses an endpoint-specific contract:
 - complete conversation history on every request
 - no `previous_response_id` continuation
 - no provider remote compaction
-- no inherited Anthropic-native web-search capability
+- no built-in web-search capability
 
 Plain `reasoning_text` output is stored as `ModelBlock::ReasoningText`. It is
 replayed as a Responses reasoning item, but it is excluded from user-visible
@@ -23,6 +23,11 @@ DeepSeek's Responses endpoint is wire-compatible with only part of the OpenAI
 Responses contract. Treating it as the standard stateful dialect would make
 provider restart behavior depend on unavailable remote response state and
 would attempt unsupported remote compaction.
+
+The official Responses guide states that built-in tools, including `web_search`,
+are ignored. Only function tools and the `apply_patch` custom tool are supported,
+so this route must not advertise native web search. This restriction does not
+change the default Anthropic endpoint's independent capability declaration.
 
 Keeping the reasoning block durable preserves the exact history needed after a
 tool call or runtime restart without leaking provider reasoning into the

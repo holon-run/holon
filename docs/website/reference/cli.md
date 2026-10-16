@@ -36,7 +36,9 @@ replaying the initial text snapshot. Reset/gap requires a fresh snapshot.
 Reads select output types, not tasks: one agent's tasks may be mixed. They do not
 expose raw transcript, reasoning or tool trace, but are not an isolation or
 redaction guarantee. Reads never prompt/wake/stop the observed agent or consume
-task results. Use `TaskStatus` and `WaitFor(task_result)` for task completion.
+task results. EOF or an `end` receipt does not mean a task completed. Use
+`holon task status <TASK_ID>` (`TaskStatus` for models) for lifecycle and
+`WaitFor(wake=task_result, resource=<task_id>, delivery=...)` for result re-entry.
 The runtime must advertise `agents.conversation-read.v1` for opt-in observation;
 the existing default brief snapshot remains available without it.
 
@@ -86,7 +88,6 @@ holon (v0.50.0)
 │   ├── list     List tasks
 │   ├── run      Run a command as a managed background task
 │   ├── status   Show task lifecycle status
-│   ├── output   Read task output
 │   ├── input    Send text input to a task
 │   └── stop     Stop a task
 ├── work-item    Inspect and manage WorkItems
@@ -375,7 +376,6 @@ holon serve --access tunnel
 ```bash
 holon task run "Build project" --cmd "cargo build"
 holon task status <TASK_ID>
-holon task output <TASK_ID> --block --timeout-ms 30000
 holon task input <TASK_ID> --text "continue\n"
 holon task stop <TASK_ID>
 ```
@@ -384,6 +384,23 @@ Task lifecycle commands default to the configured default agent. Pass
 `--agent <AGENT>` to inspect or control a task owned by a different public
 agent. All task lifecycle commands print the corresponding JSON control-plane
 or read-model response.
+
+The former `holon task output` command and model tool `TaskOutput` are removed,
+including their `block`/`timeout_ms` current-turn short wait. They are not
+replaced by tail polling. Use the status response's runtime-confirmed command
+file path for bounded reads, for example:
+
+```bash
+dd if="$CONFIRMED_OUTPUT_PATH" bs=1 skip=0 count=8192 status=none
+```
+
+Set the variable to the exact returned path; never derive it from an agent home
+or task id. Capture can retain only a head/tail and rewrite the file at
+termination. EOF is not completion; wait for a terminal task before relying on
+a stable final log. Observe agent progress with bounded
+[`holon tail --agent`](#agent-output-observation), which does not promise
+task-exclusive output. The underlying HTTP task-output route and runtime
+capture/result services remain available.
 
 ### WorkItems
 

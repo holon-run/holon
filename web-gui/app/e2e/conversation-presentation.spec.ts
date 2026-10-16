@@ -469,7 +469,7 @@ test("operator interjections survive admission, folding, refresh and interrupted
   } } } });
   await update([{ ...first, revision: 1, state: "queued" }]);
   await page.goto(`/agents/${agentId}/conversation`);
-  await expect(page.getByText(first.preview, { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Pending inputs").getByText(first.preview, { exact: true })).toBeVisible();
   const live = page.locator('[data-turn-id="steered"]');
   current = { ...current, revision: 2, inputs: [source, first, second] };
   await update();

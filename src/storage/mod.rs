@@ -939,6 +939,14 @@ impl AppStorage {
             .len());
     }
 
+    pub fn latest_terminal_task_records_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<TaskRecord>> {
+        self.runtime_db.tasks().terminal_for_agent(agent_id, limit)
+    }
+
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db.tasks().latest(task_id);

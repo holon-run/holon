@@ -136,13 +136,23 @@ impl RuntimeHandle {
                 .as_ref()
                 .and_then(crate::wake_contract::agent_message_reply_reference)
             {
-                if self
+                let consumed = self
                     .inner
                     .runtime_db
                     .queue_entries()
                     .latest(reply_id)?
                     .is_some_and(|entry| entry.status == QueueEntryStatus::Processed)
-                {
+                    || self
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .reply_source_is_consumed(&record)?;
+                let recoverable = self
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .reply_source_is_recoverable(&record)?;
+                if consumed && !recoverable {
                     // Content was consumed by another execution owner. Preserve
                     // that distinct outcome instead of claiming caller admission.
                     self.inner
@@ -151,10 +161,11 @@ impl RuntimeHandle {
                         .settle_reply_consumed_elsewhere(&record.message_id, now)?;
                     continue;
                 }
-                // The delivery ledger and original message own reply recovery.
-                // A reference observation must not create a second model wake.
-                eligible = false;
-                reason = "awaiting_original_agent_reply_admission";
+                if !recoverable {
+                    // The original queue source still owns first delivery.
+                    eligible = false;
+                    reason = "awaiting_original_agent_reply_admission";
+                }
             }
             // Advance first: a crash or enqueue failure still leaves a bounded
             // retry, while an ineligible owner cannot create a hot loop.

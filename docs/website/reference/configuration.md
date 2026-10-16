@@ -175,6 +175,17 @@ requests, and native credential endpoints remain compatible. Trusted origins
 must be explicit `http://` or `https://` origins with an optional port;
 wildcard `*`, paths, queries, and forwarded proxy headers are not accepted.
 
+### Prompt Attachments
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `api.prompt.attachment_max_bytes` | integer | `67108864` | Maximum decoded size in bytes for each image or file attachment (64 MiB) |
+
+The prompt HTTP request body limit is derived as
+`max(32 MiB, 2 × api.prompt.attachment_max_bytes)` (128 MiB by default),
+allowing room for Base64 and JSON. Runtime reload applies changes to new
+requests; each in-flight request keeps one snapshot for both limits.
+
 ### Projection Gate
 
 | Key | Type | Default | Description |

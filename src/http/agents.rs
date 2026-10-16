@@ -330,11 +330,17 @@ pub async fn handshake(
             advertise_url: state.advertise_url.clone(),
         },
         limits: Some(HandshakeLimits {
-            prompt_body_max_bytes: super::CONTROL_PROMPT_BODY_LIMIT_BYTES as u64,
-            prompt_image_attachment_max_bytes:
-                super::control::MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
-            prompt_file_attachment_max_bytes:
-                super::control::MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
+            prompt_body_max_bytes: config.stored_config.api.prompt.body_max_bytes() as u64,
+            prompt_image_attachment_max_bytes: config
+                .stored_config
+                .api
+                .prompt
+                .attachment_max_bytes(),
+            prompt_file_attachment_max_bytes: config
+                .stored_config
+                .api
+                .prompt
+                .attachment_max_bytes(),
         }),
     }))
 }

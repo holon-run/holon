@@ -14,9 +14,9 @@ use crate::{
         AgentListModelSummary, AgentModelSource, AgentPostureProjection, AgentState, AgentStatus,
         AgentSummary, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot, ChildAgentPhase,
         ChildAgentSummary, ClosureDecision, ClosureOutcome, ExternalTriggerStateSnapshot,
-        RuntimeFailureSummary, RuntimePosture, TaskKind, TaskRecord, TaskStatus, TimerRecord,
-        TodoItem, TurnTerminalRecord, WaitingReason, WorkItemPlanStatus, WorkItemReadiness,
-        WorkItemSchedulingState, WorkItemState,
+        RuntimeFailureSummary, RuntimePosture, TaskKind, TaskRecord, TaskStatus, TaskTargetRef,
+        TimerRecord, TodoItem, TurnTerminalRecord, WaitingReason, WorkItemPlanStatus,
+        WorkItemReadiness, WorkItemSchedulingState, WorkItemState,
     },
     work_item_scheduling::{
         WorkItemCandidateClass, WorkItemFocus, WorkItemSchedulingProjection,
@@ -258,6 +258,24 @@ pub struct SlimTaskDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TaskTargetRef>,
+}
+
+/// Keep the original task-list fields while sharing the state/detail target contract.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TaskRecordDto {
+    #[serde(flatten)]
+    pub task: TaskRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<TaskTargetRef>,
+}
+
+impl From<TaskRecord> for TaskRecordDto {
+    fn from(task: TaskRecord) -> Self {
+        let target = task.target();
+        Self { task, target }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -415,6 +433,7 @@ impl From<&ChildAgentObservabilitySnapshot> for SlimChildObservabilityDto {
 
 impl From<TaskRecord> for SlimTaskDto {
     fn from(task: TaskRecord) -> Self {
+        let target = task.target();
         Self {
             id: task.id,
             agent_id: task.agent_id,
@@ -425,6 +444,7 @@ impl From<TaskRecord> for SlimTaskDto {
             parent_message_id: task.parent_message_id,
             work_item_id: task.work_item_id,
             summary: task.summary,
+            target,
         }
     }
 }
@@ -441,7 +461,9 @@ impl From<SlimTaskDto> for TaskRecord {
             parent_message_id: task.parent_message_id,
             work_item_id: task.work_item_id,
             summary: task.summary,
-            detail: None,
+            detail: task
+                .target
+                .map(|target| serde_json::json!({ "target": target })),
             recovery: None,
         }
     }

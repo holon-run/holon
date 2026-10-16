@@ -1,9 +1,29 @@
 use super::*;
-use crate::{daemon::RuntimeStatusResponse, runtime_db::RuntimeDbProtectionStatus};
+use crate::{
+    config::ApiPromptConfigFile, daemon::RuntimeStatusResponse,
+    runtime_db::RuntimeDbProtectionStatus,
+};
 use anyhow::Context as _;
 
-pub(crate) const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-pub(crate) const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) async fn prompt_body_limit(
+    State(state): State<Arc<AppState>>,
+    mut request: AxumRequest<Body>,
+    next: Next,
+) -> AxumResponse {
+    use tower::{Layer, ServiceExt};
+
+    let limits = state.host.config().stored_config.api.prompt.clone();
+    let body_max_bytes = limits.body_max_bytes();
+    request.extensions_mut().insert(limits);
+    match DefaultBodyLimit::max(body_max_bytes)
+        .layer(next)
+        .oneshot(request)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
+}
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
@@ -602,6 +622,7 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "api.cors.allow_credentials"
             | "api.cors.max_age_seconds"
             | "api.csrf.trusted_origins"
+            | "api.prompt.attachment_max_bytes"
             | "model.default"
             | "model.route_options"
             | "model.fallbacks"
@@ -1284,6 +1305,7 @@ pub async fn reset_callback(
 pub async fn control_prompt(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    axum::Extension(limits): axum::Extension<ApiPromptConfigFile>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<ControlPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
@@ -1291,7 +1313,7 @@ pub async fn control_prompt(
     let actor = control_actor(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent_for_external_ingress(&agent_id)
+        .get_agent_for_operator_prompt(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let client_request_id = request
@@ -1310,127 +1332,149 @@ pub async fn control_prompt(
         return Err(bad_request("client_request_id must not exceed 200 bytes"));
     }
     let work_item_id = request.work_item_id.clone().and_then(non_empty_opt);
+    let expected_incarnation = request.expected_incarnation;
     let semantic_content = serde_json::to_value(&request)
         .map_err(anyhow::Error::from)
         .map_err(error_response)?;
-    let materialized = control_prompt_text_with_attachments(&runtime.agent_home(), request)
-        .map_err(|err| bad_request(err.to_string()))?;
+    let materialized = control_prompt_text_with_attachments(
+        &runtime.agent_home(),
+        request,
+        limits.attachment_max_bytes(),
+    )
+    .map_err(|err| bad_request(err.to_string()))?;
     let text = materialized.text;
     let created_attachment_paths = materialized.created_paths;
     let admission_context = control_admission_context(&state);
 
-    if let Some(client_request_id) = client_request_id {
-        let caller_principal = actor.principal_id();
-        let preparation = crate::runtime::AgentMessageDeliveryService::prepare(
-            crate::types::AgentMessageSendRequest {
-                target_agent_id: agent_id.clone(),
-                content: MessageBody::Json {
-                    value: semantic_content,
-                },
-                client_idempotency_key: client_request_id.clone(),
-                correlation_id: None,
-                causation_id: None,
-                requested_priority: Some(Priority::Interject),
-                forward: false,
+    // Even without a client key, use canonical operator policy/lifecycle admission.
+    let delivery_key = client_request_id
+        .clone()
+        .unwrap_or_else(crate::ids::message_id);
+    let caller_principal = actor.principal_id();
+    let preparation = crate::runtime::AgentMessageDeliveryService::prepare(
+        crate::types::AgentMessageSendRequest {
+            target_agent_id: agent_id.clone(),
+            content: MessageBody::Json {
+                value: semantic_content,
             },
-            crate::types::AgentMessageCallerContext {
-                caller_principal,
-                caller_agent_id: None,
-                principal_kind: crate::types::AgentMessagePrincipalKind::Operator,
-                route: "operator_control".into(),
-                origin: actor.operator_origin(),
-                authority_class: AuthorityClass::OperatorInstruction,
-                delivery_surface: MessageDeliverySurface::HttpControlPrompt,
-                admission_context,
-                current_turn_id: None,
-                current_task_id: None,
-                current_work_item_id: None,
-                inherited_routing_context: None,
-            },
-        );
-        let mut prepared = match preparation {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                remove_materialized_control_prompt_attachments(&created_attachment_paths);
-                return Err(bad_request(error.to_string()));
-            }
-        };
-        prepared.message.kind = MessageKind::OperatorPrompt;
-        prepared.message.body = MessageBody::Text { text };
-        prepared.message.work_item_id = work_item_id;
-        prepared.message.metadata = Some(json!({
-            "control": true,
-            "client_request_id": client_request_id,
-        }));
-        let delivery = runtime
-            .agent_message_delivery_service()
-            .deliver(&prepared)
-            .await;
-        let receipt = match delivery {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                remove_materialized_control_prompt_attachments(&created_attachment_paths);
-                if error
-                    .downcast_ref::<crate::types::AgentMessageDeliveryError>()
-                    .is_some()
-                {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "ok": false,
-                            "code": "idempotency_conflict",
-                            "error": "client_request_id was reused with different prompt content",
-                            "retryable": false,
-                        })),
-                    ));
-                } else {
-                    return Err(error_response(error));
-                }
-            }
-        };
-        let message_id = receipt
-            .message_id
-            .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
-        return Ok(Json(EnqueueResponse {
-            ok: true,
-            agent_id,
-            message_id,
-            disposition: Some(if receipt.idempotent_replay {
-                "duplicate".into()
-            } else {
-                "accepted".into()
-            }),
-        }));
-    }
-
-    let message = InboundRequest {
-        agent_id: agent_id.clone(),
-        kind: MessageKind::OperatorPrompt,
-        priority: Priority::Interject,
-        origin: actor.operator_origin(),
-        authority_class: AuthorityClass::OperatorInstruction,
-        body: MessageBody::Text { text },
-        delivery_surface: MessageDeliverySurface::HttpControlPrompt,
-        admission_context,
-        work_item_id,
-        metadata: Some(json!({ "control": true })),
-        correlation_id: None,
-        causation_id: None,
-        trace_context: None,
-    }
-    .into_message();
-    let queued = match runtime.enqueue(message).await {
-        Ok(queued) => queued,
+            client_idempotency_key: delivery_key,
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: Some(Priority::Interject),
+            forward: false,
+            reply_context_id: None,
+        },
+        crate::types::AgentMessageCallerContext {
+            caller_principal,
+            caller_agent_id: None,
+            principal_kind: crate::types::AgentMessagePrincipalKind::Operator,
+            route: "operator_control".into(),
+            origin: actor.operator_origin(),
+            authority_class: AuthorityClass::OperatorInstruction,
+            delivery_surface: MessageDeliverySurface::HttpControlPrompt,
+            admission_context,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context: None,
+            routing_activation_id: None,
+        },
+    );
+    let mut prepared = match preparation {
+        Ok(prepared) => prepared,
         Err(error) => {
             remove_materialized_control_prompt_attachments(&created_attachment_paths);
-            return Err(error_response(error));
+            return Err(bad_request(error.to_string()));
         }
     };
+    prepared.message.kind = MessageKind::OperatorPrompt;
+    prepared.record.expected_incarnation = expected_incarnation;
+    prepared.message.body = MessageBody::Text { text };
+    prepared.message.work_item_id = work_item_id;
+    prepared.message.metadata = Some(json!({
+        "control": true,
+        "client_request_id": client_request_id,
+    }));
+    let delivery = runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await;
+    let receipt = match delivery {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            remove_materialized_control_prompt_attachments(&created_attachment_paths);
+            if let Some(crate::types::AgentMessageDeliveryError::StaleIncarnation {
+                expected_incarnation,
+                actual_incarnation,
+            }) = error.downcast_ref::<crate::types::AgentMessageDeliveryError>()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "code": "agent_incarnation_mismatch",
+                        "error": "target agent identity changed; reload the conversation",
+                        "expected_incarnation": expected_incarnation,
+                        "actual_incarnation": actual_incarnation,
+                        "retryable": false,
+                    })),
+                ));
+            } else if error
+                .downcast_ref::<crate::types::AgentMessageDeliveryError>()
+                .is_some()
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "code": "idempotency_conflict",
+                        "error": "client_request_id was reused with different prompt content",
+                        "retryable": false,
+                    })),
+                ));
+            } else {
+                return Err(error_response(error));
+            }
+        }
+    };
+    if receipt.outcome != crate::types::AgentMessageDeliveryOutcome::Accepted {
+        remove_materialized_control_prompt_attachments(&created_attachment_paths);
+        use crate::types::AgentMessageDeliveryRejectionCode as Rejection;
+        return Err(match receipt.rejection_code {
+            Some(Rejection::AgentStopped) => {
+                stopped_agent_conflict("target agent is stopped", &agent_id)
+            }
+            Some(Rejection::AgentDeleting) => agent_access_error(PublicAgentError::Deleting {
+                agent_id: agent_id.clone(),
+            }),
+            Some(Rejection::AgentDeleted) => agent_access_error(PublicAgentError::Deleted {
+                agent_id: agent_id.clone(),
+            }),
+            Some(Rejection::TargetNotFound) => not_found("target agent was not found"),
+            Some(Rejection::MessageNotAuthorized) => http_error(
+                StatusCode::FORBIDDEN,
+                HttpErrorEnvelope::new(
+                    "message_not_authorized",
+                    "operator input is denied by the target message policy",
+                ),
+            ),
+            _ => error_response(anyhow!("operator prompt admission rejected")),
+        });
+    }
+    let message_id = receipt
+        .message_id
+        .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
     Ok(Json(EnqueueResponse {
         ok: true,
         agent_id,
-        message_id: queued.id,
-        disposition: None,
+        message_id,
+        disposition: client_request_id.map(|_| {
+            if receipt.idempotent_replay {
+                "duplicate".into()
+            } else {
+                "accepted".into()
+            }
+        }),
     }))
 }
 
@@ -1443,6 +1487,7 @@ struct MaterializedControlPrompt {
 fn control_prompt_text_with_attachments(
     agent_home: &std::path::Path,
     request: ControlPromptRequest,
+    max_attachment_bytes: u64,
 ) -> Result<MaterializedControlPrompt> {
     if request.attachments.is_empty() {
         return Ok(MaterializedControlPrompt {
@@ -1471,7 +1516,7 @@ fn control_prompt_text_with_attachments(
                         "image",
                         position,
                         &data_base64,
-                        MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
+                        max_attachment_bytes,
                     )?;
                     let extension = image_extension_for_media_type(&media_type)
                         .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
@@ -1502,7 +1547,7 @@ fn control_prompt_text_with_attachments(
                         "file",
                         position,
                         &data_base64,
-                        MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
+                        max_attachment_bytes,
                     )?;
                     let extension = file_extension_for_attachment(name.as_deref(), &media_type);
                     let written = write_control_prompt_attachment(
@@ -1822,6 +1867,9 @@ mod tests {
         assert!(is_runtime_mutable_config_key("decision.model"));
         assert!(is_runtime_mutable_config_key("decision.local_onnx.preset"));
         assert!(is_runtime_mutable_config_key("api.csrf.trusted_origins"));
+        assert!(is_runtime_mutable_config_key(
+            "api.prompt.attachment_max_bytes"
+        ));
         assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 
@@ -1859,6 +1907,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: "look".into(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::Image(
                     ControlPromptImageAttachment {
@@ -1869,6 +1918,7 @@ mod tests {
                 )],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap()
         .text;
@@ -1890,6 +1940,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: "read this".into(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("report.pdf".into()),
@@ -1898,6 +1949,7 @@ mod tests {
                 })],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap()
         .text;
@@ -1940,6 +1992,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("empty.txt".into()),
@@ -1948,10 +2001,73 @@ mod tests {
                 })],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap_err();
 
         assert!(error.to_string().contains("file attachment 1 is empty"));
+    }
+
+    #[test]
+    fn prompt_attachments_honor_configured_limit_and_cleanup_on_failure() {
+        for kind in ["image", "file"] {
+            let attachment = |bytes: &[u8]| {
+                if kind == "image" {
+                    ControlPromptAttachment::Image(ControlPromptImageAttachment {
+                        name: Some("test.png".into()),
+                        media_type: "image/png".into(),
+                        data_base64: encoded(bytes),
+                    })
+                } else {
+                    ControlPromptAttachment::File(ControlPromptFileAttachment {
+                        name: Some("test.txt".into()),
+                        media_type: "text/plain".into(),
+                        data_base64: encoded(bytes),
+                    })
+                }
+            };
+            let request = |attachments| ControlPromptRequest {
+                text: String::new(),
+                expected_incarnation: None,
+                work_item_id: None,
+                attachments,
+                client_request_id: None,
+            };
+            let home = tempfile::tempdir().unwrap();
+            let accepted = control_prompt_text_with_attachments(
+                home.path(),
+                request(vec![attachment(b"abc")]),
+                3,
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&accepted.created_paths[0]).unwrap(), b"abc");
+            remove_materialized_control_prompt_attachments(&accepted.created_paths);
+
+            let error = control_prompt_text_with_attachments(
+                home.path(),
+                request(vec![attachment(b"abc"), attachment(b"abcd")]),
+                3,
+            )
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains(&format!("{kind} attachment 2 exceeds 3 bytes")));
+            assert!(inbox_files(home.path()).is_empty());
+        }
+    }
+
+    #[test]
+    fn prompt_attachment_default_accepts_64_mib_and_rejects_one_byte_more() {
+        let max_bytes = crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES;
+        for size in [max_bytes, max_bytes + 1] {
+            let data = encoded(&vec![b'x'; size as usize]);
+            let result = decode_control_prompt_attachment("file", 1, &data, max_bytes);
+            if size == max_bytes {
+                assert_eq!(result.unwrap().len() as u64, max_bytes);
+            } else {
+                assert!(result.unwrap_err().to_string().contains("exceeds"));
+            }
+        }
     }
 
     #[test]
@@ -1961,6 +2077,7 @@ mod tests {
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
+                expected_incarnation: None,
                 work_item_id: None,
                 attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("../../secret[name].md".into()),
@@ -1969,6 +2086,7 @@ mod tests {
                 })],
                 client_request_id: None,
             },
+            crate::config::DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES,
         )
         .unwrap();
 

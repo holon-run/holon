@@ -8,21 +8,41 @@ pub struct ToolExecutionArtifactContent {
     pub content: String,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TaskListQuery {
+    pub status: Option<TaskListStatus>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskListStatus {
+    Active,
+    Terminal,
+}
+
 pub async fn tasks(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<LimitQuery>,
+    Query(query): Query<TaskListQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
+    let tasks = match query.status.unwrap_or(TaskListStatus::Active) {
+        TaskListStatus::Active => storage.latest_active_task_records(query.limit.unwrap_or(50)),
+        TaskListStatus::Terminal => storage
+            .latest_terminal_task_records_for_agent(&agent_id, query.limit.unwrap_or(20).min(20)),
+    }
+    .map_err(error_response)?;
     Ok(Json(
-        storage
-            .latest_active_task_records(query.limit.unwrap_or(50))
-            .map_err(error_response)?,
+        tasks
+            .into_iter()
+            .map(crate::http_dto::TaskRecordDto::from)
+            .collect::<Vec<_>>(),
     ))
 }
 

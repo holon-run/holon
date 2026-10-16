@@ -6,8 +6,9 @@ order: 20
 
 # Documentation workflow
 
-The Holon website is a mdorigin content root under `docs/website/`. Source
-pages are Markdown files that can render as HTML or be fetched as Markdown.
+The Holon website sources live under `docs/website/`. Builds prepare an isolated
+mdorigin content root in `.tools/dist/content/`; source pages are Markdown files
+that can render as HTML or be fetched as Markdown.
 
 ## Edit content
 
@@ -65,20 +66,33 @@ immediately after that specific reference:
 Run the checks from the repository root:
 
 ```bash
-python3 docs/website/.tools/check-links.py
+npm --prefix docs/website/.tools run prepare:content
+npm --prefix docs/website/.tools run check:content
 python3 docs/website/.tools/test-check-contract-refs.py
 python3 docs/website/.tools/check-contract-refs.py
 ```
 
 Failures use `file:line:target` diagnostics so editors and CI logs can locate
-the declaration directly.
+the declaration directly. Links and navigation are checked together against the
+prepared content root, which includes generated routes.
 
 ## Preview locally
 
+Use Node.js 22 and Python 3.11 or newer. From the repository root:
+
 ```bash
-cd docs/website
-mdorigin dev --root .
+npm ci --prefix docs/website/.tools
+npm --prefix docs/website/.tools run dev
 ```
+
+`dev` prepares a startup snapshot and serves that generated content, not the
+source tree. After any website content (including ordinary Markdown),
+configuration, style, template, or display metadata change, restart the preview.
+For content-only edits, running
+`npm --prefix docs/website/.tools run prepare:content` separately refreshes the
+generated files; configuration and stylesheet changes require a restart because
+mdorigin loads them at startup. Source changes are not automatically copied;
+there is no source-tree watcher.
 
 ## Refresh indexes
 
@@ -86,7 +100,8 @@ Documentation landing pages use one managed catalog as the source of article
 links. Keep introductory prose and cross-section links outside it, but do not
 copy the catalog into the body or translate it as a second list. Translate each
 article's `title` and `summary`, then regenerate the index. Run
-`npm --prefix .tools run check:directories` from `docs/website` to check for duplicates.
+`npm --prefix .tools run check:directories` from `docs/website` after preparing
+content and building indexes to check the generated directory pages for duplicates.
 
 Directory pages may contain managed index blocks:
 
@@ -95,20 +110,48 @@ Directory pages may contain managed index blocks:
 <!-- INDEX:END -->
 ```
 
-Regenerate them with:
+Regenerate them in the isolated content root from `docs/website` with:
 
 ```bash
-mdorigin build index --root .
+npm --prefix .tools run prepare:content
+npm --prefix .tools run build:index
+npm --prefix .tools run check:directories
 ```
 
 ## Build deployable assets
 
+From `docs/website`:
+
 ```bash
-mdorigin build search --root . --out dist/search
-mdorigin build cloudflare --root . --search dist/search
+npm --prefix .tools run build
 ```
 
-The generated `dist/` directory is ignored and should not be committed.
+The build prepares content once, then builds directory indexes, checks generated
+links and directories, and builds search and Cloudflare assets from that same
+content root. Search and bundle outputs remain in `.tools/dist/search/` and
+`.tools/dist/cloudflare/`. The generated `.tools/dist/` tree is ignored; do not
+commit it or copy generated catalogs back into the source pages.
+
+## Template catalog
+
+The catalog reads repository-local `agent_templates/*/template.toml` and
+`skills.toml` files. `.tools/build-template-catalog.py` copies website content
+(excluding `.tools`) and generates the home-page selections, full catalog pages,
+and JSON assets in `.tools/dist/content/`. It works from any current directory.
+There is no network fetch or catalog API: each website build uses template data
+from the same Git commit SHA as its documentation.
+
+Keep categories, featured ranks, and optional Chinese display names and summaries
+in `template-display.json`; role contracts remain in the template files. Missing
+localized display text falls back to the template's English metadata. Templates
+without a display entry still appear in the full directory with a fallback
+category. Removing a featured template fails the build until its stale selection
+is removed or replaced in `template-display.json`.
+
+CI validates templates and generator tests, retains contract-reference and
+generated-copy checks, and checks all copied source and generated links and
+navigation against the actual content root. Pull requests build and upload the
+bundle but do not deploy.
 
 ## Generated pages and locales
 

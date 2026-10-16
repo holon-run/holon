@@ -55,7 +55,9 @@ use super::context_management::{
 };
 use super::projection::{
     build_round_estimated_tokens, build_turn_local_projection_with_time,
-    normalize_provider_attempt_timing, provider_attempt_model_state, TurnLocalProjectionOutcome,
+    estimate_prompt_blocks_tokens, estimate_prompt_frame_tokens, estimate_round_tokens,
+    estimate_tool_specs_tokens, normalize_provider_attempt_timing, provider_attempt_model_state,
+    TurnLocalProjectionOutcome,
 };
 use super::reminders::{build_turn_budget_warning, round_invalidates_checkpoint_anchor};
 use super::{
@@ -68,6 +70,23 @@ use crate::runtime::{
     combine_text_history, is_max_output_stop_reason, message_dispatch::message_text, scheduler,
     CurrentRunAborted, RuntimeHandle, WaitForWakeKind,
 };
+
+fn live_input_available_bytes(
+    prompt: &EffectivePrompt,
+    rounds: &[TurnRoundRecord],
+    tools: &[ToolSpec],
+    prompt_budget: usize,
+) -> usize {
+    // Reserve the complete un-compacted request, including request time,
+    // reminder and envelope overhead, before claiming a new source.
+    let frame = build_provider_prompt_frame(prompt);
+    let baseline = estimate_prompt_frame_tokens(&frame)
+        .saturating_add(estimate_prompt_blocks_tokens(&frame.context_blocks))
+        .saturating_add(rounds.iter().map(estimate_round_tokens).sum::<usize>())
+        .saturating_add(estimate_tool_specs_tokens(tools))
+        .saturating_add(1024);
+    prompt_budget.saturating_sub(baseline).saturating_mul(4)
+}
 
 enum OperatorInterjectionPlan {
     Admit,
@@ -865,12 +884,22 @@ impl RuntimeHandle {
         request: ProviderTurnRequest,
     ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
         if let Some(snapshot) = self.current_run_abort_token().await {
-            tokio::select! {
+            let result = tokio::select! {
                 result = provider.complete_turn_with_diagnostics(request) => result,
                 _ = snapshot.token.cancelled() => Err(CurrentRunAborted {
                     run_id: snapshot.run_id.clone(),
                     reason: snapshot.reason(),
                 }.into()),
+            };
+            // A provider can cancel the run and return Ready in the same poll.
+            if snapshot.token.is_cancelled() {
+                Err(CurrentRunAborted {
+                    run_id: snapshot.run_id.clone(),
+                    reason: snapshot.reason(),
+                }
+                .into())
+            } else {
+                result
             }
         } else {
             provider.complete_turn_with_diagnostics(request).await
@@ -1318,15 +1347,17 @@ impl RuntimeHandle {
         Ok(outcome)
     }
 
-    pub(crate) async fn run_agent_loop_deferred(
-        &self,
-        agent_id: &str,
+    pub(crate) fn run_agent_loop_deferred<'a>(
+        &'a self,
+        agent_id: &'a str,
         authority_class: AuthorityClass,
         effective_prompt: EffectivePrompt,
         model_selection: TurnModelSelection,
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
-    ) -> Result<AgentLoopOutcome> {
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<AgentLoopOutcome>> + Send + 'a>>
+    {
+        // Unwind the large construction frame before polling provider callbacks.
         Box::pin(
             TurnExecution {
                 runtime: self,
@@ -1340,7 +1371,6 @@ impl RuntimeHandle {
             }
             .run(),
         )
-        .await
     }
 }
 
@@ -1943,7 +1973,6 @@ impl TurnExecution<'_> {
                 runtime.model_state_for_turn(&guard.state, model_selection.fallback_model()),
             )
         };
-        let identity = runtime.agent_identity_view().await?;
         let time_timezone = runtime.current_time_timezone().await?;
         let (
             provider,
@@ -1952,7 +1981,7 @@ impl TurnExecution<'_> {
             native_web_search,
             builtin_web_search_selection,
         ) = runtime
-            .provider_tool_selection_for_turn(&identity, model_selection.fallback_model())
+            .provider_tool_selection_for_turn(model_selection.fallback_model())
             .await?;
         let configured_selector =
             configured_history_selector(agent_id, &turn_model_state.effective_model);
@@ -2118,6 +2147,21 @@ impl TurnExecution<'_> {
                         &mut completed_rounds,
                     )
                     .await?;
+                let available_bytes = live_input_available_bytes(
+                    &effective_prompt,
+                    &completed_rounds,
+                    &available_tools,
+                    runtime
+                        .current_context_config()
+                        .await
+                        .prompt_budget_estimated_tokens,
+                );
+                let attached =
+                    Box::pin(runtime.attach_live_inputs(agent_id, round, available_bytes, false))
+                        .await?;
+                if let Some(last) = completed_rounds.last_mut() {
+                    append_follow_up_user_texts(last, attached);
+                }
             }
 
             // One sample per logical inference; request retries and budget
@@ -3625,6 +3669,48 @@ impl TurnExecution<'_> {
                         scheduler::InterjectionBoundary::AfterProviderRound,
                     )
                     .await?;
+                let mut interjections = interjections;
+                if pending_completion_report.is_none()
+                    && pending_wait_report.is_none()
+                    && prepared_work_item_completion.is_none()
+                    && loop_control.max_tool_rounds.is_none_or(|max| round < max)
+                {
+                    let candidate = TurnRoundRecord {
+                        inference_time: Some(inference_time.clone()),
+                        round,
+                        estimated_tokens: build_round_estimated_tokens(
+                            &completed_round_assistant_blocks,
+                            &[],
+                            &interjections,
+                        ),
+                        assistant_blocks: completed_round_assistant_blocks.clone(),
+                        text_blocks: text_blocks.clone(),
+                        tool_calls: Vec::new(),
+                        tool_results: Vec::new(),
+                        tool_result_envelopes: Vec::new(),
+                        follow_up_user_texts: interjections.clone(),
+                    };
+                    let mut rounds = completed_rounds.clone();
+                    rounds.push(candidate);
+                    let available_bytes = live_input_available_bytes(
+                        &effective_prompt,
+                        &rounds,
+                        &available_tools,
+                        runtime
+                            .current_context_config()
+                            .await
+                            .prompt_budget_estimated_tokens,
+                    );
+                    interjections.extend(
+                        Box::pin(runtime.attach_live_inputs(
+                            agent_id,
+                            round + 1,
+                            available_bytes,
+                            true,
+                        ))
+                        .await?,
+                    );
+                }
                 if !interjections.is_empty() {
                     let mut round_record = TurnRoundRecord {
                         inference_time: Some(inference_time.clone()),

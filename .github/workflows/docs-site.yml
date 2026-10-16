@@ -9,6 +9,8 @@ on:
       - 'docs/runtime-spec.md'
       - 'docs/rfcs/**'
       - 'docs/website/**'
+      - 'agent_templates/**'
+      - 'scripts/validate-agent-templates*.py'
       - '.github/workflows/docs-site.yml'
   pull_request:
     branches: [main]
@@ -18,6 +20,8 @@ on:
       - 'docs/runtime-spec.md'
       - 'docs/rfcs/**'
       - 'docs/website/**'
+      - 'agent_templates/**'
+      - 'scripts/validate-agent-templates*.py'
       - '.github/workflows/docs-site.yml'
   workflow_dispatch:
 
@@ -46,12 +50,23 @@ jobs:
           cache: "npm"
           cache-dependency-path: docs/website/.tools/package-lock.json
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate agent templates and catalog generator
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 scripts/validate-agent-templates.py
+          python3 scripts/validate-agent-templates-test.py
+          python3 docs/website/.tools/test-build-template-catalog.py
+
       - name: Install dependencies
         run: npm ci --prefix .tools
 
-      - name: Check internal links and contract references
+      - name: Check blog and contract references
         run: |
-          python3 .tools/check-links.py
           python3 .tools/check-blog.py
           python3 .tools/test-check-contract-refs.py
           python3 .tools/check-contract-refs.py
@@ -59,8 +74,14 @@ jobs:
       - name: Check generated page copies
         run: python3 .tools/sync-generated-pages.py --check
 
+      - name: Prepare isolated content
+        run: npm --prefix .tools run prepare:content
+
       - name: Build directory indexes
         run: npm --prefix .tools run build:index
+
+      - name: Check generated content links
+        run: npm --prefix .tools run check:content
 
       - name: Check directory catalogs
         run: npm --prefix .tools run check:directories

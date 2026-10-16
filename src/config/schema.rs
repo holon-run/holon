@@ -176,6 +176,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "api.prompt.attachment_max_bytes",
+            kind: "positive_integer",
+            description: "Maximum decoded bytes per prompt image or file attachment. The HTTP request limit is max(32 MiB, twice this value), including Base64 and JSON. Applies to new requests after runtime config reload.",
+            default: json!(DEFAULT_PROMPT_ATTACHMENT_MAX_BYTES),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "api.projection.max_leaders",
             kind: "positive_integer",
             description: "Maximum concurrent projection builds in the HTTP API projection gate. Additional distinct keys receive 429 projection_busy until a leader frees up.",
@@ -1008,6 +1015,12 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
         "api.csrf.trusted_origins" => Ok(json!(config.api.csrf.trusted_origins)),
+        "api.prompt.attachment_max_bytes" => Ok(config
+            .api
+            .prompt
+            .attachment_max_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "api.projection.max_leaders" => Ok(config
             .api
             .projection
@@ -1549,6 +1562,13 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "api.csrf.trusted_origins" => {
             config.api.csrf.trusted_origins = parse_string_list(raw_value)?;
         }
+        "api.prompt.attachment_max_bytes" => {
+            let prompt = ApiPromptConfigFile {
+                attachment_max_bytes: Some(parse_positive_u64_key(key, raw_value)?),
+            };
+            validate_api_prompt_config(&prompt)?;
+            config.api.prompt = prompt;
+        }
         "api.projection.max_leaders" => {
             config.api.projection.max_leaders = Some(parse_positive_u64_key(key, raw_value)?);
         }
@@ -2028,6 +2048,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "api.cors.allow_credentials" => config.api.cors.allow_credentials = None,
         "api.cors.max_age_seconds" => config.api.cors.max_age_seconds = Some(600),
         "api.csrf.trusted_origins" => config.api.csrf.trusted_origins.clear(),
+        "api.prompt.attachment_max_bytes" => config.api.prompt.attachment_max_bytes = None,
         "api.projection.max_leaders" => config.api.projection.max_leaders = None,
         "api.projection.cache_ttl_ms" => config.api.projection.cache_ttl_ms = None,
         "model.route_options" => config.model.route_options.clear(),
@@ -2261,6 +2282,18 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     validate_api_cors_config(&config.api.cors)?;
     validate_api_csrf_config(&config.api.csrf)?;
     validate_api_projection_config(&config.api.projection)?;
+    validate_api_prompt_config(&config.api.prompt)?;
+    Ok(())
+}
+
+pub fn validate_api_prompt_config(prompt: &ApiPromptConfigFile) -> Result<()> {
+    let max_bytes = prompt.attachment_max_bytes();
+    if max_bytes == 0 || max_bytes > (usize::MAX / 2) as u64 {
+        return Err(anyhow!(
+            "api.prompt.attachment_max_bytes must be a positive integer no greater than {}",
+            usize::MAX / 2
+        ));
+    }
     Ok(())
 }
 

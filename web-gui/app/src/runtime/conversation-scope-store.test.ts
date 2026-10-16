@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   ConversationClientLike,
@@ -11,6 +11,8 @@ import {
   CONVERSATION_SCOPE_KEEP_ALIVE,
   activeConversationScopeCount,
   conversationScopeKey,
+  conversationCacheKey,
+  resolveConversationScopeKey,
   disposeAllConversationScopes,
   idleConversationScopeCount,
   peekConversationScope,
@@ -140,6 +142,82 @@ afterEach(() => {
 });
 
 describe("conversation scope store", () => {
+  it("isolates scopes by incarnation while retaining remote and login identity", () => {
+    const user = { authMethod: "token", userId: "alice" };
+    const oldKey = resolveConversationScopeKey("local", "child", user, 1);
+    const newKey = resolveConversationScopeKey("local", "child", user, 2);
+    const { client } = fakeClient();
+    const first = acquireConversationScope({
+      key: oldKey, agentId: "child", baseUrl: client.baseUrl, clientFactory: () => client,
+    });
+    const second = acquireConversationScope({
+      key: newKey, agentId: "child", baseUrl: client.baseUrl, clientFactory: () => client,
+    });
+    expect(second.controller).not.toBe(first.controller);
+    expect(newKey).not.toBe(oldKey);
+    expect(newKey).not.toBe(resolveConversationScopeKey("local", "child", { ...user, userId: "bob" }, 2));
+    expect(newKey).not.toBe(resolveConversationScopeKey("remote", "child", user, 2));
+    expect(newKey).not.toBe(resolveConversationScopeKey("local", "child", undefined, 2));
+    expect(conversationCacheKey("local", user, 1)).not.toBe(conversationCacheKey("local", user, 2));
+    expect(conversationCacheKey("local", undefined, 1)).toBeUndefined();
+    expect(resolveConversationScopeKey("local", "child", user)).toBe(conversationScopeKey(conversationCacheKey("local", user)!, "child"));
+  });
+
+  it("never publishes or caches the first summary if the admitted agent is rebuilt", async () => {
+    const { client, calls } = fakeClient();
+    let incarnation = 1;
+    const fetchIdentity = vi.fn(async () => new Response(JSON.stringify({
+      identity: { incarnation, status: "active" },
+    }), { headers: { "content-type": "application/json" } }));
+    client.summary = async () => {
+      calls.summary += 1;
+      incarnation = 2;
+      return { summary: summarySnapshot(99), etag: "new-agent" } as never;
+    };
+    const stored = vi.fn(async () => {});
+    const cleared = vi.fn(async () => {});
+    const observed: Array<string | null> = [];
+    const key = conversationScopeKey("local", "child", 1);
+    const unsubscribe = useConversationScopeStore.subscribe(() => observed.push(firstMirrorTurn(key)));
+    const { controller } = acquireConversationScope({
+      key, agentId: "child", incarnation: 1, baseUrl: client.baseUrl,
+      fetchImpl: fetchIdentity, clientFactory: () => client,
+      controllerOptions: { snapshotCache: { load: async () => null, store: stored, clear: cleared } },
+    });
+    await waitFor(() => controller.status.kind === "recoverable_error");
+    unsubscribe();
+    expect(fetchIdentity).toHaveBeenCalledTimes(2);
+    expect(calls.summary).toBe(1);
+    expect(calls.stream).toBe(0);
+    expect(observed).not.toContain("turn-99");
+    expect(controller.view().turns).toHaveLength(0);
+    expect(stored).not.toHaveBeenCalled();
+    await waitFor(() => cleared.mock.calls.length === 1);
+    expect(controller.status).toMatchObject({ error: { status: 403, body: { retryable: false } } });
+  });
+
+  it("clears a mounted conversation on replacement before yielding the next stream item", async () => {
+    const { client, hub, calls } = fakeClient();
+    let incarnation = 1;
+    const { controller } = acquireConversationScope({
+      key: conversationScopeKey("local", "mounted", 1), agentId: "mounted", incarnation: 1,
+      baseUrl: client.baseUrl, clientFactory: () => client,
+      fetchImpl: async () => new Response(JSON.stringify({ identity: { incarnation, status: "active" } })),
+    });
+    await waitFor(() => calls.stream === 1);
+    expect(controller.view().turns).toHaveLength(1);
+    incarnation = 2;
+    hub.push({ type: "reset_required", reset: {
+      type: "reset_required", reason: "retention_expired", oldest_retained_seq: 1, event_head_seq: 20,
+    } });
+    await waitFor(() => controller.status.kind === "recoverable_error");
+    expect(controller.view().turns).toHaveLength(0);
+    // The reset was not applied and no rebootstrap/reconnect occurred.
+    expect(calls.summary).toBe(1);
+    expect(calls.stream).toBe(1);
+    expect(calls.open).toBe(0);
+  });
+
   it("publishes the located window for display while preserving live tail authority", async () => {
     const { client } = fakeClient();
     const historical = summarySnapshot(5);

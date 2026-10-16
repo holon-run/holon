@@ -159,6 +159,17 @@ holon config set api.cors.max_age_seconds 600
 不要同时设置 `api.cors.allow_credentials=true` 和
 `api.cors.allowed_origins=["*"]`；Holon 会拒绝这个不安全的组合。
 
+### Prompt 附件
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `api.prompt.attachment_max_bytes` | integer | `67108864` | 每个图片或文件附件解码后的最大字节数（64 MiB） |
+
+Prompt HTTP 请求体上限由
+`max(32 MiB, 2 × api.prompt.attachment_max_bytes)` 派生（默认 128 MiB），
+为 Base64 和 JSON 预留空间。运行时重载后，修改对新请求生效；
+处理中请求继续使用同一份配置快照校验请求体和单附件上限。
+
 ### Projection Gate
 
 | 键 | 类型 | 默认值 | 说明 |

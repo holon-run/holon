@@ -39,9 +39,9 @@ use holon::{
     },
 };
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 
 use crate::support::runtime_compaction_providers::MaxOutputRecoveryProvider;
 use crate::support::runtime_helpers::{
@@ -182,17 +182,46 @@ impl AgentProvider for WaitForDispatchProvider {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueuedTaskResultWaitMode {
+    QueuedReentry,
+    LiveConsumption,
+}
+
 struct QueuedTaskResultWaitProvider {
     calls: Mutex<usize>,
     task_id: Mutex<Option<String>>,
+    release_path: PathBuf,
+    wait_request_entered: Notify,
+    allow_wait: Notify,
+    mode: QueuedTaskResultWaitMode,
 }
 
 impl QueuedTaskResultWaitProvider {
-    fn new() -> Self {
+    fn new(release_path: PathBuf) -> Self {
         Self {
             calls: Mutex::new(0),
             task_id: Mutex::new(None),
+            release_path,
+            wait_request_entered: Notify::new(),
+            allow_wait: Notify::new(),
+            mode: QueuedTaskResultWaitMode::QueuedReentry,
         }
+    }
+
+    fn for_live_consumption(release_path: PathBuf) -> Self {
+        Self {
+            mode: QueuedTaskResultWaitMode::LiveConsumption,
+            ..Self::new(release_path)
+        }
+    }
+
+    async fn wait_at_request_gate(&self) -> Result<()> {
+        self.wait_request_entered.notify_one();
+        timeout(Duration::from_secs(10), self.allow_wait.notified())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out releasing the task-result provider request"))?;
+        Ok(())
     }
 
     async fn calls(&self) -> usize {
@@ -217,7 +246,10 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                 id: "promote-background-command".into(),
                 name: "ExecCommand".into(),
                 input: json!({
-                    "cmd": "sleep 0.4; printf background_done",
+                    "cmd": format!(
+                        "while [ ! -f '{}' ]; do sleep 0.01; done; printf background_done",
+                        self.release_path.display()
+                    ),
                     "yield_time_ms": 100
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
@@ -241,37 +273,81 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                     })
                     .expect("promoted command receipt should include the task id");
                 *self.task_id.lock().await = Some(task_id);
+                if self.mode == QueuedTaskResultWaitMode::LiveConsumption {
+                    self.wait_at_request_gate().await?;
+                }
                 vec![ModelBlock::ToolUse {
                     id: "wait-for-background-completion".into(),
                     name: "ExecCommand".into(),
                     input: json!({
-                        "cmd": "sleep 0.7",
+                        "cmd": "true",
                         "yield_time_ms": 2_000
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
                     provider_data: None,
                 }]
             }
-            3 => vec![ModelBlock::ToolUse {
-                id: "wait-for-queued-task-result".into(),
-                name: "WaitFor".into(),
-                input: json!({
-                    "reason": "consume the completed background command result",
-                    "wake": "task_result",
-                    "delivery": "silent",
-                    "resource": self
-                        .task_id
-                        .lock()
-                        .await
-                        .clone()
-                        .expect("task id should be captured before WaitFor")
-                }),
-                kind: holon::provider::ModelToolCallKind::Function,
-                provider_data: None,
-            }],
-            4 => vec![ModelBlock::Text {
-                text: "background command result observed".into(),
-            }],
+            3 => {
+                if self.mode == QueuedTaskResultWaitMode::QueuedReentry {
+                    self.wait_at_request_gate().await?;
+                } else {
+                    assert!(
+                        request.conversation.iter().any(|message| matches!(
+                            message,
+                            ConversationMessage::UserText(text)
+                                if text.contains("Current live input batch")
+                                    && text.contains("background_done")
+                        )),
+                        "the task result must reach the provider before the late WaitFor"
+                    );
+                    self.wait_at_request_gate().await?;
+                }
+                vec![ModelBlock::ToolUse {
+                    id: "wait-for-queued-task-result".into(),
+                    name: "WaitFor".into(),
+                    input: json!({
+                        "reason": "consume the completed background command result",
+                        "wake": "task_result",
+                        "delivery": "silent",
+                        "resource": self
+                            .task_id
+                            .lock()
+                            .await
+                            .clone()
+                            .expect("task id should be captured before WaitFor")
+                    }),
+                    kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                }]
+            }
+            4 => {
+                if self.mode == QueuedTaskResultWaitMode::LiveConsumption {
+                    let receipt = request
+                        .conversation
+                        .iter()
+                        .filter_map(|message| match message {
+                            ConversationMessage::UserToolResults(results) => Some(results),
+                            _ => None,
+                        })
+                        .flatten()
+                        .find(|result| result.tool_use_id == "wait-for-queued-task-result")
+                        .expect("the late WaitFor receipt must reach the same turn");
+                    assert!(!receipt.is_error, "{}", receipt.content);
+                    let receipt: serde_json::Value = serde_json::from_str(&receipt.content)?;
+                    assert_eq!(
+                        receipt["result"]["disposition"],
+                        "task_result_already_consumed"
+                    );
+                    assert_eq!(receipt["result"]["continuation"], "continue_turn");
+                    assert_eq!(
+                        receipt["result"]["task_id"].as_str(),
+                        self.task_id.lock().await.as_deref()
+                    );
+                }
+                vec![ModelBlock::Text {
+                    text: "background command result observed".into(),
+                }]
+            }
             _ => anyhow::bail!("unexpected provider call {call}"),
         };
 
@@ -402,7 +478,9 @@ pub async fn silent_wait_for_with_assistant_text_does_not_publish_brief() -> Res
 }
 
 pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model() -> Result<()> {
-    let provider = Arc::new(QueuedTaskResultWaitProvider::new());
+    let gate = tempfile::tempdir()?;
+    let release_path = gate.path().join("release");
+    let provider = Arc::new(QueuedTaskResultWaitProvider::new(release_path.clone()));
     let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
@@ -413,19 +491,71 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model()
         ))
         .await?;
 
+    // Release the command only after the third request passes the P2 safe point,
+    // then hold WaitFor until its canonical result is durably queued.
+    timeout(
+        Duration::from_secs(10),
+        provider.wait_request_entered.notified(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for the queued-result provider request"))?;
+    let task_id = provider
+        .task_id()
+        .await
+        .expect("provider should capture the promoted task id");
+    std::fs::write(&release_path, b"release")?;
+    wait_until_async_for(Duration::from_secs(10), || async {
+        let Some(task) = runtime.task_record(&task_id).await? else {
+            return Ok(false);
+        };
+        if task.status != TaskStatus::Completed
+            || task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("terminal_snapshot_ready"))
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            return Ok(false);
+        }
+        let Some(result_message_id) = task.parent_message_id.as_deref() else {
+            return Ok(false);
+        };
+        let Some(result_message) = runtime.storage().read_message_by_id(result_message_id)? else {
+            return Ok(false);
+        };
+        Ok(result_message.kind == MessageKind::TaskResult
+            && result_message.task_id.as_deref() == Some(task_id.as_str())
+            && runtime
+                .storage()
+                .latest_queue_entries()?
+                .iter()
+                .any(|entry| {
+                    entry.message_id == result_message_id
+                        && entry.status == QueueEntryStatus::Queued
+                }))
+    })
+    .await?;
+    provider.allow_wait.notify_one();
+
     eventually_for(Duration::from_secs(10), || {
         let queue_entries = runtime.storage().read_recent_queue_entries(20)?;
         Ok(queue_entries.iter().any(|entry| {
             entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
         }))
     })
-    .await?;
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "operator queue did not settle: {error}; queue={:?}; turns={:?}; transcript={:?}; events={:?}",
+            runtime.storage().read_recent_queue_entries(5),
+            runtime.storage().read_recent_turns(5),
+            runtime.storage().read_recent_transcript(8),
+            runtime.storage().read_recent_events(8),
+        )
+    })?;
 
     assert_eq!(provider.calls().await, 4);
-    let task_id = provider
-        .task_id()
-        .await
-        .expect("provider should capture the promoted task id");
     let task_result = runtime
         .storage()
         .read_recent_messages(20)?
@@ -442,7 +572,16 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model()
             entry.message_id == task_result.id && entry.status == QueueEntryStatus::Processed
         }))
     })
-    .await?;
+    .await
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "task-result queue did not settle: {error}; queue={:?}; turns={:?}; transcript={:?}; events={:?}",
+            runtime.storage().read_recent_queue_entries(5),
+            runtime.storage().read_recent_turns(5),
+            runtime.storage().read_recent_transcript(8),
+            runtime.storage().read_recent_events(8),
+        )
+    })?;
 
     let turns = runtime.storage().read_recent_turns(20)?;
     let operator_turn = turns
@@ -468,6 +607,194 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model()
         .as_ref()
         .and_then(|terminal| terminal.no_brief_reason.as_ref())
         .is_none());
+
+    Ok(())
+}
+
+pub async fn live_task_result_consumption_continues_after_late_wait_for() -> Result<()> {
+    let gate = tempfile::tempdir()?;
+    let release_path = gate.path().join("release");
+    let provider = Arc::new(QueuedTaskResultWaitProvider::for_live_consumption(
+        release_path.clone(),
+    ));
+    let host = RuntimeHost::new_with_provider(test_config(), provider.clone())?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let message = runtime
+        .enqueue(admitted_operator_prompt(
+            "default",
+            "consume the promoted command result before requesting a wait",
+        ))
+        .await?;
+
+    // Hold round two until the canonical result is queued, then let its `true`
+    // tool reach the safe point that attaches the result before round three.
+    timeout(
+        Duration::from_secs(10),
+        provider.wait_request_entered.notified(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for the live-result provider request"))?;
+    let task_id = provider
+        .task_id()
+        .await
+        .expect("provider should capture the promoted task id");
+    std::fs::write(&release_path, b"release")?;
+    wait_until_async_for(Duration::from_secs(10), || async {
+        let Some(task) = runtime.task_record(&task_id).await? else {
+            return Ok(false);
+        };
+        if task.status != TaskStatus::Completed
+            || task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("terminal_snapshot_ready"))
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            return Ok(false);
+        }
+        let Some(result_message_id) = task.parent_message_id.as_deref() else {
+            return Ok(false);
+        };
+        let Some(result_message) = runtime.storage().read_message_by_id(result_message_id)? else {
+            return Ok(false);
+        };
+        Ok(result_message.kind == MessageKind::TaskResult
+            && result_message.task_id.as_deref() == Some(task_id.as_str())
+            && runtime
+                .storage()
+                .latest_queue_entries()?
+                .iter()
+                .any(|entry| {
+                    entry.message_id == result_message_id
+                        && entry.status == QueueEntryStatus::Queued
+                }))
+    })
+    .await?;
+    let task = runtime
+        .task_record(&task_id)
+        .await?
+        .expect("the completed task should remain available");
+    let result_message_id = task
+        .parent_message_id
+        .expect("the terminal snapshot should identify its canonical result");
+    provider.allow_wait.notify_one();
+
+    timeout(
+        Duration::from_secs(10),
+        provider.wait_request_entered.notified(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out observing the canonical live-result admission"))?;
+    // Pause before the late WaitFor so admission is checked independently of
+    // terminal settlement, without relying on the Interjected queue status.
+    let database = rusqlite::Connection::open_with_flags(
+        host.config().runtime_db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let read_canonical_evidence = || -> Result<(serde_json::Value, serde_json::Value)> {
+        let (settlement, attempt): (String, String) = database.query_row(
+            "SELECT settlements.payload_json, attempts.payload_json
+             FROM task_result_settlements settlements
+             JOIN execution_protocol_attempts attempts
+               ON attempts.agent_id = settlements.agent_id
+              AND attempts.attempt_id = settlements.activation_id
+             WHERE settlements.message_id = ?1",
+            [&result_message_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((
+            serde_json::from_str(&settlement)?,
+            serde_json::from_str(&attempt)?,
+        ))
+    };
+    let (admission, admitted_attempt) = read_canonical_evidence()?;
+    assert_eq!(admission["state"], "caller_admitted");
+    assert!(admission["admitted_at"].is_string());
+    assert_eq!(
+        admitted_attempt["source_message_id"].as_str(),
+        Some(message.id.as_str())
+    );
+    provider.allow_wait.notify_one();
+
+    eventually_for(Duration::from_secs(10), || {
+        Ok(runtime
+            .storage()
+            .latest_queue_entries()?
+            .iter()
+            .any(|entry| {
+                entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
+            }))
+    })
+    .await?;
+    assert_eq!(provider.calls().await, 4);
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()?
+            .iter()
+            .find(|entry| entry.message_id == result_message_id)
+            .map(|entry| &entry.status),
+        Some(&QueueEntryStatus::Interjected),
+        "a same-turn consumed result must not require a Processed queue entry"
+    );
+
+    let turns = runtime.storage().read_recent_turns(20)?;
+    assert_eq!(
+        turns.len(),
+        1,
+        "no separate task-result turn should be opened"
+    );
+    let operator_turn = &turns[0];
+    assert!(operator_turn.input_message_ids.contains(&message.id));
+    assert!(operator_turn.input_message_ids.contains(&result_message_id));
+    assert_eq!(
+        operator_turn
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+    assert!(!operator_turn.produced_brief_ids.is_empty());
+    assert!(operator_turn.waiting_condition_ids.is_empty());
+    assert!(runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")?
+        .is_empty());
+    assert_eq!(operator_turn.live_input_batches.len(), 1);
+    let batch = &operator_turn.live_input_batches[0];
+    assert_eq!(batch.safe_point.provider_round, 3);
+    assert!(batch.ordinary_message_ids.is_empty());
+    assert_eq!(batch.items.len(), 1);
+    assert_eq!(batch.items[0].message_id, result_message_id);
+
+    let (settlement, attempt) = read_canonical_evidence()?;
+    assert_eq!(settlement["state"], "settled");
+    assert_eq!(settlement["disposition"], "model_delivered");
+    assert_eq!(settlement["activation_id"], admission["activation_id"]);
+    assert_eq!(settlement["result_identity"], admission["result_identity"]);
+    assert_eq!(attempt["attempt_id"], admitted_attempt["attempt_id"]);
+    assert_eq!(
+        settlement["activation_id"].as_str(),
+        Some(batch.activation_id.as_str())
+    );
+    assert_eq!(
+        batch.result_identities,
+        vec![settlement["result_identity"]
+            .as_str()
+            .expect("the settlement must identify the consumed result")
+            .to_string()]
+    );
+    assert_eq!(attempt["state"], "settled");
+    assert_eq!(
+        attempt["source_message_id"].as_str(),
+        Some(message.id.as_str())
+    );
+    assert_eq!(
+        attempt["turn_id"].as_str(),
+        Some(operator_turn.turn_id.as_str())
+    );
     Ok(())
 }
 

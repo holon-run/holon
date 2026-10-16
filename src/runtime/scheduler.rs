@@ -1175,7 +1175,7 @@ fn authoritative_wait_correlation(message: &MessageEnvelope) -> Option<String> {
     message.source_refs.get("wait_id").cloned()
 }
 
-fn matching_wait_conditions<'a>(
+pub(super) fn matching_wait_conditions<'a>(
     projection: &'a SchedulerProjection,
     message: &MessageEnvelope,
 ) -> Vec<&'a WaitConditionRecord> {

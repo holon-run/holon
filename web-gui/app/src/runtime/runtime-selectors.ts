@@ -23,7 +23,7 @@ export function selectSelectedAgent(state: RuntimeStoreState): AgentSummary | un
   // Bootstrap carries work items only when merged from cached state.
   // When missing, enrich from session detail (which always has accurate data).
   const sessionAgent = state.sessionsByAgentId[bootstrapAgent.id]?.detail?.agent;
-  if (!sessionAgent || bootstrapAgent.workItems?.length) {
+  if (!sessionAgent || sessionAgent.incarnation !== bootstrapAgent.incarnation || bootstrapAgent.workItems?.length) {
     enrichedAgent = undefined;
     return bootstrapAgent;
   }

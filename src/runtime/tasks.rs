@@ -1243,6 +1243,10 @@ impl RuntimeHandle {
                     if let Some(child_agent_id) = failed_child_agent_id.as_ref() {
                         failed_task_detail["child_agent_id"] = serde_json::json!(child_agent_id);
                     }
+                    if let Some(failure) = err.downcast_ref::<crate::host::ChildTaskSpawnFailure>()
+                    {
+                        failed_task_detail["target"] = serde_json::json!(failure.target());
+                    }
                     let result_message = MessageEnvelope {
                         turn_id: Some(crate::ids::turn_id()),
                         metadata: Some(serde_json::json!({
@@ -2066,6 +2070,7 @@ impl RuntimeHandle {
             .map(|task| {
                 let wait_policy = task.wait_policy();
                 let command = CommandTaskStatusSnapshot::identity_from_task_record(&task);
+                let target = task.target();
                 TaskListEntry {
                     id: task.id,
                     kind: task.kind.as_str().to_string(),
@@ -2074,6 +2079,7 @@ impl RuntimeHandle {
                     updated_at: task.updated_at,
                     wait_policy,
                     command,
+                    target,
                 }
             })
             .collect())

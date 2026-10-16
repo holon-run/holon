@@ -101,6 +101,15 @@ than requiring a running daemon.
 
 ### Agent interaction and inspection
 
+`holon task output` has been removed, including its former `--block` and
+`--timeout-ms` current-turn short wait. Use `holon task status`, bounded reads of
+runtime-confirmed command output files, and `holon tail --agent <AGENT>` for
+agent-scoped observation. Tail neither consumes task results nor wakes the
+producer, and does not promise task-exclusive output; stream/file EOF is not
+completion. Model workflows use `WaitFor(task_result)` for completion and
+re-entry. The underlying HTTP task-output route remains. See the
+[task contract](../spec/tasks.md) for the migration.
+
 These commands require a reachable local control plane unless noted otherwise.
 
 | Command | Args | Options | Output | Initial stability | Notes |
@@ -111,7 +120,6 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon transcript` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | JSON transcript entries | `stable` candidate | Transcript entry stability needs API inventory. |
 | `holon task run` | `<SUMMARY>` | required `--cmd <CMD>`; `--workdir <WORKDIR>`; `--shell <SHELL>`; `--login <true\|false>`; `--tty`; `--yield-time-ms <MS>`; `--max-output-tokens <N>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Creates command tasks through the control plane. |
 | `holon task status` | `<TASK_ID>` | `--agent <AGENT>` | pretty JSON `TaskStatusSnapshot` | `experimental` | Reads task lifecycle state through the task status API. |
-| `holon task output` | `<TASK_ID>` | `--block`; `--timeout-ms <MS>`; `--agent <AGENT>` | pretty JSON `TaskOutputResult` | `experimental` | Output preview length follows the task's creation-time `--max-output-tokens`; this command controls readiness waiting only. |
 | `holon task input` | `<TASK_ID>` | required `--text <TEXT>`; `--agent <AGENT>` | pretty JSON `TaskInputResult` | `experimental` | Sends trusted operator text to command-task stdin/TTY or supervised child-agent follow-up input. |
 | `holon task stop` | `<TASK_ID>` | `--agent <AGENT>` | pretty JSON `TaskStopResult` | `experimental` | Requests managed-task cancellation through the control plane. |
 | `holon work-item list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `WorkItemRecord` | `experimental` | The JSON schema owner is the HTTP/API `WorkItemRecord` read model returned by `/agents/:agent_id/work-items`. |

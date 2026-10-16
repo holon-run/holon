@@ -171,6 +171,8 @@ async function createDaemon(
     ], {
       env: {
         ...inheritedEnv,
+        // Nested delegation futures need more stack in unoptimized debug builds.
+        RUST_MIN_STACK: inheritedEnv.RUST_MIN_STACK ?? "33554432",
         HOLON_HOME: home,
         HOLON_AGENT_ID: DEFAULT_AGENT_ID,
         HOLON_MODEL: "openai/gpt-5.4",
