@@ -1,236 +1,130 @@
 ---
-title: Memory system
-summary: How Holon's memory layers preserve continuity across turns — work items, work refs, episodes, durable ledger, and indexed search.
-order: 15
+title: Memory
+summary: Runtime evidence, curated memory, and ordinary notes, with their loading, search, and authority limits.
+order: 90
 ---
 
-# Memory System
+<a id="memory-system"></a>
 
-Holon is designed for long-lived agents. Memory preserves what matters across
-turns without replaying the entire conversation history. The runtime derives
-memory from durable evidence rather than relying on free-form model summaries.
+# Memory
 
-## Memory Indexing
+Memory helps an agent recover useful facts without replaying every past
+interaction. Holon preserves runtime evidence and supports curated memory
+files. Ordinary notes and project files remain useful too, but they do not
+all enter the same search or loading path.
 
-Holon indexes memory asynchronously at startup. The index build runs in the
-background and does **not block daemon startup**. New events continue to be
-indexed as they are written to the durable ledger.
+For example, "use concise replies" belongs in curated operator preferences.
+The test result for a particular patch belongs with that work's evidence.
+A long research note belongs in a file that the agent can open when needed.
 
-During the initial index build, search results may be incomplete. The
-runtime prioritizes newly written events so recent memory is always
-findable, even while the background build catches up on historical
-records.
+<a id="memory-layers"></a>
+<a id="durable-ledger"></a>
+<a id="current-work-context"></a>
+<a id="episode-memory"></a>
 
-## Memory Layers
+## Runtime records and current work
 
-Holon's context memory has four layers, each with a distinct role:
+Runtime records include messages, result briefs, task and tool evidence, and
+work-item state. Archived summaries help the agent locate earlier work; source
+references let it retrieve supporting records when the summary is insufficient.
+These records have their own retention and retrieval limits. They are not a
+promise that every past byte remains available forever.
 
-```
-Durable Ledger  ──── append-only audit trail (messages, briefs, tool calls, tasks)
-     │
-     ▼
-Current Work Context ─ current WorkItem, todo state, waits, and refs
-     │
-     ▼
-Episode Memory  ──── archived records of completed work chunks
-     │
-     ▼
-Context Assembly ──── budgeted prompt sections selected from all layers
-```
+The current WorkItem holds the live objective, plan, progress, and waiting
+state. It takes precedence over an old summary of what the agent once intended
+to do. If a review changed scope after an earlier report, recovery should use
+the current work record and inspect the earlier report only as history.
 
-### Durable Ledger
+<a id="context-assembly"></a>
 
-The append-only source of truth. Every runtime event is recorded:
+The model sees a bounded selection of this material on each activation.
+Saving a record, loading it into context, and finding it in search are different
+operations. [Context continuity](./context-continuity.md) explains how that
+selection supports resumed work.
 
-- Messages and briefs
-- Tool executions and command results
-- Task lifecycle transitions
-- Work item state changes and current work refs
-- Episode records
+## Memory vs Agent Home files
 
-The ledger is **not prompt-bounded**. It grows indefinitely as the audit
-trail. The model-visible projection is a compressed selection, not a full
-replay.
+| Material | Purpose | How the agent uses it |
+|---|---|---|
+| Runtime evidence | What happened during work | Selected context and indexed retrieval. |
+| Agent Home `AGENTS.md` | Standing role and responsibilities | Loaded guidance. |
+| `memory/operator.md` | Stable operator preferences | A compact auto-loaded slice and indexed retrieval. |
+| `memory/self.md` | Durable agent-specific facts | A compact auto-loaded slice and indexed retrieval. |
+| Notes and project files | Longer references and project knowledge | File reads; ordinary Markdown is not automatically indexed as memory. |
 
-### Current Work Context
+Curated memory belongs to the agent whose home contains it. Writing a preference
+in one agent's `operator.md` does not automatically distribute it to other
+agents. Keep project-specific conventions in the project rather than presenting
+them as universal operator preferences.
 
-Current work context is the compact runtime-owned projection that answers:
+## Agent memory auto-load
 
-- What work is active right now?
-- What is the current objective and plan?
-- Which todo items, waits, and blockers matter?
-- Which files, tool outputs, issues, PRs, tasks, or memories should remain easy
-  to reopen?
-
-The prompt-facing authority is the current `WorkItemRecord` plus its
-runtime-derived `work_refs`. Work refs are extracted at turn closure from
-trusted runtime evidence such as current input source refs and tool execution
-records. The model does not author them directly.
-
-Current work context is **not free-form summary**. It is a structured projection
-of the runtime's own records: current WorkItem state, active todo list,
-blockers, waiting conditions, and refs back to retrievable evidence.
-
-### Episode Memory
-
-Episode memory archives completed work. While work is in progress, an active
-episode builder accumulates:
-
-- Active work item ID and delivery target
-- Work summary and scope
-- Touched files
-- Verification evidence
-- Decisions made
-- Carry-forward follow-ups
-
-When a meaningful boundary is reached (work item completed, task finished),
-the runtime finalizes the builder into an immutable **episode record** and
-stores it.
-
-Archived episodes are selected into prompt context by relevance and budget,
-not rendered in full by default. Default prompt assembly treats episodes as a
-mid-term archive: it excludes episodes that overlap the `recent_turns` window
-so recent turn evidence is not duplicated by a summary of the same turns.
-
-### Context Assembly
-
-Each turn assembles a prompt from budgeted memory sections:
-
-- Hot turn context (current input, continuation, recent events)
-- Turn-based context projection (linked turns, result briefs, task results,
-  and work item transitions)
-- Current work item and plan
-- Current work refs
-- Relevant episode memory
-- Execution environment projection
-
-This assembly keeps prompt size bounded while preserving continuity.
-Slow-changing memory sections keep provider cache identity stable.
-For a user-facing walkthrough of how these sections fit together, see
-[Context Continuity](/concepts/context-continuity.md).
-
-## Memory vs Agent Home Files
-
-Memory and agent home files serve different purposes:
-
-| Aspect | Runtime Memory | Agent Home Files |
-|--------|---------------|-----------------|
-| **What it stores** | Current state, episodes, evidence | Role contract, notes, references |
-| **Who writes it** | Runtime (automatic) | Agent or operator (manual) |
-| **Durability** | Append-only ledger + snapshots | Persistent files |
-| **Search** | Indexed via `MemorySearch` | Ordinary file read |
-| **Loaded** | Budgeted prompt assembly | `AGENTS.md` always loaded |
-
-`agent_home/AGENTS.md` is loaded guidance — the agent's long-lived role
-contract. Runtime memory is automatically derived evidence. They coexist
-without overlapping.
-
-## MemorySearch and MemoryGet
-
-Holon exposes two memory tools for indexed retrieval:
-
-- **`MemorySearch`** — Search across memory sources (agent memory markdown, runtime evidence) by query. Returns ranked results with opaque `source_ref` values. The query engine bounds candidate documents before projection to keep searches fast even on large indexes.
-- **`MemoryGet`** — Fetch exact memory content by `source_ref`. Used to retrieve a specific record identified by search.
-
-These tools let the agent pull relevant past context on demand without
-rendering every archived episode into every prompt.
-
-## Agent Memory Auto-Load
-
-Holon automatically injects a compact slice of the agent's curated memory
-files into every turn's system prompt. This gives the agent persistent
-self-knowledge and operator preferences without manual recall or search.
-
-Two files participate in auto-load:
-
-| File | Purpose | Who writes it |
-|------|---------|---------------|
-| `agent_home/memory/operator.md` | Operator preferences, standing instructions | Operator |
-| `agent_home/memory/self.md` | Agent self-knowledge, role facts | Agent |
-
-At turn assembly, each file is read and a **compact slice** is injected under
-a fixed per-file character budget (default 1500 characters). If the file
-exceeds the budget, the injected slice is truncated and the agent receives a
-note that the remainder is retrievable via `MemoryGet`. If the file is empty,
-the agent receives a note that curated content is not yet present.
-
-The auto-loaded sections appear in the prompt as:
-
-- **`agent_memory_operator`** — Curated operator memory, loaded with
-  `Stability::AgentScoped` (changes only when the operator edits the file).
-- **`agent_memory_self`** — Curated self memory, loaded with
-  `Stability::AgentScoped` (changes only when the agent edits the file).
-
-These sections sit between `AGENTS.md` guidance and the workspace scope in
-the prompt hierarchy. They carry lower authority than workspace or turn-scoped
-instructions but provide persistent facts that survive context compaction.
+Holon loads a bounded slice of each curated memory file into context. If the
+file is longer than that budget, the remaining content stays available through
+retrieval. Put the most useful stable facts near the beginning and keep the
+files focused.
 
 ### When to use each file
 
-- **`operator.md`** — Store cross-agent operator preferences: preferred
-  language, naming conventions, tool defaults, communication style. These
-  apply regardless of which agent is running.
-- **`self.md`** — Store agent-specific durable facts: the agent's role,
-  standing responsibilities, past decisions worth remembering, recurring
-  workflow notes.
+Use `operator.md` for collaboration preferences such as reply language or
+recurring naming conventions. Use `self.md` for stable facts about the agent's
+own role and responsibilities. Update an existing fact when it changes instead
+of appending contradictory versions indefinitely.
 
-## Notes Catalog
+A transient build failure or the next step of an unfinished task belongs in the
+WorkItem or its evidence. Curated memory is not a substitute for a recoverable
+plan or a registered wait.
 
-In addition to curated memory files, Holon can inject a metadata catalog of
-the agent's `notes/` directory into the prompt. The notes catalog acts as a
-bounded reference index, not as instruction content.
+## Notes catalog
 
-The catalog is rendered from each Markdown file in `agent_home/notes/` and
-includes:
+The context can include a bounded catalog of notes with titles, summaries, and
+paths. This helps discovery without loading every note body. The agent still
+needs to open the referenced file before relying on its details.
 
-- **Title** — extracted from frontmatter, the first heading, or the filename.
-- **Summary** — extracted from frontmatter or the first paragraph excerpt.
-- **Tags** — extracted from frontmatter (lower-cased, deduped).
+A catalog entry is reference metadata, not an instruction. Neither inclusion
+in the notes catalog nor storage in Agent Home gives ordinary note text the
+status of loaded guidance.
 
-The catalog is bounded: at most 20 entries and 2000 total characters. Note
-bodies are **never** injected — the catalog is a metadata index only. The
-agent can retrieve full note content by reading the referenced file.
+## MemorySearch and MemoryGet
 
-Notes are treated as reference material, not as instructions. They do not
-override operator input, AGENTS.md guidance, or the current WorkItem objective.
+`MemorySearch` searches supported runtime evidence and the curated memory
+files. It returns ranked matches with opaque source references. `MemoryGet`
+retrieves bounded content from a reference returned by search or supplied by
+the runtime. It is not a general file reader or a URL fetcher.
 
-## Memory and Work Items
+To answer "why did we choose this approach?", the agent can search for the
+objective, retrieve its decision or completion report, and check the cited
+verification. A search excerpt alone may omit the caveat that matters.
 
-Memory is tightly coupled to work items:
+## Memory indexing
 
-- **Current work item** anchors the live continuity state: objective, plan,
-  todo list, blocked status, and current work refs.
-- **Episode records** are scoped to work items. When a work item completes,
-  its accumulated evidence becomes an archived episode.
-- If a current work item and an episode both match the prompt, the work item
-  remains authoritative for current objective, plan, todo, and wait state; the
-  episode is supporting historical evidence.
-- **MemorySearch** indexes across completed episodes, making past work
-  findable by content rather than by timestamp alone.
+Indexing happens asynchronously. Search results can be incomplete during an
+initial build or while changes are being indexed. A missing match does not
+prove that the underlying record or file does not exist. Check reported index
+freshness and use known source references or file reads when appropriate.
 
-This means Holon can remember what it did for a previous issue without
-re-reading the entire transcript of that work.
+## Memory and work items
 
-## Memory Boundaries
+WorkItems preserve the state needed to resume an objective. Completion reports
+make finished outcomes easier to find later. Neither remembering "we should
+check tomorrow" nor saving that sentence in a note schedules a future check;
+use a recorded wait or timer for that purpose.
 
-Holon separates memory by identity scope:
+## Memory boundaries
 
-- **Agent-scoped memory** — Working memory, episodes, and search index belong
-  to a specific agent.
-- **Workspace-scoped memory** — Episode records are tagged with the
-  `workspace_id` where the work happened.
-- **Curated durable memory** — `agent_home/memory/self.md` and
-  `agent_home/memory/operator.md` are manually curated Markdown files for
-  agent-specific facts and operator preferences.
+Historical material remains evidence. A retrieved webhook, web page, or child
+report does not become an operator instruction because it was saved or
+summarized. Verify provenance and current scope before acting on recalled text.
 
-These boundaries prevent session transcripts from becoming the only memory
-surface and let shared workspaces accumulate knowledge across multiple agents.
+Memory search is scoped to the agent's accessible sources and can be filtered
+by workspace. Workspace association helps locate relevant work; it does not
+make every other agent's history or every Markdown file in the project
+searchable. There is no guarantee of exhaustive recall.
 
-## See Also
+## See also
 
-- [Context Continuity](/concepts/context-continuity.md) — How Holon keeps context coherent without replaying the entire transcript
-- [Runtime Model](/concepts/runtime-model.md) — Agents, work items, and the execution loop
-- [Documentation Layers](/concepts/documentation-layers.md) — How memory fits into Holon's documentation architecture
-- [Agent Templates](/reference/agent-templates.md) — How templates initialize agent role contracts
-- RFC: [Long-Lived Context Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/long-lived-context-memory.md)
-- RFC: [Agent and Workspace Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-and-workspace-memory.md)
+- [Save preferences and find past work](../guides/manage-agent-memory.md)
+- [Context continuity](./context-continuity.md)
+- [Work item reference](../reference/work-items.md)
+- [Memory tool schemas](../reference/model-tool-schema-inventory.md)
+- [Trust boundaries](./trust-boundaries.md)

@@ -32,8 +32,11 @@ Avoid creating work items for:
 A work item can be:
 
 - **open** — still active
+- **completing** — completion has been requested but its required report is not yet bound
 - **completed** — explicitly finished
 - **current** — the agent's active focus
+- **queued** — an open item available for scheduling outside the current focus
+- **yielded** — parked behind a WorkItem continuation
 - **blocked** — waiting on a specific blocker
 - **waiting for operator** — needs clarification or approval
 - **runnable** — ready for execution
@@ -58,16 +61,59 @@ Each work item can contain:
 
 Treat the work item as coordination state, not a scratchpad.
 
+### Record fields
+
+The persistent `WorkItemRecord` contains these fields. Read-model projections
+may add focus, readiness, scheduling state, and plan-artifact resolution status;
+those are not interchangeable with the stored lifecycle `state`.
+
+| Field | Contract |
+|---|---|
+| `id`, `agent_id`, `workspace_id` | Item identity, owning agent, and workspace |
+| `revision` | Version used to reject stale state transitions |
+| `objective` | Tracked goal |
+| `state` | `open`, `completing`, or `completed` |
+| `plan_status` | `draft`, `ready`, or `needs_input` |
+| `plan_artifact` | Optional plan descriptor with owner/workspace identity, relative and absolute paths, hash, byte count, timestamp, preview, and preview completeness |
+| `todo_list` | Entries containing `text` and `state`: `pending`, `in_progress`, or `completed` |
+| `work_refs` | Evidence references with kind, reference, reason, status, timestamp, and optional title/source/metadata |
+| `blocked_by` | Current blocker, if any |
+| `blocked_by_wait_id` | Wait that established the blocker; absent for independent or older blockers |
+| `recheck_at`, `recheck_consumed_at` | Fallback recheck deadline and its consumption timestamp |
+| `result_brief_id`, `result_summary` | Canonical completion report linkage and summary |
+| `completion_intent` | Completion source/revision, required report state, and report linkage |
+| `created_at`, `updated_at`, `turn_id` | Record timestamps and optional associated turn |
+
+`plan_artifact_status=missing` or `unreadable` does not make the item itself
+unqueryable. Read the actual plan path returned by the runtime; do not invent a
+path from the item ID.
+
 ## Core Operations
 
 Typical work-item operations:
 
 - `CreateWorkItem` — create a new tracked objective
 - `PickWorkItem` — make an open item the current focus
-- `UpdateWorkItem` — refine objective, plan status, blocker, or todo list
+- `UpdateWorkItem` — refine objective, plan status, or todo list
 - `ListWorkItems` — inspect current, open, blocked, or completed work
 - `GetWorkItem` — inspect one work item in detail
 - `CompleteWorkItem` — mark the objective done
+- `WaitFor` — record an explicit wait without changing the task's ownership
+
+Edit the plan file for plan-body changes. Use `WaitFor` for agent waits, not
+blocker fields on `UpdateWorkItem`. Operator HTTP PATCH has separate
+`blocked_by`/`recheck_after` controls documented in the
+[HTTP reference](http-control-plane.md); those are not agent-tool arguments.
+
+`PickWorkItem` can yield the current execution through a continuation to another
+item. `clear_blocker=true` requires evidence that the blocker is resolved and a
+reason. Do not use it to bypass a yielded item's return path.
+
+`CompleteWorkItem` requires acceptance evidence and a non-empty assistant
+completion report. Bound completion settles that execution; detached completion
+preserves the current execution when allowed. An item active in another execution
+cannot be completed by a different execution or control request. The operator
+HTTP completion route requires `report_text` and persists the canonical report.
 
 ## Example Workflow
 
@@ -103,6 +149,8 @@ blocked, waiting, or non-runnable. If no immediate progress is possible, call
 - use `wake=task_result` with `resource=<task_id>` when waiting on a task
 - use `wake=external` with `resource=<external object>` when waiting on an
   outside system such as a PR, CI run, URL, or durable inbox source
+- use `wake=timer` with the real `timer_id` returned by the runtime
+- use `wake=system` for the next non-work-queue system wake
 - use an external trigger when an external system can actively wake the agent
 
 Keep work items runnable only when the next scheduler resume can make useful
@@ -134,6 +182,21 @@ When a work item cannot proceed:
 
 This keeps the scheduler and future turns aligned with reality.
 
+Every `WaitFor` call selects `delivery=final` or `silent`. A yielding final-delivery
+path needs a non-empty operator-facing report. Follow the returned
+`continuation`: `continue_turn` means continue useful work now,
+`yield_and_wait` means wait for the wake, and `yield_and_reenter` means yield for
+the queued result. Already-consumed results do not register duplicate waits.
+
+The execution-bound WorkItem owns the wait when one exists; a conflicting
+explicit `work_item_id` is ignored and disclosed. Otherwise the runtime resolves
+the waiter from an explicit owned open item, the turn-bound item, current focus,
+or agent lifecycle. A valid matching wake may resume inspection even when an
+independent business blocker remains. It does not clear that blocker or
+automatically make ordinary WorkItem work runnable.
+
+See [Events and timers](events-and-timers.md) for callback and timer contracts.
+
 ## Relationship to Tasks
 
 Work items and tasks are different:
@@ -145,6 +208,56 @@ Work items and tasks are different:
 
 A single work item may create multiple tasks over time. Tasks are execution;
 work items are intent and progress.
+
+A task retains the WorkItem owner captured at creation. Picking another item,
+creating a new one, or waiting from another item never migrates that task.
+`WaitFor(task_result)` can wait on a task owned by any WorkItem of the same agent;
+tasks belonging to other agents are rejected.
+
+### Delegated task snapshots
+
+`InvokeAgent(new_subagent)` returns a result-bearing supervised child handle.
+`InvokeAgent(existing_agent)` returns a handle satisfied by the first later
+durable message from that peer; this is not a business-completion guarantee.
+Multiple waits may observe the same peer reply.
+
+Child task status/output snapshots can report cumulative `token_usage`:
+
+```json
+{
+  "total": {
+    "input_tokens": 12450,
+    "output_tokens": 3840,
+    "total_tokens": 16290
+  },
+  "total_model_rounds": 5,
+  "last_turn": {
+    "input_tokens": 2100,
+    "output_tokens": 720,
+    "total_tokens": 2820
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `total` | Cumulative token counts across child turns |
+| `total_model_rounds` | Model round-trips made by the child |
+| `last_turn` | Token counts for the latest turn, when available |
+
+Task status also provides supported follow-up information. Command-task input
+requires input support; supervised child follow-up uses
+`child_supervision.followup_target`. A terminal handle cannot be restarted with
+`TaskInput`.
+
+Children are retained for reuse after invocation completion. The supervising
+parent owns cleanup and must inspect the child's current incarnation and
+blockers before deletion. Parent `GetAgent` summaries expose up to 16
+`subagent_cleanup` entries. Active execution, unresolved descendants, and
+dirty/shared worktrees can block deletion. Open WorkItems or completed tasks
+alone do not prevent cleanup once the parent has decided their records are no
+longer needed. Optional `reminders_enabled` reminders and
+`idle_retirement_enabled` runtime retirement do not delete durable child identity.
 
 ## Relationship to Agents
 
@@ -163,6 +276,6 @@ update or switch the work item before doing high-commitment work.
 
 - [Runtime Model](/concepts/runtime-model.md) — Work items in the runtime
   lifecycle
-- [Quick Examples](/guides/quick-examples.md) — Common command patterns
+- [Run a long-lived task](../guides/run-long-lived-task.md) — Follow one objective through acceptance
 - [Multi-Agent Collaboration](/guides/delegate-work.md) — Delegated work and task
   supervision

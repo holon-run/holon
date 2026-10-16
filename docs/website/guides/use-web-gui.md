@@ -1,14 +1,22 @@
 ---
 title: Use the Web GUI
 summary: Drive agents, work items, and skills from the browser.
-order: 16
+order: 170
 ---
 
 # Use the Web GUI
 
-The Web GUI ships inside the daemon: start it, open a browser, and work with
-agents, work items, skills, and files without the terminal. This page covers the
-first session and the main screens.
+Use the Web GUI to send an agent a request, follow its work, and inspect the
+result and files. Start with the steps below; the page descriptions cover
+settings and less frequent tasks.
+
+## Prerequisites
+
+- A Holon runtime with the embedded Web GUI and a working model route.
+  For model setup, follow [Configure models](configure-models.md).
+- A browser that can reach the runtime's base URL.
+- A control token or organization login if the runtime requires authentication.
+  For another host, first follow [Connect to a remote runtime](connect-remote-runtime.md).
 
 ## Quick Start
 
@@ -40,7 +48,52 @@ When connecting remotely or running with authentication enabled, navigate to
 
 For full IdP setup and session timeouts, see [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
 
+## Send a request
+
+1. Open the Dashboard and select an existing agent, or create one from the
+   template catalog.
+2. Check the agent identity and workspace in the side panel before asking it
+   to read or change files.
+3. Enter a request in the conversation input. For a connection check, use:
+
+   ```text
+   Reply with "Web GUI connection verified". Do not change any files.
+   ```
+
+4. Wait for the new response. Expand the turn's execution details if the agent
+   reports a failure or you need to inspect a tool result.
+
+## Follow a WorkItem or Task
+
+For work that must survive across turns, ask the agent to track the objective,
+plan, and acceptance criteria. Inspect its current work in the right panel:
+
+- Read the WorkItem's plan status and checklist to understand the goal.
+- Open a Task detail to inspect a background command or child-agent result.
+- If the agent is waiting, read the wait reason before sending another request.
+  It may need operator input, a task result, or an external event.
+- Read the completion brief and check the promised artifacts before accepting
+  the result. A finished Task does not necessarily finish the WorkItem.
+
+See [WorkItems and Tasks](../concepts/work-items-and-tasks.md) for the distinction.
+
+## Inspect a result or file
+
+1. Read the agent's completion brief for the outcome and verification status.
+2. Follow a file reference in the response, or open **Files** in the context
+   panel.
+3. Check **File information** for the workspace, execution root, and path.
+   Files belong to the runtime host, which may be different from your browser's
+   computer.
+4. Preview the content, use **Source** for literal Markdown, or download the
+   full file when the preview is truncated.
+
+The [Workspace File Browser](#workspace-file-browser) section below covers
+navigation and host-side Finder integration.
+
 ## Pages
+
+Use these screens for the task you need:
 
 ### Dashboard
 
@@ -53,9 +106,9 @@ The Dashboard provides a runtime overview:
   command, workdir, and output. Task events (creation, status updates,
   completion) refresh the list in real time.
 - **Quick actions** — create agents, attach workspaces, and view agent detail.
-- **Agent lifecycle** — start, stop, and delete agents directly from the
-  dashboard. Deleting an agent permanently removes it and its data, with an
-  option to also remove its private child agents.
+- **Agent lifecycle** — start, stop, and delete agents from the dashboard.
+  Before deleting, preserve needed results and review the confirmation and
+  any blockers. Include private children only when you intend to remove them.
 
 ### Agent Conversation
 
@@ -69,13 +122,12 @@ Select an agent from the Dashboard to open its conversation page:
 - **Input bar** — send operator messages to the selected agent.
 - **Event timeline** — a sidebar timeline of recent events including turns,
   tool executions, and state transitions.
-- **Virtual scrolling** — message lists use virtualized rendering for
-  smooth performance across long conversations without DOM overhead.
 - **Tool execution details** — expand individual tool calls in the message
   stream to inspect request/response payloads, timing, and metadata.
   Tool result panels show structured output alongside raw data, making
   it easier to debug agent behavior.
-- **Real-time SSE streaming** — connects to `/api/agents/:id/events/stream` for live token streaming, streaming reasoning thoughts, active tool execution indicators, and immediate brief updates.
+- **Live updates** — watch new output, tool activity, and completion briefs
+  as the runtime sends events.
 - **Waiting & scheduler indicators** — clearly displays explicit wait states when agents invoke `WaitFor` (waiting on background tasks, external callbacks, or operator input), including delivery modes (`final` vs `silent`).
 
 ### Search
@@ -109,7 +161,7 @@ Available at `/templates`:
   the template manifest, pre-installed skills, and source provenance.
 
 For CLI-based template management, see
-[Agent Templates Guide](/reference/agent-templates.md).
+[Agent Templates reference](../reference/agent-templates.md).
 
 ### Skill Management
 
@@ -143,7 +195,7 @@ update jobs run as background tasks (see [Job API](#job-monitoring)).
 Skill catalog updates also run as jobs, with progress tracked in the job
 list.
 
-For CLI-based skill management, see [Skills Guide](/reference/skills.md).
+For CLI-based skill management, see [Use skills](use-skills.md).
 
 ### Workspace File Browser
 
@@ -199,8 +251,8 @@ runtime is local.
 Configure Holon from the browser:
 
 - **Model settings** — view and change the default model, override per-agent
-  models, and set reasoning effort. The fallback model list uses a chip
-  component with drag-to-reorder support for easy priority adjustment.
+  models, and set reasoning effort. Drag fallback models to change their
+  priority. See [Configure models](configure-models.md) for route setup.
 - **API keys** — add or update provider credentials (API keys) through the
   credential store without editing JSON files. The settings page
   automatically determines the right credential method for each provider
@@ -236,22 +288,16 @@ just one LAN adapter, while retaining loopback for Serve.
 
 ### Internationalization (i18n)
 
-The Web GUI uses react-i18next for full internationalization. A language
-selector in the Settings page lets you switch between English and Simplified
-Chinese. All interface text — including navigation items, button labels, form
-hints, status messages, and error pages — translates instantly on selection.
-Translation resources are compiled into the embedded build alongside the UI
-assets, so no external files or network access are required.
+Choose English or Simplified Chinese in [Settings](#settings). Changing the
+interface language does not translate agent responses or file contents.
 
 The Settings page also includes a **search provider** section for configuring
 web search and native search providers through the browser.
 
 ### UI Icons
 
-Status indicators, navigation icons, and file browser icons now use lucide
-icons (via lucide-react) throughout the Web GUI, replacing the previous
-Unicode symbol approach. Tooltips have been streamlined for clarity, and
-panel titles use a consistent `label(N)` format.
+Use icon tooltips to identify an action before selecting it. For file actions,
+see [Workspace File Browser](#workspace-file-browser).
 
 ### Inspector (Right Panel)
 
@@ -267,9 +313,7 @@ The right panel also hosts contextual detail views. For example, clicking
 a task in the Dashboard opens a **Task Detail** panel showing status,
 kind, command, workdir, and output right alongside the main view.
 
-The right panel supports an expanded fullscreen mode, and the model menu
-renders through a fixed-position portal so it is never clipped by layout
-overflow.
+Expand the right panel when you need more room to read a detail view.
 
 ## Remote Access
 
@@ -277,7 +321,7 @@ The Web GUI works with Holon's remote access modes. When the daemon is
 configured for remote access (tunnel, tailnet, or LAN), open the GUI URL
 through the same endpoint:
 
-```bash
+```text
 # Example: LAN access from another machine on the same network
 http://<daemon-host>:7878/
 ```
@@ -288,46 +332,17 @@ Configure CORS if accessing from a different origin. See
 
 ## Embedded vs Development Build
 
-| Mode | How to access | When to use |
-|------|--------------|-------------|
-| **Embedded** (default) | `holon daemon start` → `/` | Normal use |
-| **Dev server** | `cd web-gui/app && npm run dev` | UI development |
+Release binaries include the Web GUI. Start the daemon and open its browser
+origin; normal use needs no Node.js installation or UI build.
 
-The embedded build is compiled into the `holon` binary at release time via
-`rust-embed`. No separate `npm` install or build step is required for
-production use.
-
-To run the development server for UI work:
-
-```bash
-cd web-gui/app
-npm install
-npm run dev
-```
-
-The dev server includes hot reload and uses fixture data when no Holon server
-is running. Set `HOLON_API_PROXY_TARGET` to point the dev server's `/api`
-proxy at a running Holon daemon (it defaults to `http://127.0.0.1:7878`).
+For UI development, follow [Run Holon locally](../maintainers/local-runtime.md#web-gui-development).
 
 ## Performance Diagnostics
 
-The Web GUI exposes runtime performance metrics at
-`/api/control/runtime/performance`. This endpoint returns granular timing data
-grouped by phase:
-
-| Group | Metrics |
-|-------|---------|
-| `turn.*` | Total turn time, context build, provider round, tool execution, cleanup |
-| `provider.*` | Request build, round total, retry latency |
-| `tool.execution` | Cumulative tool execution timing |
-| `storage.*` | Event append and state persistence timing |
-| `projection.*` | Agent state projection substeps (tasks, timers, work items, etc.) |
-| `http.*` | Per-route HTTP response timing |
-| `scheduler.*` | Poll latency by outcome |
-
-Each metric includes `count`, `total_ms`, `max_ms`, and `avg_ms`. Use this to
-diagnose slow turns, identify expensive tools, or track provider latency over
-time.
+If a request is slow, first inspect the agent's wait reason and execution
+details. For counters across the runtime, use the
+[observability guide](configure-observability.md). The endpoint and field
+definitions are in [Runtime performance snapshots](../reference/observability.md#runtime-performance-snapshots).
 
 ### Job Monitoring
 
@@ -339,9 +354,33 @@ instead of blocking the request:
 - **Job API** — the runtime exposes the job read model at
   `/api/jobs/{job_id}` for status, phase, and progress items.
 
+## Verify your session
+
+Check that your test request appears under the intended agent and has a new
+response. For file work, open the promised artifact and check its execution
+root. Refresh the page and confirm that the persisted conversation and work
+status remain visible; live animation alone is not evidence of a saved result.
+
+## Troubleshooting
+
+- **Login loops:** Check the selected auth mode and the browser's session.
+  For OIDC, verify the callback URL using the
+  [OIDC guide](configure-oidc-authentication.md).
+- **Page loads but requests fail:** Check the API origin, proxy routing, and
+  authentication. Follow [Remote access](connect-remote-runtime.md).
+- **No new activity:** Read the agent's wait reason and Task status. Refresh
+  once to distinguish a disconnected event stream from paused work; avoid
+  resubmitting the same request until you know whether it was accepted.
+- **Skill installation still running:** Inspect its job status before retrying.
+  The initial request can return before installation finishes.
+- **File link fails:** Check the registered workspace and execution root.
+  A moved or removed worktree may make an old reference unavailable.
+- **Model unavailable:** Check provider credentials and model routing in
+  [Configure models](configure-models.md).
+
 ## See Also
 
-- [Run your first Holon task](/guides/quick-examples) — try Holon in a few commands
+- [Run your first agent](../getting-started/first-agent.md) — the first-session walkthrough
 - [Connect to a remote Holon runtime](/guides/connect-remote-runtime) — use the GUI from another machine
 - [Troubleshoot a Holon task](/guides/troubleshooting) — diagnose common problems
 - [Configuration Reference](/reference/configuration) — CORS, ports, and

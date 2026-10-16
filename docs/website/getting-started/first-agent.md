@@ -1,32 +1,35 @@
 ---
 title: Create your first agent
-summary: "From zero to your first Holon agent: install, start, TUI basics, create an agent, and configure models."
+summary: Install Holon, configure a model, and get a verified result from a named agent.
 order: 20
-updated: 2026-05-23
+aliases:
+  - /guides/quick-examples
+  - /guides/quick-examples.md
 ---
+
+<a id="run-your-first-holon-task"></a>
+
+<a id="create-your-first-agent"></a>
 
 # Create your first agent
 
-This guide walks you through creating your first Holon agent from scratch. You will:
+This walkthrough ends with a named agent answering one small request. Configure
+a model before sending that request, then use the same agent from the terminal
+or browser.
 
-1. Install Holon
-2. Start the runtime (one-shot and daemon mode)
-3. Connect with the TUI
-4. Create an agent
-5. Configure models
-
-**Time:** ~10 minutes (with Homebrew); ~15 minutes (build from source)
+<a id="prerequisites"></a>
 
 ## Prerequisites
 
-- **Holon** installed on `PATH` (see Step 1)
-- **A model provider** account (Anthropic, OpenAI, or compatible)
-- **Basic terminal** familiarity
+You need a terminal and access to a supported model provider. For a local
+provider, its model server must be reachable. You do not need a template,
+project workspace, or external event integration for this first task.
+
+<a id="step-1-install-holon"></a>
 
 ## Step 1: Install Holon
 
-Holon v0.14.0 and later ship as installable releases. Choose the method that
-works best for you.
+<a id="option-a-homebrew-recommended"></a>
 
 ### Option A: Homebrew (recommended)
 
@@ -35,33 +38,22 @@ brew tap holon-run/tap
 brew install holon
 ```
 
+<a id="option-b-direct-binary-download"></a>
+
 ### Option B: Direct binary download
 
-Download the latest binary for your platform from the
-[GitHub Releases page](https://github.com/holon-run/holon/releases/latest),
-then place it on your `PATH`:
+Download the binary for your operating system and architecture from
+[GitHub Releases](https://github.com/holon-run/holon/releases/latest), make it
+executable if needed, and place it on your `PATH`.
 
-```bash
-# Example: Linux amd64
-curl -L https://github.com/holon-run/holon/releases/latest/download/holon-linux-amd64 -o holon
-chmod +x holon
-sudo mv holon /usr/local/bin/
-```
-
-Binaries are available for Linux amd64, macOS amd64, and macOS arm64.
+<a id="option-c-build-from-source"></a>
 
 ### Option C: Build from source
 
-If you prefer to build from source or plan to contribute to Holon:
+If you are changing Holon itself, follow the
+[local build workflow](../maintainers/local-runtime.md).
 
-```bash
-git clone https://github.com/holon-run/holon.git
-cd holon
-cargo build --release
-```
-
-When building from source, replace `holon` commands in the examples below with
-`cargo run --`. For example, `holon --help` becomes `cargo run -- --help`.
+<a id="verify-the-install"></a>
 
 ### Verify the install
 
@@ -69,56 +61,84 @@ When building from source, replace `holon` commands in the examples below with
 holon --help
 ```
 
-You should see the CLI help output with available commands.
+If the command is missing, fix your `PATH` before continuing.
 
-## Step 2: Start the Holon runtime
+<a id="step-5-configure-models"></a>
+<a id="recommended-quick-setup-with-holon-onboard"></a>
+<a id="7-set-up-api-credentials"></a>
 
-Holon can run in two modes:
+<a id="step-2-configure-a-model"></a>
 
-- **CLI mode** (default): Single-shot commands with direct output
-- **Daemon mode**: Background service with TUI support
-
-### Option A: CLI mode (quick start)
-
-Run a single command:
+## Step 2: Configure a model
 
 ```bash
-holon run "What is Holon?"
+holon onboard
+holon config doctor
 ```
 
-This executes one turn and exits. Great for quick tasks, but not ideal for interactive sessions.
+The wizard selects a provider, configures credentials, and chooses a model.
+Follow the [onboarding walkthrough](onboarding.md) if you need help with the
+prompts. Resolve missing credentials or an unavailable model before proceeding;
+never paste credentials into an agent conversation.
 
-### Option B: Daemon mode (recommended for agents)
+<a id="step-2-start-the-holon-runtime"></a>
+<a id="option-b-daemon-mode-recommended-for-agents"></a>
+<a id="4-run-as-a-background-daemon"></a>
 
-Start the background daemon:
+<a id="step-3-start-the-runtime"></a>
+
+## Step 3: Start the runtime
 
 ```bash
 holon daemon start
-```
-
-This starts Holon as a background service with:
-
-- **Unix socket** at `~/.holon/run/holon.sock` (local access)
-- **Control plane** for TUI and HTTP clients
-- **Persistent state** across sessions
-
-#### Verify the daemon is running
-
-```bash
 holon daemon status
 ```
 
-You should see runtime status including the default agent.
+<a id="verify-the-daemon-is-running"></a>
 
-#### Stop the daemon
+### Verify the daemon is running
+
+Check that status reports the expected running daemon. The daemon hosts agents
+and their work while clients connect and disconnect.
+
+<a id="step-4-create-an-agent"></a>
+<a id="2-create-an-agent"></a>
+
+<a id="step-4-create-a-named-agent"></a>
+
+## Step 4: Create a named agent
+
+Choose an unused ID; this example uses `first-helper`:
 
 ```bash
-holon daemon stop
+holon agent create first-helper
+holon agent list
+holon run --agent first-helper "Explain Rust ownership in three sentences. Do not change any files."
 ```
 
-## Step 3: Connect with the TUI
+Confirm that the list contains `first-helper` and that the request produces an
+answer. An agent appearing in the list proves creation, not that its model can
+answer; the small request checks both. If it fails, inspect the error and run
+`holon config doctor` again.
 
-The **Terminal UI (TUI)** provides an interactive interface for working with agents.
+<a id="the-default-agent"></a>
+
+### The default agent
+
+A new runtime also provides `main`. You can use it instead of creating a named
+agent. A named agent helps separate a continuing responsibility from other work;
+see [Agents and guidance](../concepts/agents.md).
+
+<a id="create-a-named-agent"></a>
+<a id="list-agents"></a>
+<a id="step-3-connect-with-the-tui"></a>
+<a id="5-use-the-terminal-ui-tui"></a>
+
+<a id="step-5-continue-in-a-client"></a>
+
+## Step 5: Continue in a client
+
+<a id="start-the-tui"></a>
 
 ### Start the TUI
 
@@ -126,209 +146,107 @@ The **Terminal UI (TUI)** provides an interactive interface for working with age
 holon tui
 ```
 
-The TUI connects to the local Unix socket by default.
+<a id="tui-basics"></a>
 
 ### TUI basics
 
-The TUI shows:
+Select `first-helper` before sending another request. Type `/` for the command
+menu and `/help` for the current shortcuts. See [TUI reference](../reference/tui.md)
+for navigation and commands.
 
-- **Agent list**: Current agents and their status
-- **Active agent**: The agent receiving your input
-- **Transcript**: Conversation history
-- **Task list**: Background tasks and work items
+<a id="basic-navigation"></a>
+<a id="switch-agents-in-the-tui"></a>
 
-### Basic navigation
+You can also use the [Web GUI](../guides/use-web-gui.md). Confirm the selected
+agent ID in either client so the follow-up goes to the same agent.
 
-- **Type** your message and press Enter to send
-- **Ctrl+C** to exit the TUI
-- **Arrow keys** or **Page Up/Down** to scroll through history
+<a id="option-a-cli-mode-quick-start"></a>
+<a id="1-one-shot-question"></a>
 
-### Remote TUI (optional)
+<a id="run-a-one-shot-question-instead"></a>
 
-To connect to a remote Holon instance:
+## Run a one-shot question instead
 
-```bash
-# On the remote host
-holon serve --access lan --host 192.168.1.10 --token-file ~/.holon/remote.token
-
-# From your local machine
-holon tui --connect http://192.168.1.10:7878 --token-file ~/.holon/remote.token
-```
-
-See [Remote TUI Access RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/remote-tui-access.md) for details.
-
-## Step 4: Create an agent
-
-Holon supports different agent types for different use cases.
-
-### The default agent
-
-When you start Holon, it automatically creates a **default agent** in `~/.holon/agents/main/`. This agent:
-
-- Has its own `agent_home` with `AGENTS.md`
-- Can have agent-local skills
-- Stores conversation history and work state
-
-### Create a named agent
-
-Create a specialized agent for a specific role:
+For a bounded request without a persistent daemon session:
 
 ```bash
-holon agent create reviewer
+holon run "Explain Rust ownership in three sentences"
 ```
 
-This creates a new agent in `~/.holon/agents/reviewer/` initialized with the default role contract.
+A one-shot run may use several model/tool turns before it finishes. Do not use
+it as a substitute for tracking work that must wait on CI or a later decision;
+see [Run a long-lived task](../guides/run-long-lived-task.md).
 
-### Use a template
+<a id="stop-the-daemon"></a>
 
-Templates provide reusable agent configurations:
+### Stop the daemon
 
-```bash
-# Use an installed or synced template by ID
-holon agent create docs-helper --template software-developer
+After all work has finished, `holon daemon stop` stops the local daemon. Do not
+stop it merely to close a client: other agents may still be working.
 
-# Use a local template path
-holon agent create custom --template /path/to/template
-
-# Use a GitHub template URL
-holon agent create github-agent --template https://github.com/owner/repo/tree/main/template-path
-```
-
-### List agents
-
-```bash
-holon agent list
-```
-
-### Switch agents in the TUI
-
-In the TUI, you can switch between agents using the agent list view.
-
-## Step 5: Configure models
-
-### Recommended: Quick setup with `holon onboard`
-
-The fastest way to configure Holon is the interactive onboarding wizard:
-
-```bash
-holon onboard
-```
-
-In a terminal, this launches an interactive TUI that walks you through:
-
-1. **Provider selection** — choose from built-in providers (Anthropic, OpenAI,
-   DeepSeek, Codex, etc.) or a custom provider
-2. **Credential entry** — for OpenAI Codex: browser-based OAuth login; for other
-   providers: enter your API key (input is never echoed or stored in logs)
-3. **Model selection** — pick your default model, or enter a custom model id
-4. **Search configuration** — enable DuckDuckGo managed search, model-native
-   search, or keep search disabled
-
-`holon onboard` writes the config, stores credentials securely, and prints a
-summary. It's the recommended path for first-time setup.
-
-### Manual setup (alternative)
-
-Holon requires model configuration to work with providers like Anthropic or OpenAI.
-
-### Configuration layers
-
-Holon uses three configuration layers:
-
-1. **Startup settings** (environment variables, CLI flags)
-2. **Runtime configuration** (`config.json`)
-3. **Agent state** (per-agent overrides)
-
-See [Runtime Configuration Surface RFC](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-configuration-surface.md) for details.
-
-### Set provider credentials
-
-#### Option A: Environment variables (quick start)
-
-```bash
-# Anthropic
-export ANTHROPIC_AUTH_TOKEN="your-api-key"
-
-# OpenAI
-export OPENAI_API_KEY="your-api-key"
-```
-
-#### Option B: Credential store (recommended for persistent config)
-
-Store credentials securely without exposing them in shell history or
-environment variables:
-
-```bash
-holon config credentials set --kind api_key --stdin anthropic
-# Paste your ANTHROPIC_AUTH_TOKEN and press Enter
-```
-
-### Set the default model
-
-```bash
-holon config set model.default "anthropic@default/claude-sonnet-4-6"
-```
-
-### Agent-level model override
-
-An agent can override the default model:
-
-```bash
-holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
-```
-
-See [Configuration reference](/reference/configuration.md) for more details on agent model overrides.
-
-### Verify model configuration
-
-```bash
-holon config get model.default
-holon config doctor
-```
-
-To see available models:
-
-```bash
-holon config models list
-```
+<a id="next-steps"></a>
 
 ## Next steps
 
-Now that you have your first agent running:
+The former quick-examples page now redirects here. Use the task-specific guides
+below for work beyond the first successful request.
 
-- **Explore concepts**: Read [Runtime model](/concepts/runtime-model.md) and [Trust boundaries](/concepts/trust-boundaries.md)
-- **Try examples**: See [Quick examples](/guides/quick-examples.md) for common tasks
-- **Build integrations**: Check the [Integration guide](/guides/automate-over-http.md)
-- **Reference documentation**: See [CLI reference](/reference/cli.md), [HTTP control plane](/reference/http-control-plane.md), and [Configuration reference](/reference/configuration.md)
+<a id="use-a-template"></a>
+- [Create an agent from a template](../guides/create-agent.md) covers finding
+  and preparing a role template before creating another agent.
+
+<a id="3-switch-models"></a>
+<a id="manual-setup-alternative"></a>
+<a id="configuration-layers"></a>
+<a id="set-provider-credentials"></a>
+<a id="option-a-environment-variables-quick-start"></a>
+<a id="option-b-credential-store-recommended-for-persistent-config"></a>
+<a id="set-the-default-model"></a>
+<a id="agent-level-model-override"></a>
+<a id="verify-model-configuration"></a>
+<a id="8-inspect-configuration"></a>
+- [Configure models](../guides/configure-models.md) covers manual credentials,
+  per-agent model choices, fallback, and configuration inspection.
+
+<a id="remote-tui-optional"></a>
+- [Connect to a remote runtime](../guides/connect-remote-runtime.md) covers
+  access modes, authentication, and remote clients.
+
+<a id="6-start-the-http-server"></a>
+- [Automate over HTTP](../guides/automate-over-http.md) covers submitting and
+  following work through the API.
+
+<a id="9-run-a-multi-turn-task"></a>
+<a id="10-create-an-agent-with-a-custom-workspace"></a>
+- [Work with workspaces](../guides/work-with-workspaces.md) covers project
+  selection and isolated changes. [Run a long-lived task](../guides/run-long-lived-task.md)
+  covers goals that need durable progress and waits.
+
+<a id="see-also"></a>
+
+<a id="troubleshooting"></a>
 
 ## Troubleshooting
 
+<a id="daemon-wont-start"></a>
+
 ### Daemon won't start
 
-Check if another instance is running:
+Check `holon daemon status` and `holon daemon logs`. Resolve the reported startup
+error rather than deleting runtime state or repeatedly starting another daemon.
 
-```bash
-holon daemon status
-holon daemon stop
-holon daemon start
-```
+<a id="tui-cant-connect"></a>
 
 ### TUI can't connect
 
-Verify the daemon is running and the socket exists:
+Confirm that the daemon is running on the host you intend to use. For a remote
+connection, follow the remote guide above rather than assuming the local socket
+can reach another machine.
 
-```bash
-ls ~/.holon/run/holon.sock
-holon daemon status
-```
+<a id="model-errors"></a>
 
 ### Model errors
 
-Verify your credentials:
-
-```bash
-echo $ANTHROPIC_AUTH_TOKEN
-holon config get model.default
-```
-
-For more help, see [Troubleshooting guide](/guides/troubleshooting.md).
+Run `holon config doctor`. Check the chosen model and credentials with the
+model-configuration guide above. See [Troubleshooting](../guides/troubleshooting.md)
+for diagnosing a request that was accepted but failed or stopped making progress.

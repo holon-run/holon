@@ -7,6 +7,11 @@ order: 15
 
 # Configuration Reference
 
+For setup and verification, see
+[Configure models, credentials, and fallbacks](/guides/configure-models.md) and
+[Configure advisory decisions](/guides/configure-decision-subsystem.md).
+For route concepts, see [Models and providers](/concepts/models-and-providers.md).
+
 Holon stores runtime configuration in JSON files under `~/.holon/`:
 
 | File | Purpose |
@@ -43,25 +48,9 @@ no override is set) followed by `model.fallbacks`. `model.default` never joins
 the chain as an implicit fallback; when you want it as a safety net, list it in
 `model.fallbacks` explicitly or rely on the `auto` default.
 
-```bash
-# Set the default model
-holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
-
-# Add fallback models (JSON array)
-holon config set model.fallbacks '["anthropic@default/claude-sonnet-4-6","minimax@default/MiniMax-M2.7"]'
-
-# Use the auto default (one preferred route per authenticated provider)
-holon config set model.fallbacks '["auto"]'
-
-# Read current default
-holon config get model.default
-
-# See all current config
-holon config list
-
-# Remove a config key (reverts to default)
-holon config unset model.fallbacks
-```
+Commands: `holon config get <key>`, `set <key> <value>`, `unset <key>`, and
+`list`. List/object values use JSON. Follow the
+[model guide](/guides/configure-models.md) to choose available routes.
 
 ### Per-Model Policy
 
@@ -89,10 +78,9 @@ Model metadata and executable selection use distinct identities:
 | `prompt_budget_estimated_tokens` | integer | Reserved prompt budget before auto-compaction |
 | `display_name` | string | Human-readable model label |
 
-```bash
-# Register a custom model with decision capability and protocol
-holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
-```
+Setting `models.catalog` replaces the object value. Preserve unrelated entries
+when adding an override. Capability metadata declares supported behavior; it
+does not provision a provider endpoint or grant model access.
 
 Legacy `provider/model` selection values remain accepted, but all new writes
 include the endpoint. Inspect or explicitly rewrite existing config and agent
@@ -239,22 +227,11 @@ migrated by the follow-up schema cleanup is not downgrade-compatible.
 | `decision.tools.timeout_ms` | integer | unset | Advisory tool timeout in milliseconds |
 | `decision.tools.min_confidence` | float | unset | Minimum confidence threshold (0.0 to 1.0); decisions below this threshold abstain |
 
-```bash
-# Enable the Decision subsystem and advisory tool
-holon config set decision.enabled true
-holon config set decision.tools.enabled true
-
-# Route decisions to a dedicated provider model
-holon config set decision.model "typesafe@default/typesafe-ai/jev"
-
-# Or enable the zero-egress local ONNX provider
-holon config set decision.local_onnx.enabled true
-holon config set decision.local_onnx.preset "jev-selector-q4f16"
-
-# Set safety guardrails
-holon config set decision.tools.max_calls_per_turn 3
-holon config set decision.tools.min_confidence 0.65
-```
+An enabled local ONNX provider and a non-empty `decision.model` are mutually
+exclusive. The built-in Jev route is `typesafe@default/jev-latest`.
+Selecting a local preset does not download its files. See
+[Configure advisory decisions](/guides/configure-decision-subsystem.md)
+for provisioning, call limits, and verification.
 
 ## Credential Management
 
@@ -262,14 +239,10 @@ Credentials are stored securely in `~/.holon/credentials.json`. Use `config cred
 
 ### Setting Credentials
 
-```bash
-# Preferred: use --stdin to avoid shell history leakage
-holon config credentials set --kind api_key --stdin deepseek
-# Paste your API key and press Enter (Ctrl+D to finish)
-
-# Alternative: --material (visible in shell history — not recommended)
-holon config credentials set --kind api_key --material "sk-..." deepseek
-```
+`holon config credentials set --kind <kind> --stdin <profile>` reads secret
+material from standard input. `--material <value>` is also accepted, but can
+expose the secret in shell history and process arguments; use `--stdin`.
+See the [credential setup steps](/guides/configure-models.md#steps).
 
 The `<PROFILE>` argument is a label you choose (e.g. `deepseek`, `bigmodel`, `openai`).
 
@@ -337,13 +310,9 @@ locally with [Ollama](https://ollama.com). It requires no API key and targets
 a local Ollama server at `http://127.0.0.1:11434` over the Anthropic Messages
 transport.
 
-1. Install and start Ollama, then pull a model, for example
-   `ollama pull qwen3.8:latest`.
-2. Select Ollama during `holon onboard`, or set it directly:
-
-```bash
-holon config set model.default "ollama/qwen3.8:latest"
-```
+The route format is `ollama@default/<installed-model>`. The model must already
+be available on that Ollama server. See the
+[local endpoint setup](/guides/configure-models.md#local-or-custom-endpoints).
 
 The Web GUI discovers locally running Ollama models without any credential
 configuration, and `ViewImage` automatically discovers Ollama vision models
@@ -351,14 +320,7 @@ for image analysis.
 
 ### Adding a Custom Provider
 
-```bash
-holon config providers set my-proxy \
-  --transport openai_chat_completions \
-  --base-url "https://my-proxy.example.com/v1" \
-  --credential-source env \
-  --credential-env "MY_PROXY_API_KEY" \
-  --credential-kind api_key
-```
+`holon config providers set <provider> [options]` creates or updates a provider.
 
 Options:
 - `--transport`: Protocol — `anthropic_messages`, `openai_chat_completions`, or `openai_responses`
@@ -367,6 +329,7 @@ Options:
 - `--credential-kind`: `none`, `api_key`, or `session_token`
 - `--credential-env`: Environment variable name (when source is `env`)
 - `--credential-profile`: Credential store profile (when source is `credential_profile`)
+- `--credential-external`: External credential command (when source is `external_cli`)
 
 ### Provider Endpoints and Plans
 
@@ -419,8 +382,8 @@ The provider uses `credential_source: external_cli` and
 `credential_kind: oauth` for browser OAuth, or device OAuth via the
 onboarding wizard.
 
-If your credential expires, run `holon onboard` again — the wizard
-detects the expiry and guides you through re-authentication.
+Use `holon onboard` for setup or expired-credential recovery; see the
+[model setup guide](/guides/configure-models.md).
 
 ### Vercel AI Gateway OIDC
 
@@ -428,15 +391,8 @@ Vercel AI Gateway uses OpenID Connect (OIDC) for authentication. The
 onboarding wizard supports this flow when Vercel is selected as the
 provider.
 
-For both OAuth and OIDC flows, the recommended setup path is:
-
-```bash
-holon onboard
-```
-
-The wizard handles the entire OAuth flow and stores the credential
-securely. You should not attempt to configure OAuth providers manually in
-`config.json` unless you are scripting a headless deployment.
+`holon onboard` handles supported OAuth/OIDC flows and credential storage.
+Manual JSON edits are not the normal login path.
 
 ## Listing Available Models
 
@@ -623,15 +579,11 @@ address.
 
 ## Decision Subsystem
 
-The Decision subsystem provides non-authoritative advisory second opinions to agents facing high-ambiguity choices. It is isolated from the primary conversation loop:
-
-- **Advisory by design:** Results from `AdvisoryDecision` provide structured evidence (ranked options, choice, confidence, reasoning). They never grant permissions, bypass execution gates, or alter lifecycle state.
-- **Provider options:** Holon supports three Decision provider kinds:
-  - **Local ONNX:** Embedded zero-egress inference using the `local-onnx` feature, pre-packaged presets (such as `jev-selector-q4f16`), and question-tail encoding.
-  - **Native Jev:** Direct HTTP integration with TypeSafe Jev endpoints.
-  - **OpenAI-compatible:** Standard remote model endpoints advertising Decision capability.
-- **Route isolation:** Decision models require explicit capability advertisement and dedicated routes, preventing decision traffic from competing with primary agent context.
-- **Defensive guardrails:** Configure `decision.tools.max_calls_per_turn` to cap per-turn invocations and `decision.tools.min_confidence` to force explicit abstentions when confidence is low.
+See [Models and providers](/concepts/models-and-providers.md) for the advisory
+boundary, [Decision Subsystem Settings](#decision-subsystem-settings) for
+keys, and [Configure advisory decisions](/guides/configure-decision-subsystem.md)
+for local ONNX or remote setup. Recommendations never grant permission,
+bypass execution gates, or alter lifecycle state.
 
 ## Supervised Subagent Maintenance
 

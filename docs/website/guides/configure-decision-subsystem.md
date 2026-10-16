@@ -1,152 +1,153 @@
 ---
 title: Configure advisory decisions
-summary: Set up a dedicated Decision provider and enable the AdvisoryDecision tool to give agents non-authoritative second opinions.
-order: 36
+summary: Choose a Decision route, set call limits, and verify a recommendation or explicit abstention.
+order: 140
 ---
 
-# Configure Advisory Decisions
+# Configure advisory decisions
 
-Complex workflows often force agents to make judgment calls between competing
-approaches. The Decision subsystem gives agents a way to request a structured
-second opinion through the `AdvisoryDecision` tool without granting that advisor
-any execution authority.
-
-This guide walks through choosing a decision provider, configuring model
-routes, and setting call guardrails.
+`AdvisoryDecision` asks for a non-authoritative second opinion between explicit
+options. Its result cannot grant permission or approve an operation. For the
+routing model, see [Models and providers](/concepts/models-and-providers.md).
 
 ## Prerequisites
 
-- A running Holon daemon (v0.45.0 or later).
-- A configured primary model for your agent.
-- For local decision inference: an installation with the `local-onnx` feature
-  (included in official release binaries).
-- For remote decision inference: an API key or endpoint for a provider offering
-  Decision capabilities (such as Cloudflare Clef, OpenAI Decisions, or TypeSafe Jev).
+- A running daemon and a working primary model; see
+  [Configure models](/guides/configure-models.md).
+- Permission to change shared Decision settings.
+- For local inference, a build with the `local-onnx` feature and verified model
+  files. Downloading a preset needs network access; local inference does not
+  send decision prompts to a remote provider.
+- For remote inference, credentials and access to a route explicitly declaring
+  Decision capability and a supported `decision_protocol`.
 
 ## Step 1: Choose a Decision Provider
 
-Holon supports two provider architectures for decisions:
+Inspect the existing selection before changing it:
 
-1. **Local ONNX (zero-egress):** Runs a compact classifier entirely on your CPU
-   using ONNX Runtime. No prompts or decisions leave your machine.
-2. **Remote Provider:** Sends structured decision queries to an external HTTP
-   endpoint. Holon supports Cloudflare Clef (`cloudflare_clef`), OpenAI Decisions
-   (`openai_decisions`), and TypeSafe Jev (`jev`) protocols.
+```bash
+holon config get decision.enabled
+holon config get decision.model
+holon config get decision.local_onnx.enabled
+holon config models list
+```
 
-For private environments or air-gapped tasks, choose the local ONNX provider.
+Choose one of the following paths. A remote `decision.model` and enabled local
+ONNX cannot be configured together. Ordinary chat capability alone is not
+sufficient for a Decision route.
 
 ## Step 2: Configure the Provider
 
 ### Option A: Use the Local ONNX Provider
 
-Enable the local provider and select a preset:
+In the Web GUI, open **Settings → Decision Settings**, choose the
+`jev-selector-q4f16` preset, and click **Download and verify preset**. Wait
+until it reports ready before enabling local inference. For a pre-provisioned
+model, use `decision.local_onnx.model_dir` instead; the files must match the
+supported model/manifest format.
+
+Then set the local route:
 
 ```bash
-holon config set decision.enabled true
-holon config set decision.local_onnx.enabled true
-holon config set decision.local_onnx.preset "jev-selector-q4f16"
-```
-
-You can allocate additional CPU threads if your system has spare cores:
-
-```bash
+holon config unset decision.model
+holon config set decision.local_onnx.preset jev-selector-q4f16
 holon config set decision.local_onnx.num_threads 2
+holon config set decision.local_onnx.enabled true
+holon config set decision.enabled true
 ```
+
+If switching back from a custom model directory to the managed preset, unset
+`decision.local_onnx.model_dir` so it does not override the preset location.
+The managed preset is stored under
+`<HOLON_HOME>/models/decision/local-onnx/<preset>/`.
 
 ### Option B: Use a Remote Provider
 
-Holon routes decision requests to a model only when the route explicitly advertises decision capability (`capabilities.decision: true`) and a recognized `decision_protocol` (`jev`, `cloudflare_clef`, `openai_decisions`, or `openai_compatible`).
-
-**TypeSafe Jev (`jev`):**
-
-TypeSafe's Jev model is registered in Holon's built-in catalog with decision capability enabled:
+Authenticate the provider using the [model setup guide](/guides/configure-models.md).
+For the built-in TypeSafe Jev route, use:
 
 ```bash
-holon config set decision.enabled true
+holon config set decision.local_onnx.enabled false
 holon config set decision.model "typesafe@default/jev-latest"
-```
-
-**Cloudflare Clef (`cloudflare_clef`):**
-
-Because Cloudflare is not bundled in the default model catalog, configure the provider endpoint and register the model's decision capability under `models.catalog` before routing to it:
-
-```bash
-# 1. Configure Cloudflare provider endpoint (CLOUDFLARE_API_KEY provides credentials)
-holon config set providers.cloudflare.transport openai_chat_completions
-holon config set providers.cloudflare.base_url "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1"
-
-# 2. Register the model with decision capability and cloudflare_clef protocol
-holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
-
-# 3. Route decision queries to the registered model
 holon config set decision.enabled true
-holon config set decision.model "cloudflare@default/clef-flash"
 ```
 
-**OpenAI Decisions (`openai_decisions`):**
+For a custom service, configure its endpoint and credential source first.
+Register the service's actual model under `models.catalog` with
+`capabilities.decision: true` and its documented protocol: `jev`,
+`cloudflare_clef`, `openai_decisions`, or `openai_compatible`. Preserve existing
+catalog entries when editing that object. Then select the corresponding
+`provider@endpoint/model` route with `decision.model`.
 
-Dedicated OpenAI decision endpoints (such as `/v1/decisions`) use the `openai_decisions` wire protocol. Register the target model under `models.catalog` before pointing `decision.model` at it:
-
-```bash
-# 1. Register the model with decision capability and openai_decisions protocol
-holon config set models.catalog '{"openai/decision-preview":{"decision_protocol":"openai_decisions","capabilities":{"decision":true}}}'
-
-# 2. Route decision queries to the registered model
-holon config set decision.enabled true
-holon config set decision.model "openai@default/decision-preview"
-```
-
-> **Transport Note:** The `openai_decisions` protocol targets the dedicated
-> `/v1/decisions` endpoint and requires the API-key-based `openai_responses`
-> transport. It cannot be used over OAuth-based Codex transports.
-
-You can also configure these settings visually in the Web GUI under **Settings**
-→ **Decision Settings**.
+These protocol names describe Holon's adapters; they do not establish that a
+particular model or endpoint is available to your account. In particular,
+`openai_decisions` uses the dedicated `/v1/decisions` endpoint through the
+API-key-based `openai_responses` transport, not an OAuth Codex transport.
+Exact metadata fields are in the
+[Configuration reference](/reference/configuration.md#model-catalog-overrides-modelscatalog).
 
 ## Step 3: Enable the Advisory Tool and Set Guardrails
 
-The `AdvisoryDecision` tool remains hidden from agents until you explicitly
-turn it on. Enable the tool and set safety boundaries to prevent runaway loops:
-
 ```bash
-# Expose the tool to agent execution loops
 holon config set decision.tools.enabled true
-
-# Cap tool invocations to 3 calls per agent turn
 holon config set decision.tools.max_calls_per_turn 3
-
-# Require at least 65% confidence; lower scores result in an explicit abstain
 holon config set decision.tools.min_confidence 0.65
-
-# Set an execution timeout (in milliseconds)
 holon config set decision.tools.timeout_ms 10000
 ```
 
+The tool stays hidden until enabled. These settings cap calls, require a
+minimum confidence, and bound the tool's wait. Provider-level timeout,
+concurrency, and queue settings are separate; see the
+[Decision key table](/reference/configuration.md#decision-subsystem-settings).
+
+Read configuration-change notes on stderr. If they require a restart, let
+active work settle and restart through your installation's normal procedure
+before testing. Saving a key does not prove the running daemon has applied it.
+
 ## Step 4: Verify with a Test Prompt
 
-Run a short prompt that requires choosing between explicit options:
+Use an existing test agent; replace `decision-test` with its ID:
 
 ```bash
-holon run "Evaluate whether to use an index scan or table scan for 50 rows in PostgreSQL. Consult the advisory decision tool before recommending."
+holon config doctor
+holon run --agent decision-test "Call AdvisoryDecision once with question 'Which review step should come first?', options ['Read the diff', 'Publish a review'], and state 'The diff has not been inspected; publishing is not authorized.' Report the returned outcome and reason. Do not publish anything or change files."
+holon transcript --agent decision-test --limit 30
 ```
 
-Inspect the output or run transcript:
+## Confirm it worked
+
+The transcript contains an actual `AdvisoryDecision` call and its result.
+Inspect `outcome`, `choice`, `confidence`, `abstain`, `reason`, and provider/model
+metadata. A valid result can select an option, report a provider fallback, or
+abstain. An explicit abstention verifies the failure path; it does not prove
+successful inference. Record its reason rather than presenting it as a choice.
+
+If the agent never called the tool, the test has not verified the Decision
+route. The recommendation remains evidence for the agent to weigh, not
+approval to publish or change state.
+
+## Troubleshooting
+
+- **Tool absent:** check both `decision.enabled` and `decision.tools.enabled`,
+  the effective configuration, and the agent's allowed tools.
+- **Conflicting routes:** unset `decision.model` for local ONNX, or disable
+  local ONNX for a remote model.
+- **Missing preset or unsupported build:** check the GUI download status and
+  the build's `local-onnx` support. Do not assume selecting a preset downloads it.
+- **Provider unavailable or rejected:** check credentials, route capability,
+  protocol, endpoint access, and any required daemon restart.
+- **Abstention:** inspect the reason for timeout, provider failure, call limit,
+  invalid choice, or low confidence. Do not lower confidence limits merely to
+  force a recommendation.
+
+To hide the tool without deleting the provider configuration:
 
 ```bash
-holon transcript
+holon config set decision.tools.enabled false
 ```
-
-You will see an `AdvisoryDecision` tool invocation containing:
-- `question`: The specific evaluation prompt.
-- `options`: The candidate options evaluated.
-- `outcome`: Either `select` (with recommended choice and confidence score) or
-  `abstain` (if confidence fell below `min_confidence`).
-
-Notice that the agent receives the outcome as advisory evidence. It remains
-free to accept, weigh, or reject the recommendation.
 
 ## Next Steps
 
-- [Configuration reference](/reference/configuration.md) — All `decision.*` configuration keys.
-- [Model tool schema inventory](/reference/model-tool-schema-inventory.md) — The machine-readable schema for `AdvisoryDecision`.
-- [Web GUI guide](/guides/use-web-gui.md) — Manage decision settings and view telemetry from the browser.
+- [Configuration reference](/reference/configuration.md) — exact configuration keys.
+- [Model tool schema inventory](/reference/model-tool-schema-inventory.md) — tool schema.
+- [Web GUI guide](/guides/use-web-gui.md) — settings and telemetry.

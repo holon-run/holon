@@ -1,179 +1,150 @@
 ---
 title: Delegate work to another agent
-summary: Hand a scoped task to a child agent, wait for the result, and handle what comes back.
-order: 13
+summary: Choose a child or peer, follow its reply, verify the result, and clean up owned children.
+order: 80
 ---
 
 # Delegate work to another agent
 
-When a piece of work is separable, hand it to another agent and keep going. This
-guide covers choosing how to invoke that agent, waiting for the result, and
-handling what comes back.
+Delegate a bounded piece of work that you can verify independently, such as a
+read-only review of a diff. The parent still owns acceptance and delivery to the
+operator.
 
-Delegation has a model behind it: who may act, how far authority reaches, and
-how results are trusted. See [Multi-agent collaboration](/concepts/multi-agent-collaboration.md).
+## Before you start
 
-Supervisor/child lifecycle and task-handle contracts are in the [Tasks spec](/spec/tasks.md).
+Give the parent access to the intended workspace and a clear objective. Confirm
+that `InvokeAgent` is available. A template named in an invocation must already
+be available; an existing peer must exist and be accessible to the caller.
+
+The JSON blocks below are **agent tool inputs**, not shell commands. As an
+operator, ask the parent to perform these steps. Do not start recursive
+`holon run` commands to imitate delegation.
 
 ## Invocation Styles
 
 ### Supervised Child Subagent
 
-Create a private subordinate agent strictly supervised by the current agent:
+Use a child for a separable task under the parent's supervision. Call
+`InvokeAgent` with scope, restrictions, and a return format:
 
 ```json
 {
   "target": {
     "kind": "new_subagent",
     "template": "code-reviewer",
-    "workspace_mode": "worktree"
+    "workspace_mode": "inherit"
   },
-  "initial_message": "Review pull request changes in src/runtime/"
+  "initial_message": "Review the current diff in src/runtime/. Read only; do not edit, commit, or publish. Return findings with file locations, severity, and verification gaps. If no findings, say what you checked."
 }
 ```
+
+Save both the returned `agent_id` and task handle. This read-only example
+inherits the workspace so the child can inspect the current uncommitted diff.
+Keep that diff stable during review.
+
+For an editing assignment, use `workspace_mode: "worktree"` and identify the
+committed revision or patch the child must inspect. A fresh worktree does not
+implicitly contain the parent's uncommitted changes. A worktree separates
+repository edits; it is not a security sandbox. Specify which files the child
+may change and whether it should commit.
 
 ### Peer Invocation
 
-Invoke an existing long-lived agent as an equal peer:
+Use a peer when an existing agent owns the expertise or ongoing responsibility:
 
 ```json
 {
-  "target": {
-    "kind": "existing_agent",
-    "agent_id": "auditor"
-  },
-  "initial_message": "Please audit runtime SQLite database retention rules."
+  "target": { "kind": "existing_agent", "agent_id": "auditor" },
+  "initial_message": "Audit the current retention change without editing. Reply with findings and the commit or diff you inspected; distinguish an acknowledgement from a completed audit."
 }
 ```
+
+This leaves the peer's configuration and parentage unchanged. Its handle resolves
+on the **first later durable message**, which may only acknowledge the request.
+Check that the reply actually satisfies the assignment. Concurrent waits can see
+the same reply; they do not each imply a separate completed task.
 
 ### Child Agent Token Usage
 
-Task status and output snapshots include a `token_usage` field with the
-child agent's cumulative token consumption:
+Use task snapshots to inspect `token_usage` when investigating cost or unexpected
+work. The field definitions are in the
+[delegated task reference](../reference/work-items.md#delegated-task-snapshots).
+Token consumption does not establish progress or correctness.
 
-```json
-{
-  "total": {
-    "input_tokens": 12450,
-    "output_tokens": 3840,
-    "total_tokens": 16290
-  },
-  "total_model_rounds": 5,
-  "last_turn": {
-    "input_tokens": 2100,
-    "output_tokens": 720,
-    "total_tokens": 2820
-  }
-}
-```
+## Supervision Flow
 
-| Field | Description |
-|-------|-------------|
-| `total` | Cumulative tokens across all child turns |
-| `total_model_rounds` | Number of model round-trips the child has made |
-| `last_turn` | Token usage for the most recent turn (if available) |
+1. Save the task handle returned by `InvokeAgent`.
+2. Continue independent work if there is any. Use `TaskStatus` or `TaskOutput`
+   for a bounded inspection when diagnosing a problem.
+3. When only the result remains, call `WaitFor` with the returned task ID:
 
-Use token usage to estimate child agent costs, detect unexpectedly expensive
-delegations, or decide whether to stop a child that is consuming more tokens
-than its output warrants.
+   ```json
+   {
+     "wake": "task_result",
+     "resource": "TASK_ID_FROM_INVOKE_AGENT",
+     "reason": "Wait for the scoped review",
+     "delivery": "silent"
+   }
+   ```
+
+4. Follow `result.continuation`. `continue_turn` means use the available result
+   now; a yielding result means resume when the runtime delivers it. Do not poll
+   `TaskOutput` repeatedly to wait.
+5. Check the child or peer's evidence against the assigned scope. Reproduce
+   relevant checks and inspect changed files before accepting the result.
+6. Deliver the combined answer with verification gaps and retained artifact
+   locations. Do not represent an acknowledgement as a finished audit.
+
+For follow-up input, inspect task status first. Use `TaskInput` only when that
+handle supports it. A terminal task cannot be restarted by sending input; invoke
+the retained agent again or send an authorized durable message.
+
+### Subagent Lifecycle and Cleanup
+
+Children remain available after an invocation completes. Reuse a child while its
+context is useful. Once its mission ends:
+
+1. Preserve needed artifacts and incorporate or retain its worktree changes.
+2. Inspect the parent's `GetAgent` summary for `subagent_cleanup` blockers.
+3. Read the child's `GetAgent(detail="full")` result for its current
+   `identity.incarnation`.
+4. Call `DeleteAgent` with that agent ID and incarnation. Resolve any reported
+   execution, descendant, dirty-worktree, or shared-worktree blocker first.
+
+Only clean up children under your supervision. A peer reply never grants
+ownership of that peer. Do not delete a peer because its task is terminal.
 
 ## Usage Patterns
 
 ### Parallel investigation
 
-Invoke multiple agents to explore different aspects simultaneously:
-
-```
-Parent agent:
-  InvokeAgent("Review src/runtime/ for performance issues")
-  InvokeAgent("Review src/runtime/ for error handling gaps")
-  InvokeAgent("Review src/runtime/ for missing tests")
-  → Wait for all task handles to complete
-  → Aggregate findings into final report
-```
+Assign non-overlapping questions and retain each handle. Verify and reconcile
+conflicting findings before reporting them. Limit parallelism to work that can
+actually proceed independently.
 
 ### Specialized delegates
 
-Assign specialized agents for distinct concerns:
-
-```
-Parent agent:
-  InvokeAgent("Code review", template="code-reviewer")
-  InvokeAgent("Test writing", template="test-writer")
-```
+Choose an installed template for the task, but include acceptance criteria in
+the assignment. A role name alone does not tell the child what to deliver.
 
 ### Safe experimentation
 
-Use `worktree` mode to let a child experiment without affecting the main
-workspace:
-
-```
-Parent agent:
-  InvokeAgent("Try alternative implementation approach",
-              workspace_mode=worktree)
-  → Child works in isolated worktree
-  → Parent reviews child's output
-  → Parent applies the best approach to main workspace
-```
-
-## Supervision Flow
-
-A typical parent-child interaction:
-
-1. **Invoke** — Parent calls `InvokeAgent` with `initial_message` describing the
-   task
-2. **Monitor** — Parent uses `TaskStatus` to check if the child is still
-   working, sleeping, or waiting
-3. **Review** — Parent reads `TaskOutput` to get bounded previews or wait for
-   completion
-4. **Deliver** — Parent aggregates child results into the final user-facing
-   answer
-5. **Clean up** — Once child work is incorporated, the parent owns cleanup.
-   Inspect `GetAgent(detail="full")` to check the child's `identity.incarnation`
-   and blockers, then call `DeleteAgent(agent_id, incarnation)` to release
-   its resources.
-
-The parent remains responsible for:
-
-- **Verification** — Child output is evidence, not authority
-- **Aggregation** — Combining results from multiple children
-- **Final delivery** — The parent produces the user-facing answer
-
-### Subagent Lifecycle and Cleanup
-
-Newly invoked subagents are private, reusable instances retained after their
-tasks complete. They do not expire automatically by age:
-
-- **Parent ownership:** Only the supervising parent can delete a retained child.
-  The runtime validates canonical supervision and both agent incarnations.
-- **Cleanup inspection:** Calling `GetAgent` on the parent surfaces a bounded
-  `subagent_cleanup` list (up to 16 supervised children) with any blockers.
-- **Blocker checks:** Active execution, unresolved descendant responsibilities,
-  and dirty or shared worktrees block cleanup until settled. Open work items
-  or completed tasks do not block cleanup if the parent decides they are no
-  longer needed.
-- **Background reminders and retirement:** The daemon can send deduplicated
-  daily reminders to parents with lingering children (`reminders_enabled`). If
-  configured, fully idle child runtimes can cooperatively exit memory
-  (`idle_retirement_enabled`) while preserving durable identity and history on
-  disk.
+For an authorized experiment, use a child worktree and request a diff and test
+results. Inspect that worktree before integrating changes; do not assume they
+already exist in the parent's checkout.
 
 ## Best Practices
 
-- **Keep delegations focused.** Each child should have one clear objective.
-- **Supervise explicitly.** Check `TaskStatus` before assuming completion.
-- **Treat child output as evidence.** Review and verify before passing to the
-  user.
-- **Limit parallelism.** Invoke only as many agents as the task actually
-  benefits from.
-- **Clean up retained children.** When a child's mission ends, check
-  `subagent_cleanup` and call `DeleteAgent` rather than leaving idle identities.
+If invocation is rejected, check the target ID, template availability, and caller
+permissions. Do not create a same-named replacement or broaden authority to work
+around the rejection. If a child waits for input, answer the concrete question
+or stop the task when its work is no longer needed.
+
+Success means the parent has a verified result, can locate its artifacts, and
+has either retained the child intentionally or completed safe cleanup.
 
 ## See Also
 
-- [Multi-agent collaboration](/concepts/multi-agent-collaboration.md) — roles,
-  boundaries, and trust
-- [Trust boundaries](/concepts/trust-boundaries.md) — why child output is
-  evidence, not authority
-- [Work items reference](/reference/work-items.md) — tracking objectives across
-  agents
+- [Multi-agent collaboration](../concepts/multi-agent-collaboration.md)
+- [Tasks specification](../spec/tasks.md)
+- [Observe agent work](observe-agent-work.md)

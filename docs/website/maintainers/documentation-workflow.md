@@ -27,6 +27,9 @@ docs/website/
 Keep public-facing website copy concise. Detailed runtime contracts and design
 records still belong under the repository `docs/` tree.
 
+Use [Documentation layers](documentation-layers.md) to decide whether a change
+belongs in Concepts, a task guide, Reference, or a maintainer contract.
+
 ## Check contract references
 
 The docs CI checks repository-local Markdown links and heading anchors in:
