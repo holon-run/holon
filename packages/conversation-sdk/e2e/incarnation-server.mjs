@@ -13,7 +13,7 @@ const snapshot = await client.summary("web", { limit: 1 });
 assert.ok(snapshot.summary && snapshot.etag);
 assert.equal((await client.summary("web", { ifNoneMatch: snapshot.etag, limit: 1 })).summary, null);
 await client.activities("web", "turn-active");
-await client.brief("web", "brief-one");
+const originalBrief = await client.brief("web", "brief-one");
 await client.locateSource("web", "brief:brief-one", { contextLimit: 1 });
 
 // A complete initial checkpoint is admitted under incarnation 1.
@@ -54,6 +54,10 @@ try {
   // Deletion retains durable history; assert the binding, not an empty projection.
   const freshSnapshot = await fresh.summary("web");
   assert.ok(freshSnapshot.summary);
+  assert.ok(freshSnapshot.summary.turns.some((turn) => turn.turn_id === "turn-active"),
+    "newly admitted reads still project retained pre-deletion turns");
+  assert.deepEqual(await fresh.brief("web", "brief-one"), originalBrief,
+    "newly admitted reads still expose the retained pre-deletion Brief without rewriting it");
   assert.notEqual(freshSnapshot.summary.snapshot_cursor, snapshot.summary.snapshot_cursor);
   await assert.rejects(fresh.stream("web", { after: snapshot.summary.snapshot_cursor }).next(),
     (error) => error instanceof ConversationHttpError &&
