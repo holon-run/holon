@@ -158,6 +158,7 @@ internal data class ShareUiState(
 internal data class ShellUiState(
     val mainDestination: MainDestination = MainDestination.Agents,
     val busy: Boolean = false,
+    val rosterRefreshing: Boolean = false,
     val online: Boolean = false,
     val lastSyncedAt: Long? = null,
     val session: ActiveSession? = null,
@@ -190,6 +191,7 @@ internal data class HolonUiState(
         browserLoginUrl: String? = null,
         mainDestination: MainDestination = MainDestination.Agents,
         busy: Boolean = false,
+        rosterRefreshing: Boolean = false,
         enqueueing: Boolean = false,
         stagingAttachment: Boolean = false,
         abortingRun: Boolean = false,
@@ -265,7 +267,7 @@ internal data class HolonUiState(
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),
-        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage, updateState = updateState),
+        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, rosterRefreshing = rosterRefreshing, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage, updateState = updateState),
     )
 
     // Transitional shell adapter; feature state has a single immutable owner.
@@ -279,6 +281,7 @@ internal data class HolonUiState(
     val browserLoginUrl: String? get() = connectionState.browserLoginUrl
     val mainDestination: MainDestination get() = shellState.mainDestination
     val busy: Boolean get() = shellState.busy
+    val rosterRefreshing: Boolean get() = shellState.rosterRefreshing
     val enqueueing: Boolean get() = conversationState.enqueueing
     val stagingAttachment: Boolean get() = conversationState.stagingAttachment
     val abortingRun: Boolean get() = conversationState.abortingRun
@@ -370,6 +373,7 @@ internal data class HolonUiState(
         browserLoginUrl: String? = this.browserLoginUrl,
         mainDestination: MainDestination = this.mainDestination,
         busy: Boolean = this.busy,
+        rosterRefreshing: Boolean = this.rosterRefreshing,
         enqueueing: Boolean = this.enqueueing,
         stagingAttachment: Boolean = this.stagingAttachment,
         abortingRun: Boolean = this.abortingRun,
@@ -450,7 +454,7 @@ internal data class HolonUiState(
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),
-        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage, updateState = updateState),
+        shellState = ShellUiState(mainDestination = mainDestination, busy = busy, rosterRefreshing = rosterRefreshing, online = online, lastSyncedAt = lastSyncedAt, session = session, networkProfiles = networkProfiles, switchingNetworkId = switchingNetworkId, selectedAgent = selectedAgent, agentSection = agentSection, error = error, statusMessage = statusMessage, updateState = updateState),
     )
 
     val recentAgents: List<AgentSummary>

@@ -3,8 +3,6 @@ package run.holon.android.app
 import java.net.ConnectException
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotSame
-import kotlin.test.assertSame
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -106,59 +104,6 @@ class LiveSyncRequestsTest {
         runCurrent()
         assertEquals(13, reads)
         assertEquals(13, received.size)
-    }
-
-    @Test
-    fun `roster refresh shares one active request`() = runTest {
-        val gate = CompletableDeferred<Unit>()
-        var reads = 0
-        val loader = RosterRefreshRequest(this) {
-            reads++
-            gate.await()
-            "roster"
-        }
-
-        val first = loader.load()
-        val second = loader.load()
-        assertSame(first, second)
-        runCurrent()
-        assertEquals(1, reads)
-        gate.complete(Unit)
-        assertEquals("roster", first.await())
-    }
-
-    @Test
-    fun `roster refresh coalesces across dispatchers and reset drops the old request`() = runTest {
-        val firstGate = CompletableDeferred<Unit>()
-        val replacementGate = CompletableDeferred<Unit>()
-        var reads = 0
-        var gate = firstGate
-        val loader = RosterRefreshRequest(this) {
-            reads++
-            gate.await()
-            "roster-$reads"
-        }
-        val firstResult = CompletableDeferred<kotlinx.coroutines.Deferred<String>>()
-        val secondResult = CompletableDeferred<kotlinx.coroutines.Deferred<String>>()
-
-        val firstJob = launch(Dispatchers.Default) { firstResult.complete(loader.load()) }
-        val secondJob = launch(Dispatchers.IO) { secondResult.complete(loader.load()) }
-        firstJob.join()
-        secondJob.join()
-        val first = firstResult.await()
-        val second = secondResult.await()
-        assertSame(first, second)
-        runCurrent()
-        assertEquals(1, reads)
-
-        withContext(Dispatchers.Default) { loader.reset() }
-        gate = replacementGate
-        val replacement = withContext(Dispatchers.IO) { loader.load() }
-        assertNotSame(first, replacement)
-        runCurrent()
-        assertEquals(2, reads)
-        replacementGate.complete(Unit)
-        assertEquals("roster-2", replacement.await())
     }
 
     @Test

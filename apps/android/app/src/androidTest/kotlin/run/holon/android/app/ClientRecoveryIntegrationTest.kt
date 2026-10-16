@@ -1,8 +1,13 @@
 package run.holon.android.app
 
+import android.app.Application
 import android.view.inputmethod.InputMethodManager
 import android.net.Uri
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -12,7 +17,10 @@ import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -30,6 +38,7 @@ class ClientRecoveryIntegrationTest {
         val offline = AtomicBoolean(false)
         val currentUserStatus = AtomicInteger(200)
         val invalidCurrentUser = AtomicBoolean(false)
+        val snapshotFailures = AtomicInteger(0)
         val prompts = ConcurrentLinkedQueue<String>()
         MockWebServer().use { server ->
             server.dispatcher = object : Dispatcher() {
@@ -43,6 +52,9 @@ class ClientRecoveryIntegrationTest {
                         if (currentUserStatus.get() != 200) {
                             return MockResponse().setResponseCode(currentUserStatus.get()).setBody("{}")
                         }
+                    }
+                    if (path.endsWith("/agents/snapshot") && snapshotFailures.getAndUpdate { (it - 1).coerceAtLeast(0) } > 0) {
+                        return MockResponse().setResponseCode(503).setBody("{}")
                     }
                     val body = when {
                         request.method == "GET" && path.endsWith("/auth/method") -> """{"mode":"local"}"""
@@ -214,10 +226,48 @@ class ClientRecoveryIntegrationTest {
                         assertTrue(runBlocking { recovered.resume() } is ResumeResult.Offline)
                         assertEquals(entries, runBlocking { recovered.outbox("holon-tester") })
 
-                        offline.set(false)
-                        val ready = runBlocking { recovered.resume() } as ResumeResult.Ready
-                        assertFalse(ready.session.isOffline)
-                        runBlocking { recovered.retryOutbox() }
+                        // No resume/relogin after the cached launch: foreground refresh
+                        // must restore the online session and actual outbox delivery.
+                        val viewModelStore = ViewModelStore()
+                        lateinit var recovery: HolonViewModel
+                        instrumentation.runOnMainSync {
+                            recovery = ViewModelProvider(viewModelStore, viewModelFactory {
+                                initializer {
+                                    HolonViewModel(context.applicationContext as Application, recovered, TraceRecorder(context))
+                                }
+                            })[HolonViewModel::class.java]
+                        }
+                        try {
+                            runBlocking {
+                                withTimeout(10_000) { recovery.state.first { it.phase == AppPhase.Ready && it.session?.isOffline == true } }
+                            }
+                            instrumentation.runOnMainSync { recovery.onBackground() }
+                            snapshotFailures.set(2)
+                            offline.set(false)
+                            instrumentation.runOnMainSync { recovery.onForeground() }
+                            runBlocking {
+                                withTimeout(30_000) {
+                                    recovery.state.first { it.online && it.session?.isOffline == false }
+                                    while (recovered.outbox("holon-tester").any { it.state != "received" }) delay(100)
+                                }
+                            }
+                            assertEquals(0, snapshotFailures.get())
+                            assertNotNull(recovery.state.value.session?.server?.limits)
+                            assertEquals(credential, profileStore.read(session.networkId))
+
+                            // Explicit retry also wakes a pending automatic backoff.
+                            snapshotFailures.set(10)
+                            instrumentation.runOnMainSync { recovery.refresh() }
+                            runBlocking { withTimeout(10_000) { recovery.state.first { !it.online } } }
+                            snapshotFailures.set(0)
+                            instrumentation.runOnMainSync { recovery.refresh() }
+                            runBlocking {
+                                withTimeout(10_000) { recovery.state.first { it.online && !it.rosterRefreshing } }
+                            }
+                            assertNull(recovery.state.value.error)
+                        } finally {
+                            instrumentation.runOnMainSync { viewModelStore.clear() }
+                        }
                         assertTrue(runBlocking { recovered.outbox("holon-tester") }.all { it.state == "received" })
                         assertEquals(2, prompts.size)
                         assertTrue(prompts.any { it.contains("\"client_request_id\":\"offline-text\"") && it.contains("offline text") })

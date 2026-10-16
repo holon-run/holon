@@ -367,7 +367,7 @@ internal class HolonRepository(
         ) {
             throw SessionScopeChangedException(lease.client.instanceId)
         }
-        sessions.activate(current.copy(user = user, server = server), client)
+        sessions.activate(current.copy(user = user, server = server, isOffline = false), client)
         cacheRoster(requireSession().scopeKey, roster)
         return requireSession() to roster
     }

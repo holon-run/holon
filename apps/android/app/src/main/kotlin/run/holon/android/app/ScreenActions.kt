@@ -33,6 +33,7 @@ internal interface ConnectionActions {
 internal interface AgentsActions {
     fun beginAddNetwork(): Unit
     fun openAgent(agent: AgentSummary): Unit
+    fun refresh(showProgress: Boolean = true): Unit
     fun selectMainDestination(destination: MainDestination): Unit
     fun setSearch(value: String): Unit
     fun switchNetwork(networkId: String): Unit
@@ -140,6 +141,7 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
     val agents: AgentsActions = object : AgentsActions {
         override fun beginAddNetwork(): Unit { delegate.beginAddNetwork() }
         override fun openAgent(agent: AgentSummary): Unit { delegate.openAgent(agent) }
+        override fun refresh(showProgress: Boolean): Unit { delegate.refresh(showProgress) }
         override fun selectMainDestination(destination: MainDestination): Unit { delegate.selectMainDestination(destination) }
         override fun setSearch(value: String): Unit { delegate.setSearch(value) }
         override fun switchNetwork(networkId: String): Unit { delegate.switchNetwork(networkId) }
