@@ -533,4 +533,4 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 - [Configuration Reference](/reference/configuration.md) — Config keys and credential management
 - [HTTP Control Plane](/reference/http-control-plane.md) — HTTP API design philosophy
 - [Getting Started](/getting-started/first-agent.md) — Setup tutorial
-- [Quick Examples](/guides/quick-examples.md) — Task-oriented examples
+- [Guides](/guides/) — Task-oriented workflows and verification steps

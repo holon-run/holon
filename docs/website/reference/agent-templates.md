@@ -6,36 +6,19 @@ order: 32
 
 # Agent Templates
 
-An agent template is a reusable bootstrap that initializes a new agent's
-`AGENTS.md` role contract and optional pre-installed skills. Templates give new
-agents a known starting point without manual setup.
+This page lists template roles, library resolution rules, and manifest formats.
+For the model, see [Agent templates](/concepts/agent-templates.md).
+For setup, see [Create an agent](/guides/create-agent.md) or
+[Create an agent template](/guides/create-agent-template.md).
 
 ## When to Use Templates
 
-Use `--template` when you want a new agent to start with a specific role and
-capabilities. Without a template, agents start with a generic default contract.
-
-Common scenarios:
-
-- **Creating a synced reviewer agent** — `holon agent create reviewer --template code-reviewer`
-- **Working with office documents** — `holon agent create office --template office-assistant`
-- **Producing video deliverables** — `holon agent create video --template video-producer`
-- **Owning the GitHub issue inbox** — `holon agent create triage --template issue-triager`
-- **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
-- **Owning documentation hygiene** — `holon agent create docs --template docs-steward`
-- **Maintaining code health and reducing technical debt** — `holon agent create code-health --template code-health-steward`
-- **Maintaining marketing context and campaign briefs** — `holon agent create marketing --template marketing-steward`
-- **Maintaining community health and contributor experience** — `holon agent create community --template community-steward`
-- **Organizing legal operations and contract intake** — `holon agent create legal --template legal-ops-steward`
-- **Maintaining a source-linked knowledge base** — `holon agent create knowledge --template knowledge-steward`
-- **Guiding deliberate practice and spaced learning** — `holon agent create coach --template learning-coach`
-- **Owning defensive security review** — `holon agent create security --template security-reviewer`
-- **Owning the dependency update queue** — `holon agent create deps --template dependency-steward`
-- **Turning a goal into a spec** — `holon agent create pm --template product-manager`
-- **Operating servers and services** — `holon agent create ops --template server-ops`
-- **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
-- **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
-- **Solving GitHub issues** — `holon solve https://github.com/owner/repo/issues/42`
+See [Create an agent from a template](/guides/create-agent.md) for template
+inspection, installation, creation, and verification. Common selectors include
+`code-reviewer`, `office-assistant`, `software-developer`, `server-ops`,
+`holon-ops`, and `github-solver`; the specialized roles below describe their
+own dependencies and boundaries. Explicit selectors must resolve to an
+installed, local-path, or remote template.
 
 ## Video Production
 
@@ -334,14 +317,13 @@ explicit path, including when installed from a release archive.
 
 ### Create an Agent
 
-```bash
-holon agent create reviewer --template code-reviewer
+```text
+holon agent create <agent-id> --template <selector>
 ```
 
-This initializes `~/.holon/agents/reviewer/AGENTS.md` from the local
-`code-reviewer` template after that template has been installed or synced. If
-the agent home already exists and is non-empty, template initialization refuses
-to overwrite it.
+Selectors accept catalog names, absolute template directories, and GitHub tree
+URLs. Initialization refuses to overwrite a non-empty agent home. Follow the
+[creation guide](/guides/create-agent.md) for the complete workflow.
 
 ### One-Shot Run
 
@@ -382,10 +364,20 @@ automatically, so your template only needs to define the role-specific content.
 
 ### `template.toml`
 
-An optional manifest for template metadata such as display name, summary,
-schema, and compatibility. Synced remote templates use it for catalog metadata;
-path-based local templates can omit it and fall back to directory/AGENTS.md
-metadata.
+An optional manifest for template metadata:
+
+```toml
+schema = "holon.agent_template.v1"
+id = "my-template"
+name = "My Template"
+summary = "The agent's responsibility."
+
+[compatibility]
+holon = ">=0.1.0"
+```
+
+Synced remote templates use it for catalog metadata; path-based local templates
+can omit it and fall back to directory/AGENTS.md metadata.
 
 ### `skills.toml`
 
@@ -439,18 +431,8 @@ example `repo = "holon-run/holon"` and `path = "skills/ghx"`.
 
 ## Creating Custom Templates
 
-Create a directory with an `AGENTS.md`, optional `template.toml`, and optional
-`skills.toml`, then use the absolute path as the template selector:
-
-```bash
-holon agent create my-agent --template /path/to/my-template
-```
-
-You can also host templates on GitHub and reference them by URL:
-
-```bash
-holon agent create my-agent --template https://github.com/owner/repo/tree/main/templates/my-template
-```
+Follow [Create an agent template](/guides/create-agent-template.md) to write,
+test, and reuse a template without overwriting an existing agent.
 
 Templates referenced by absolute path or GitHub URL record provenance in the
 agent home (`template-provenance.json`), so you can trace back where the
@@ -458,15 +440,6 @@ agent's contract came from.
 
 ## Templates vs Skills
 
-Templates and skills serve different purposes:
-
-| Feature | Template | Skill |
-|---------|----------|-------|
-| What it provides | Agent identity and role contract | Reusable task workflow |
-| When applied | At agent creation time | Loaded on demand during a task |
-| Persistence | Permanent in agent home | Available as long as installed |
-| Example | "You are a reviewer" | "Here's how to review a PR" |
-
-Templates often include skill references so that new agents have the right
-tools available from the start. See the [Skills guide](/reference/skills) for
-details on skills.
+See [Agent templates](/concepts/agent-templates.md) for creation-time
+initialization and [Skills and tools](/concepts/skills-and-tools.md) for
+on-demand workflows. Skill dependencies do not grant tool permissions.

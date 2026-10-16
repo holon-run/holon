@@ -48,3 +48,20 @@ cargo test
 ```
 
 迭代时可以用更窄的检查，但最终验证不要用一次性脚本替代真实的项目检查。
+<a id="web-gui-development"></a>
+
+## Web GUI 开发
+
+正式发布版本内置了 Web GUI；本地开发服务器用于修改其前端源码。要求 Node.js 24 或更高版本。在仓库根目录执行以下命令，在启动 GUI 之前先安装并构建共享的 conversation SDK：
+
+```bash
+npm ci --prefix packages/conversation-sdk
+npm --prefix packages/conversation-sdk run build
+cd web-gui/app
+npm ci
+npm run dev
+```
+
+开发服务器支持热重载。其 `/api` 代理默认指向 `http://127.0.0.1:7878`；当测试守护进程运行在不同地址时，可设置 `HOLON_API_PROXY_TARGET` 环境变量。请使用专用的开发守护进程，避免使用包含生产凭据或真实数据的环境。
+
+通过 [Web GUI 指南](../guides/use-web-gui.md)中的流程对照正在运行的守护进程验证前端改动。切勿将本地 Mock 夹具输出当作真实网络请求成功的依据。

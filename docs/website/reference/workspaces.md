@@ -6,26 +6,25 @@ order: 30
 
 # Workspaces and execution environments
 
-> **Mental model & specification:** To understand workspace security and trust boundaries, see [Security and execution boundaries](/concepts/security-and-execution-boundaries.md). For internal execution root invariants and worktree lifecycle contracts, see [Workspace and execution spec](/spec/workspace-and-execution.md).
-
-A workspace is the execution root for an agent — where it reads files, runs
-commands, and applies patches. Every agent always has exactly one active
-workspace.
+For the model, see [Workspaces](/concepts/workspaces.md); for the procedure,
+see [Work in a workspace or worktree](/guides/work-with-workspaces.md).
+Internal invariants are in the
+[Workspace and execution spec](/spec/workspace-and-execution.md).
+Every agent has one active workspace, which can use a canonical root or a
+registered worktree projection.
 
 ## What a Workspace Defines
 
 | Concern | Set by workspace |
 |---------|-----------------|
 | Instruction root | Where `AGENTS.md` and policy files resolve |
-| Execution root | Default working directory for commands |
-| ApplyPatch target | Where file mutations land |
+| Execution root | Default working directory for commands in the active projection |
+| ApplyPatch target | Base for relative patch paths; explicit absolute paths remain explicit targets |
 | Memory scope | Workspace-scoped episode records and indexes |
 
 ## Workspace vs Shell Directory
 
-A workspace is **not** a shell `cd`. Shell `cd` changes the directory for
-that one command process. Agents use explicit binding and activation tools to
-change where runtime tools operate.
+See [Workspaces](/concepts/workspaces.md) for the scope distinction.
 
 | Action | Effect |
 |--------|--------|
@@ -38,12 +37,7 @@ change where runtime tools operate.
 
 ### Attach
 
-Attach a project directory to an agent:
-
-```bash
-holon workspace attach /path/to/project
-holon workspace attach --agent my-agent /path/to/project
-```
+`holon workspace attach [--agent <id>] <path>`
 
 This discovers or creates a workspace record for the directory and binds it to
 the agent. Attaching does not by itself change the active workspace; activate
@@ -52,54 +46,42 @@ persists across sessions.
 
 ### Exit
 
-Return to the agent's home workspace:
-
-```bash
-holon workspace exit
-holon workspace exit --agent my-agent
-```
+`holon workspace exit [--agent <id>]` returns to the agent's home workspace.
 
 ### Detach
 
-Remove a workspace record entirely:
+`holon workspace detach [--agent <id>] <workspace-id>` removes the target
+agent's binding. An active target returns to agent home first.
 
-```bash
-holon workspace detach <workspace-id>
-```
-
-Detaching does not delete the directory — it removes the workspace record
-from Holon's index. Memory and episode records associated with the workspace
-are preserved.
+Detaching does not delete project files or retained worktree artifacts.
+Memory and episode records associated with the workspace are preserved.
 
 ## Worktree Isolation
 
 `CreateWorktree` creates a managed linked worktree from an explicit attached
 workspace, branch, and base ref:
 
-```text
-CreateWorktree {
-  workspace_id: "ws_...",
-  branch: "feature/example",
-  base_ref: "origin/main"
-}
-```
+| Field | Contract |
+|-------|----------|
+| `workspace_id` | Required attached repository workspace |
+| `branch` | Required branch to check out |
+| `base_ref` | Required starting ref for a new worktree |
+| `activate` | Defaults to `true` |
+| `on_existing` | `reuse` or `error`; reuse requires one unambiguous live worktree and does not reset it |
+| `label` | Optional descriptive label |
 
-Isolated workspaces are useful for:
-
-- Safe experimentation without polluting the working copy
-- Parallel work on the same repository by different agents
-- PR review branches where changes should not leak
+`RemoveWorktree` accepts exactly one of `execution_root_id` or `path`.
+Removal refuses dirty, locked, unregistered, canonical, or occupied roots.
+Removing an active root requires `return_to`. `branch_policy` is `keep` or
+`delete_if_merged`; the latter can use `merged_into` to name the comparison ref.
+See the [workspace guide](/guides/work-with-workspaces.md) for safe cleanup.
 
 ## Agent Home vs Project Workspace
 
-| Workspace Type | Purpose | Example |
-|---------------|---------|---------|
-| Agent home | Agent-local state and memory | `~/.holon/agents/my-agent/` |
-| Project workspace | Code and files being worked on | `/path/to/project` |
-
-Every agent starts with its agent home as the active workspace. Use
-`workspace attach` to bind a project workspace and `SwitchWorkspace` to
-activate it, and `workspace exit` to return to agent home.
+See [Workspaces](/concepts/workspaces.md) for their roles and
+[Customize an agent](/guides/customize-agent.md) for choosing where to put
+guidance. Agent home normally lives at `~/.holon/agents/<agent-id>/`; use
+runtime-reported paths when `HOLON_HOME` or the active projection differs.
 
 ## Agent Workspace Tools
 
@@ -113,6 +95,10 @@ activate it, and `workspace exit` to return to agent home.
 - `DetachWorkspace({ workspace_id: "ws_..." })` — remove a binding; active targets first return to agent home
 
 `UseWorkspace` remains a hidden compatibility alias for historical calls.
+`SwitchWorkspace` accepts exactly one selector: `workspace_id`,
+`execution_root_id`, or `path`, with optional `cwd`. It only activates an
+existing binding or registered projection; it does not attach a repository.
+Shell `workdir` and `cd` do not change that activation.
 
 ## See Also
 

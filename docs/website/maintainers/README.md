@@ -22,4 +22,12 @@ For runtime contracts, see [Spec](/spec/). For the mental model, see
   How to edit and build the mdorigin-powered Holon website.
   <!-- mdorigin:index kind=article -->
 
+- [Documentation layers](./documentation-layers.md)
+  Choose where a documentation change belongs and keep user explanations separate from runtime specifications.
+  <!-- mdorigin:index kind=article -->
+
+- [Build mobile clients](./build-mobile-clients.md)
+  Build and install the Android and iOS clients from a local checkout.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

@@ -1,135 +1,32 @@
 ---
 title: Host local apps
-summary: Host agent-owned HTML/JS static applications, interact with agents through the App SDK, and serve lightweight UI tools.
-order: 25
+summary: Build a small agent-owned app, submit a request, and verify its queue events in the browser.
+order: 240
 ---
 
-# Host Local Apps
+# Host local apps
 
-Starting in v0.47.0, Holon includes a Local App Engine. Agents can host lightweight, self-contained HTML and JavaScript applications stored directly inside their `agent_home/apps/` directory.
+Build a card that shows its owning agent, submits a `ping` request, and displays
+queue events. This verifies the App SDK connection without granting the app
+permission to run arbitrary work. For the underlying model, see
+[Local Apps](../concepts/local-apps.md).
 
-Clients access these applications through logical URLs rather than physical filesystem paths, protecting host directory structures.
+## Before you start
 
-## How Local Apps Work
+- Use an existing agent and confirm its Agent Home. Ask the agent to create the
+  app there, or use its confirmed host path; a custom data directory can change
+  that location. Do not overwrite an existing `ping-card` app.
+- Run `holon daemon status` to check the runtime. Start it with
+  `holon daemon start` if needed.
+- Use the runtime's browser origin and, for remote access, an authenticated
+  session. See [Connect to a remote runtime](connect-remote-runtime.md).
+- Host only code you trust. Apps share the runtime's origin and session;
+  they are not isolated from host credentials.
 
-Each app lives in its own subdirectory under the agent's home:
+## 1. Create the directory and manifest
 
-```text
-~/.holon/agents/<agent_id>/apps/<app_id>/
-├── manifest.json
-├── index.html
-├── style.css
-└── app.js
-```
 
-When a user or browser visits `/apps/<agent_id>/<app_id>/`, Holon:
-
-1. Validates the directory and `manifest.json`.
-2. Applies baseline Content Security Policy (CSP) headers and traversal checks.
-3. Serves the configured entry document and requested static assets.
-4. Mounts the built browser SDK at `/apps/<agent_id>/<app_id>/holon.js`.
-
-## Manifest Contract
-
-Every app directory must contain a valid `manifest.json` (maximum 64 KiB):
-
-```json
-{
-  "id": "status-monitor",
-  "name": "Status Monitor",
-  "version": "1.0.0",
-  "entry": "index.html",
-  "description": "Displays agent status and triggers health checks"
-}
-```
-
-### Manifest Fields
-
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | App identifier. Must match the directory name exactly. |
-| `name` | string | Human-readable application name. |
-| `version` | string | Application version string (e.g. `1.0.0`). |
-| `entry` | string | Safe relative path to the entry HTML document within the app root. |
-| `description` | string | Optional short summary of what the app does. |
-
-## The Browser App SDK
-
-Holon serves `@holon/app-sdk` directly at `holon.js` inside every app route. Include it in your entry HTML:
-
-```html
-<script src="holon.js"></script>
-```
-
-The script attaches `window.Holon` to the global browser environment with three primary methods:
-
-### 1. `window.Holon.context()`
-
-Fetches execution metadata and session state for the running app:
-
-```javascript
-const ctx = await window.Holon.context();
-console.log(ctx.agent_id, ctx.app_id, ctx.session.authenticated);
-```
-
-Returns:
-
-```json
-{
-  "sdk_version": "1",
-  "agent_id": "main",
-  "app_id": "status-monitor",
-  "session": { "authenticated": true }
-}
-```
-
-### 2. `window.Holon.request(requestType, payload, requestId)`
-
-Dispatches a structured request to the agent queue:
-
-```javascript
-const response = await window.Holon.request("run_diagnostics", { verbose: true });
-console.log("Enqueued request ID:", response.request_id);
-```
-
-The call sends a `POST` to `/apps/<agent_id>/<app_id>/request`, recording origin provenance.
-
-### 3. `window.Holon.events(options)`
-
-Streams app lifecycle events over Server-Sent Events (SSE). It returns an `AsyncIterable<AppEvent>` and accepts an options object with an optional `AbortSignal`:
-
-```javascript
-const controller = new AbortController();
-
-try {
-  for await (const event of window.Holon.events({ signal: controller.signal })) {
-    console.log("Received event:", event);
-  }
-} catch (err) {
-  if (err.name !== "AbortError") {
-    console.error("Stream error:", err);
-  }
-}
-
-// Breaking out of the loop or calling controller.abort() closes the SSE stream.
-```
-
-## Security Invariants
-
-The Local App Engine enforces several strict security boundaries:
-
-- **Same-Origin Session:** Hosted apps share the origin with the Holon daemon. They inherit ambient session cookie authentication for control-plane calls, but do not gain additional privileges.
-- **Content Security Policy (CSP):** The server sends a baseline CSP restricting network connections and external resource loading to the same origin (`'self'`), with `data:` URIs allowed for images and fonts. Same-origin scripts and inline scripts/styles (`'unsafe-inline'`) are allowed so self-contained UI components work without external bundlers. Cross-origin scripts, embeds, and outside network calls are blocked. Stronger isolation (such as unique origins or sandboxed iframes) is out of scope for this slice.
-- **Asset Boundaries:** Static assets are capped at 8 MiB per file. Holon only serves allowlisted file types (HTML, JS, CSS, JSON, TXT, SVG, common images, and common fonts). Executable binaries or unknown extensions return an error.
-- **Path Confinement:** Every request canonicalizes the target path. Requests attempting path traversal (`../`) or traversing symlinks outside the app directory are rejected immediately.
-
-## Example: Building a Minimal App
-
-Here is a minimal app that inspects agent context and sends a prompt.
-
-### 1. Create the Directory and Manifest
-
-Create directory `~/.holon/agents/main/apps/ping-card/` and save `manifest.json`:
+In the confirmed Agent Home, create `apps/ping-card/` and save `manifest.json`:
 
 ```json
 {
@@ -141,7 +38,7 @@ Create directory `~/.holon/agents/main/apps/ping-card/` and save `manifest.json`
 }
 ```
 
-### 2. Write `index.html`
+## 2. Write the page
 
 ```html
 <!DOCTYPE html>
@@ -160,6 +57,7 @@ Create directory `~/.holon/agents/main/apps/ping-card/` and save `manifest.json`
   <p id="status">Loading context...</p>
   <button id="ping-btn" disabled>Ping Agent</button>
   <pre id="output"></pre>
+  <pre id="events"></pre>
 
   <script src="holon.js"></script>
   <script>
@@ -172,6 +70,7 @@ Create directory `~/.holon/agents/main/apps/ping-card/` and save `manifest.json`
         const ctx = await window.Holon.context();
         statusEl.textContent = `Connected to agent: ${ctx.agent_id}`;
         pingBtn.disabled = false;
+        observeEvents();
       } catch (err) {
         statusEl.textContent = `Failed to load context: ${err.message}`;
       }
@@ -182,7 +81,8 @@ Create directory `~/.holon/agents/main/apps/ping-card/` and save `manifest.json`
       outputEl.textContent = "Sending request...";
       try {
         const res = await window.Holon.request("ping", { timestamp: Date.now() });
-        outputEl.textContent = JSON.stringify(res, null, 2);
+        outputEl.textContent = "Queue receipt (not a completed result):\n" +
+          JSON.stringify(res, null, 2);
       } catch (err) {
         outputEl.textContent = `Error: ${err.message}`;
       } finally {
@@ -190,24 +90,86 @@ Create directory `~/.holon/agents/main/apps/ping-card/` and save `manifest.json`
       }
     });
 
+    async function observeEvents() {
+      const eventsEl = document.getElementById("events");
+      try {
+        for await (const item of window.Holon.events()) {
+          const event = item.event;
+          eventsEl.textContent += `${event.type}: ${event.message_id}\n`;
+        }
+      } catch (err) {
+        eventsEl.textContent += `Stream ended: ${err.message}`;
+      }
+    }
+
     init();
   </script>
 </body>
 </html>
 ```
 
-### 3. Open in Browser
+## 3. Open and test the app
 
-Ensure the daemon is running:
+Open `/apps/<agent-id>/ping-card/` on your runtime's browser origin, replacing
+`<agent-id>` with the owning agent ID. For example, a local runtime using the
+default port and the `main` agent serves the page at
+`http://127.0.0.1:7878/apps/main/ping-card/`. Do not open the HTML as a `file:` URL.
 
-```bash
-holon daemon start
-```
+1. Check that the page names the expected agent. This comes from `context()`.
+2. Wait for the event connection to open, then click **Ping Agent** once.
+3. Check the queue receipt for `status: "accepted"` and a `message_id`.
+4. Match that ID to a `message_enqueued` event. A runnable agent may also emit
+   `message_processing_started`.
 
-Visit `http://127.0.0.1:7878/apps/main/ping-card/` in your browser. The page will load the card, query `context()`, and allow sending structured ping requests to the `main` agent.
+The stream reports queue and processing events, not completed results. A `ping`
+request is structured input for the agent, not a built-in executable command.
+Use the [work observation guide](observe-agent-work.md) to check what the agent
+actually did. Operator instructions must separately authorize any business
+workflow that the app requests.
+
+## If it does not work
+
+- **App missing or rejected:** check that `manifest.json` is valid, its `id`
+  equals `ping-card`, and its entry file exists inside that directory.
+- **Authentication fails:** open the app from the runtime origin after logging
+  in or pairing. Never put a bearer token in the HTML or JavaScript.
+- **SDK unavailable:** check the `holon.js` response. Source builds must include
+  the App SDK assets; an HTML page alone cannot supply them.
+- **No events:** check the browser's network panel for the `/events` stream.
+  Reload and submit another request after it connects. Do not infer failure
+  from an event missed during a disconnect.
+- **External script or request blocked:** use same-origin assets. Do not weaken
+  the CSP to import untrusted code.
+
+## Contract details
+
+<a id="how-local-apps-work"></a>
+For ownership and request flow, read [Local Apps](../concepts/local-apps.md).
+
+<a id="manifest-contract"></a>
+<a id="manifest-fields"></a>
+The [manifest contract](../reference/local-apps.md#manifest-contract) defines
+required fields and validation.
+
+<a id="the-browser-app-sdk"></a>
+<a id="1-windowholoncontext"></a>
+<a id="2-windowholonrequestrequesttype-payload-requestid"></a>
+<a id="3-windowholoneventsoptions"></a>
+The [Browser SDK reference](../reference/local-apps.md#browser-sdk) covers
+return values and stream limits.
+
+<a id="security-invariants"></a>
+See [hosting and access limits](../reference/local-apps.md#hosting-and-access-limits)
+for asset restrictions, authentication, and CSP.
+
+<a id="example-building-a-minimal-app"></a>
+<a id="1-create-the-directory-and-manifest"></a>
+<a id="2-write-indexhtml"></a>
+<a id="3-open-in-browser"></a>
+The example above replaces the earlier minimal-app walkthrough.
 
 ## Next Steps
 
-- [Use the Web GUI](/guides/use-web-gui.md) — Manage agents and browse workspace files.
-- [HTTP control plane reference](/reference/http-control-plane.md) — Inspect `/apps` routes and authentication schemas.
-- [Automate over HTTP](/guides/automate-over-http.md) — Programmatic workflows using HTTP endpoints.
+- [Use the Web GUI](use-web-gui.md) to manage agents and inspect files.
+- [HTTP control plane reference](../reference/http-control-plane.md) covers
+  routes and authentication.

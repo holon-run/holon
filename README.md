@@ -210,7 +210,7 @@ structured delivery.
 ## Documentation
 
 - [Website docs](https://holon.run) — install, getting started, concepts, guides, reference
-- [Documentation layers](docs/website/concepts/documentation-layers.md)
+- [Documentation layers](docs/website/maintainers/documentation-layers.md)
 - [Architecture overview](docs/architecture-overview.md)
 - [Test duty matrix](docs/test-duty-matrix.md)
 - [RFCs](docs/rfcs/README.md)

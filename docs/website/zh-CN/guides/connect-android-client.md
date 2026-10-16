@@ -1,105 +1,116 @@
 ---
-title: 连接 Android 客户端
-summary: 安装并配置原生 Android 客户端，通过扫码配对连接运行中的 Holon 守护进程，在移动端管理 Agent 与对话。
-order: 37
+title: 使用 Android 客户端连接
+summary: 配置原生 Android 客户端，与运行中的 Holon 守护进程配对，并在移动设备上管理 Agent。
+order: 190
 ---
 
-# 连接 Android 客户端
+# 使用 Android 客户端连接
 
-Holon 提供了专为移动端工作流设计的原生 Android 客户端。应用以对话为核心，支持查看完成简报（Brief）、本地会话缓存以及与守护进程一键配对。
-
-本指南介绍应用安装、连接配置、网络配置多环境管理以及移动端核心功能。
+将 Android 设备连接到 Holon 运行时，向 Agent 发送请求并阅读产出结果。客户端在本地维护历史记录缓存，但在确认运行时的最新状态时，依然需要处于在线连接状态。
 
 ## 前置条件
 
-- 已启动并开启 HTTP 的 Holon 守护进程（默认端口 `7878`）。
-- 运行 Android 8.0（API 级别 26）或更高版本的设备或模拟器。
-- 本地 USB 调试需安装 `adb` 命令行工具。
+- 已启动并启用 HTTP 的 Holon 守护进程（默认端口 `7878`）。
+- 运行 Android 8.0（API 级别 26）或更高版本的实体设备或模拟器。
+- 到该守护进程的网络通路，并持有配对邀请、控制 Token 或组织单点登录入口。
+- 如需通过 USB 安装或端口转发：电脑上需安装好 `adb`。
 
 ## 安装客户端
 
-### 下载官方安装包
+### 下载官方发布包
 
-直接从 [Holon GitHub Releases](https://github.com/holon-run/holon/releases) 页面下载官方签名的发布包。每个版本提供用于设备直接安装的 `holon-android-v<version>.apk`，以及用于 Google Play 分发的 `holon-android-v<version>.aab`（Bundle 格式不可直接通过 `adb` 安装）。
+在 [Holon GitHub Releases](https://github.com/holon-run/holon/releases) 页面查找对应版本的 Android APK。`.apk` 可直接安装；`.aab` 是分发打包格式，并非直接可安装文件。
 
-通过 `adb` 将 APK 安装到设备：
-
-```bash
-adb install holon-android-v0.50.0.apk
-```
-
-### 从源码编译
-
-也可以自行从源码编译 Debug 版本：
+通过命令行直接将 APK 安装到设备：
 
 ```bash
-cd apps/android
-./gradlew :app:assembleDebug
-adb install app/build/outputs/apk/debug/app-debug.apk
+adb install /path/to/downloaded-holon.apk
 ```
 
-## 连接网络方案
+### 从源码构建
 
-| 运行环境 | 默认 API Base URL | 宿主机准备操作 |
-|---------------------|----------------------|------------------|
-| Tailscale / 局域网 | `https://<tailnet-host>/api` 或 `http://<lan-ip>:7878/api` | 开启 Tailscale Serve 或绑定局域网接口 |
-| 官方模拟器 | `http://10.0.2.2:7878/api` | 使用默认配置 |
-| USB 物理设备 | `http://127.0.0.1:7878/api` | 运行 `adb reverse tcp:7878 tcp:7878` |
+本地源码构建与安装步骤已整理至[构建移动端客户端](../maintainers/build-mobile-clients.md#android)。
 
-> **安全说明：** 生产环境建议使用 HTTPS。Tailscale Serve 可直接为你的私有网络提供自动化证书。跨网络使用未加密的 HTTP 时，客户端会提示显式风险确认。
+## 连接方案
+
+| 目标网络环境 | 默认 API 基准 URL | 主机端设置 |
+|---|---|---|
+| Tailscale / 局域网 | `https://<tailnet-host>/api` 或 `http://<lan-ip>:7878/api` | 启用 Tailscale Serve 或绑定局域网 IP |
+| Android 模拟器 | `http://10.0.2.2:7878/api` | 默认配置直接可用 |
+| 实体设备（USB） | `http://127.0.0.1:7878/api` | 执行 `adb reverse tcp:7878 tcp:7878` |
+
+> **安全提示：** 生产环境建议使用 HTTPS。Tailscale Serve 可以为你的 tailnet 自动配置有效证书。跨网络使用未加密的 HTTP 连接会弹出显式确认提示。
 
 ## 连接到守护进程
 
-### 方式一：二维码配对（推荐）
+### 方案 A：二维码扫码配对（推荐）
 
-1. 在浏览器中打开 Holon Web GUI，进入 **Settings** -> **Device Pairing**（或点击 macOS 菜单中的 **Pair Device**）。
-2. 打开 Holon Android 应用，点击 **扫码连接**。
-3. 扫描页面上的 2 分钟有效一次性二维码。
+1. 在电脑浏览器中打开 Holon Web GUI，进入 **Settings** -> **Device Pairing**（或在 macOS 菜单栏中点击 **Pair Device**）。
+2. 打开 Android 上的 Holon 应用，点击 **Scan QR Code**。
+3. 对准扫描屏幕上展示的一次性配对二维码。
 
-应用会自动请求 `/api/auth/pairing/redeem/native` 将一次性票据兑换为 Session 凭据，安全保存在 Android Keystore 中并完成连接。
+应用会向 `/api/auth/pairing/redeem/native` 兑换该凭据，换取会话密钥安全存储在 Android Keystore 中，并立即建立连接。
 
-### 方式二：手动配置
+### 方案 B：手动配置连接
 
-1. 打开 Holon 应用。服务器地址初始为空，不提供默认托管服务器。
-2. 输入 **Holon 地址**（如 `http://10.0.2.2:7878` 或 `https://<你的域名>`），HTTP 地址需确认可信网络。
-3. 点击 **下一步**，应用会查询服务器的认证方式。
-4. 对于本地令牌服务器，输入控制令牌（Bearer Token）或 Bootstrap Token，再点击 **登录**。
+1. 打开 Holon 应用。服务器地址默认留空，系统未内置默认云端服务器。
+2. 输入你的 **Holon 地址**（例如 `http://10.0.2.2:7878` 或 `https://<your-host>`），如果使用 HTTP 请确认信任网络风险。
+3. 点击 **Next**。应用会自动检测服务器支持的认证方式。
+4. 若服务器采用本地 Token 认证，输入 Bearer Token 或 Bootstrap Secret 并点击 **Sign in**。
 
-客户端请求 `/api/auth/session/exchange/native` 兑换可撤销的会话凭据，存入 Android Keystore 并从内存中抹除原始 Token。
+应用会调用 `/api/auth/session/exchange/native`，将换取的会话凭据加密存入 Android Keystore，同时从内存中彻底清除明文 Token。
 
-### 方式三：OIDC 单点登录（SSO）
+### 方案 C：使用 OIDC 组织单点登录
 
-若守护进程开启了 OIDC 认证：
+若守护进程启用了 OIDC 认证：
 
 1. 打开 Holon 应用并输入 **Holon 地址**。
-2. 点击 **下一步**，应用会检测到服务器使用 OIDC 认证。
-3. 应用调起系统浏览器完成身份提供商登录；若未完成登录就返回，可点击 **使用组织浏览器登录** 重试。
-4. 登录成功后，浏览器自动通过 `run.holon.android://oidc/callback` 重定向唤醒应用。
+2. 点击 **Next**。应用会检测到该服务器启用了 OIDC。
+3. 应用会自动调起系统浏览器完成身份提供商（IdP）的登录。如果在未完成前返回，可点击 **Use organization browser sign-in** 重新发起。
+4. 认证成功后，浏览器会通过 `run.holon.android://oidc/callback` 深度链接重定向回 Holon。
 
-应用将一次性 bootstrap 票据兑换为可撤销的会话凭据，存入当前网络配置对应的 Android Keystore 中并完成连接。
+应用将一次性 Bootstrap 票据换取为可吊销的会话凭据，在 Android Keystore 中完成加密存储并建立连接。
 
-## 管理网络配置（Network Profiles）
+## 管理网络配置文件（Profile）
 
-应用支持在**设置**中保存多个连接配置（例如“家中 Tailscale”、“办公室局域网”与“本机 USB”）。保存后可一键切换网络环境，无需重复输入地址和凭据。你也可以在列表中直接删除不再使用的网络配置，删除后配置与对应的 Keystore 凭据会立即清除。
+应用支持在 **Settings** 中保存多个网络配置文件（例如“家庭 Tailscale”、“办公室局域网”或“USB 调试”）。保存后只需单击即可无缝切换不同环境，无需反复输入凭据。你也可以随时在列表中滑动删除无用的配置文件；删除时会立即清理配置项及 Keystore 中的凭据信息。
 
-## 移动端核心功能
+删除配置文件同时会清空该环境下的本地缓存、草稿、未发送的待发箱条目、附件以及诊断日志。删除前请确认待发队列；已成功提交给运行时的主线记录不受影响。
 
-- **对话核心与本地历史缓存：** 会话历史在设备本地自动缓存，即使在弱网或重连状态下也能立即浏览既往对话与交付内容。
-- **日常导航与任务卡片：** 支持按天查看活动时间线，直观展示后台任务进度卡片，并可直接在移动端查看子 Agent 的实时状态预览。
-- **以 Brief 为先的工作区：** 优先突出最终完成简报、活动工作项与待办清单，无需查看冗长的执行细节即可确认成果。
-- **折叠后台活动：** 后台排队和执行中的过程消息支持自动折叠，保持主对话流清爽。
-- **模型切换：** 在移动端直接查看并覆盖单个 Agent 所使用的模型。
-- **系统分享集成：** 支持从其他 Android 应用中通过系统分享面板将文本、链接或文档直接发送给指定的 Agent。
-- **本地持久化发件箱：** 离线时输入的指令会自动存入本地发件箱，网络恢复后自动提交发送。
-- **单文件诊断追踪：** 导出的诊断追踪日志统一保存在单个文件中，记录内按网络环境清晰分区，便于集中排查与分享。
-- **举报 AI 内容：** 长按助手回复可调出举报菜单，直接向服务端的 `POST /api/content-reports` 提交该条回复快照与违规原因，无需担心泄露全量对话或私有工作区密钥。
+## 验证连接与执行结果
 
-## 界面语言设置
+1. 确认已选中正确的网络配置文件与服务器地址，进入该运行时中已有的某个 Agent。
+2. 发送一条安全的测试消息，例如：`请回复“Android connection verified”，不要修改任何文件。`
+3. 确认消息从发件箱离开并收到最新的回复。仅浏览历史缓存内容并不代表网络已连通。
+4. 对于跟踪的任务，进入该 Agent 的工作视图（Work view），区分工作项进度（WorkItem）与具体任务执行状态（Task）。在确认工作完成前，先阅读完整的完成摘要（Brief）。
+5. 退出并重新打开应用，刷新对话列表，验证已保存的配置文件能否自动恢复重连。
 
-应用支持英语和简体中文。默认遵循系统语言设置，也可以在登录界面或**设置**中手动指定。
+## 移动端特色功能
 
-## 下一步
+- **对话优先与本地缓存：** Agent 对话列表秒开。历史记录缓存在设备本地，在弱网或离线环境下也能查阅历史轮次与关键产物。
+- **按日导航与任务状态卡片：** 快速在每日活动流之间跳转，直观查看后台运行任务卡片，并在时间线中直接预览子 Agent 状态。
+- **以简报（Brief）为核心：** 重点展示完成简报、活动工作项与清单进度，无需在冗长的执行日志中反复滑动翻找结论。
+- **折叠后台操作：** 运行中与排队中的后台消息自动折叠收起，保证主线对话清爽。
+- **模型切换：** 在移动界面中直接查看或覆盖任意 Agent 的当前模型。
+- **系统分享面板打通：** 从其他 Android 应用（如浏览器、文件管理器）中直接通过系统分享功能将文字、链接或文档投递给 Agent。
+- **离线安全待发箱（Outbox）：** 离线时编辑的提示词会自动保存在本地待发箱中，网络恢复后自动排队发送。
+- **单文件诊断日志导出：** 诊断信息可一键导出为单一整合文件，按网络环境归类，便于排查与日志分享。
+- **举报 AI 内容：** 长按助手回复可举报不准确、有害或不恰当的内容。运行时会保存所选回复的有界快照。提交前请确认内容；回复本身可能包含敏感信息。
 
-- [远程连接指南](/zh-CN/guides/connect-remote-runtime.md) — 远程守护进程的安全网络配置。
-- [OIDC 身份认证指南](/zh-CN/guides/configure-oidc-authentication.md) — 统一身份认证与会话策略。
-- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — Android 客户端使用的底层端点说明。
+## 语言设置
+
+应用界面完整支持英文与简体中文。默认跟随系统语言，但你也可以在登录界面或 **Settings** 中手动指定显示语言。
+
+## 故障排查
+
+- **无法连接运行时：** 确认手机网络能否解析并访问该地址。在实体手机上，`localhost` 指向手机自身；请使用主机的局域网 IP、tailnet 域名，或配置 USB 端口映射。
+- **配对失败：** 重新生成一张有效的一次性邀请二维码，并核对其访问主机。tailnet 邀请要求手机本身也加入同一 tailnet 并具备访问权限。
+- **登录过期或拒绝访问：** 重新登录目标环境。对于启用了 OIDC 的服务器，请使用组织登录而非输入本地 Token。
+- **能看到旧消息但收不到新回复：** 检查网络连接状态和本地待发箱。本地展示的历史记录不代表请求已成功抵达守护进程。
+- **反复连接失败：** 在“设置”中导出诊断日志。分享前先检查有无隐私数据；提供客户端与运行时版本号及出错步骤即可，切勿泄露 Token 或配对票据。
+
+## 后续阅读
+
+- [远程连接指南](/zh-CN/guides/connect-remote-runtime.md) — 了解远程守护进程的安全网络拓扑配置。
+- [配置 OIDC 认证](/zh-CN/guides/configure-oidc-authentication.md) — 单点登录与会话策略配置。
+- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — Android SDK 调用的底层 API 端点。

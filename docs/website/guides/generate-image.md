@@ -1,7 +1,7 @@
 ---
 title: Generate an image
 summary: Write a prompt, generate an image, and find the result on disk.
-order: 20
+order: 220
 ---
 
 # Generate an image
@@ -11,8 +11,11 @@ describe what you want; the agent calls the tool and saves the result.
 
 ## Before you start
 
-- Image generation is configured. If it is not, the tool reports that no model is
-  available. See the [Image generation reference](/reference/image-generation.md).
+- The agent can use `GenerateImage`.
+- An image-generation route and its credentials are configured. Follow
+  [Configure models](configure-models.md); a conversation model alone may not
+  support image generation.
+- The runtime can reach the provider and write to the agent's media directory.
 
 ## Steps
 
@@ -23,20 +26,37 @@ describe what you want; the agent calls the tool and saves the result.
    background. Save it as desk-lamp.png.
    ```
 
-   The agent turns this into a `GenerateImage` call with a prompt, a size
-   (`1024x1024`, `1536x1024`, or `1024x1536`), a background, and an output
-   format.
+   The agent calls `GenerateImage` with your prompt and supported output
+   options. Each call generates one image; request separate calls for distinct
+   images.
 
-2. Let the agent report where the file landed. Generated images are written under
-   the agent's media directory.
+2. Ask the agent to report the returned file reference. Generated images are
+   written under `agent_home/media/generated`; the requested name is not a
+   substitute for the actual saved path.
+
+3. Open the image from the response or the client's file browser. If you need
+   the agent to check its content, follow
+   [Inspect an image](inspect-image.md).
 
 ## Confirm it worked
 
-The result names the saved file and its format and dimensions. If the tool
-returned an error, the message says whether the model or the size was the
-problem.
+Confirm that the tool succeeded and returned an image reference and metadata,
+then open the saved artifact. Check the image against your prompt; a successful
+provider call does not guarantee that every requested detail appears.
+
+## Troubleshooting
+
+- **No generation model:** Check the image-generation route and provider
+  credentials in [Configure models](configure-models.md).
+- **Unsupported option:** Use a size, format, and background supported by the
+  configured model. The reference lists the tool's accepted values.
+- **Provider or network error:** Read the returned error before retrying. Do
+  not report an image as generated without a successful tool result.
+- **Cannot open the result:** Check the returned path on the runtime host.
+  A remote host's filesystem path does not identify a file on your laptop;
+  use the client's artifact viewer or download action.
 
 ## Sizes and formats
 
 Size, background, and format options, plus supported models, are in the
-[Image generation reference](/reference/image-generation.md).
+[Image generation reference](../reference/image-generation.md).

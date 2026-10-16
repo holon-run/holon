@@ -1,26 +1,19 @@
 ---
 title: Skills
-summary: Skill sources, skills.toml schema, and the CLI commands that install, enable, update, and verify skills.
+summary: Skill sources, CLI commands, and API endpoints for installation, enablement, updates, and verification.
 order: 34
 ---
 
 # Skills
 
-Skills are reusable local workflows. A skill is rooted at a `SKILL.md` file and
-describes a repeatable task pattern that an agent can load when needed.
+This page records skill sources, management commands, and API endpoints.
+For workflows, see [Install and update skills](/guides/use-skills.md) and
+[Write a skill](/guides/write-skill.md).
 
 ## What a Skill Is
 
-A skill typically contains:
-
-- **Purpose** — What task the skill helps with
-- **Workflow** — Step-by-step guidance for the agent
-- **Boundaries** — What the skill should and should not do
-- **References** — Related files or commands to inspect
-
-Skills are **not automatically active**. The runtime exposes a catalog of
-available skills, and the agent opens the relevant `SKILL.md` only when a
-matching task appears.
+See [Skills and tools](/concepts/skills-and-tools.md) for discovery, loading,
+and authority boundaries. The entry file is `SKILL.md`.
 
 ## Location
 
@@ -41,48 +34,30 @@ Example skills in this repository include:
 
 ## How Agents Use Skills
 
-1. The runtime exposes a **skills catalog** with name, description, and path
-2. The agent chooses a skill only if it matches the current task
-3. The agent reads the skill's `SKILL.md`
-4. The agent follows the workflow with normal tool calls
-
-This keeps skills explicit and avoids loading irrelevant guidance.
+The catalog exposes name, description, and path; the agent reads `SKILL.md`
+when a task matches. Follow [Write and verify a skill](/guides/write-skill.md)
+to check both loading and behavior.
 
 ## Managing skills with the CLI
 
-Holon separates skill management into two layers:
-
-- **Skill Library** — A global catalog of known skills managed with
-  `holon skills add/remove/check/reconcile/catalog`. Think of it as your
-  local skill registry.
-- **Agent Skills** — Per-agent enablement managed with
-  `holon skills enable/disable/list`. A skill must exist in the library
-  before it can be enabled for an agent.
+Library commands affect the shared registry; enable/disable commands select an
+agent's entries. The [management guide](/guides/use-skills.md) covers the
+install → enable → verify workflow.
 
 ### Skill Library (global)
 
-The Skill Library is your local catalog of skills. Manage it with:
+Commands in this section manage shared library state.
 
 #### List the library catalog
 
-```bash
-holon skills catalog
-```
-
-Shows all skills registered in the local Skill Library.
+`holon skills catalog` lists registered entries.
 
 #### Add a skill to the library
 
-```bash
-# Add from a local directory or SKILL.md file
-holon skills add /path/to/skill-dir
-
-# Add from a remote source
-holon skills add https://github.com/user/repo/tree/main/skills/my-skill --remote
-
-# Copy the skill into the user directory instead of referencing it
-holon skills add /path/to/skill --copy
-```
+`holon skills add <source> [--remote] [--skill <name>] [--copy]` accepts a local
+directory or `SKILL.md`, a remote URL, or the GitHub shorthand below.
+`--skill` selects a skill from a source with multiple entries. Default local
+installation is linked; `--copy` creates an independent managed copy.
 
 GitHub remote skills are fetched as a single repository archive and discovered
 locally. This avoids depending on the GitHub Contents/Tree API for public
@@ -92,19 +67,11 @@ folder hash used by `holon skills update`.
 
 #### Remove a skill from the library
 
-```bash
-holon skills remove my-skill
-```
+`holon skills remove <name>` removes a library entry.
 
 #### Check library consistency
 
-```bash
-# Check all library entries against .skill-lock.json
-holon skills check
-
-# Check a specific skill
-holon skills check my-skill
-```
+`holon skills check [name]` compares one or all entries with `.skill-lock.json`.
 
 > **Note:** Installing an already-installed global skill is idempotent —
 > `holon skills add` skips the install and reports the existing entry without
@@ -112,64 +79,34 @@ holon skills check my-skill
 
 #### Reconcile library with lock file
 
-```bash
-# Reconcile all library entries
-holon skills reconcile
-
-# Reconcile a specific skill
-holon skills reconcile my-skill
-```
+`holon skills reconcile [name]` reconciles one or all entries with lock state.
+Inspect differences before using it to accept changed contents.
 
 #### Update skills from remote sources
 
-```bash
-holon skills update
-```
-
-Fetches remote skill sources and compares against the lock file
+`holon skills update [name]` fetches remote skill sources and compares against the lock file
 (`.skill-lock.json`). Skills that have changed upstream are downloaded
 and updated. The update preserves the npx `skills` v3 lock format
 (source, subdir, mode, etag) for interoperability.
 
 ### Agent Skills (per-agent)
 
-Once a skill is in the library, enable it for a specific agent:
+`--agent <id>` selects the target agent. In agent mode, omitting it targets the
+caller; operator mode uses the default agent.
 
 #### List enabled skills for an agent
 
-```bash
-# List for the default agent
-holon skills list
-
-# List for a specific agent
-holon skills list --agent reviewer
-```
-
-Shows all skills currently enabled for the agent, including their name,
+`holon skills list [--agent <id>]` shows effective skills, including their name,
 scope (agent, workspace, or user), and source.
 
 #### Enable a skill for an agent
 
-```bash
-# Enable for the default agent
-holon skills enable my-skill
-
-# Enable for a specific agent
-holon skills enable my-skill --agent reviewer
-
-# Enable and copy into the agent home
-holon skills enable my-skill --copy
-```
+`holon skills enable <name> [--agent <id>] [--copy]` enables a known skill.
+`--copy` places an independent managed copy in the agent home.
 
 #### Disable a skill for an agent
 
-```bash
-# Disable for the default agent
-holon skills disable my-skill
-
-# Disable for a specific agent
-holon skills disable my-skill --agent reviewer
-```
+`holon skills disable <name> [--agent <id>]` removes agent-level enablement.
 
 > **Compatibility aliases:** `holon skills install` and
 > `holon skills uninstall` are still accepted but map to the new
@@ -274,42 +211,18 @@ session.
 
 ## Writing a Good Skill
 
-Keep skills:
-
-- **Small** — Focus on one workflow
-- **Actionable** — Give concrete steps the agent can execute
-- **Scoped** — Avoid broad project-overriding instructions
-- **Durable** — Encode reusable behavior, not one-off task notes
-
-Good skill topics:
-
-- GitHub issue solving
-- PR review workflow
-- Release checklist
-- Incident triage
-- Project-specific test/debug loop
-
-Poor skill topics:
-
-- Temporary meeting notes
-- One-off task plans
-- Large copied documentation dumps
+Follow [Write and verify a skill](/guides/write-skill.md) for a minimal
+`SKILL.md`, a test task, and checks for discovery and loading. Keep each skill
+focused on one reusable workflow, such as review, release checks, incident
+triage, or a project's test/debug loop. Temporary plans and copied document
+dumps belong elsewhere.
 
 ## Relationship to AGENTS.md
 
-Use:
-
-- **`AGENTS.md`** for durable role, authority, and local conventions
-- **Skills** for reusable workflows
-- **Work items** for current tracked objectives
-
-These are different layers:
-
-| Surface | Purpose |
-|---------|---------|
-| `AGENTS.md` | Standing instructions and boundaries |
-| `SKILL.md` | Reusable workflow for a type of task |
-| Work item | Current objective and progress |
+See [Agents and guidance](/concepts/agents.md),
+[Skills and tools](/concepts/skills-and-tools.md), and
+[WorkItems and Tasks](/concepts/work-items-and-tasks.md) for standing
+instructions, reusable workflows, and tracked objectives respectively.
 
 ## See Also
 

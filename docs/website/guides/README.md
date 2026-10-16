@@ -1,44 +1,83 @@
 ---
 title: Guides
-summary: Task-oriented how-to guides for using, operating, and integrating Holon.
+summary: Complete a specific task, verify the result, and diagnose common failures.
 order: 30
 ---
 
 # Guides
 
-Each guide answers one question: *how do I get this done?* They run from start
-to finish and stay close to the task. Exact commands, flags, fields, and
-endpoints live in [Reference](/reference/); the supporting mental model lives in
-[Concepts](/concepts/).
+Choose a guide for the outcome you want. Each gives the prerequisites,
+steps, and checks needed to finish the task. If you have not yet run a
+successful request, start with [Getting started](../getting-started/).
 
-The list below is grouped by the job in hand: getting a first result, running
-work that waits on something, coordinating more than one agent, driving Holon
-from code or a browser, working with external content, and fixing a task that
-stalls.
+The catalog follows a working sequence: set up agents and extensions, run
+and follow continuing work, configure models and memory, connect clients,
+then work with web content, images, and apps. The final guides cover checking
+results, troubleshooting, and runtime telemetry.
 
-Every guide follows the same shape: goal and context, prerequisites, steps, and
-how to confirm success.
+Read [Concepts](../concepts/) for the underlying objects and boundaries.
+Use [Reference](../reference/) for complete command syntax and schemas.
 
 <!-- INDEX:START -->
 
-- [Run your first Holon task](./quick-examples.md)
-  Start Holon, run one task end to end, and confirm the result.
+- [Create an agent from a template](./create-agent.md)
+  Pick a template, create an agent, and confirm it can take a task.
   <!-- mdorigin:index kind=article -->
 
-- [Run a GitHub task with holon solve](./run-github-task.md)
-  Take an issue or pull request from input to a finished task, then check the result.
+- [Customize an agent's role and guidance](./customize-agent.md)
+  Update an existing agent's standing instructions without replacing its home or reapplying a template.
+  <!-- mdorigin:index kind=article -->
+
+- [Create an agent template](./create-agent-template.md)
+  Write a role contract, add optional skill dependencies, and test it with a new agent.
+  <!-- mdorigin:index kind=article -->
+
+- [Install, enable, and update skills](./use-skills.md)
+  Manage the shared Skill Library and verify the skills available to a selected agent.
+  <!-- mdorigin:index kind=article -->
+
+- [Write and verify a skill](./write-skill.md)
+  Author a small SKILL.md workflow, enable it for a test agent, and verify that it is loaded and followed.
+  <!-- mdorigin:index kind=article -->
+
+- [Work in a project workspace or worktree](./work-with-workspaces.md)
+  Attach a project, activate its execution root, isolate changes in a managed worktree, and clean up safely.
   <!-- mdorigin:index kind=article -->
 
 - [Run a long-lived task](./run-long-lived-task.md)
-  Start work that waits, check progress, survive disconnects, and collect the final brief.
+  Track one objective across sessions, wait for dependencies, and verify its completion report.
   <!-- mdorigin:index kind=article -->
 
 - [Delegate work to another agent](./delegate-work.md)
-  Hand a scoped task to a child agent, wait for the result, and handle what comes back.
+  Choose a child or peer, follow its reply, verify the result, and clean up owned children.
+  <!-- mdorigin:index kind=article -->
+
+- [Run a GitHub task with holon solve](./run-github-task.md)
+  Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
+  <!-- mdorigin:index kind=article -->
+
+- [Connect external events](./connect-external-events.md)
+  Connect a callback, register a wait, and verify that an external event resumes the intended work.
+  <!-- mdorigin:index kind=article -->
+
+- [Schedule agent work](./schedule-agent-work.md)
+  Create a one-off or recurring timer, verify the resulting work, and cancel the schedule.
   <!-- mdorigin:index kind=article -->
 
 - [Automate Holon over HTTP](./automate-over-http.md)
-  Authenticate, submit work, follow status, and read results from code.
+  Authenticate, submit one tracked objective, follow its state, and retrieve its completion report.
+  <!-- mdorigin:index kind=article -->
+
+- [Configure models, credentials, and fallbacks](./configure-models.md)
+  Authenticate a provider, select global or per-agent routes, and verify the route used for a test turn.
+  <!-- mdorigin:index kind=article -->
+
+- [Configure advisory decisions](./configure-decision-subsystem.md)
+  Choose a Decision route, set call limits, and verify a recommendation or explicit abstention.
+  <!-- mdorigin:index kind=article -->
+
+- [Manage agent memory](./manage-agent-memory.md)
+  Save durable preferences in the right scope and retrieve past work with traceable sources.
   <!-- mdorigin:index kind=article -->
 
 - [Connect to a remote Holon runtime](./connect-remote-runtime.md)
@@ -53,12 +92,12 @@ how to confirm success.
   Set up OpenID Connect single sign-on, configure session policies, and audit user prompts.
   <!-- mdorigin:index kind=article -->
 
-- [Create an agent from a template](./create-agent.md)
-  Pick a template, create an agent, and confirm it can take a task.
+- [Connect with the Android client](./connect-android-client.md)
+  Set up the native Android client, pair with a running Holon daemon, and manage agents on mobile.
   <!-- mdorigin:index kind=article -->
 
-- [Add a skill to an agent](./use-skills.md)
-  Find a skill, install it to the library, enable it for an agent, and confirm it is active.
+- [Connect with the iOS client](./connect-ios-client.md)
+  Set up the native iOS client, pair with a running Holon daemon, inspect deliverables and files, and report AI content on iPhone and iPad.
   <!-- mdorigin:index kind=article -->
 
 - [Fetch and search web content](./use-web-tools.md)
@@ -74,23 +113,19 @@ how to confirm success.
   <!-- mdorigin:index kind=article -->
 
 - [Host local apps](./host-local-apps.md)
-  Host agent-owned HTML/JS static applications, interact with agents through the App SDK, and serve lightweight UI tools.
+  Build a small agent-owned app, submit a request, and verify its queue events in the browser.
+  <!-- mdorigin:index kind=article -->
+
+- [Observe agent work](./observe-agent-work.md)
+  Locate an agent's objective, inspect task progress, and retrieve the completion report and artifacts.
   <!-- mdorigin:index kind=article -->
 
 - [Troubleshoot a Holon task](./troubleshooting.md)
-  Work through a stalled, failing, or silent task to a concrete next step.
+  Identify the failing layer of a silent, stalled, or unsuccessful task without duplicating work.
   <!-- mdorigin:index kind=article -->
 
-- [Configure advisory decisions](./configure-decision-subsystem.md)
-  Set up a dedicated Decision provider and enable the AdvisoryDecision tool to give agents non-authoritative second opinions.
-  <!-- mdorigin:index kind=article -->
-
-- [Connect with the Android client](./connect-android-client.md)
-  Set up the native Android client, pair with a running Holon daemon, and manage agents on mobile.
-  <!-- mdorigin:index kind=article -->
-
-- [Connect with the iOS client](./connect-ios-client.md)
-  Set up the native iOS client, pair with a running Holon daemon, inspect deliverables and files, and report AI content on iPhone and iPad.
+- [Configure observability](./configure-observability.md)
+  Export traces, scrape protected metrics, and verify the telemetry path separately from task execution.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

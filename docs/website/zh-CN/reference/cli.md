@@ -511,4 +511,4 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 - [配置参考](/zh-CN/reference/configuration.md) — 配置键与凭据管理
 - [HTTP 控制平面](/zh-CN/reference/http-control-plane.md) — HTTP API 设计理念
 - [入门指南](/zh-CN/getting-started/first-agent.md) — 配置教程
-- [快速示例](/zh-CN/guides/quick-examples.md) — 面向任务的示例
+- [指南](/zh-CN/guides/) — 面向任务的工作流与验证步骤

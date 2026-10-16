@@ -1,15 +1,22 @@
 ---
 title: Documentation layers
-summary: How Holon separates getting started, concepts, guides, reference, and maintainer runtime specs.
-order: 20
+summary: Choose where a documentation change belongs and keep user explanations separate from runtime specifications.
+order: 30
+aliases:
+  - /concepts/documentation-layers
+  - /concepts/documentation-layers.md
 ---
+
+<a id="documentation-layers"></a>
 
 # Documentation layers
 
-Holon's documentation is organized into five distinct layers with explicit
-boundaries, audience definitions, and content contracts. This prevents drift
-between user-facing mental models, authoritative reference contracts, and
-internal runtime specifications.
+Use these layers to decide where a documentation change belongs. User
+explanations, task instructions, exact contracts, and internal specifications
+serve different readers. For editing and build steps, see the
+[documentation workflow](documentation-workflow.md).
+
+<a id="the-five-documentation-layers"></a>
 
 ## The five documentation layers
 
@@ -21,13 +28,19 @@ internal runtime specifications.
 | **Reference** (`/reference/`) | Users, integrators & operators | *"What is the exact, authoritative definition of this flag, endpoint, or configuration key?"* | CLI command tree, configuration schema, HTTP control plane endpoints, model catalog, tool schemas, status enums | Narrative tutorials, onboarding paths, architecture rationale, internal state machines |
 | **Spec** (`/spec/`) | Maintainers & contributors | *"What is the current internal runtime contract that changes must preserve?"* | Scheduler state machines, execution-root invariants, task lifecycle contracts, internal security boundaries | User onboarding, marketing narrative, quick start workflows |
 
+<a id="layer-guidelines-content-contracts"></a>
+
 ## Layer guidelines & content contracts
+
+<a id="1-getting-started-first-success"></a>
 
 ### 1. Getting started — First success
 
-- **Purpose:** Take a new user from zero to a verified running agent in under 15 minutes.
+- **Purpose:** Take a new user from installation to a verified agent result.
 - **Format:** Minimal commands, clear prerequisites, explicit expected output, and pointers to next paths.
 - **Rule:** Never dump complete option lists or internal repository layouts into getting started pages. Keep the path uninterrupted.
+
+<a id="2-concepts-user-facing-mental-models"></a>
 
 ### 2. Concepts — User-facing mental models
 
@@ -39,6 +52,8 @@ internal runtime specifications.
   - **Do not disguise implementation details as concepts:** Never burden users with internal Rust module names, struct layouts, database tables, or private queue mechanics just because they exist in code.
   - **Behavioral durability check:** A concept page must remain accurate even if internal queue or storage implementations are refactored.
   - **Link rather than duplicate:** Link to Reference for exact parameters and to Spec or RFCs for maintainer contracts.
+
+<a id="3-guides-task-oriented-how-to"></a>
 
 ### 3. Guides — Task-oriented how-to
 
@@ -52,11 +67,15 @@ internal runtime specifications.
   6. **Related reference & concepts:** Direct links to authoritative reference and background concepts.
 - **Rule:** Guides provide minimal inline examples. Complete endpoint tables or configuration schemas belong in Reference.
 
+<a id="4-reference-current-authoritative-contract"></a>
+
 ### 4. Reference — Current authoritative contract
 
 - **Purpose:** The single source of truth for syntax, options, endpoints, and schema definitions.
 - **Structure:** Standardized tables and sections: Scope, Syntax / Endpoint, Parameters / Payload, Return values, Limits, and Stability.
 - **Rule:** Reference pages are authoritative snapshots verified against the compiled binary (`holon --help`, `holon config schema`, route inventory). If an option or endpoint changes, update Reference first.
+
+<a id="5-spec-maintainer-runtime-contracts"></a>
 
 ### 5. Spec — Maintainer runtime contracts
 
@@ -64,12 +83,16 @@ internal runtime specifications.
 - **Audience:** Contributors and maintainers working on Holon's codebase.
 - **Rule:** Spec pages are normative specifications, not user documentation. User-facing navigation de-emphasizes spec pages so beginners are not confused by internal mechanics.
 
+<a id="supporting-maintainer-layers"></a>
+
 ## Supporting maintainer layers
 
 - **`docs/rfcs/` (Design RFCs):** Canonical design rationale and architectural debates behind major capabilities.
 - **`docs/implementation-decisions/` (ADRs):** Lightweight records explaining why a specific technical choice was made when multiple viable options existed.
 - **`docs/archive/`:** Preserved historical notes that are no longer active specifications.
 - **`docs/website/maintainers/` (Maintainer workflows):** Build, test, and documentation workflows for people changing Holon itself.
+
+<a id="cross-layer-links"></a>
 
 ## Cross-layer links
 
@@ -84,6 +107,8 @@ Getting started ──> Guides (for specific tasks)
       ▼ (maintainers only)
     Spec ─────────> RFCs / ADRs (for design rationale)
 ```
+
+<a id="when-to-update-which-layer"></a>
 
 ## When to update which layer
 

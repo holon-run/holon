@@ -1,137 +1,112 @@
 ---
-title: 配置决策子系统
-summary: 配置专用的 Decision 提供者并启用 AdvisoryDecision 工具，让 Agent 获取非权威的咨询第二意见。
-order: 36
+title: 配置咨询决策子系统
+summary: 选择决策模型路由、设置调用限额，并验证决策建议或显式弃权行为。
+order: 140
 ---
 
-# 配置决策子系统
+# 配置咨询决策子系统
 
-在复杂工作流中，Agent 常常需要在互斥的技术方案或执行策略间权衡。Decision 子系统为 Agent 提供了向专用模型咨询第二意见的能力（通过 `AdvisoryDecision` 工具），同时确保该建议绝不具备越权执行权限。
-
-本指南介绍如何选择决策提供者、配置模型路由以及设定调用防护阈值。
+`AdvisoryDecision` 工具允许 Agent 在多个明确的选项之间请求非权威性的第二意见。其结果仅作为参考建议，绝不能用于直接授予系统权限或批准高风险操作。有关路由模型，请参阅[模型与服务商](/zh-CN/concepts/models-and-providers.md)。
 
 ## 前置条件
 
-- 运行中的 Holon 守护进程（v0.45.0 或更高版本）。
-- 已为 Agent 配置好主对话模型。
-- 本地推理场景：包含 `local-onnx` feature 的安装（官方发布的发布包二进制已默认包含）。
-- 远程推理场景：支持 Decision 能力的提供商 API 凭据或端点（例如 Cloudflare Clef、OpenAI Decisions 或 TypeSafe Jev）。
+- 守护进程正在运行，且主对话模型配置正常；具体请参阅[配置模型](/zh-CN/guides/configure-models.md)。
+- 具有修改共享决策配置的权限。
+- 若采用本地推理，需要支持 `local-onnx` 特性的二进制版本以及已校验的模型文件。下载预设模型需要网络连接；本地推理过程不会将决策提示词发送给外部远程服务商。
+- 若采用远程推理，需要具备相应凭据，以及显式声明支持 Decision 能力且提供受支持 `decision_protocol` 的模型路由。
 
-## 第一步：选择决策提供者
+## 第 1 步：选择决策服务商
 
-Holon 的决策子系统支持两类架构：
-
-1. **本地 ONNX（零网络外发）：** 完全在本地 CPU 上运行精简分类模型，数据不离开你的机器。
-2. **远程提供者：** 通过 HTTP 向外部专用模型发送结构化查询。Holon 原生支持 Cloudflare Clef（`cloudflare_clef`）、OpenAI Decisions（`openai_decisions`）与 TypeSafe Jev（`jev`）协议。
-
-对数据隐私或离线环境有要求的场景，推荐使用本地 ONNX 提供者。
-
-## 第二步：配置提供者
-
-### 方案 A：使用本地 ONNX 提供者
-
-启用本地提供者并指定预设：
+在修改配置前，先查看当前的选择状态：
 
 ```bash
-holon config set decision.enabled true
-holon config set decision.local_onnx.enabled true
-holon config set decision.local_onnx.preset "jev-selector-q4f16"
+holon config get decision.enabled
+holon config get decision.model
+holon config get decision.local_onnx.enabled
+holon config models list
 ```
 
-如果机器有空闲 CPU 核心，可以提高推理线程数：
+在以下两种路径中二选一。远程 `decision.model` 与启用的本地 ONNX 无法同时生效。单纯具备常规聊天能力（chat）并不足以支撑 Decision 路由。
+
+## 第 2 步：配置服务商
+
+### 方案 A：使用本地 ONNX 决策服务商
+
+在 Web GUI 中，打开 **Settings → Decision Settings**，选择 `jev-selector-q4f16` 预设，并点击 **Download and verify preset**。等待界面显示就绪状态后再启用本地推理。若使用预先准备好的模型文件，可改用 `decision.local_onnx.model_dir`；模型文件必须符合受支持的模型与清单格式。
+
+随后通过命令行配置本地路由：
 
 ```bash
+holon config unset decision.model
+holon config set decision.local_onnx.preset jev-selector-q4f16
 holon config set decision.local_onnx.num_threads 2
+holon config set decision.local_onnx.enabled true
+holon config set decision.enabled true
 ```
 
-### 方案 B：使用远程提供者
+若从自定义模型目录切回受管预设，需执行 `holon config unset decision.local_onnx.model_dir`，避免覆盖预设路径。受管预设保存在 `<HOLON_HOME>/models/decision/local-onnx/<preset>/` 下。
 
-Holon 仅在目标路由显式声明决策能力（`capabilities.decision: true`）且指定受支持的 `decision_protocol`（`jev`、`cloudflare_clef`、`openai_decisions` 或 `openai_compatible`）时，才会向该模型分发决策请求。
+### 方案 B：使用远程决策服务商
 
-**TypeSafe Jev（`jev`）：**
-
-TypeSafe Jev 模型已内置于 Holon 模型编目中，默认已开启决策能力：
+按照[模型配置指南](/zh-CN/guides/configure-models.md)完成服务商认证。
+若使用内置的 TypeSafe Jev 路由：
 
 ```bash
-holon config set decision.enabled true
+holon config set decision.local_onnx.enabled false
 holon config set decision.model "typesafe@default/jev-latest"
-```
-
-**Cloudflare Clef（`cloudflare_clef`）：**
-
-由于 Cloudflare 未预置于内置模型编目中，在设置决策路由前，需先配置提供商端点，并在 `models.catalog` 中注册该模型的决策能力与协议：
-
-```bash
-# 1. 配置 Cloudflare 提供商端点（凭据通过 CLOUDFLARE_API_KEY 环境变量提供）
-holon config set providers.cloudflare.transport openai_chat_completions
-holon config set providers.cloudflare.base_url "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1"
-
-# 2. 在模型编目中声明决策能力与 cloudflare_clef 协议
-holon config set models.catalog '{"cloudflare/clef-flash":{"decision_protocol":"cloudflare_clef","capabilities":{"decision":true}}}'
-
-# 3. 将决策请求路由至已注册的模型
 holon config set decision.enabled true
-holon config set decision.model "cloudflare@default/clef-flash"
 ```
 
-**OpenAI Decisions（`openai_decisions`）：**
+若接入自定义决策服务，需先配置其端点与凭据源。在 `models.catalog` 中注册实际模型，标注 `capabilities.decision: true` 及其对应的协议：`jev`、`cloudflare_clef`、`openai_decisions` 或 `openai_compatible`。编辑该对象时请保留已有条目。随后使用 `decision.model` 选中对应的 `provider@endpoint/model` 路由。
 
-专用的 OpenAI 决策端点（如 `/v1/decisions`）采用 `openai_decisions` 传输协议。在指向该路由前，同样需先在 `models.catalog` 中注册：
+这些协议名称对应 Holon 的适配器类型；它们并不保证你的服务商账户一定开通了相应模型或端点权限。特别是 `openai_decisions` 使用基于 API Key 的 `openai_responses` 传输协议访问专用的 `/v1/decisions` 端点，而不是 OAuth Codex 协议。精确的元数据字段定义请参阅[配置参考](/zh-CN/reference/configuration.md#模型目录覆盖-modelscatalog)。
 
-```bash
-# 1. 在模型编目中声明决策能力与 openai_decisions 协议
-holon config set models.catalog '{"openai/decision-preview":{"decision_protocol":"openai_decisions","capabilities":{"decision":true}}}'
-
-# 2. 将决策请求路由至已注册的模型
-holon config set decision.enabled true
-holon config set decision.model "openai@default/decision-preview"
-```
-
-> **传输层说明：** `openai_decisions` 协议直接对接专用的 `/v1/decisions` 端点，且仅允许搭配基于 API Key 的 `openai_responses` 传输层使用，不可用于基于 OAuth 的 Codex 传输层。
-
-你也可以在 Web GUI 的 **设置** → **Decision 设置** 中直接可视化配置。
-
-## 第三步：启用咨询工具并配置防护上限
-
-出于安全防御考量，`AdvisoryDecision` 工具默认对 Agent 隐藏。你需要显式启用它并设置合理的防护边界，避免模型陷入无休止的反复决策：
+## 第 3 步：启用咨询工具并设置安全护栏
 
 ```bash
-# 向 Agent 暴露咨询工具
 holon config set decision.tools.enabled true
-
-# 限制每个对话轮次最多调用 3 次
 holon config set decision.tools.max_calls_per_turn 3
-
-# 要求至少 65% 的置信度；低于该分数时必须显式弃权（abstain）
 holon config set decision.tools.min_confidence 0.65
-
-# 设置工具超时时间（毫秒）
 holon config set decision.tools.timeout_ms 10000
 ```
 
-## 第四步：使用测试任务验证
+未启用前，工具对 Agent 保持隐藏。上述配置用于限制单轮最大调用次数、要求最低置信度阈值，并限定工具等待超时时间。服务商层面的超时、并发与队列配置彼此独立；具体请参阅[决策子系统配置表](/zh-CN/reference/configuration.md#决策子系统配置项)。
 
-运行一个包含明确选项权衡的任务：
+留意标准错误输出中的配置变动提示。如果提示需要重启，请待进行中的任务收敛后，按正常流程重启守护进程再行测试。保存配置项并不代表运行中的守护进程已自动热更新生效。
 
-```bash
-holon run "评估 PostgreSQL 中 50 行小表查询应使用索引扫描还是全表扫描。给出最终建议前先咨询 advisory decision 工具。"
-```
+## 第 4 步：通过测试提示词进行验证
 
-检查执行过程或最近记录：
+使用已有的测试 Agent；将 `decision-test` 替换为你实际的 Agent ID：
 
 ```bash
-holon transcript
+holon config doctor
+holon run --agent decision-test "调用一次 AdvisoryDecision 工具，传入问题'哪个审查步骤应该最先执行？'，选项列表['阅读 Diff', '发布审查结论']，状态说明'Diff 尚未经过检查；发布审查结论尚未获得授权。'汇报返回的结果与原因。不要发布任何结论，也不要修改文件。"
+holon transcript --agent decision-test --limit 30
 ```
 
-你将在工具调用流中看到 `AdvisoryDecision`：
-- `question`：具体权衡的问题。
-- `options`：参与评估的候选方案。
-- `outcome`：`select`（包含建议方案与置信度分数）或 `abstain`（置信度低于阈值时弃权）。
+## 确认结果
 
-可以看到，Agent 将建议作为参考证据接收，并由 Agent 自行决定是否采纳该建议。
+执行轨迹中应包含实际的 `AdvisoryDecision` 工具调用及其返回结果。
+核查 `outcome`、`choice`、`confidence`、`abstain`、`reason` 以及服务商/模型元数据。合法的返回结果包括选中某个选项、报告服务商回退、或显式弃权（abstain）。显式的弃权能够验证失败处理路径，但不代表推理本身成功。请如实记录弃权原因，不可将其当作有效选项处理。
 
-## 后续探索
+如果 Agent 全程未调用该工具，说明本次测试并未真正验证 Decision 路由。决策系统的建议仅供 Agent 综合权衡，绝不能作为发布变更或修改状态的授权依据。
 
-- [配置参考](/zh-CN/reference/configuration.md)：全部 `decision.*` 配置项说明。
-- [模型工具 schema 清单](/zh-CN/reference/model-tool-schema-inventory.md)：`AdvisoryDecision` 的机器可读输入与输出契约。
-- [Web GUI 指南](/zh-CN/guides/use-web-gui.md)：在浏览器中管理决策设置与查看遥测指标。
+## 故障排查
+
+- **工具未暴露：** 检查 `decision.enabled` 与 `decision.tools.enabled` 是否均已开启，检查当前生效配置，并核对 Agent 允许使用的工具清单。
+- **路由冲突：** 使用本地 ONNX 时需清除 `decision.model`；使用远程模型时需禁用本地 ONNX。
+- **预设缺失或构建版本不支持：** 检查 GUI 中的下载状态，确认当前二进制构建是否包含 `local-onnx` 支持。切勿以为单纯选择预设就会自动触发后台下载。
+- **服务商不可用或拒绝请求：** 检查凭据有效性、路由能力声明、协议匹配度、端点网络连通性，以及是否已按要求重启守护进程。
+- **显式弃权（Abstention）：** 检查返回原因是否由超时、服务商故障、调用次数超限、选项不合法或置信度偏低引起。切勿单纯为了强制得出建议而随意调低置信度下限。
+
+若希望隐藏该工具同时保留服务商配置：
+
+```bash
+holon config set decision.tools.enabled false
+```
+
+## 后续阅读
+
+- [配置参考](/zh-CN/reference/configuration.md) — 完整的配置键说明。
+- [模型工具 Schema 清单](/zh-CN/reference/model-tool-schema-inventory.md) — 工具 Schema 定义。
+- [Web GUI 指南](/zh-CN/guides/use-web-gui.md) — 决策设置与遥测监控。

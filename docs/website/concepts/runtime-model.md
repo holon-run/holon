@@ -1,77 +1,73 @@
 ---
 title: Runtime model
-summary: Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
+summary: How the daemon, clients, agents, work items, tasks, and workspaces fit together.
 order: 10
 ---
 
-# Runtime Model
+# Runtime model
 
-Holon treats agent execution as a runtime system. A single model turn is
-important, but it's not the whole picture. The runtime tracks durable identity,
-active work, supervised tasks, wake conditions, and final delivery as separate
-concerns — each with its own lifecycle.
+Holon is a headless runtime for agents that can work beyond a single chat
+interaction. The daemon owns execution and durable state. Clients such as the
+CLI and Web GUI submit work and display results; they do not need to hold the
+entire execution in a chat window.
 
-## Core Concepts
+An agent activation may involve several model calls and tool operations.
+The agent's identity and tracked objectives can outlive that activation.
+A one-shot run is useful for a bounded job; a persistent agent is useful when
+you want to return to the same worker and its accumulated context.
+
+```text
+Clients and Local Apps ── requests / results ── Daemon
+                                                │
+Template ── initial role and skills ────────── Agent
+                                                ├── guidance and memory
+                                                ├── models and provider routes
+                                                ├── skills → tool operations
+                                                ├── workspace → execution root
+                                                └── WorkItem → tasks and waits
+                                                               → completion report
+```
+
+The last branch is optional: a short question or current-turn task need not
+create a WorkItem.
+
+[Trust boundaries](./trust-boundaries.md) govern how inputs are interpreted.
+[Execution boundaries](./security-and-execution-boundaries.md) describe what
+operations can reach. [Context continuity](./context-continuity.md) connects
+the current activation to saved work and evidence.
+
+## Core concepts
 
 ### Agents
 
-An agent is an **addressable runtime actor** with:
+An [agent](./agents.md) is an addressable worker with its own guidance, memory,
+and work state. An [Agent Template](./agent-templates.md) can initialize its
+role; [skills](./skills-and-tools.md) provide workflows it can load as needed.
+[Models and provider routes](./models-and-providers.md) supply model capabilities
+for the agent's calls. These choices do not grant permissions.
 
-- **Identity** — A unique `agent_id` used for addressing messages and
-  inspecting state
-- **Lifecycle** — Created, active, sleeping, and eventually terminated
-- **Workspace** — A project root where the agent reads and mutates files
-- **Guidance** — Loaded from `AGENTS.md` (project and agent-level)
-- **Local state** — Agent-specific memory, pending follow-ups, and work item
-  focus
+### Work items
 
-Agent profiles:
-
-- **Public (self-owned):** Standalone identity, self-managed lifecycle. Used
-  for long-running, addressable agents.
-- **Private (child):** Parent-supervised via a task handle. Used for delegated
-  subtasks and parallel work.
-
-### Work Items
-
-A work item is a **durable objective record** that outlives individual model
-turns. It contains:
-
-- **Objective** — The short goal statement (e.g. "Fix build warnings in src/")
-- **Plan** — Durable multi-step plan in prose
-- **Plan status** — `draft`, `ready`, or `needs_input`
-- **Todo list** — Discrete progress checklist items
-- **Blocked by** — Specific blocker description when progress stalls
-
-Work items let Holon resume work across turns, inspect progress, or hand off
-incomplete work to another agent. They are not chat history — they're a
-**project management primitive** built into the runtime.
-
-Work item lifecycle:
-
-```
-[Created] -> [Draft plan] -> [Ready] -> [In progress] -> [Completed]
-                ^                            |
-                +--- [Needs input] <-- [Blocked]
-```
-
-When a work item finishes, it records an operator-facing **completion report**.
-This report captures the final conclusions, key deliverables, and verification
-evidence. Completion reports become durable records indexed into memory,
-allowing users and agents to instantly recall "what did we decide and deliver
-on that objective?" without re-reading lengthy conversation transcripts.
-For exact tool invocation protocols and scheduler settlement contracts, see
-the maintainer-facing [Work items spec](/spec/work-items.md).
+A [WorkItem](./work-items-and-tasks.md) preserves a goal, plan, progress, and
+acceptance criteria when the work needs tracking or continuity. It remains
+open until the objective is explicitly completed. Current focus, readiness,
+and completion are separate properties.
 
 ### Tasks
 
-A task is a **supervised execution handle**. Tasks include:
+A task tracks a particular execution, such as a background command or delegated
+invocation. Its status and output provide evidence for the objective. A test
+command finishing does not automatically complete the WorkItem that requested
+it.
 
-- **Command tasks** — Shell commands, builds, tests, scripts
-- **Child agent tasks** — Delegated agents invoked via `InvokeAgent`
+### Queues and wakeups
+
+Messages and events let the runtime schedule an agent. A recorded wait tells
+it what continuation the agent expects. Ending a reply or writing a reminder
+in a plan does not register a wait. See
+[Events, waits, and wakeups](./events-and-waits.md).
 
 Task lifecycle is independent of the agent's user-facing answer. You can:
-
 - Inspect status (`TaskStatus`)
 - Read runtime-confirmed command files in bounded ranges, or observe agent
   progress with bounded `holon tail --agent <id> --include-progress`
@@ -80,89 +76,45 @@ Task lifecycle is independent of the agent's user-facing answer. You can:
 - Send continuation input (`TaskInput`)
 - Stop explicitly (`TaskStop`)
 
-### Queues and Wakeups
+### External triggers
 
-Holon's scheduling primitives manage when an agent acts and when it rests:
-
-- **Enqueue** — Schedule a follow-up message for this agent. Priorities:
-  `interject`, `next`, `normal`, `background`.
-- **Sleep** — Runtime idle posture when no immediate work remains.
-- **Wake** — External trigger or queued message reactivates the agent.
-
-These state transitions are visible — integrations don't need to infer hidden
-background behavior.
-
-### External Triggers
-
-External triggers let an agent wait for events from outside the runtime:
-
-```text
-Agent waits ──► External ingress provisioned ──► Event arrives ──► Agent wakes
-```
-
-Holon provisions a default external ingress capability for each agent. The
-agent uses this capability to receive wake hints and contentful external
-events without creating or cancelling triggers on every wait cycle.
-
-**Delivery modes:**
-
-| Mode | Behavior |
-|------|----------|
-| `wake_hint` | Wakes the agent so it can inspect external state (e.g., check a CI run). The hint payload is not enqueued as a message. |
-| `enqueue_message` | Wakes the agent **and** delivers the event payload as a message in the agent's queue. |
-
-Choose `wake_hint` when the external system already has a query API (GitHub
-API, CI status endpoints). Choose `enqueue_message` when the callback payload
-itself contains the actionable information.
-
-External ingress capabilities are agent-scoped. The same agent ingress can be
-reused across PRs, CI runs, issues, and WorkItems; WorkItems record their
-waiting state separately through `blocked_by`, `plan_status`, and todo state.
+External ingress can signal that outside state changed or deliver a message.
+A wake hint does not pass its payload to the model; the agent checks the
+source after waking. Receiving an event neither grants authority nor proves
+that the outside work succeeded.
 
 ### Delivery
 
-Holon separates **internal execution traces** from **user-facing delivery**:
-
-- **Briefs** — Condensed context summaries for model consumption
-- **Final answer** — The useful result shown to the operator
-- **Task output** — Command stdout/stderr, available through task inspection
-- **Transcripts** — Full turn history for debugging
-
-Briefs and task results are linked back to the runtime turns that produced
-them. This lets Holon preserve continuity across wakeups and task-result
-continuations without treating the raw transcript as the only context source.
-See [Context Continuity](/concepts/context-continuity.md) for the
-user-facing model of prompt layout, projection, and compaction.
+The operator receives a concise result, with deliverables and verification
+status. Task output and transcripts remain separate evidence surfaces for
+inspection. A WorkItem's completion report records the outcome of that
+objective. A [Local App](./local-apps.md) can provide a focused interface for
+requesting and inspecting work. See [Results and artifacts](./results-and-artifacts.md).
 
 ### Workspaces
 
-Every agent has exactly one active workspace. Workspaces define:
+The active [workspace](./workspaces.md) supplies project context and tool
+location defaults. An execution root can be a canonical checkout or a linked
+worktree. These bindings organize work; they do not create a host filesystem
+sandbox.
 
-- **Instruction root** — Where `AGENTS.md` and policy files are resolved
-- **Execution root** — Default working directory for commands
-- **ApplyPatch target** — Where file mutations land
+## The operating loop
 
-Workspaces can be attached, detached, or isolated for safe experimentation.
+Suppose you ask an agent to fix a failing build and wait for CI. It inspects
+the project, records the objective if the work will span turns, makes the
+change, and runs local checks. It then records a wait for the CI run. After a
+notification, it checks that run and the remaining acceptance criteria before
+reporting the outcome.
 
-## The Operating Loop
+You can disconnect your client while the daemon continues this work. Restarting
+the daemon or interrupting a command is a different situation: durable work
+records help recovery, but do not promise uninterrupted processes. See
+[Context continuity](./context-continuity.md).
 
-Each agent turn follows this pattern:
+## See also
 
-1. **Ingress** arrives with `origin`, `trust`, and `priority` metadata.
-2. **Anchor** — Non-trivial work gets a work item with a stable objective.
-3. **Load context** — Agent reads only what's needed for the current decision.
-4. **Mutate** — Changes happen through explicit workspace tools (`ApplyPatch`,
-   `ExecCommand`).
-5. **Verify** — Run real project checks (`cargo test`, `cargo check`) when
-   available.
-6. **Deliver** — Concise user-facing result, then sleep or enqueue follow-up.
-
-## See Also
-
-- [Context Continuity](/concepts/context-continuity.md) — How Holon preserves model-visible continuity across turns
-- [Memory System](/concepts/memory.md) — How Holon preserves continuity across turns
-- [Trust Boundaries](/concepts/trust-boundaries.md) — How Holon classifies and
-  enforces trust
-- [CLI Reference](/reference/cli.md) — All CLI commands
-- [Automate Holon over HTTP](/guides/automate-over-http.md) — HTTP control plane API
-- [Getting Started](/getting-started/first-agent.md) — Hands-on tutorial
+- [Create your first agent](../getting-started/first-agent.md)
+- [Track long-lived work](../guides/run-long-lived-task.md)
+- [Memory](./memory.md)
+- [Trust boundaries](./trust-boundaries.md)
+- [CLI reference](../reference/cli.md)

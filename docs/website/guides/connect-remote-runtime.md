@@ -1,14 +1,24 @@
 ---
 title: Connect to a remote Holon runtime
 summary: Reach a runtime running on another machine and verify the connection.
-order: 15
+order: 160
 ---
 
 # Connect to a remote Holon runtime
 
-Run Holon on one machine and use it from another — a shared team server, a
-headless box, or a remote dev host. This guide picks an access mode, connects,
-and confirms the connection works.
+Run Holon on one machine and connect from another. Choose a reachable address,
+protect the control plane, then verify authorized and unauthenticated access.
+
+## Prerequisites
+
+- Holon is installed on the runtime host and, for TUI access, on the client.
+- You can administer the host's network and restart its daemon.
+- Prepare a control token file on the host, readable only by the account
+  running Holon. See [Providing a Token](#providing-a-token).
+- Choose a network path the client can reach. For public access, use HTTPS.
+
+Run server commands below on the runtime host. Choose either a managed daemon
+or a foreground `holon serve` process; do not start both on the same port.
 
 ## Access Modes
 
@@ -28,36 +38,43 @@ Both `holon daemon start` and `holon serve` accept an `--access` flag:
 Start a daemon accessible through a Cloudflare Tunnel:
 
 ```bash
-holon daemon start --access tunnel
+holon daemon start --access tunnel --token-file ~/.holon/remote.token
 ```
 
 Or use the standalone server:
 
 ```bash
-holon serve --access tunnel
+holon serve --access tunnel --token-file ~/.holon/remote.token
 ```
 
 The runtime manages the tunnel lifecycle. No Cloudflare configuration is
 required on your side — Holon creates and manages ephemeral tunnels
-automatically.
+automatically. Use the URL reported by the runtime rather than assuming that
+its local listen address is the public endpoint. The tunnel exposes the
+control plane through a third party; keep Holon authentication enabled.
 
 ### Tailnet Mode (Tailscale)
 
 For private mesh access between your own devices:
 
 ```bash
-holon daemon start --access tailnet
-holon serve --access tailnet
+holon daemon start --access tailnet --token-file ~/.holon/remote.token
+# Or run in the foreground:
+holon serve --access tailnet --token-file ~/.holon/remote.token
 ```
 
 Requires Tailscale to be installed and authenticated on the host machine.
+The client must also have tailnet access to the host. Tailnet connectivity and
+Tailscale Serve HTTPS are separate choices; use the scheme and URL actually
+configured for your endpoint.
 
 ### LAN Mode
 
 For same-network access with a known IP:
 
 ```bash
-holon serve --access lan --host 192.168.1.10 --port 8787
+holon serve --access lan --host 192.168.1.10 --port 8787 \
+  --token-file ~/.holon/remote.token
 ```
 
 ### Custom Host and Port
@@ -65,11 +82,20 @@ holon serve --access lan --host 192.168.1.10 --port 8787
 Override the default listen address:
 
 ```bash
-holon daemon start --access tunnel --port 9000
-holon serve --access lan --host 0.0.0.0 --port 8787
+holon daemon start --access tunnel --port 9000 --token-file ~/.holon/remote.token
+holon serve --access lan --host 0.0.0.0 --port 8787 \
+  --token-file ~/.holon/remote.token
 ```
 
+`0.0.0.0` listens on all IPv4 interfaces, potentially including public ones.
+Binding an interface does not add TLS; restrict exposure with host networking
+and use HTTPS when traffic leaves a trusted local path.
+
 ## Connecting Remotely
+
+Use the host's advertised or configured base URL in place of the examples
+below. A public HTTPS endpoint may use port 443 even when Holon listens locally
+on another port. Open that same base URL in a browser for the Web GUI.
 
 ### TUI Connection
 
@@ -107,14 +133,20 @@ the full API surface.
 
 ### Providing a Token
 
-Holon does not generate control tokens for you. Pick a secret yourself, then
-hand it to the server with `--token`, `--token-file`, or the
+For direct CLI startup, provide your own control token. Pass it to the server
+with `--token`, `--token-file`, or the
 `HOLON_CONTROL_TOKEN` environment variable:
 
 ```bash
 # Read the control token from a file
 holon daemon start --access tunnel --token-file ~/.holon/remote.token
 ```
+
+Prepare this file using a securely generated secret. Do not commit it, include
+it in logs, or share it in plaintext.
+Transfer the token securely to the client, or use
+[device pairing](connect-android-client.md#option-a-qr-code-pairing-recommended)
+for supported clients. Prefer a token file over an inline command-line secret.
 
 ### Token Profiles
 
@@ -139,7 +171,9 @@ You can also connect to remote runtimes from an Android phone or tablet using th
 
 ## Daemon Management
 
-Once the daemon is running, standard management commands work remotely:
+Run these commands on the runtime host, for example through an authorized SSH
+session. They manage that host's daemon; they do not target the server selected
+by a previous `holon tui --connect` command.
 
 ```bash
 holon daemon status
@@ -148,14 +182,45 @@ holon daemon restart
 holon daemon stop
 ```
 
+## Verify the connection
+
+1. Open the remote GUI or connect with the TUI and confirm the expected agent
+   roster. Check the base URL to avoid testing a different runtime.
+2. Send a harmless request to a known agent and wait for its new response.
+   A page loading or a request being accepted is not proof that the agent
+   completed the work.
+3. Request `/api/agents/list` with the configured credential and check for a
+   successful JSON response.
+4. Repeat the request without a credential:
+
+   ```bash
+   curl -i https://your-server:8787/api/agents/list
+   ```
+
+   Expect an authentication error, not the agent list. If protected data is
+   returned, stop exposing the endpoint until authentication is corrected.
+
+## Troubleshooting
+
+- **Connection refused or timed out:** Check the host's daemon status, listen
+  address, port, firewall, and the client's network path.
+- **Tailnet host unreachable:** Check that both devices are connected and that
+  tailnet access rules allow the connection.
+- **Authentication error:** Check the client credential and server auth mode.
+  For OIDC deployments, follow organization login rather than assuming a shared
+  control token is a user session.
+- **GUI loads but API fails:** Serve the GUI and API at the same origin's root
+  or check the reverse proxy and CORS configuration.
+- **Tunnel URL stopped working:** Check the current advertised URL and tunnel
+  status on the host; do not assume an ephemeral URL survives a restart.
+
 ## Security Considerations
 
 - **Always use a token**. Holon refuses to start with a non-loopback listen
   address, or with `--access lan`/`--access tailnet`, unless a token is set.
   Set a token for `--access tunnel` too: the tunnel is publicly reachable.
-- **Prefer tunnel or tailnet** over LAN mode when connecting across the
-  internet. These provide encryption and authentication without exposing raw
-  ports.
+- **Prefer tunnel or tailnet** over exposing a raw LAN listener to the internet.
+  Keep Holon authentication enabled; network access does not replace it.
 - **Rotate tokens** by restarting the daemon with a new `--token-file`.
 - **Use `--access local`** when only local connections are needed. This is
   the default and the most secure option.
@@ -164,6 +229,11 @@ holon daemon stop
 - **Team deployments**: For shared multi-user deployments, switch to OIDC
   authentication (`auth.mode = "oidc"`). This replaces the shared control token
   with individual SSO logins. See [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
+
+Remote authentication controls entry to the runtime. It does not sandbox agent
+commands or create filesystem isolation between users. Read
+[Security and execution boundaries](../concepts/security-and-execution-boundaries.md)
+before exposing a host with sensitive files.
 
 ## See Also
 

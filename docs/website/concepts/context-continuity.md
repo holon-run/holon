@@ -1,154 +1,101 @@
 ---
 title: Context continuity
-summary: How Holon keeps long-lived agent context coherent without replaying every transcript turn.
-order: 12
+summary: How durable work state helps an agent resume without replaying all history, and what interruptions still require recovery.
+order: 100
 ---
 
-# Context Continuity
+# Context continuity
 
-Holon agents are meant to continue work across many turns, wakeups, tasks, and
-model calls. Context continuity is the product contract that lets an agent keep
-the current objective, important results, and provenance visible without
-replaying the entire transcript.
+Context continuity lets an agent resume an objective across activations using
+saved work state and relevant evidence. Each model call receives a bounded
+view. The runtime does not replay every transcript or load every file the
+agent has ever read.
 
-Holon does this by treating context as a runtime projection, not as a chat log.
-The durable record remains available for audit and recovery, while each model
-turn receives a bounded selection of the information that matters now.
+For example, after waiting for CI, an agent needs the original acceptance
+criteria, the revision under test, and the new CI result. It usually does not
+need the full output of every earlier shell command.
 
-## What the Model Sees
+## What the model sees
 
-A Holon prompt is assembled from several sections with different jobs:
+An activation can include the current input and its provenance, the objective
+it continues, current work state, relevant recent results, selected historical
+evidence, and the execution environment with its guidance.
 
-| Section | Purpose |
-|---------|---------|
-| **Current input and continuation anchor** | The event that woke the agent and the trusted operator intent it continues. |
-| **Current work item** | The active objective, durable plan, todo list, and any waiting state. |
-| **Current work refs** | Runtime-derived refs to files, tools, issues, PRs, tasks, waits, or memory records relevant to the active work item. |
-| **Relevant episode memory** | Archived completed work selected by relevance and budget. |
-| **Recent runtime evidence** | Recent messages, result briefs, task results, tool executions, and wakeups when they are directly useful. |
-| **Execution environment** | The current workspace, runtime capabilities, and scoped guidance. |
+The active WorkItem is the record for the current objective, plan, and progress.
+Older summaries help explain how the work arrived there. They do not override
+updated scope or a later operator decision. When exact details matter, the
+agent should reopen the referenced evidence.
 
-These sections are not separate sources of truth competing with each other.
-They are projections of runtime evidence. The durable ledger remains the audit
-trail; the prompt is the budgeted view used for the next model decision.
-When sections overlap, the current work item is the task lifecycle source of
-truth. Relevant episode memory is historical evidence and should not override
-the active work item's objective, plan, todo list, or waiting state.
+<a id="turns-are-the-causal-unit"></a>
 
-## Turns Are the Causal Unit
+## Connecting a result to the right request
 
-Holon uses runtime turns as the main way to preserve continuity. A turn is one
-activation of an agent: an operator message, a task result, an external wake, a
-scheduler tick, or a provider recovery attempt.
+A task result may arrive after the agent has handled another message. Holon
+keeps the result connected to its invocation and work ownership so that it can
+continue the relevant request. A new event does not automatically become a new
+operator objective.
 
-The important part is not only the trigger. A turn also links what happened:
+This is why a CI notification should lead back to the work that requested the
+CI run. The agent must still check that the run and revision are the intended
+ones before accepting its result.
 
-- the operator input or external event that caused the turn;
-- task results or tool executions observed during the turn;
-- result briefs produced for the operator;
-- work item updates, waits, and completion reports;
-- provenance and trust classification for the inputs involved.
+<a id="projection-is-not-transcript-truncation"></a>
+<a id="compaction-preserves-provenance"></a>
 
-This keeps related facts together. For example, a CI wake can be shown as a
-continuation of the original "fix this issue" request instead of replacing
-that request as the newest intent. A completion report can stay linked to the
-work item it completed instead of becoming an unrelated summary.
+## Bounded context and recall
 
-## Projection Is Not Transcript Truncation
+The runtime selects current work and useful evidence instead of simply using
+an ever-growing chat log. Older work can be represented by summaries and
+references. Some detail will therefore be absent from the current prompt.
 
-Simple truncation drops the oldest text once a context window fills. That is
-not enough for long-lived agents: old text may contain the operator's original
-intent, a completed decision, a task-result fact, or the reason an agent is
-waiting.
+Summaries preserve a route back to evidence; they are not independent approval
+or a replacement for the work record. An external instruction remains external
+when summarized. [Memory](./memory.md) explains what can be searched and which
+files are loaded automatically.
 
-Holon uses projection instead:
+<a id="work-items-tasks-briefs-and-final-answers"></a>
 
-1. **Pin what must remain authoritative**, such as trusted operator intent,
-   active work item state, waits, and lifecycle transitions.
-2. **Select useful recent turns** by continuation chain, retention priority,
-   and budget.
-3. **Fold low-value runtime noise**, such as duplicate wakeups, retries,
-   fallback attempts, no-op scheduler ticks, or repeated pending polls.
-4. **Render older completed work as structured episodes** with source refs and
-   authority boundaries.
+## Records that make recovery useful
 
-The result is a shorter prompt that still preserves why the agent is acting,
-what it has already done, and which evidence supports the current state.
-This turn-based context projection is Holon's intended direction for preserving
-continuity without rendering an unbounded transcript.
+A WorkItem should preserve scope, decisions, acceptance criteria, and the next
+action. Task handles identify executions and their results. A completion report
+states the outcome and verification. Artifact references identify the actual
+files, including the worktree that contains them.
 
-## Compaction Preserves Provenance
-
-Compaction is a way to keep context bounded; it is not permission to rewrite
-history.
-
-When older turn ranges age out of the hot prompt budget, Holon can archive them
-as structured episodes. An episode records the covered turn range, source turn
-IDs, source references, decisions, results, verification, unresolved items,
-operator intents, and model inferences.
-
-By default, prompt assembly recalls only episodes whose covered turn range is
-older than the `recent_turns` window. Recent turns provide the high-fidelity
-view of current interaction; episodes provide the compressed mid-term archive
-for turns no longer shown directly. Diagnostic modes may choose to show both,
-but ordinary prompts should avoid replaying the same turn evidence twice.
-
-Model-generated summaries may help describe an episode, but they are evidence,
-not authority. They do not change the trust level of an input, overwrite
-operator intent, decide work item state, or determine what may be discarded.
-The source refs remain available for audit and recovery.
-
-## Work Items, Tasks, Briefs, and Final Answers
-
-Continuity depends on keeping runtime objects distinct:
-
-- **Work items** hold durable objectives, plans, todo lists, waits, and
-  completion status.
-- **Tasks** represent supervised commands or child agents. Their results can
-  wake an agent and continue an older operator request.
-- **Briefs** are user-facing or prompt-facing outputs produced by a turn. A
-  turn may produce more than one brief, including work item completion reports.
-- **Final answers** are what the operator sees for the current interaction.
-  They are delivery artifacts, not the only memory mechanism.
-
-Because these objects are linked through turns, the agent can answer questions
-such as "what did we do for that issue?" or "why are you waiting?" without
-searching an unstructured transcript.
-
-## What Is the User-Facing Contract
-
-Users should be able to rely on these behaviors:
-
-- the current objective and trusted operator intent remain visible across
-  wakeups and task-result continuations;
-- active work item state is treated as authoritative runtime state;
-- compaction keeps provenance and does not silently flatten trust boundaries;
-- completed work can be recalled through episode memory and completion
-  reports;
-- prompt context is bounded, so old transcript text is not always replayed.
-
-The exact internal schemas, token budgets, and retention scores are
-implementation details. The visible contract is that Holon preserves continuity
-through typed runtime evidence rather than by treating the chat transcript as
-the only source of memory.
+These records let the agent recover without assuming it remembers an old
+conversation. A vague plan such as "continue fixing things" does not provide
+enough information. Nor does a final reply replace updating an unfinished
+objective's state.
 
 ## How Holon keeps work continuous
 
-Continuity is why an agent can stop and later pick the work back up. Three things
-stay with the runtime rather than with your client:
+Distinguish three situations:
 
-- The **agent** keeps its identity, its guidance, and its memory.
-- The **objective** stays tracked as a work item, with its plan and progress.
-- The **execution** keeps running as a task even after the client disconnects.
+| Interruption | What to expect |
+|---|---|
+| Client disconnects | The daemon owns runtime work and can continue while it remains running. Reconnect to inspect state and results. |
+| Daemon stops or restarts | Persisted objectives and evidence support recovery. Inspect current state before assuming execution resumed. |
+| Command or provider request is interrupted | Check its recorded outcome and any side effects before deciding whether to retry. Durable intent does not guarantee an uninterrupted process. |
 
-When you reconnect, you see the current state, not a replay. When the work
-finishes, the result arrives as a brief. You do not have to keep a terminal open
-for the work to continue.
+A reconnect should begin with the current WorkItem and task state, not with an
+assumption that every previously running process survived. Retrying an action
+that already changed an external system can duplicate that change.
 
-## See Also
+## What is the user-facing contract
 
-- [Runtime Model](/concepts/runtime-model.md) — Agents, work items, tasks, and wakeups
-- [Memory System](/concepts/memory.md) — Work items, work refs, episode memory, durable ledger, and search
-- [Trust Boundaries](/concepts/trust-boundaries.md) — Origin and trust classification
-- RFC: [Turn-Based Context Projection](https://github.com/holon-run/holon/blob/main/docs/rfcs/turn-based-context-projection.md)
-- RFC: [Long-Lived Context Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/long-lived-context-memory.md)
+You can rely on explicit work records and provenance to understand what the
+agent is continuing. You should not rely on unlimited recall, replay of every
+transcript, or automatic success after an interruption.
+
+For work that must resume later, preserve the objective and acceptance criteria,
+record waits through the runtime, and keep required artifacts in durable
+locations. If evidence is missing or a process failed, the agent should say so
+and identify the recovery step.
+
+## See also
+
+- [Track long-lived work](../guides/run-long-lived-task.md)
+- [Observe progress and results](../guides/observe-agent-work.md)
+- [Memory](./memory.md)
+- [Wake and continuation specification](../spec/wake-and-continuation.md)
+- [Work item specification](../spec/work-items.md)

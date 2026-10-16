@@ -1,36 +1,34 @@
 ---
 title: Connect with the iOS client
 summary: Set up the native iOS client, pair with a running Holon daemon, inspect deliverables and files, and report AI content on iPhone and iPad.
-order: 38
+order: 200
 ---
 
 # Connect with the iOS Client
 
-Holon includes a native SwiftUI client for iPhone and iPad, targeting iOS 18 and newer. The app delivers a result-first conversation interface, offline identity caching, quick QR pairing, paged workspace file reading, and system share integration.
-
-This guide covers installation, connection setup, conversation navigation, file reading, system integration, and AI content reporting.
+Connect an iPhone or iPad to a Holon runtime, send a request, and open the
+result or its files. Previously cached conversations remain useful offline,
+but they do not confirm that the runtime is reachable.
 
 ## Prerequisites
 
 - A running Holon daemon with HTTP access enabled (default port `7878`).
 - An iPhone or iPad running iOS 18.0 or newer, or a compatible Xcode simulator.
 - A network path to the daemon (LAN, reverse proxy, or tailnet).
+- A pairing invitation, a control token, or organization sign-in.
 
 ## Installation
 
 ### Install Official Packages
 
-Install official builds through Apple TestFlight or the App Store. When invited, follow the redemption link on your device to install the latest build.
+If you have a TestFlight invitation, follow its redemption link on your device.
+For other distribution channels, check the project's announced availability;
+this guide does not imply that an App Store build is available.
 
 ### Build from Source
 
-To build and run the iOS client with Xcode:
-
-```bash
-open apps/ios/Holon.xcodeproj
-```
-
-Select your target device or simulator in Xcode and run the project (`Cmd + R`).
+The Xcode build and run steps have moved to
+[Build mobile clients](../maintainers/build-mobile-clients.md#ios).
 
 ## Connecting to the Daemon
 
@@ -71,6 +69,15 @@ When your daemon connects to an OpenID Connect provider:
 
 ## Daily Navigation and Mobile Experience
 
+After connecting, select an agent and send a harmless request:
+
+```text
+Reply with "iOS connection verified". Do not change any files.
+```
+
+Wait for a new completion brief. Check that the request was sent to the selected
+runtime rather than left in a local sending queue.
+
 - **Searchable Agent Roster:** The main screen lists accessible agents with real-time status and activity summaries. Filter agents by recent activity, reply state, or name.
 - **Result-First Timeline:** Conversations display operator requests alongside final Markdown completion briefs. Detailed execution traces and tool outputs collapse into expandable turn rows so you can review deliverables without scrolling through internal logs.
 - **Background Task Visibility:** Ongoing background runs and child-agent invocations appear as compact status cards that reflect current execution state.
@@ -100,12 +107,46 @@ You can report inaccurate, harmful, or policy-violating assistant responses dire
 4. Optionally provide details in the text box.
 5. Tap **Submit Report**.
 
-The client submits the report to `POST /api/content-reports`. The server stores an authenticated, bounded snapshot of that single response for administrator review. The report includes only the selected assistant response and metadata, never your entire chat history or private workspace secrets.
+The client submits the report to `POST /api/content-reports`. The server stores
+an authenticated, bounded snapshot of the selected response for administrator
+review, not the entire conversation. Review the selected text: it may itself
+contain sensitive information. Acceptance by the runtime does not mean the
+report has been moderated.
 
 ## Managing Connections and Diagnostics
 
 - **Switching Connections:** In **Settings** -> **Connections**, view configured endpoints or swipe left to delete unused servers.
 - **Diagnostic Reports:** In **Settings** -> **Diagnostics**, generate a sanitized report containing connection state, system version, and event counters to share when troubleshooting issues.
+
+## Verify results and file access
+
+1. Check the saved connection address and confirm that the expected agent
+   received your test request and returned a new brief.
+2. Open **Files** from that agent's conversation. Select a known, harmless text
+   file and verify its contents and workspace.
+3. Open a file reference from a brief, if available. Confirm that it resolves to
+   the intended runtime artifact, especially when the agent uses a worktree.
+4. Reopen the app and refresh. Cached conversation text is available within
+   the app's cache limits; execution details and files are not promised as
+   offline downloads.
+
+## Troubleshooting
+
+- **Cannot connect on Wi-Fi:** Check iOS Local Network permission, the server
+  address, and the host's listen interface. A physical phone cannot reach your
+  computer through the phone's `localhost`.
+- **Pairing fails:** Request a fresh invitation. Check its host before redeeming
+  it and ensure the phone can reach that host.
+- **Organization login returns without a session:** Retry sign-in and check
+  the runtime's OIDC configuration. Do not substitute a shared local token.
+- **Conversation opens but files do not:** Restore the live connection. Check
+  that the referenced workspace or execution root still exists and is
+  accessible; cached briefs do not cache all linked files.
+- **Request remains queued:** Reconnect and inspect the sending queue before
+  resubmitting, to avoid duplicate requests.
+- **Persistent failure:** Generate a diagnostic report in Settings, review it
+  before sharing, and include the failing step and client/runtime versions.
+  Do not include credentials or pairing invitations.
 
 ## Next Steps
 

@@ -1,6 +1,6 @@
 ---
 title: Getting started
-summary: Go from zero to your first Holon agent in under 15 minutes.
+summary: Install Holon, configure a model, and verify your first agent result.
 order: 10
 ---
 
@@ -38,23 +38,22 @@ Holon gives you three ways to interact with the runtime:
 
 | Mode | Command | Best for |
 |------|---------|----------|
-| **One-shot** | `holon run "..."` | Quick single-turn tasks — no daemon needed |
+| **One-shot** | `holon run "..."` | Bounded tasks that finish in one command invocation |
 | **Daemon + TUI** | `holon daemon start` + `holon tui` | Interactive agent sessions with state, queues, and workspaces |
 | **Daemon + HTTP** | `holon daemon start` + HTTP client | Integrations, automation, control-plane consumers |
 
-The first agent tutorial uses daemon + TUI because it
-gives you the full interactive experience. For one-shot runs, see the
-[quick examples](/guides/quick-examples).
+The first-agent walkthrough below covers a named agent and client follow-up,
+with a one-shot alternative for a bounded question. One command invocation can
+include several model and tool turns.
 
 ## Evaluate or explore?
 
 If you're already familiar with Holon or want to jump straight into specifics:
 
-- **[Run your first Holon task](/guides/quick-examples)** — one-shot and common task patterns
-- **[Run a long-lived task](/guides/run-long-lived-task)** — work that waits, survives disconnects, and delivers
+- **[Run a long-lived task](/guides/run-long-lived-task)** — track progress, wait for events, and verify completion
 - **[Delegate work to another agent](/guides/delegate-work)** — hand a scoped task to a child agent
 - **[Automate Holon over HTTP](/guides/automate-over-http)** — drive Holon from code
-- **[Concepts](/concepts/)** — the mental model before diving into internals
+- **[Concepts](/concepts/)** — agents, reusable roles, workspaces, and continuing work
 - **[CLI reference](/reference/cli.md)** — full command surface
 - **[Troubleshoot a Holon task](/guides/troubleshooting)** — diagnose common setup problems
 
@@ -69,7 +68,7 @@ If you plan to modify or contribute to Holon itself:
 ## Requirements
 
 - Holon installed on `PATH` (Homebrew or direct binary; see the walkthrough below)
-- A model provider API key (Anthropic, OpenAI, or compatible)
+- Access to a supported model provider and its required credentials
 
 ## Community & feedback
 
@@ -84,7 +83,7 @@ If you are contributing to the Holon runtime engine or need internal lifecycle s
 <!-- INDEX:START -->
 
 - [Create your first agent](./first-agent.md)
-  From zero to your first Holon agent: install, start, TUI basics, create an agent, and configure models.
+  Install Holon, configure a model, and get a verified result from a named agent.
   <!-- mdorigin:index kind=article -->
 
 - [Onboarding guide](./onboarding.md)

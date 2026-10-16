@@ -87,7 +87,7 @@ baselines are refreshed from source instead of edited here.
   <!-- mdorigin:index kind=article -->
 
 - [Skills](./skills.md)
-  Skill sources, skills.toml schema, and the CLI commands that install, enable, update, and verify skills.
+  Skill sources, CLI commands, and API endpoints for installation, enablement, updates, and verification.
   <!-- mdorigin:index kind=article -->
 
 - [TUI](./tui.md)
@@ -98,8 +98,12 @@ baselines are refreshed from source instead of edited here.
   Work item fields, statuses, lifecycle operations, and the CLI and HTTP surfaces that act on them.
   <!-- mdorigin:index kind=article -->
 
+- [Events and timers](./events-and-timers.md)
+  Callback routes, delivery modes, timer fields, and explicit wait contracts.
+  <!-- mdorigin:index kind=article -->
+
 - [Observability](./observability.md)
-  Trace export, protected metrics endpoints, and configuration for OTLP, OpenMetrics, dashboards, and alerts.
+  Trace export, protected metrics endpoints, OTLP fields, and runtime performance snapshot contracts.
   <!-- mdorigin:index kind=article -->
 
 - [Web tools](./web-tools.md)
@@ -112,6 +116,10 @@ baselines are refreshed from source instead of edited here.
 
 - [Image generation](./image-generation.md)
   Image generation tool parameters, supported models, output sizes and formats, and error behavior.
+  <!-- mdorigin:index kind=article -->
+
+- [Local App reference](./local-apps.md)
+  Manifest fields, browser SDK methods, event scope, and hosting limits for agent-owned apps.
   <!-- mdorigin:index kind=article -->
 
 - [Supported Models](./models.md)

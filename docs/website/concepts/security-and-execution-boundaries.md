@@ -1,140 +1,107 @@
 ---
 title: Security and execution boundaries
-summary: "What Holon does and does not sandbox: local execution, workspace binding, remote access, capability secrets, and trust metadata."
-order: 30
+summary: Host-local execution, workspace limits, authenticated access, and capability-secret risks.
+order: 150
 ---
 
 # Security and execution boundaries
 
-Holon runs agents that can execute shell commands, delegate work, and wait for
-external events. Understanding what boundaries Holon provides — and what it
-does not — helps you run agents safely.
+An agent that can run shell commands can affect the machine and services those
+commands can reach. Holon's workspace and trust rules organize that work, but
+the host-local backend does not provide a general sandbox.
 
 ## The host-local runtime
 
-Holon runs as a user-level process on your machine. It is **not a sandbox**:
+Commands and file operations use the host environment and its permissions.
+A command may be able to read files outside the project, reach network services,
+or access credentials available to the process. Do not assume that starting an
+agent creates a container, virtual machine, or separate operating-system user.
 
-- Agents can run any command your user account can run.
-- File operations use your user permissions.
-- Network access follows your host's network configuration.
-- There is no container, VM, or seccomp isolation built into the runtime.
-
-**What this means:** scope workspaces intentionally, use dedicated user
-accounts or containers when running untrusted agent workloads, and treat agent
-command execution with the same care you'd give a shell script running as your
-user.
+For example, a reviewer asked to inspect an unfamiliar repository may encounter
+a test script that reads files from the user's home. The review scope forbids
+unrelated access, but that instruction is not an OS-level block on the script.
+Review the script and use an appropriately isolated environment before running
+untrusted code.
 
 ## Execution environment summary
 
-Every agent receives an execution environment summary in context. This summary
-describes the current policy snapshot and what is enforced:
+The agent receives a summary of the current execution environment and policy.
+Read it as a description of specific enforced or unenforced boundaries, not a
+blanket safety guarantee.
 
-| Boundary | Level | What it means |
-|----------|-------|---------------|
-| `cwd_rooting` | runtime_shaped | The runtime allows workdir outside the workspace root when explicitly requested; sandboxing is the responsibility of the execution backend |
-| `projection_rooting` | hard_enforced | Filesystem views are constrained to the projected root |
-| `path_confinement` | not_enforced | The runtime does not prevent access outside the workspace by path |
-| `write_confinement` | not_enforced | Write operations are not restricted to the workspace |
-| `network_confinement` | not_enforced | Network access is unrestricted by default |
-| `secret_isolation` | not_enforced | The runtime does not isolate secrets from agent commands |
-| `child_process_containment` | not_enforced | Spawned child processes are not confined by the runtime |
-
-**Key takeaway:** boundaries marked `hard_enforced` are runtime guarantees.
-Boundaries marked `not_enforced` rely on the operator's host configuration
-(filesystem permissions, firewall rules, container isolation).
+A runtime can enforce message ingress or control-plane ownership while leaving
+filesystem and network access to the host. Enforcement of one boundary does
+not imply enforcement of the others. Exact guarantee levels and workspace
+operations are documented in the
+[workspace reference](../reference/workspaces.md) and
+[execution specification](../spec/workspace-and-execution.md).
 
 ## Workspace binding
 
-Holon provides workspace binding that constrains where the agent operates:
+The active workspace sets project context and default locations. Relative
+patches resolve against its execution root; commands start in the selected
+working directory. Explicit paths and shell commands can still reach elsewhere
+when the backend and host permissions allow it.
 
-- **Workspace root** — the agent's default working directory. The runtime
-  defaults commands to start inside this root, but an explicit workdir may
-  point outside the workspace when the execution backend allows it.
-- **Projection root** — constrains the filesystem view presented to the agent.
-  When enforced, the agent only sees files under the projection root.
-- **ApplyPatch targets** — file mutation tools resolve relative paths against
-  the active workspace by default.
+A worktree separates working copies, not host credentials or network access.
+Use it to avoid accidental file conflicts. Use host permissions, dedicated
+accounts, containers, or virtual machines when you need stronger confinement.
 
-These bindings are **organizational guardrails**, not security boundaries:
-an agent that can execute arbitrary shell commands can `cd /etc` or read files
-outside the workspace if your OS permissions allow it. For true confinement,
-pair Holon with a container, VM, or dedicated user account.
+<a id="remote-access-holon-serve"></a>
 
-## Remote access (`holon serve`)
+## Local and remote access
 
-`holon serve` exposes the Holon control plane over HTTP. This is a powerful
-surface and must be protected:
+Local daemon access and network serving have different exposure. A local Unix
+socket relies on host access controls. Serving over a network makes the control
+plane reachable by other clients and requires deliberate authentication and
+transport protection.
 
-```bash
-# Secure: local-only access on Unix socket (default daemon mode) — no
-# additional protection needed beyond filesystem permissions
-holon daemon start
+Authentication establishes a client's identity or accepted credential.
+Authorization determines what that caller can do. A valid login does not
+make every target agent or operation available, and it does not turn arbitrary
+payload content into a trusted instruction.
 
-# Caution: LAN-accessible — always require a token
-holon serve --access lan --token "your-secret-token"
-holon serve --access lan --token-file ~/.holon/remote.token
-
-# Caution: tunnel access — the tunnel provider can route traffic to
-# your Holon instance
-holon serve --access tunnel --token "your-secret-token"
-```
-
-**Rules for remote access:**
-
-- Always use `--token` or `--token-file` when exposing Holon beyond localhost.
-- Prefer `--access local` or the default daemon Unix socket unless you have a
-  specific integration need.
-- Treat the token as a credential: rotate it, don't commit it, and don't share
-  it through unencrypted channels.
-- Tunnel mode exposes Holon through a tunnel provider; understand the provider's
-  security model before using it.
+Keep access as narrow as the workflow permits. A tunnel changes reachability;
+it does not replace authentication. Bearer tokens and browser sessions need
+protection even when the connection is encrypted. See the
+[remote connection guide](../guides/connect-remote-runtime.md) and
+[OIDC guide](../guides/configure-oidc-authentication.md) for setup and verification.
 
 ## Capability-secret URLs
 
-Holon generates callback URLs for external triggers and wake events. These URLs
-contain capability secrets:
+External callbacks use URLs containing secret tokens. Possession of a URL
+allows its corresponding wake or enqueue action. That is narrower than full
+control-plane access, but exposure can still cause unwanted activations or
+inject external messages.
 
-```
-http://host:7878/callbacks/wake/cb_<secret>
-```
-
-Anyone who knows this URL can wake the agent. Treat these URLs as secrets:
-
-- Do not log them, commit them, or share them in public channels.
-- Rotate them when rotating other credentials.
-- Use HTTPS and token-protected serve for production deployments.
+Treat the complete URL as a credential. Keep it out of source control, public
+reports, screenshots, and unnecessary logs. Use a protected transport and
+rotate or revoke the capability if it leaks. Do not assume that control-plane
+login protection replaces the callback's own capability check.
 
 ## Trust and provenance
 
-Holon classifies every input by its **origin** and **trust level**:
-
-| Trust level | Example sources | What it means |
-|-------------|----------------|---------------|
-| `trusted-operator` | CLI, TUI, authenticated HTTP | You initiated this input |
-| `trusted-system` | Internal runtime events, scheduled timers | The runtime generated this |
-| `trusted-integration` | Authenticated webhook from a known service | A trusted external system sent this |
-| `untrusted-external` | Public webhooks, user-submitted content | The source is unknown or unverified |
-
-**Trust metadata is a policy signal, not a security guarantee.** The agent
-sees the trust level and can adjust its behavior (e.g., refusing destructive
-commands on untrusted input), but trust labels do not replace sandboxing.
-External content marked `untrusted-external` still runs with your user's
-privileges unless you add OS-level confinement.
+[Trust boundaries](./trust-boundaries.md) govern how the agent interprets input.
+They do not restrict what a shell process can access. Conversely, an isolated
+process can still receive misleading instructions. Source classification and
+execution isolation address different risks.
 
 ## Practical recommendations
 
-1. **Use dedicated workspaces** — give agents a specific project directory
-   rather than your home directory.
-2. **Protect remote access** — always use tokens, prefer local Unix sockets.
-3. **Guard capability URLs** — treat wake/callback URLs as credentials.
-4. **Don't rely on trust labels alone** — they inform agent behavior, not OS
-   security.
-5. **Add OS-level isolation for high-risk work** — containers, VMs, or
-   dedicated user accounts.
+Before running unfamiliar code, inspect both the requested actions and the
+host access they would have. Limit credentials and filesystem access to what
+the work needs. For remote operation, verify authentication, transport, and
+caller authorization separately.
+
+After work ends, clean up only the resources the agent owns and no longer
+needs. Preserve deliverables before removing a worktree, child agent, or
+external integration. Finishing one objective does not imply that every shared
+resource should be deleted.
 
 ## See also
 
-- [Trust boundaries](/concepts/trust-boundaries) — how trust classification works end-to-end
-- [Runtime model](/concepts/runtime-model) — execution environment and workspace binding
-- [Automate Holon over HTTP](/guides/automate-over-http) — HTTP control plane access
-- [Connect to a remote Holon runtime](/guides/connect-remote-runtime) — serving Holon beyond localhost
+- [Workspaces](./workspaces.md)
+- [Connect to a remote runtime](../guides/connect-remote-runtime.md)
+- [Configure OIDC authentication](../guides/configure-oidc-authentication.md)
+- [HTTP control plane reference](../reference/http-control-plane.md)
+- [Configuration reference](../reference/configuration.md)

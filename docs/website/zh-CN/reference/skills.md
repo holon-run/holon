@@ -1,25 +1,17 @@
 ---
 title: Skills
-summary: Skill 来源、skills.toml schema，以及安装、启用、更新和校验 skill 的 CLI 命令。
+summary: Skill 来源规范、管理命令以及用于安装、启用、更新和校验的 API 端点。
 order: 34
 ---
 
 # Skills
 
-Skill 是可复用的本地工作流。一个 skill 以一个 `SKILL.md` 文件为根，描述一种
-可重复的任务模式，Agent 需要时可以加载。
+本页记录 Skill 的来源规范、管理命令与 API 端点。
+具体操作指引请参阅[安装与更新 Skill](/zh-CN/guides/use-skills.md)以及[编写 Skill](/zh-CN/guides/write-skill.md)。
 
 ## 什么是 skill
 
-一个 skill 通常包含：
-
-- **用途** — 这个 skill 帮助完成什么任务
-- **工作流** — 给 Agent 的分步指引
-- **边界** — 这个 skill 该做什么、不该做什么
-- **引用** — 要查看的相关文件或命令
-
-Skill **不会自动生效**。运行时会提供一份可用 skill 的目录，只有当出现匹配的
-任务时，Agent 才会打开对应的 `SKILL.md`。
+关于发现机制、加载方式与执行权限边界，请参考[Skill 与工具](/zh-CN/concepts/skills-and-tools.md)。入口文件统一为 `SKILL.md`。
 
 ## 位置
 
@@ -40,64 +32,37 @@ skills/<skill-name>/SKILL.md
 
 ## Agent 如何使用 skill
 
-1. 运行时提供一份 **skills 目录**，包含名称、描述和路径
-2. 只有当 skill 匹配当前任务时，Agent 才会选择它
-3. Agent 读取该 skill 的 `SKILL.md`
-4. Agent 用普通的工具调用执行其中的工作流
-
-这样能让 skill 保持显式，也避免加载无关的指引。
+目录暴露名称、描述与路径；当任务匹配时，Agent 会读取 `SKILL.md`。
+请遵循[编写与校验 Skill](/zh-CN/guides/write-skill.md)来检查加载与执行行为。
 
 ## 用 CLI 管理 skill
 
-Holon 把 skill 管理分成两层：
-
-- **Skill Library** — 已知 skill 的全局目录，用
-  `holon skills add/remove/check/reconcile/catalog` 管理。可以把它当作你的
-  本地 skill 注册表。
-- **Agent Skills** — 按 Agent 启用的 skill，用
-  `holon skills enable/disable/list` 管理。skill 必须先存在于 library，
-  才能为某个 Agent 启用。
+Library 命令管理共享注册表；enable/disable 命令用于调整具体 Agent 的启用项。
+[管理指南](/zh-CN/guides/use-skills.md)详细介绍了“安装 → 启用 → 校验”的工作流。
 
 ### Skill Library（全局）
 
-Skill Library 是你本地的 skill 目录。用下面的命令管理：
+本节命令用于管理共享的 Library 状态。
 
 #### 查看 library 目录
 
-```bash
-holon skills catalog
-```
-
-列出本地 Skill Library 中注册的所有 skill。
+`holon skills catalog` 列出所有已注册条目。
 
 #### 向 library 添加 skill
 
-```bash
-# 从本地目录或 SKILL.md 文件添加
-holon skills add /path/to/skill-dir
+`holon skills add <source> [--remote] [--skill <name>] [--copy]` 支持本地目录、`SKILL.md` 文件、远程 URL 或下文介绍的 GitHub 简写形式。
+`--skill` 用于从包含多个 Skill 的来源中挑选具体一项。本地安装默认采用软链接；`--copy` 会在本地创建独立受管副本。
 
-# 从远程源添加
-holon skills add https://github.com/user/repo/tree/main/skills/my-skill --remote
-
-# 把 skill 复制到用户目录，而不是引用它
-holon skills add /path/to/skill --copy
-```
+GitHub 远程 skill 会打包下载为单个仓库归档并在本地进行探测，无需依赖 GitHub
+Contents/Tree API。归档内容会计算校验和并生成稳定的文件夹哈希，供 `holon skills update` 使用。
 
 #### 从 library 移除 skill
 
-```bash
-holon skills remove my-skill
-```
+`holon skills remove <name>` 从 Library 中移除条目。
 
 #### 检查 library 一致性
 
-```bash
-# 对照 .skill-lock.json 检查所有 library 条目
-holon skills check
-
-# 检查某个具体 skill
-holon skills check my-skill
-```
+`holon skills check [name]` 对照 `.skill-lock.json` 检查一项或全部条目。
 
 > **注意：** 安装一个已安装的全局 skill 是幂等的：`holon skills add` 会跳过
 > 安装并报告已有条目，不报错。在脚本和自动化里
@@ -105,63 +70,29 @@ holon skills check my-skill
 
 #### 用 lock 文件校准 library
 
-```bash
-# 校准所有 library 条目
-holon skills reconcile
-
-# 校准某个具体 skill
-holon skills reconcile my-skill
-```
+`holon skills reconcile [name]` 根据 lock 文件状态对齐单项或全部条目。
+在接受变更内容前，建议先核对差异。
 
 #### 从远程源更新 skill
 
-```bash
-holon skills update
-```
-
-拉取远程 skill 源并与 lock 文件（`.skill-lock.json`）比对。上游有变化的
-skill 会被下载并更新。更新会保留 npx `skills` v3 的 lock 格式（source、
-subdir、mode、etag），以便互通。
+`holon skills update [name]` 拉取远程源并与 lock 文件（`.skill-lock.json`）比对。发生上游变动的条目会被下载更新。更新过程遵循 npx `skills` v3 lock 规范（source、subdir、mode、etag）以保证兼容性。
 
 ### Agent Skills（按 Agent）
 
-skill 进入 library 后，再为具体 Agent 启用：
+使用 `--agent <id>` 指定目标 Agent。在 Agent 执行模式下，省略该参数代表当前调用者；在 Operator 模式下则默认指向 default agent。
 
 #### 列出某个 Agent 已启用的 skill
 
-```bash
-# 列出默认 Agent 的
-holon skills list
-
-# 列出某个具体 Agent 的
-holon skills list --agent reviewer
-```
-
-列出该 Agent 当前已启用的所有 skill，包括名称、作用域（agent、workspace
-或 user）和来源。
+`holon skills list [--agent <id>]` 显示当前生效的 Skill，包含名称、作用域（agent、workspace 或 user）及来源。
 
 #### 为 Agent 启用 skill
 
-```bash
-# 为默认 Agent 启用
-holon skills enable my-skill
-
-# 为某个具体 Agent 启用
-holon skills enable my-skill --agent reviewer
-
-# 启用并复制到 Agent home
-holon skills enable my-skill --copy
-```
+`holon skills enable <name> [--agent <id>] [--copy]` 为指定 Agent 启用已知 Skill。
+`--copy` 会在 Agent Home 中放入独立的受管副本。
 
 #### 为 Agent 禁用 skill
 
-```bash
-# 为默认 Agent 禁用
-holon skills disable my-skill
-
-# 为某个具体 Agent 禁用
-holon skills disable my-skill --agent reviewer
-```
+`holon skills disable <name> [--agent <id>]` 移除 Agent 层面的启用配置。
 
 > **兼容别名：** `holon skills install` 和 `holon skills uninstall` 仍被接受，
 > 但会映射到新的 add/enable 和 remove/disable 模型。为了清晰，优先用新命令。
@@ -257,42 +188,11 @@ HTTP 控制平面把 library 操作和 Agent 操作分开：
 
 ## 如何写好一个 skill
 
-让 skill 保持：
-
-- **小巧** — 只聚焦一个工作流
-- **可执行** — 给出 Agent 能照做的具体步骤
-- **有边界** — 避免大范围覆盖项目的指令
-- **持久** — 记录可复用的行为，而不是一次性的任务笔记
-
-适合写成 skill 的主题：
-
-- 解决 GitHub issue
-- PR 评审流程
-- 发布清单
-- 事故分类
-- 项目专属的测试/调试循环
-
-不适合写成 skill 的主题：
-
-- 临时会议记录
-- 一次性的任务计划
-- 大段照搬的文档
+请参考[编写与校验 Skill](/zh-CN/guides/write-skill.md)获取最小化的 `SKILL.md` 模板、测试任务以及发现与加载检查。每个 Skill 应当专注于单一的可复用工作流，例如代码评审、发布检查清单、故障分流排查或特定的测试调试循环。临时计划和复制来的大段文档不应作为 Skill。
 
 ## 与 AGENTS.md 的关系
 
-这样分工：
-
-- **`AGENTS.md`** 放持久的角色、权限和本地约定
-- **Skill** 放可复用的工作流
-- **工作项** 放当前跟踪的目标
-
-它们是不同的层：
-
-| 面 | 用途 |
-|---------|---------|
-| `AGENTS.md` | 常驻指令和边界 |
-| `SKILL.md` | 某一类任务的可复用工作流 |
-| 工作项 | 当前目标和进度 |
+请分别参阅 [Agent 与角色契约](/zh-CN/concepts/agents.md)、[Skill 与工具](/zh-CN/concepts/skills-and-tools.md)以及 [WorkItem 与 Task](/zh-CN/concepts/work-items-and-tasks.md)了解长期角色指引、复用工作流与跟踪目标的职责分工。
 
 ## 另见
 

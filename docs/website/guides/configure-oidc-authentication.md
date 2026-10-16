@@ -1,7 +1,7 @@
 ---
 title: Configure OIDC authentication
 summary: Set up OpenID Connect single sign-on, configure session policies, and audit user prompts.
-order: 17
+order: 180
 ---
 
 # Configure OIDC authentication
@@ -21,15 +21,22 @@ session timeouts, and verifying logins.
 - Administrative access in your IdP to register a new client application.
 
 > **Security note:** Holon requires HTTPS for the OIDC issuer URL and callback
-> endpoints in production. HTTP is only permitted when the callback host is
-> `localhost`.
+> endpoint. The callback alone may use HTTP when its host is exactly
+> `localhost`; the issuer must still use HTTPS.
+
+Keep administrative access to the runtime host while changing authentication,
+so you can correct a failed configuration. OIDC identifies signed-in users; it
+does not create a sandbox or imply per-user workspace isolation. See
+[Security and execution boundaries](../concepts/security-and-execution-boundaries.md).
 
 ## Step 1: Register Holon in your IdP
 
 Create a new OpenID Connect application in your identity provider:
 
 1. **Client ID**: Choose an identifier, such as `holon`.
-2. **Client Authentication**: Enable client credentials (confidential client) and generate a **Client Secret**.
+2. **Client Authentication**: Register a confidential client for the authorization
+   code login flow and generate a **Client Secret**. This is user sign-in, not
+   the client-credentials grant.
 3. **Redirect URI**: Set the callback URL:
    ```text
    https://<your-holon-host>/api/auth/oidc/callback
@@ -44,15 +51,16 @@ Note down the **Issuer URL**, **Client ID**, and **Client Secret**.
 
 ## Step 2: Store the Client Secret in an environment variable
 
-Never store client secrets in configuration files on disk. Set the secret as
-an environment variable where the Holon daemon runs:
+Keep the secret out of Holon's configuration and source control. Supply it
+through an environment variable where the daemon runs:
 
 ```bash
 export HOLON_OIDC_CLIENT_SECRET="your-oidc-client-secret"
 ```
 
-If you run Holon as a systemd service or container, supply this variable in your
-service unit or environment file.
+If you run Holon as a service or container, supply it through that process's
+secret or environment mechanism. Restrict access to any backing environment
+file. Exporting it in an unrelated shell does not update an existing service.
 
 ## Step 3: Configure Holon
 
@@ -82,7 +90,7 @@ API clients. Configure how long sessions stay valid:
 
 ```bash
 # Idle session lifetime in seconds (default: 604800, or 7 days)
-# Every user interaction refreshes this timer.
+# Authenticated activity refreshes this timer.
 holon config set auth.session.idle_ttl_seconds 43200
 
 # Optional absolute session lifetime in seconds (must be >= idle_ttl_seconds)
@@ -104,8 +112,13 @@ holon daemon restart
 If running Holon interactively:
 
 ```bash
-holon serve --access tunnel
+holon serve --access local
 ```
+
+Use the same protected network endpoint or reverse proxy as before. If you
+also change the public hostname, update the registered redirect URI. Direct
+non-loopback, LAN, and tailnet CLI listeners still require a configured
+control token at startup; OIDC login does not remove that listener check.
 
 ## Verify the setup
 
@@ -150,8 +163,9 @@ identity in the message origin:
 - `actor_display_name`: The user's display name at send time (falls back to `actor_id` if no name claim exists).
 
 When auditing agent transcripts or inspecting messages via `GET
-/api/agents/{agent_id}/messages/{message_id}`, you can verify exactly who
-triggered each action.
+/api/agents/{agent_id}/messages/{message_id}`, check who submitted the prompt.
+That attribution does not mean the user individually approved every later
+tool call.
 
 ### 4. Log out
 
@@ -162,7 +176,21 @@ curl -X POST -H "Authorization: Bearer <session-token>" \
   https://<your-holon-host>/api/auth/session/logout
 ```
 
-This invalidates the session record on the server and clears the browser cookie.
+Logout invalidates the session record. Browser logout also clears its cookie;
+a separate `curl` request does not clear a cookie in your browser.
+
+### 5. Verify rejection of unauthorized requests
+
+Make a request without a cookie or bearer credential:
+
+```bash
+curl -i https://<your-holon-host>/api/auth/session/me
+```
+
+Expect an authentication error rather than a user identity. Repeat with the
+revoked session credential after logout and confirm that it is rejected.
+Use a private browser window to check the sign-in flow separately from an
+already authenticated session.
 
 ## Troubleshooting
 
@@ -170,6 +198,12 @@ This invalidates the session record on the server and clears the browser cookie.
 - **Invalid issuer URL**: The issuer URL must match the `iss` claim in ID tokens and serve `/.well-known/openid-configuration` over HTTPS.
 - **Secret not found**: Verify that the environment variable named in `auth.oidc.client_secret_env` is exported in the daemon process environment.
 - **Invalid TTL configuration**: If you configure `auth.session.absolute_ttl_seconds`, it must be greater than or equal to `auth.session.idle_ttl_seconds`. Otherwise, Holon fails configuration validation on startup.
+- **Login works but the wrong identity appears**: Inspect `/api/auth/session/me`
+  in that same session and check the IdP account used. Do not infer identity
+  from a display name alone.
+- **Logged-out browser immediately signs in again**: Check whether the IdP
+  still has an active browser session. Holon session logout does not imply
+  organization-wide IdP logout.
 
 ## See Also
 

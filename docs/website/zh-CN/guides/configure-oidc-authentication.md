@@ -1,126 +1,130 @@
 ---
-title: 配置 OIDC 身份认证
-summary: 设置 OpenID Connect 单点登录、配置会话超时策略，并审计用户触发的消息。
-order: 17
+title: 配置 OIDC 认证
+summary: 配置 OpenID Connect 单点登录、会话超时策略及用户提示词审计。
+order: 180
 ---
 
-# 配置 OIDC 身份认证
+# 配置 OIDC 认证
 
-默认情况下，Holon 使用本地 Control Token 进行身份验证。如果需要部署在共享团队服务器或对外提供服务，可以切换为 OpenID Connect (OIDC) 认证。团队成员通过公司现有的身份提供商 (IdP) 登录，Holon 会在每条触发 Agent 的消息中记录具体的操作人身份。
+默认情况下，Holon 使用本地控制 Token 进行身份认证。对于团队共享服务器或远程多用户部署，可以切换为 OpenID Connect (OIDC) 单点登录。团队成员通过企业现有的身份提供商（IdP）登录，Holon 会精准记录向 Agent 发起提示词的具体用户身份。
 
-本指南涵盖在 IdP 中注册客户端、配置 Holon 运行时、调整会话超时策略以及验证登录流程。
+本指南涵盖在 IdP 中注册 OIDC 客户端、配置 Holon、调整会话生命周期以及验证登录流程。
 
-## 前置准备
+## 前置条件
 
-- 一个可供用户访问的 Holon 实例（例如通过 `--access tunnel`、`--access tailnet` 或反向代理对外暴露）。
-- 一个兼容 OIDC 的身份提供商，如 Keycloak、Okta、Authentik、Google Workspace 或 Microsoft Entra ID。
-- 在该 IdP 中创建新应用客户端的管理权限。
+- 运行中且用户可访问的 Holon 实例（例如通过 `--access tunnel`、`--access tailnet` 或反向代理对外提供服务）。
+- 兼容 OIDC 规范的身份提供商，例如 Keycloak、Okta、Authentik、Google Workspace 或 Microsoft Entra ID。
+- 在 IdP 中具有注册新客户端应用的管理员权限。
 
-> **安全提示：** 在生产环境中，Holon 要求 OIDC Issuer URL 和回调地址必须使用 HTTPS。仅当回调主机为 `localhost` 时才允许使用 HTTP。
+> **安全注意：** Holon 要求 OIDC 发行者 URL（issuer URL）与回调端点必须使用 HTTPS。仅当主机名严格为 `localhost` 时，回调地址才允许使用 HTTP；发行者 URL 必须始终使用 HTTPS。
 
-## 第一步：在 IdP 中注册 Holon 应用
+修改认证配置时请保持对运行时主机的运维通道畅通，以便在配置出错时及时修正。OIDC 仅用于识别登录用户身份；它不会建立底层沙箱，也不代表实现了用户间的文件系统或工作区隔离。具体请参阅[安全与执行边界](../concepts/security-and-execution-boundaries.md)。
 
-在你的身份提供商管理后台中新建一个 OpenID Connect 应用：
+## 第 1 步：在 IdP 中注册 Holon 客户端
 
-1. **Client ID**：指定客户端标识符，例如 `holon`。
-2. **客户端身份验证（Client Authentication）**：启用机密客户端（Confidential Client）并生成 **Client Secret**。
-3. **重定向 URI（Redirect URI）**：配置回调地址：
+在身份提供商中创建新的 OpenID Connect 应用：
+
+1. **Client ID**：拟定客户端标识，例如 `holon`。
+2. **Client 认证方式**：针对授权码（Authorization Code）登录流程注册机密客户端（Confidential Client），并生成 **Client Secret**。这是面向用户登录的流程，并非 Client Credentials 流程。
+3. **重定向 URI（Redirect URI）**：配置登录回调地址：
    ```text
    https://<your-holon-host>/api/auth/oidc/callback
    ```
-   如果在本地开发环境测试（端口 7878），使用：
+   若在本地 `7878` 端口测试，可配置为：
    ```text
    http://localhost:7878/api/auth/oidc/callback
    ```
-4. **作用域（Scopes）**：确保客户端至少申请了 `openid`、`profile` 和 `email`。
+4. **权限范围（Scopes）**：确保客户端至少申请了 `openid`、`profile` 与 `email` 权限。
 
-记录下 IdP 的 **Issuer URL**、**Client ID** 与 **Client Secret**。
+妥善记录下 **Issuer URL**、**Client ID** 以及 **Client Secret**。
 
-## 第二步：将 Client Secret 写入环境变量
+## 第 2 步：将 Client Secret 存入环境变量
 
-不要把凭据密钥硬编码在磁盘上的配置文件中。在 Holon daemon 运行的环境中设置环境变量：
+避免将 Secret 明文写入 Holon 配置文件或提交至版本控制。在守护进程运行的主机环境中通过环境变量注入：
 
 ```bash
 export HOLON_OIDC_CLIENT_SECRET="your-oidc-client-secret"
 ```
 
-如果使用 systemd 服务或容器运行 Holon，请将该变量添加到服务单元文件或环境变量配置中。
+如果使用 systemd 服务或容器运行 Holon，请通过服务配置文件的密钥注入或环境配置注入该变量。严格限制对底层环境配置文件的读取权限。在互不相关的其他 Shell 会话中 export 不会影响已运行的服务进程。
 
-## 第三步：配置 Holon 运行时
+## 第 3 步：配置 Holon
 
-使用 `holon config set` 设置认证模式与提供商参数：
+使用 `holon config set` 设置认证模式与服务商参数：
 
 ```bash
-# 切换认证模式为 OIDC
+# 切换到 OIDC 认证模式
 holon config set auth.mode "oidc"
 
-# 设置 Issuer URL（必须支持 /.well-known/openid-configuration 元数据发现）
+# 设置发行者 URL（必须支持在 /.well-known/openid-configuration 进行 OIDC 发现）
 holon config set auth.oidc.issuer_url "https://auth.example.com/realms/team"
 
 # 设置已注册的 Client ID
 holon config set auth.oidc.client_id "holon"
 
-# 指定存放 Client Secret 的环境变量名
+# 指向包含 Secret 的环境变量名
 holon config set auth.oidc.client_secret_env "HOLON_OIDC_CLIENT_SECRET"
 
-# 设置公开的回调地址（在反向代理后部署时建议显式设置）
+# 设置公网可访问的回调 URL（在反向代理环境下建议显式配置）
 holon config set auth.oidc.redirect_uri "https://holon.example.com/api/auth/oidc/callback"
 ```
 
-## 第四步：配置会话策略（Session TTL）
+## 第 4 步：配置文件会话策略
 
-Holon 会为浏览器颁发 HttpOnly Session Cookie，为 API 客户端颁发 Session 凭据。你可以按需配置会话的有效期：
+Holon 会为浏览器下发 HttpOnly 会话 Cookie，为 API 客户端下发会话凭据。你可以按需配置会话的有效时长：
 
 ```bash
-# 空闲超时时间（秒，默认 604800，即 7 天）
-# 每次用户发起请求或交互都会刷新该计时器。
+# 空闲会话有效时长，单位秒（默认：604800，即 7 天）
+# 期间发生的合法交互操作会自动刷新该计时器。
 holon config set auth.session.idle_ttl_seconds 43200
 
-# 可选的绝对超时时间（秒，必须大于或等于 idle_ttl_seconds）
-# 达到该时长后会话强制失效，无论中途是否活跃。
+# 可选的绝对会话超时时间，单位秒（必须 >= idle_ttl_seconds）
+# 配置后，无论用户是否处于活跃状态，超过此时长后必须重新登录。
 holon config set auth.session.absolute_ttl_seconds 604800
 ```
 
-如果不需要绝对超时上限、希望活跃用户一直保持登录状态，可以省略 `auth.session.absolute_ttl_seconds` 或将其设为 `null`。
+若希望禁用绝对超时，允许活跃用户持续保持登录状态，可省略 `auth.session.absolute_ttl_seconds` 或将其置为 `null`。
 
-## 第五步：重启 daemon 生效
+## 第 5 步：重启守护进程
 
-认证模式变更需要重启 daemon 后生效：
+重启守护进程使认证变更生效：
 
 ```bash
 holon daemon restart
 ```
 
-如果是前台运行调试：
+如果是在前台交互式运行 Holon：
 
 ```bash
-holon serve --access tunnel
+holon serve --access local
 ```
 
-## 验证与使用
+保持使用与此前一致的安全网络端点或反向代理。如果同时变更了公网主机名，务必同步更新 IdP 中注册的重定向 URI。直接启动非回环接口、LAN 或 tailnet 命令行监听时，启动瞬间依然要求配置控制 Token；开启 OIDC 登录不会移除该底层的监听检查。
 
-### 1. 从 Web GUI 登录
+## 验证配置
+
+### 1. 通过 Web GUI 登录
 
 1. 在浏览器中打开 `https://<your-holon-host>/login`。
-2. 登录页面检测到 OIDC 模式后，会显示 **Continue with organization login** 链接。
-3. 点击该链接，浏览器将跳转至你的身份提供商登录页。
-4. 登录完成后，IdP 会重定向回 `/api/auth/oidc/callback`。Holon 将设置安全的 `holon_session` Cookie 并自动跳到控制面板首页 (`/`)。
+2. 登录页面识别到 OIDC 模式，展示 **Continue with organization login** 入口。
+3. 点击链接跳转至你的身份提供商登录页。
+4. 完成身份登录。IdP 会重定向回 `/api/auth/oidc/callback`，服务端写入安全的 `holon_session` Cookie 并跳转进入仪表盘主页（`/`）。
 
-### 2. 检查会话身份
+### 2. 验证会话身份
 
-通过 Session 检查接口确认当前身份：
+通过会话接口检查当前登录身份：
 
 ```bash
 curl -b "holon_session=<session-cookie>" https://<your-holon-host>/api/auth/session/me
 ```
 
-或者将 Session 凭据放在请求头中：
+或将 Session Token 作为 Bearer 凭据传入：
 
 ```bash
 curl -H "Authorization: Bearer <session-token>" https://<your-holon-host>/api/auth/session/me
 ```
 
-接口会返回当前已认证用户的身份与认证方式：
+端点会返回认证后的用户身份与鉴权方式：
 
 ```json
 {
@@ -131,36 +135,47 @@ curl -H "Authorization: Bearer <session-token>" https://<your-holon-host>/api/au
 }
 ```
 
-### 3. 查看消息归属（Message Attribution）
+### 3. 检查消息归属审计
 
-在 OIDC 模式下，用户通过 Web GUI 或控制面 API 发送的每一条 Prompt，都会在消息 origin 中记录发送者身份：
+在 OIDC 模式下，通过控制平面发送的每条用户提示词都会在消息来源（origin）中记录发送者的身份：
 
-- `actor_id`：用户在 Holon 中的稳定标识符（格式为 `oidc-<uuid-v4>`）。
-- `actor_display_name`：发送时刻用户的显示名称（若 IdP 未提供姓名 claim 则回退为 `actor_id`）。
+- `actor_id`：用户在 Holon 中的持久标识（格式为 `oidc-<uuid-v4>`）。
+- `actor_display_name`：用户在发送消息时的显示名称（若缺少 name 声明则回退为 `actor_id`）。
 
-无论用户后续在 IdP 中是否修改昵称，历史消息都完整保留发送时刻的快照。审计任务记录或调用 `GET /api/agents/{agent_id}/messages/{message_id}` 时，可以清晰核对每个操作的发起人。
+在审计 Agent 运行轨迹或通过 `GET /api/agents/{agent_id}/messages/{message_id}` 查询消息时，可以明确追溯是谁下发的指令。该归属信息并不代表该用户逐一手动批准了后续触发的每一次具体工具调用。
 
 ### 4. 退出登录
 
-点击 Web GUI 界面上的**退出登录**，或调用登出接口：
+点击 Web GUI 中的 **Log out**，或调用登出接口：
 
 ```bash
-curl -X POST -H "Authorization: Bearer <session-token>" \
-  https://<your-holon-host>/api/auth/session/logout
+curl -X POST -H "Authorization: Bearer <session-token>"   https://<your-holon-host>/api/auth/session/logout
 ```
 
-该请求会销毁服务端的会话记录，并清理浏览器中的会话 Cookie。
+登出会注销服务端对应的会话记录。在浏览器中登出会同步清除本地 Cookie；单独执行 `curl` 请求不会清理你浏览器中的 Cookie。
 
-## 常见问题排查
+### 5. 验证未经授权请求的拦截表现
 
-- **Redirect URI 不匹配**：IdP 中配置的 Callback URL 必须与 `auth.oidc.redirect_uri` 完全一致，包括协议（`https://`）、端口以及路径后缀（`/api/auth/oidc/callback`）。
-- **Issuer URL 无法解析或证书无效**：Issuer URL 必须能在公网或内网正常解析，且在生产环境下必须使用受信任的 HTTPS 证书。
-- **未读取到 Client Secret**：检查 `auth.oidc.client_secret_env` 指定的环境变量是否在启动 daemon 的当前 shell 或服务环境中正确导出。
-- **TTL 配置校验失败**：如果设置了 `auth.session.absolute_ttl_seconds`，其数值必须大于或等于 `auth.session.idle_ttl_seconds`，否则启动时配置校验会报错。
+发起不带 Cookie 和 Bearer 凭据的请求：
 
-## 相关文档
+```bash
+curl -i https://<your-holon-host>/api/auth/session/me
+```
 
-- [HTTP 控制面参考](/zh-CN/reference/http-control-plane.md) — 会话交换、状态查询与登出端点详情
-- [配置参考](/zh-CN/reference/configuration.md) — 完整的 `auth.*` 配置项列表
-- [连接远程 Holon 运行时](/zh-CN/guides/connect-remote-runtime.md) — 远程访问模式与网络接入
-- [使用 Web GUI](/zh-CN/guides/use-web-gui.md) — 在浏览器中管理 Agent 与任务
+预期应返回未鉴权错误，而不是用户信息。使用登出后已吊销的凭据重复该请求，确认其同样被拦截拒绝。验证登录流程时，建议使用浏览器无痕隐私窗口，避免受既有会话干扰。
+
+## 故障排查
+
+- **重定向 URI 不匹配（Redirect URI mismatch）：** 确认 IdP 中的回调地址与 `auth.oidc.redirect_uri` 完全一致（逐字节匹配协议 `https://`、端口号及结尾路径 `/api/auth/oidc/callback`）。
+- **无效的发行者 URL（Invalid issuer URL）：** 发行者 URL 必须与 ID Token 中的 `iss` 声明完全一致，且能通过 HTTPS 访问其 `/.well-known/openid-configuration`。
+- **未找到 Secret：** 检查 `auth.oidc.client_secret_env` 中声明的环境变量是否已成功注入守护进程进程树。
+- **TTL 配置不合法：** 若配置了 `auth.session.absolute_ttl_seconds`，其数值必须大于或等于 `auth.session.idle_ttl_seconds`。否则 Holon 在启动校验时会直接报错退出。
+- **登录成功但身份不匹配：** 在同一会话中请求 `/api/auth/session/me`，核实 IdP 实际登录的账户。切勿单凭显示名称推断身份归属。
+- **登出后刷新网页立即自动重新登录：** 检查浏览器在 IdP 端是否仍保持着活跃的登录态。Holon 会话登出并不等同于 IdP 全局企业单点登出。
+
+## 另见
+
+- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — 会话兑换、状态查询与登出接口定义
+- [配置参考](/zh-CN/reference/configuration.md) — `auth.*` 配置项完整清单
+- [连接到远程 Holon 运行时](/zh-CN/guides/connect-remote-runtime.md) — 远程访问方案与网络拓扑
+- [使用 Web GUI](/zh-CN/guides/use-web-gui.md) — 在浏览器中操作 Agent 与任务
