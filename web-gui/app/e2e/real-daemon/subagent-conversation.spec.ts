@@ -408,13 +408,15 @@ test("pinned conversation rejects a first summary fetched after same-name recrea
     const original = await createTarget();
     let summaryStarted = false;
     let deliveredSummary = "";
+    let deliveredSummaryStatus = 0;
     await page.route((url) => url.pathname === `/api/agents/${targetId}/conversation`, async (route) => {
       summaryStarted = true;
       await summaryGate;
-      // Fetch the real response only after recreation: old access preflight
-      // succeeded, but this body now belongs to the new identity.
+      // Fetch only after recreation: the server must reject the old binding
+      // even though its access preflight succeeded before replacement.
       const response = await route.fetch();
       deliveredSummary = await response.text();
+      deliveredSummaryStatus = response.status();
       await route.fulfill({ response });
     }, { times: 1 });
     const pinnedUrl = `${daemon.baseUrl}/agents/${targetId}/conversation?incarnation=${original.identity.incarnation}`;
@@ -451,7 +453,13 @@ test("pinned conversation rejects a first summary fetched after same-name recrea
     }, { timeout: 30_000 }).toContain(OPERATOR_INPUT);
     releaseSummary();
 
-    await expect.poll(() => deliveredSummary).toContain(OPERATOR_INPUT);
+    await expect.poll(() => deliveredSummaryStatus).toBe(409);
+    expect(JSON.parse(deliveredSummary)).toMatchObject({
+      ok: false,
+      code: "conversation_identity_changed",
+      retryable: false,
+    });
+    expect(deliveredSummary).not.toContain(OPERATOR_INPUT);
     await expect(page.getByText("This link belongs to an earlier agent identity", { exact: true }))
       .toBeVisible();
     await expect(page).toHaveURL(pinnedUrl);
