@@ -43,6 +43,7 @@ function online(agents: AgentSummary[] = []): RuntimeBootstrap {
 let bootstrap: ReturnType<typeof deferred<RuntimeBootstrap>>;
 let pending: Promise<void> | undefined;
 beforeEach(() => {
+  vi.useFakeTimers();
   useRuntimeStore.setState(initial, true);
   bootstrap = deferred<RuntimeBootstrap>();
   mocks.bootstrap.mockReset().mockReturnValue(bootstrap.promise);
@@ -57,6 +58,8 @@ afterEach(async () => {
   await pending;
   pending = undefined;
   useRuntimeStore.setState(initial, true);
+  vi.clearAllTimers();
+  vi.useRealTimers();
 });
 function refresh() {
   pending = useRuntimeStore.getState().refreshBootstrap({ syncEvents: false });
@@ -113,6 +116,25 @@ describe("authenticated reload-time agent presentation", () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
+  it.each([404, 503, "network"])("surfaces subject failure %s and retries without reading unconfirmed caches", async (failure) => {
+    const error = typeof failure === "number"
+      ? new RuntimeHttpError("GET", "/auth/session/me", failure) : new TypeError("Failed to fetch");
+    mocks.user.mockRejectedValueOnce(error);
+    await refresh();
+    expect(useRuntimeStore.getState().bootstrapLoading).toBe(false);
+    expect(useRuntimeStore.getState().bootstrapError).toBe(error.message);
+    expect(useRuntimeStore.getState().bootstrap.connection.error).toBe(error.message);
+    expect(mocks.read).not.toHaveBeenCalled();
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    bootstrap.resolve(online([agent]));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(mocks.user).toHaveBeenCalledTimes(2);
+    expect(mocks.bootstrap).toHaveBeenCalledTimes(1);
+    expect(useRuntimeStore.getState().bootstrap.agents).toMatchObject([agent]);
+    expect(useRuntimeStore.getState().bootstrapError).toBeUndefined();
+    expect(useRuntimeStore.getState().bootstrap.connection.error).toBeUndefined();
+  });
+
   it.each([401, 403])("treats strict session HTTP %s as a definitive auth rejection", async (status) => {
     mocks.user.mockRejectedValue(new RuntimeHttpError("GET", "/auth/session/me", status));
     void refresh();
@@ -122,6 +144,32 @@ describe("authenticated reload-time agent presentation", () => {
     expect(useRuntimeStore.getState().bootstrap.connection.authRequired).toBe(true);
     expect(mocks.read).not.toHaveBeenCalled();
     expect(mocks.clear).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.user).toHaveBeenCalledTimes(1);
+  });
+
+  it("consumes the scheduled subject retry when a manual refresh recovers first", async () => {
+    mocks.user.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await refresh();
+    bootstrap.resolve(online([agent]));
+    await refresh();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.user).toHaveBeenCalledTimes(2);
+    expect(mocks.bootstrap).toHaveBeenCalledTimes(1);
+    expect(useRuntimeStore.getState().bootstrap.connection.error).toBeUndefined();
+  });
+
+  it("does not retry a late subject failure after the stream has rejected authentication", async () => {
+    let reject!: (error: Error) => void;
+    mocks.user.mockReturnValue(new Promise((_, no) => { reject = no; }));
+    void refresh();
+    useRuntimeStore.setState({ globalStreamStatus: "unauthorized" });
+    reject(new TypeError("Failed to fetch"));
+    await pending;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mocks.user).toHaveBeenCalledTimes(1);
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.read).not.toHaveBeenCalled();
   });
 
   it("does not persist a new roster under an old subject while the new subject is still pending", async () => {

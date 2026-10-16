@@ -39,18 +39,21 @@ test("refresh preserves overview width, header and close control until agent acc
   await page.reload();
   await expect(panel.locator(".panel-header strong")).toHaveText("Agent overview");
   await expect(panel.getByRole("button", { name: "Close side panel", exact: true })).toBeVisible();
-  await expect(panel.getByRole("status")).toHaveText("Loading agent information…");
-  await expect(panel.locator(".agent-overview-skeleton")).toHaveCount(4);
+  await expect(panel.locator(".agent-overview-stack")).toBeVisible();
+  await expect(panel.locator(".agent-overview-skeleton")).toHaveCount(0);
+  await expect(page.locator(".conversation-sync-status")).toContainText("cached history is read-only");
+  await expect(page.locator(".composer textarea")).toBeDisabled();
   const loading = await panel.boundingBox();
   expect(Math.abs(loading!.width - before!.width)).toBeLessThan(1);
   await page.screenshot({ path: info.outputPath("agent-overview-loading.png") });
   release();
+  await expect(page.locator(".composer textarea")).toBeEnabled();
   await expect(panel.locator(".agent-overview-stack")).toBeVisible();
   await expect(panel.locator(".agent-overview-placeholder")).toHaveCount(0);
   expect(Math.abs((await panel.boundingBox())!.width - before!.width)).toBeLessThan(1);
 });
 
-test("failed access shows an error in the panel and retry restores the real overview", async ({ page }) => {
+test("delayed access retains the read-only overview and retry restores online access", async ({ page }) => {
   await rememberOpenPanel(page);
   let fail = true;
   await page.route("**/api/control/agents/bootstrap-agent/detail", async (route) => {
@@ -60,10 +63,15 @@ test("failed access shows an error in the panel and retry restores the real over
   await page.goto("/agents/bootstrap-agent/conversation");
   const panel = page.locator(".side-panel");
   await expect(panel).toBeVisible();
-  await expect(panel.getByText("Could not load this agent", { exact: true })).toBeVisible();
+  await expect(panel.locator(".agent-overview-stack")).toBeVisible();
+  await expect(page.locator(".conversation-sync-status")).toContainText("Agent refresh is delayed");
+  await expect(page.locator(".composer textarea")).toBeDisabled();
+  await expect(panel.getByText("Could not load this agent", { exact: true })).toHaveCount(0);
   await expect(panel.locator(".agent-overview-skeleton")).toHaveCount(0);
   fail = false;
-  await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.locator(".conversation-sync-status").getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.locator(".composer textarea")).toBeEnabled();
+  await expect(page.locator(".conversation-sync-status").filter({ hasText: "cached history is read-only" })).toHaveCount(0);
   await expect(panel.locator(".agent-overview-stack")).toBeVisible();
 });
 

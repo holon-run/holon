@@ -10,7 +10,13 @@ async function expectCenteredAccessState(page: Page) {
   const card = pane.locator(".conversation-empty");
   await expect(card).toBeVisible();
   const outer = (await pane.boundingBox())!;
-  const inner = (await card.boundingBox())!;
+  // Center the complete access-state group, including its retry action.
+  const inner = await pane.evaluate((element) => {
+    const boxes = Array.from(element.children, (child) => child.getBoundingClientRect());
+    const x = Math.min(...boxes.map((box) => box.left));
+    const y = Math.min(...boxes.map((box) => box.top));
+    return { x, y, width: Math.max(...boxes.map((box) => box.right)) - x, height: Math.max(...boxes.map((box) => box.bottom)) - y };
+  });
   expect(outer.height).toBeGreaterThan(300);
   expect(Math.abs(inner.x + inner.width / 2 - outer.x - outer.width / 2)).toBeLessThan(2);
   expect(Math.abs(inner.y + inner.height / 2 - outer.y - outer.height / 2)).toBeLessThan(2);
@@ -44,16 +50,17 @@ for (const supervised of [false, true]) {
       });
       try {
         await page.goto(`/agents/${agentId}/conversation`, { waitUntil: "domcontentloaded" });
-        await expect(page.getByText("Loading agent…", { exact: true })).toBeVisible();
-        await expectCenteredAccessState(page);
+        await expect(page.locator(".conversation-sync-status")).toContainText("cached history is read-only");
+        await expect(page.locator(".composer textarea")).toBeDisabled();
         release();
         await expect(page.locator(".composer textarea")).toBeEnabled();
 
         gate = new Promise<void>((resolve) => { release = resolve; });
         await page.reload({ waitUntil: "domcontentloaded" });
-        await expect(page.getByText("Loading agent…", { exact: true })).toBeVisible();
-        await expectCenteredAccessState(page);
-        await page.screenshot({ path: info.outputPath("refresh-loading.png") });
+        await expect(page.locator(".conversation-sync-status")).toContainText("cached history is read-only");
+        await expect(page.locator(".composer textarea")).toBeDisabled();
+        await expect(page.locator(".message-list")).toBeVisible();
+        await page.screenshot({ path: info.outputPath("refresh-read-only.png") });
         release();
         await expect(page.locator(".composer textarea")).toBeEnabled();
         await expect(page.getByText(/Messages go directly to this subagent/)).toHaveCount(0);
@@ -88,6 +95,7 @@ test("missing agent state stays centered with a retry action", async ({ page, co
   await expect(page.locator(".conversation-access-state").getByText("Agent not found", { exact: true })).toBeVisible();
   await expect(page.locator(".side-panel").getByText("Agent not found", { exact: true })).toHaveCount(1);
   await expect(page.locator(".conversation-access-state")).toHaveCSS("display", "flex");
+  await expectCenteredAccessState(page);
   await expect(page.locator(".conversation-access-state").getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Back to parent agent", exact: true })).toHaveCount(0);
 });

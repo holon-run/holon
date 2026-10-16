@@ -1594,6 +1594,7 @@ describe("projection saturation refresh handling", () => {
     let saturated = false;
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
       const url = String(input);
+      if (url.endsWith("/auth/session/me")) return Promise.resolve(jsonResponse({ user_id: "test-user", auth_method: "none" }));
       if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
       if (url.endsWith("/agents/list")) {
         return Promise.resolve(

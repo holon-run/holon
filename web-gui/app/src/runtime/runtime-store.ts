@@ -565,7 +565,7 @@ const agentDetailRetryAttempts = new Map<string, number>();
 const agentSkillCatalogRetryTimers = new Map<string, number>();
 const agentSkillCatalogRetryAttempts = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
-let bootstrapRefreshTimer: number | undefined;
+let bootstrapRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let clientGeneration = 0;
 let confirmedPresentationSubjectKey: string | undefined;
 let resumeReconciliationInFlight: Promise<void> | undefined;
@@ -631,7 +631,7 @@ async function observeRuntimeConfigReload(
 function cancelClientGenerationWork(): void {
   bootstrapRefreshInFlight = undefined;
   if (bootstrapRefreshTimer != null) {
-    window.clearTimeout(bootstrapRefreshTimer);
+    globalThis.clearTimeout(bootstrapRefreshTimer);
     bootstrapRefreshTimer = undefined;
   }
   agentStateRefreshInFlight.clear();
@@ -1834,6 +1834,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   refreshBootstrap: async (options = {}) => {
     if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;
+    if (bootstrapRefreshTimer != null) {
+      globalThis.clearTimeout(bootstrapRefreshTimer);
+      bootstrapRefreshTimer = undefined;
+    }
     let generation = clientGeneration;
     confirmedPresentationSubjectKey = undefined;
     const trace =
@@ -1896,15 +1900,22 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         }).catch(() => { /* best-effort presentation */ });
         return true;
       }).catch((error: unknown) => {
-        if (!isCurrentClientGeneration(generation)) return;
+        if (!isCurrentClientGeneration(generation) || presentationAuthRejected(get())) return;
         if (error instanceof RuntimeHttpError && [401, 403].includes(error.status)) {
           set((state) => ({ bootstrap: {
             ...state.bootstrap, connection: { ...state.bootstrap.connection, authRequired: true },
           } }));
-        } else if (!get().currentUserLoaded) {
+        } else {
           // A transient subject lookup failure is not a logout and cannot
-          // authorize a new private cache read.
-          set({ currentUserLoaded: true });
+          // authorize a new private cache read. Make the failed initialization
+          // visible and retry confirmation instead of leaving an empty shell.
+          const message = error instanceof Error ? error.message : String(error);
+          set((state) => ({
+            currentUserLoaded: true,
+            bootstrapError: message,
+            bootstrap: { ...state.bootstrap, connection: { ...state.bootstrap.connection, error: message } },
+          }));
+          scheduleBootstrapRefresh(get, 5_000, { syncEvents: options.syncEvents, trigger: "subject.retry" });
         }
       });
       try {
@@ -4056,11 +4067,11 @@ function setSessionModelError(set: StoreSet, agentId: string, error: string | un
   }));
 }
 
-function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000): void {
+function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000, options: BootstrapRefreshOptions = {}): void {
   if (bootstrapRefreshTimer != null) return;
-  bootstrapRefreshTimer = window.setTimeout(() => {
+  bootstrapRefreshTimer = globalThis.setTimeout(() => {
     bootstrapRefreshTimer = undefined;
-    void get().refreshBootstrap({ background: true });
+    void get().refreshBootstrap({ ...options, background: true });
   }, delayMs);
 }
 
