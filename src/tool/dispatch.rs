@@ -640,7 +640,7 @@ mod tests {
         );
         assert_eq!(
             family_for("RemoveWorktree"),
-            ToolCapabilityFamily::AuthorityExpanding
+            ToolCapabilityFamily::LocalEnvironment
         );
         assert_eq!(
             family_for("AttachWorkspace"),
