@@ -385,6 +385,54 @@ mod tests {
     }
 
     #[test]
+    fn test_delegation_decision_guidance_for_each_invocation_tool() {
+        for name in [tn::CREATE_AGENT, tn::INVOKE_AGENT, tn::SEND_AGENT_MESSAGE] {
+            let sections = tool_sections(&[ToolSpec {
+                name: name.into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            }]);
+            let content = &sections
+                .iter()
+                .find(|section| section.name == "tool_agent_invocation")
+                .expect("delegation decision guidance")
+                .content;
+            for rule in [
+                "Default to completing the task yourself",
+                "not a required workflow step",
+                "Do not delegate a small serial task to an equally capable agent",
+                "Real parallelism",
+                "while you advance separate useful work",
+                "If only a skill guide is missing, load it yourself",
+                "Prefer an existing authorized, suitable specialist",
+                "select the relevant template, such as a reviewer",
+                "A template does not grant authority",
+                "Significant context isolation",
+                "A few ordinary file reads do not justify a child",
+                "review question, independent perspective, and time or token budget",
+                "Agent review is not human approval",
+                "bounded deliverable and acceptance criteria",
+                "relevant known evidence and unresolved questions",
+                "If the benefit is not parallelism, name that reason instead",
+                "shared-file, build/Cargo, or other resource conflicts",
+                "rather than duplicating the child's assigned exploration",
+                "a concrete gap, contradiction, changed state",
+                "integration, verification, follow-through, and supervised-child cleanup",
+                "Waiting is appropriate when a dependency is not ready",
+                "a shared resource must be serialized",
+                "Do not invent unrelated work or repeat commands to appear busy",
+                "use WaitFor with the task handle",
+            ] {
+                assert!(content.contains(rule), "{name} missing rule: {rule}");
+            }
+        }
+        assert!(!tool_sections(&[])
+            .iter()
+            .any(|section| section.name == "tool_agent_invocation"));
+    }
+
+    #[test]
     fn test_parent_progress_example_parses_as_bounded_agent_tail() {
         let content = include_str!("tool_guidance/tool_agent_invocation.md");
         let examples = content

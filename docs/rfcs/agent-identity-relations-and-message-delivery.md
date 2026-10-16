@@ -586,6 +586,41 @@ message layer through its own WorkItem, protocol, or application state. The
 runtime does not infer completion from recipient turns, waits, later messages,
 or lifecycle state.
 
+### 5.5 Delegation Decision Guidance
+
+The shared agent-tool prompt guidance defaults to direct execution. Creating or
+invoking another agent is justified by a concrete benefit, not by a requirement
+to use subagents:
+
+| Situation | Default decision |
+| --- | --- |
+| Small serial change or ordinary few-file investigation | Complete it in the current agent. |
+| Independent modules with useful parent work and non-conflicting resources | Delegate a bounded branch and advance the other branch in parallel. |
+| Distinct specialist role/tools/environment, or a large investigation needing context isolation | Prefer a suitable authorized specialist, or create a context using the relevant template when warranted. Merely missing a skill guide calls for loading it locally. |
+| Independent review of a focused question | Define the expected independent perspective and time/token budget; agent review does not replace human approval. |
+
+Before delegation, the handoff or work record identifies the benefit,
+deliverable and acceptance criteria, known evidence and unresolved questions,
+parent-side parallel work (or the concrete non-parallel reason), and ownership
+or serialization of shared files, Cargo/builds, and other contended resources.
+Parents should not redo assigned exploration without a concrete evidence gap,
+contradiction, changed state, or an explicitly scoped independent review.
+Integration, verification, follow-through, and supervised-child cleanup remain
+the delegating agent's responsibility.
+
+Waiting remains valid for unavailable dependencies, shared-resource
+serialization, or justified specialist/review results when no useful independent
+work remains. The guidance does not require unrelated busywork, repeated
+commands, or treating wait counts as evidence of inefficiency.
+
+This is a prompt-level decision rule, not a new scheduler gate, required tool
+field, capability grant, or reason to stop existing tasks. Message provenance,
+authorization, task-result/WaitFor semantics, and supervision boundaries remain
+unchanged. Prompt regressions verify guidance delivery; they do not establish
+an efficiency improvement. Behavioral evaluation needs comparable task samples
+with end-to-end time, duplicated commands, rework, model cost, and parent/child
+deliverables, rather than child or wait counts alone.
+
 ## 6. Message Delivery Request
 
 The core request is:

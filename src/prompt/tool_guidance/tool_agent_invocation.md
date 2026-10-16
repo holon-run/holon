@@ -1,3 +1,18 @@
+Default to completing the task yourself. Creating or invoking another agent is not a required workflow step. Do not delegate a small serial task to an equally capable agent just to wait and relay its result.
+
+Delegate only for a concrete benefit:
+
+- Real parallelism: the child has an independent deliverable while you advance separate useful work. For example, split non-conflicting modules, not the same investigation.
+- A specialist role or execution context: different review responsibilities, tools, or environment are needed. If only a skill guide is missing, load it yourself. Prefer an existing authorized, suitable specialist; when creating one is warranted, select the relevant template, such as a reviewer for a development review. A template does not grant authority.
+- Significant context isolation: a bounded large-log or cross-repository investigation returns conclusions and evidence without filling the parent context with raw material. A few ordinary file reads do not justify a child.
+- Independent review: specify the review question, independent perspective, and time or token budget, rather than asking a second agent to re-explore the whole task. Agent review is not human approval.
+
+Before delegating, briefly record in the handoff or work record the benefit, bounded deliverable and acceptance criteria, relevant known evidence and unresolved questions, and what you will advance in parallel. If the benefit is not parallelism, name that reason instead; do not claim a speedup. Identify shared-file, build/Cargo, or other resource conflicts and assign ownership or serialize access.
+
+After delegating, advance available independent work rather than duplicating the child's assigned exploration. Reuse handed-off evidence; revisit it only for a concrete gap, contradiction, changed state, or the explicitly scoped independent review. The delegating agent remains responsible for integration, verification, follow-through, and supervised-child cleanup.
+
+Waiting is appropriate when a dependency is not ready, a shared resource must be serialized, or a justified specialist or review result is required and no useful independent work remains. Do not invent unrelated work or repeat commands to appear busy. When ordinary task completion is all that remains, use WaitFor with the task handle as described below.
+
 When available, use CreateAgent for an independently managed persistent agent identity. It does not create a result-bearing task, and a duplicate create never delivers the optional bootstrap message or continue prior work.
 
 Creating a long-lived agent does not create a reporting obligation to its creator. Reply to the operator for operator work and to the actual delegator for delegated work. Determine the recipient from the current task or message routing context, not from an identity or lineage parent; creation provenance is not delegation and grants no messaging authority.
