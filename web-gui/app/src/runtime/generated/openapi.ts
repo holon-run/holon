@@ -5296,7 +5296,7 @@ export interface components {
             /** Format: uint64 */
             oldest_retained_seq?: number | null;
             /** @enum {string} */
-            reason: "retention_expired" | "cursor_ahead" | "replay_limit_exceeded" | "schema_version_mismatch" | "query_version_mismatch" | "event_log_epoch_mismatch" | "cursor_rejected" | "agent_not_found" | "stream_recovery_failed" | "slow_consumer";
+            reason: "retention_expired" | "cursor_ahead" | "replay_limit_exceeded" | "schema_version_mismatch" | "query_version_mismatch" | "event_log_epoch_mismatch" | "cursor_rejected" | "agent_not_found" | "agent_identity_changed" | "stream_recovery_failed" | "slow_consumer";
             /** @constant */
             type: "reset_required";
         };
