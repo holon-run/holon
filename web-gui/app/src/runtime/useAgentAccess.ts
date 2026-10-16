@@ -1,109 +1,55 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 
-import { createRuntimeClient, RuntimeHttpError } from "./client";
+import { createRuntimeClient } from "./client";
 import { getRuntimeConnectionConfig, useRuntimeStore } from "./runtime-store";
-import type { AgentSummary } from "./types";
+import { currentRemoteKey } from "./session-cache";
+import { conversationCacheKey, resolveConversationScopeKey, useConversationScopeStore } from "./conversation-scope-store";
+import {
+  acquireAgentAccess, agentAccessKey, agentAccessRejection, agentAccessRevision, agentAccessSnapshot, rejectAgentAccess, retryAgentAccess,
+  setAgentAccessContext, subscribeAgentAccess,
+} from "./agent-access-records";
+export type { AgentAccessStatus } from "./agent-access-records";
 
-export type AgentAccessStatus = "loading" | "available" | "unauthorized" | "missing" | "deleting" | "deleted" | "replaced" | "error";
-interface AgentAccess {
-  status: AgentAccessStatus;
-  agent?: AgentSummary;
-  error?: string;
-}
-interface ParentCandidate {
-  agentId: string;
-  supervisionId: string;
-  taskId?: string;
-}
-
-/** Resolve a route independently of the public roster. Reads never start an agent. */
+/** Cached history is presentation only; every route entry revalidates access. */
 export function useAgentAccess(agentId: string | undefined, expectedIncarnation?: number) {
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
+  const user = useRuntimeStore((state) => state.currentUser);
+  const userLoaded = useRuntimeStore((state) => state.currentUserLoaded);
   const config = getRuntimeConnectionConfig();
   const client = useMemo(() => createRuntimeClient(config), [connection.mode, connection.baseUrl, config.token]);
-  const key = `${connection.mode}:${connection.baseUrl}:${agentId}:${expectedIncarnation}`;
-  const [result, setResult] = useState<{ key: string; access: AgentAccess; parent?: ParentCandidate }>();
-  const [verifiedParent, setVerifiedParent] = useState<{ key: string; agentId?: string }>();
-  const [revision, setRevision] = useState(0);
-  const pinnedIdentity = useRef<{ key: string; incarnation: number } | undefined>(undefined);
-  const retry = useCallback(() => setRevision((value) => value + 1), []);
+  const contextKey = JSON.stringify([connection.mode, connection.baseUrl, config.token, userLoaded, connection.authRequired, user?.authMethod, user?.userId]);
+  const identityKey = JSON.stringify([contextKey, agentId]);
+  const key = agentAccessKey(JSON.stringify([identityKey, expectedIncarnation]), identityKey, expectedIncarnation);
+  const remoteKey = currentRemoteKey(connection);
+  useSyncExternalStore(subscribeAgentAccess, agentAccessRevision);
+  const recorded = agentAccessSnapshot(key);
+  const scopeKey = agentId && recorded.agent?.incarnation !== undefined
+    ? resolveConversationScopeKey(remoteKey, agentId, user, recorded.agent.incarnation) : "";
+  const mirror = useConversationScopeStore((state) => state.scopes[scopeKey]);
+  const view = mirror?.displayView;
+  const rejectedError = mirror?.status.kind === "terminal_error" || mirror?.status.kind === "recoverable_error"
+    ? mirror.status.error : undefined;
+  const rejected = agentAccessRejection(rejectedError);
+  const warm = user !== undefined && view?.scope != null && (view.turns.length > 0 || view.pending_inputs.length > 0);
+  const access = rejected ? { ...recorded, status: rejected, agent: undefined }
+    : recorded.status === "available" || warm ? recorded
+    : { ...recorded, status: recorded.status === "revalidating" ? "loading" as const : recorded.status, agent: undefined };
+  const parent = access.parent;
+  const retry = useCallback(() => retryAgentAccess(key), [key]);
+
+  useLayoutEffect(() => {
+    if (rejected) rejectAgentAccess(key, rejectedError);
+  }, [key, rejected, rejectedError]);
 
   useEffect(() => {
-    if (!agentId) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const commit = (access: AgentAccess, parent?: ParentCandidate) => {
-      if (!cancelled) setResult({ key, access, parent });
-    };
-    const load = async () => {
-      try {
-        const detail = await client.getAgentIdentity(agentId);
-        const identity = detail.identity;
-        // Creation lineage and capability presets are not supervision.
-        const relations = detail.canonical_relations;
-        const supervision = relations?.resolution === "resolved" && relations.agent_id === agentId
-          ? relations.supervision : undefined;
-        const supervisorId = supervision?.supervisor_agent_id;
-        // Never remap a historical "default" parent to today's unrelated default route.
-        const parent = supervision && (supervision.state === "active" || supervision.state === "cleanup_required") && supervision.child_agent_id === agentId
-          && supervisorId && supervisorId !== agentId && supervisorId !== "default"
-          ? { agentId: supervisorId, supervisionId: supervision.supervision_id, taskId: supervision.delegated_from_task_id ?? undefined } : undefined;
-        const pinnedIncarnation = expectedIncarnation
-          ?? (pinnedIdentity.current?.key === key ? pinnedIdentity.current.incarnation : undefined);
-        if (pinnedIncarnation !== undefined && identity.incarnation !== pinnedIncarnation) {
-          commit({ status: "replaced" });
-          return;
-        }
-        if (!cancelled) pinnedIdentity.current = { key, incarnation: identity.incarnation };
-        if (identity.status === "deleting" || identity.status === "deleted") {
-          commit({ status: identity.status }, parent);
-          return;
-        }
-        const agent = await client.getAgentState(agentId);
-        if (agent.incarnation !== identity.incarnation) {
-          commit({ status: "replaced" });
-          return;
-        }
-        commit({ status: "available", agent }, parent);
-      } catch (error) {
-        const status = error instanceof RuntimeHttpError
-          ? error.status === 401 || error.status === 403 ? "unauthorized" : error.status === 404 ? "missing" : "error"
-          : "error";
-        commit({ status, error: error instanceof Error ? error.message : String(error) });
-      } finally {
-        if (!cancelled) timer = setTimeout(() => void load(), 5000);
-      }
-    };
-    void load();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [agentId, expectedIncarnation, client, key, revision]);
+    setAgentAccessContext(contextKey);
+    if (!agentId || !userLoaded || connection.authRequired) return;
+    return acquireAgentAccess({
+      key, identityKey, agentId, expectedIncarnation, client,
+      scopeKey: (incarnation) => resolveConversationScopeKey(remoteKey, agentId, user, incarnation),
+      cacheKey: (incarnation) => conversationCacheKey(remoteKey, user, incarnation),
+    });
+  }, [key, identityKey, contextKey, agentId, expectedIncarnation, client, remoteKey, user?.authMethod, user?.userId, userLoaded, connection.authRequired]);
 
-  const access = result?.key === key ? result.access : { status: "loading" as const };
-  const parent = result?.key === key ? result.parent : undefined;
-  const parentKey = `${key}:${parent?.agentId}:${parent?.supervisionId}`;
-  useEffect(() => {
-    if (!parent) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      let agentId: string | undefined;
-      try {
-        const detail = await client.getAgentIdentity(parent.agentId);
-        if (detail.identity.agent_id === parent.agentId && detail.identity.status === "active") {
-          agentId = parent.agentId;
-        }
-      } catch {
-        // An unavailable parent must not block the child's conversation or input.
-      } finally {
-        if (!cancelled) {
-          setVerifiedParent({ key: parentKey, agentId });
-          timer = setTimeout(() => void load(), 5000);
-        }
-      }
-    };
-    void load();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [client, parent?.agentId, parentKey, revision]);
-  const parentAgentId = verifiedParent?.key === parentKey ? verifiedParent.agentId : undefined;
-  return { ...access, parentAgentId, parentTaskId: parentAgentId ? parent?.taskId : undefined, retry };
+  return { ...access, parentTaskId: access.parentAgentId ? parent?.taskId : undefined, retry };
 }

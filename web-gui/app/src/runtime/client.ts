@@ -181,13 +181,14 @@ async function fetchAgentState(
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
   agentId: string,
+  signal?: AbortSignal,
 ): Promise<AgentSummary> {
   const encodedAgentId = encodeURIComponent(agentId);
   const state = await getJson<AgentStateDto>(
     fetchImpl,
     baseUrl,
     `/agents/${encodedAgentId}/state`,
-    { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
+    { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal, cache: "no-store" },
   );
   return projectAgent({ identity: state.agent?.identity ?? { agent_id: agentId } }, state);
 }
@@ -1003,20 +1004,20 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return disconnectedAgentDetail(agentId, message);
       }
     },
-    async getAgentState(agentId: string): Promise<AgentSummary> {
+    async getAgentState(agentId: string, signal?: AbortSignal): Promise<AgentSummary> {
       if (!baseUrl) {
         throw new Error("Agent state requires a runtime connection.");
       }
       // Failures propagate instead of returning a synthetic disconnected
       // summary: a fabricated summary would overwrite the last-known-good
       // roster row and detail agent held in the store.
-      return fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
+      return fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId, signal);
     },
-    async getAgentIdentity(agentId: string): Promise<AgentDetailDto> {
+    async getAgentIdentity(agentId: string, signal?: AbortSignal): Promise<AgentDetailDto> {
       if (!baseUrl) throw new Error("Agent identity requires a runtime connection.");
       return getJson<AgentDetailDto>(
         fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/detail`,
-        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
+        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal, cache: "no-store" },
       );
     },
     async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
@@ -2340,13 +2341,15 @@ async function getJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
-  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+  options: { timeoutMs?: number; headers?: Record<string, string>; signal?: AbortSignal; cache?: RequestCache } = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "application/json", ...options.headers },
-    signal: controller.signal,
+    // Access validation must not reuse a cached 404/410 from an older identity.
+    ...(options.cache === undefined ? {} : { cache: options.cache }),
+    signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw await httpRequestError("GET", path, response);

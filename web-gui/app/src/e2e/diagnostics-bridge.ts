@@ -8,6 +8,7 @@ import {
   peekConversationScope,
 } from "../runtime/conversation-scope-store";
 import { currentRemoteKey } from "../runtime/session-cache";
+import { agentAccessKey, agentAccessSnapshot } from "../runtime/agent-access-records";
 import {
   AGENT_SESSIONS_STORE,
   LEDGER_DB_NAME,
@@ -96,12 +97,27 @@ declare global {
 
 function snapshot(): HolonE2eSnapshot {
   const state = useRuntimeStore.getState();
+  const config = getRuntimeConnectionConfig();
+  const connection = state.bootstrap.connection;
+  const contextKey = JSON.stringify([
+    connection.mode, connection.baseUrl, config.token, state.currentUserLoaded,
+    connection.authRequired, state.currentUser?.authMethod, state.currentUser?.userId,
+  ]);
+  const identityKey = JSON.stringify([contextKey, state.selectedAgentId]);
+  const incarnationParam = new URLSearchParams(window.location.search).get("incarnation");
+  const expectedIncarnation = incarnationParam === null ? undefined
+    : /^\d+$/.test(incarnationParam) && Number.isSafeInteger(Number(incarnationParam)) && Number(incarnationParam) > 0
+      ? Number(incarnationParam) : -1;
+  const access = agentAccessSnapshot(agentAccessKey(
+    JSON.stringify([identityKey, expectedIncarnation]), identityKey, expectedIncarnation,
+  ));
   const conversationScope = state.selectedAgentId
     ? peekConversationScope(
         resolveConversationScopeKey(
           currentRemoteKey(getRuntimeConnectionConfig()),
           state.selectedAgentId,
           state.currentUser,
+          access.agent?.incarnation,
         ),
       )
     : null;

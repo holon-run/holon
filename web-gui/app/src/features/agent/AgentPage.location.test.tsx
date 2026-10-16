@@ -6,6 +6,7 @@ import type { ConversationStateView, ConversationTurnSummary } from "@holon/conv
 import type { AgentSummary } from "../../runtime/types";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
+import { acquireConversationScope, conversationViewport, disposeAllConversationScopes } from "../../runtime/conversation-scope-store";
 import "../../i18n";
 import { AgentPage, type ConversationTimelineBundle } from "./AgentPage";
 
@@ -135,12 +136,41 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  disposeAllConversationScopes(false);
   host.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("AgentPage reading-position lifecycle", () => {
+  it("restores a warm scope's reading anchor after unmount without retaining old DOM nodes", async () => {
+    const scopeKey = "local#alice::alpha#incarnation:1";
+    acquireConversationScope({ key: scopeKey, agentId: "alpha", baseUrl: "/api", readOnly: true });
+    const conversation = { ...bundle(), scopeKey, location: undefined };
+    const first = await render(conversation);
+    await userScroll(first, 800);
+    await act(async () => root.render(null));
+    const saved = conversationViewport(scopeKey);
+    expect(saved?.scrollTop).toBe(800);
+    expect(saved?.anchors.length).toBeGreaterThan(0);
+    expect(saved?.anchors[0]).not.toHaveProperty("element");
+    const restored = await render(conversation);
+    expect(restored).not.toBe(first);
+    expect(restored.scrollTop).toBe(800);
+    growth = 100;
+    await resize();
+    expect(restored.scrollTop).toBe(900);
+  });
+
+  it("shows the read-only access notice independently of transcript synchronization", async () => {
+    const retry = vi.fn();
+    await render({ ...bundle(), readOnlyNotice: "Verifying cached history", onRetryAccess: retry },
+      { inputDisabledReason: "Verifying cached history" });
+    expect(host.querySelector(".conversation-sync-status[role=status]")?.textContent).toContain("Verifying cached history");
+    await act(async () => host.querySelector<HTMLButtonElement>(".conversation-sync-status button")?.click());
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
   it.each([undefined, "supervisor"])("keeps real composer status without a permanent input warning (parent=%s)", async (parentAgentId) => {
     await render(bundle(), { parentAgentId, inputDisabledReason: "Stopped by operator" });
     expect(host.querySelector(".composer-status[role=note]")).toBeNull();

@@ -283,9 +283,10 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await cold.reload();
     await expect(cold).toHaveURL(`${daemon.baseUrl}${childPath}`);
     await expect(cold.locator(".message-list")).toContainText(CHILD_INPUT);
-    await expect(cold.getByRole("link", { name: "Back to parent agent", exact: true }))
-      .toHaveAttribute("href", `/agents/${daemon.agentId}/conversation`);
-    await expect(cold.locator('.conversation-sync-status[role="note"]')).toContainText(task!.id);
+    // A historical "default" supervisor is not a verified parent navigation
+    // target; do not remap it to whichever agent owns today's default route.
+    await expect(cold.getByRole("link", { name: "Back to parent agent", exact: true })).toHaveCount(0);
+    await expect(cold.locator('.conversation-sync-status[role="note"]')).toHaveCount(0);
 
     // A stale identity link must not silently open the current child or home.
     const stale = await page.context().newPage();
@@ -561,6 +562,9 @@ test("existing-agent wait links keep their original identity after deletion and 
     const recreated = await createTarget();
     expect(recreated.identity.incarnation).toBeGreaterThan(original.identity.incarnation);
     await prompt(daemon, targetId, OPERATOR_INPUT);
+    // Check the uncached API independently of the browser's earlier 410.
+    const recreatedState = await daemon.api(`/agents/${targetId}/state`);
+    expect(recreatedState.status, await recreatedState.text()).toBe(200);
     await page.reload();
     await expect(page).toHaveURL(`${daemon.baseUrl}${targetPath}`);
     await expect(page.getByText("This link belongs to an earlier agent identity", { exact: true })).toBeVisible();

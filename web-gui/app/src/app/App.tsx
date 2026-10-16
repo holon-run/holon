@@ -272,9 +272,10 @@ export function App() {
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId);
   const conversationSession = useConversationSession(
-    route === "agent" && agentAccess.status === "available" && agentAccess.agent?.incarnation !== undefined ? activeAgentId : undefined,
+    route === "agent" && agentAccess.agent?.incarnation !== undefined ? activeAgentId : undefined,
     route === "agent" && agentNavigation && agentNavigation.agentId === activeAgentId ? agentNavigation.navigation : undefined,
     agentAccess.agent?.incarnation,
+    agentAccess.status !== "available",
   );
   const markSelectedAgentConversationRead = useCallback(() => {
     if (!activeAgentId || panelLayout.full || !conversationSession.conversationReady) return false;
@@ -816,7 +817,9 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
-            inputDisabledReason={activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
+            inputDisabledReason={agentAccess.status !== "available"
+              ? t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating")
+              : activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
             parentAgentId={agentAccess.parentAgentId}
             parentTaskId={agentAccess.parentTaskId}
             conversation={
@@ -824,6 +827,10 @@ export function App() {
                 ? undefined
                 : {
                     model: conversationSession.model,
+                    scopeKey: conversationSession.scopeKey,
+                    readOnlyNotice: agentAccess.status === "available" ? undefined
+                      : t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating"),
+                    onRetryAccess: agentAccess.status === "error" ? agentAccess.retry : undefined,
                     location: conversationSession.location,
                     browsing: conversationSession.browsing,
                     hasNewerHistory: conversationSession.hasNewerHistory,
@@ -882,7 +889,10 @@ export function App() {
             onSetModel={(model, reasoningEffort, serviceTier) => setAgentModel(activeAgent.id, model, reasoningEffort, serviceTier)}
             onClearModel={() => clearAgentModel(activeAgent.id)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
-            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments, activeAgent.incarnation)}
+            onSendPrompt={(text, attachments) => {
+              if (agentAccess.status !== "available") return Promise.resolve();
+              return sendOperatorPrompt(activeAgent.id, text, attachments, activeAgent.incarnation);
+            }}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
             onOpenWorkItem={(work) => {

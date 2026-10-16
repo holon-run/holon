@@ -142,6 +142,27 @@ afterEach(() => {
 });
 
 describe("conversation scope store", () => {
+  it("reattaches warm history without restarting the same controller until verified", async () => {
+    const { client, calls } = fakeClient();
+    const options = { key: "warm-preview", agentId: "child", baseUrl: client.baseUrl, clientFactory: () => client };
+    const first = acquireConversationScope(options);
+    await waitFor(() => first.controller.status.kind === "ready");
+    const before = first.controller.view();
+    releaseConversationScope(options.key);
+    const requests = { ...calls };
+    const preview = acquireConversationScope({ ...options, readOnly: true });
+    expect(preview.controller).toBe(first.controller);
+    expect(preview.controller.view()).toEqual(before);
+    expect(preview.controller.status.kind).toBe("paused");
+    await Promise.resolve();
+    expect(calls.summary).toBe(requests.summary);
+    expect(calls.stream).toBe(requests.stream);
+    releaseConversationScope(options.key, true);
+    const verified = acquireConversationScope(options);
+    expect(verified.controller).toBe(first.controller);
+    await waitFor(() => calls.stream > requests.stream);
+  });
+
   it("isolates scopes by incarnation while retaining remote and login identity", () => {
     const user = { authMethod: "token", userId: "alice" };
     const oldKey = resolveConversationScopeKey("local", "child", user, 1);

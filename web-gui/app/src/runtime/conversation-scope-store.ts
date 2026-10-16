@@ -12,6 +12,7 @@ import { createConversationBriefCache } from "./conversation-brief-cache";
 import { createConversationSnapshotCache } from "./conversation-snapshot-cache";
 import { createRuntimeClient } from "./client";
 import { pinConversationClient } from "./incarnation-conversation-client";
+import { conversationNetworkGate } from "./conversation-network-gate";
 
 /**
  * Runtime connection inputs needed to build a conversation client. Mirrors
@@ -113,8 +114,26 @@ export function conversationScopeKey(
 
 interface RegistryEntry {
   readonly controller: ConversationController;
+  readonly network: ReturnType<typeof conversationNetworkGate>;
   readonly unsubscribe: () => void;
   refCount: number;
+  writableCount: number;
+  viewport?: ConversationViewport;
+}
+
+export interface ConversationViewport {
+  readonly scrollTop: number;
+  readonly stickToBottom: boolean;
+  readonly anchors: readonly { readonly anchor: string; readonly offset: number }[];
+}
+
+export function conversationViewport(key: string): ConversationViewport | undefined {
+  return registry.get(key)?.viewport;
+}
+
+export function saveConversationViewport(key: string, viewport: ConversationViewport): void {
+  const entry = registry.get(key);
+  if (entry) entry.viewport = viewport;
 }
 
 const registry = new Map<ConversationScopeKey, RegistryEntry>();
@@ -146,6 +165,8 @@ export interface AcquireConversationScopeOptions
   readonly key: ConversationScopeKey;
   readonly agentId: string;
   readonly incarnation?: number;
+  /** Attach to history without starting or accepting network work. */
+  readonly readOnly?: boolean;
   readonly remoteId?: string;
   /** Verified identity-scoped storage key; absent means memory-only. */
   readonly cacheKey?: string;
@@ -168,17 +189,24 @@ export function acquireConversationScope(
 ): ConversationScopeHandle {
   const existing = registry.get(options.key);
   if (existing !== undefined) {
-    const wasIdle = existing.refCount === 0;
+    const wasPaused = existing.writableCount === 0;
     existing.refCount += 1;
-    if (wasIdle) {
-      removeFromIdleOrder(options.key);
-      if (isPageVisible()) existing.controller.start();
+    if (!options.readOnly) existing.writableCount += 1;
+    removeFromIdleOrder(options.key);
+    if (wasPaused && existing.writableCount > 0 && isPageVisible()) {
+      existing.network.resume();
+      existing.controller.start();
     }
     return { key: options.key, controller: existing.controller };
   }
   const factory = options.clientFactory ?? defaultClientFactory;
   const client = factory(options);
   const identityClient = options.incarnation === undefined ? undefined : createRuntimeClient(options);
+  const network = conversationNetworkGate(identityClient === undefined || options.incarnation === undefined ? client : pinConversationClient(client, {
+    agentId: options.agentId,
+    incarnation: options.incarnation,
+    getAgentIdentity: (agentId) => identityClient.getAgentIdentity(agentId),
+  }));
   const controller = new ConversationController({
     ...(options.controllerOptions ?? {}),
     // Default-inject the persistent brief/snapshot caches unless the caller
@@ -201,11 +229,7 @@ export function acquireConversationScope(
           ),
         }
       : {}),
-    client: identityClient === undefined || options.incarnation === undefined ? client : pinConversationClient(client, {
-      agentId: options.agentId,
-      incarnation: options.incarnation,
-      getAgentIdentity: (agentId) => identityClient.getAgentIdentity(agentId),
-    }),
+    client: network.client,
     agentId: options.agentId,
     ...(options.remoteId === undefined ? {} : { remoteId: options.remoteId }),
   });
@@ -214,24 +238,33 @@ export function acquireConversationScope(
   });
   registry.set(options.key, {
     controller,
+    network,
     unsubscribe,
     refCount: 1,
+    writableCount: options.readOnly ? 0 : 1,
   });
   publishScopeSnapshot(options.key, controller);
-  if (isPageVisible()) controller.start();
+  if (!options.readOnly && isPageVisible()) {
+    network.resume();
+    controller.start();
+  }
   evictIdleScopes();
   return { key: options.key, controller };
 }
 
 /** Drop one holder; the last release makes the scope idle but kept alive. */
-export function releaseConversationScope(key: ConversationScopeKey): void {
+export function releaseConversationScope(key: ConversationScopeKey, readOnly = false): void {
   const entry = registry.get(key);
   if (entry === undefined) return;
   if (entry.refCount === 0) return;
   entry.refCount -= 1;
+  if (!readOnly) entry.writableCount = Math.max(0, entry.writableCount - 1);
+  if (entry.writableCount === 0) {
+    entry.network.pause();
+    entry.controller.pause();
+  }
   if (entry.refCount > 0) return;
   entry.refCount = 0;
-  entry.controller.pause();
   idleOrder.push(key);
   evictIdleScopes();
 }
@@ -263,6 +296,16 @@ export function disposeAllConversationScopes(persist = true): void {
   idleOrder.length = 0;
 }
 
+export function disposeConversationScope(key: ConversationScopeKey, persist = true): void {
+  const entry = registry.get(key);
+  if (entry) disposeScope(key, entry, persist);
+  else useConversationScopeStore.setState((state) => {
+    const scopes = { ...state.scopes };
+    delete scopes[key];
+    return { scopes };
+  });
+}
+
 function evictIdleScopes(): void {
   while (idleOrder.length > CONVERSATION_SCOPE_KEEP_ALIVE) {
     const key = idleOrder.shift();
@@ -275,6 +318,8 @@ function evictIdleScopes(): void {
 
 function disposeScope(key: ConversationScopeKey, entry: RegistryEntry, persist = true): void {
   registry.delete(key);
+  removeFromIdleOrder(key);
+  entry.network.dispose();
   entry.unsubscribe();
   entry.controller.dispose(persist);
   useConversationScopeStore.setState((state) => {
@@ -299,8 +344,13 @@ function isPageVisible(): boolean {
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     for (const entry of registry.values()) {
-      if (!isPageVisible()) entry.controller.pause();
-      else if (entry.refCount > 0) entry.controller.start();
+      if (!isPageVisible()) {
+        entry.network.pause();
+        entry.controller.pause();
+      } else if (entry.writableCount > 0) {
+        entry.network.resume();
+        entry.controller.start();
+      }
     }
   });
 }
