@@ -1,12 +1,15 @@
 package run.holon.android.app
 
 import android.view.inputmethod.InputMethodManager
+import android.net.Uri
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
@@ -27,6 +30,7 @@ class ClientRecoveryIntegrationTest {
         val offline = AtomicBoolean(false)
         val currentUserStatus = AtomicInteger(200)
         val invalidCurrentUser = AtomicBoolean(false)
+        val prompts = ConcurrentLinkedQueue<String>()
         MockWebServer().use { server ->
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -44,7 +48,11 @@ class ClientRecoveryIntegrationTest {
                         request.method == "GET" && path.endsWith("/auth/method") -> """{"mode":"local"}"""
                         path.endsWith("/auth/session/exchange/native") -> """{"ok":true,"credential":"fixture-session","user_id":"test-user","expires_at":null}"""
                         path.endsWith("/auth/session/me") -> """{"ok":true,"user_id":"test-user","display_name":"Tester","auth_method":"local"}"""
-                        path.endsWith("/handshake") -> """{"ok":true,"protocol":{"name":"holon-control","version":1},"auth":{"mode":"bearer","required":true},"runtime":{"default_agent":"holon-tester","workspace_dir":"/test","home_dir":"/test","listen":"127.0.0.1:0","advertise_url":null},"capabilities":["agents.conversation-read.v1","auth.native-session.v1","control.prompt-idempotency.v1","control.prompt-attachments.v1","brief.attachments.v1"]}"""
+                        path.endsWith("/handshake") -> """{"ok":true,"protocol":{"name":"holon-control","version":1},"auth":{"mode":"bearer","required":true},"runtime":{"default_agent":"holon-tester","workspace_dir":"/test","home_dir":"/test","listen":"127.0.0.1:0","advertise_url":null},"capabilities":["agents.conversation-read.v1","auth.native-session.v1","control.prompt-idempotency.v1","control.prompt-attachments.v1","brief.attachments.v1"],"limits":{"prompt_body_max_bytes":4096,"prompt_file_attachment_max_bytes":512,"prompt_image_attachment_max_bytes":256}}"""
+                        path.endsWith("/prompt") -> {
+                            prompts.add(request.body.readUtf8())
+                            """{"agent_id":"holon-tester","message_id":"fixture-message","disposition":"accepted"}"""
+                        }
                         path.endsWith("/agents/snapshot") -> """{"runtime_id":"test-runtime","event_log_epoch":"test-epoch","visibility_scope_id":"test-visibility","agents":[{"agent":{"identity":{"agent_id":"holon-tester","name":"Refactor tester","is_default_agent":true,"status":"active"},"model":{"effective_model":"test/model","runtime_default_model":"test/model","source":"runtime_default"},"status":"awake_idle","pending":0}}]}"""
                         path.endsWith("/conversation") -> """{"schema_version":2,"query_version":2,"runtime_id":"test-runtime","event_log_epoch":"test-epoch","visibility_scope_id":"test-visibility","agent_id":"holon-tester","turns":[],"active_turns":[],"pending_inputs":[],"has_more":false}"""
                         path.endsWith("/brief-read-states") -> "[]"
@@ -157,6 +165,8 @@ class ClientRecoveryIntegrationTest {
                     // Exercise the SDK's real IOException -> HolonProtocolException wrapping.
                     val offlineSession = runBlocking { repository.resume() } as ResumeResult.Offline
                     assertEquals(session.scopeKey, offlineSession.session.scopeKey)
+                    assertTrue(offlineSession.session.isOffline)
+                    assertNull(offlineSession.session.server.limits)
                     assertEquals(1, offlineSession.cached.size)
                     assertEquals("durable draft", runBlocking { repository.cachedConversation("holon-tester") }?.draft)
                     assertEquals(credential, profileStore.read(session.networkId))
@@ -179,6 +189,47 @@ class ClientRecoveryIntegrationTest {
                     assertEquals(credential, profileStore.read(session.networkId))
                     assertEquals("durable draft", runBlocking { repository.cachedConversation("holon-tester") }?.draft)
                     scenario.close()
+
+                    // Offline sends survive a repository restart, including staged files/images.
+                    offline.set(true)
+                    assertTrue(runBlocking { repository.resume() } is ResumeResult.Offline)
+                    val source = File.createTempFile("offline-outbox-", ".txt", context.cacheDir)
+                    val stagedFiles = mutableListOf<File>()
+                    try {
+                        source.writeText("offline attachment")
+                        val entries = runBlocking {
+                            val file = repository.stageAttachment(Uri.fromFile(source), preferredKind = "file")
+                            stagedFiles.add(File(file.localPath))
+                            val image = repository.stageAttachment(Uri.fromFile(source), preferredKind = "image")
+                            stagedFiles.add(File(image.localPath))
+                            listOf(
+                                repository.enqueue("holon-tester", "offline text", emptyList(), "offline-text", clearComposer = false),
+                                repository.enqueue("holon-tester", "offline attachments", listOf(file, image), "offline-files", clearComposer = false),
+                            ).map { repository.deliverOutbox(it) }
+                        }
+                        assertTrue(entries.all { it.state == "unknown" })
+                        assertTrue(entries.all { it.error == "当前离线，消息已保存，恢复连接后自动重试" })
+                        assertTrue(prompts.isEmpty())
+                        val recovered = HolonRepository(context, store, preferences, database.holonDao(), TraceRecorder(context))
+                        assertTrue(runBlocking { recovered.resume() } is ResumeResult.Offline)
+                        assertEquals(entries, runBlocking { recovered.outbox("holon-tester") })
+
+                        offline.set(false)
+                        val ready = runBlocking { recovered.resume() } as ResumeResult.Ready
+                        assertFalse(ready.session.isOffline)
+                        runBlocking { recovered.retryOutbox() }
+                        assertTrue(runBlocking { recovered.outbox("holon-tester") }.all { it.state == "received" })
+                        assertEquals(2, prompts.size)
+                        assertTrue(prompts.any { it.contains("\"client_request_id\":\"offline-text\"") && it.contains("offline text") })
+                        assertTrue(prompts.any {
+                            it.contains("\"client_request_id\":\"offline-files\"") &&
+                                it.contains("\"kind\":\"file\"") && it.contains("\"kind\":\"image\"") &&
+                                it.contains(android.util.Base64.encodeToString(source.readBytes(), android.util.Base64.NO_WRAP))
+                        })
+                    } finally {
+                        source.delete()
+                        stagedFiles.forEach(File::delete)
+                    }
 
                     // A server outage is recoverable; malformed responses and expired auth are not.
                     currentUserStatus.set(503)
