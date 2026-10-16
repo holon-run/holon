@@ -297,21 +297,42 @@ impl AgentInvocationService<'_> {
                             self.runtime
                                 .fail_agent_invocation_task(&task, &error)
                                 .await?;
-                            let direct_cause = collect_runtime_error_source_chain(&error)
-                                .last()
-                                .cloned()
-                                .unwrap_or_else(|| "agent invocation admission failed".to_string());
-                            return Err(error.context(
+                            let invocation_error = if error
+                                .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
+                                .is_some()
+                            {
+                                let descriptor = describe_runtime_error(&error);
+                                let mut invocation_error = RuntimeError::new(
+                                    RuntimeErrorDomain::Task,
+                                    "agent_invocation_failed",
+                                    format!(
+                                        "failed to invoke agent: {}",
+                                        descriptor.operator_message
+                                    ),
+                                )
+                                .with_retryable(descriptor.retryable);
+                                if let Some(hint) = descriptor.recovery_hint {
+                                    invocation_error = invocation_error.with_recovery_hint(hint);
+                                }
+                                invocation_error
+                            } else {
+                                let direct_cause = collect_runtime_error_source_chain(&error)
+                                    .last()
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        "agent invocation admission failed".to_string()
+                                    });
                                 RuntimeError::new(
                                     RuntimeErrorDomain::Task,
                                     "agent_invocation_failed",
                                     format!("failed to invoke agent: {direct_cause}"),
                                 )
-                                .with_safe_context("task_id", &task.id)
                                 .with_recovery_hint(
                                     "correct the template, model, or workspace configuration and retry",
-                                ),
-                            ));
+                                )
+                            };
+                            return Err(error
+                                .context(invocation_error.with_safe_context("task_id", &task.id)));
                         }
                     };
                     admitted.task_detail["created_new_subagent"] = serde_json::json!(true);
@@ -346,7 +367,15 @@ pub(super) fn required_model_resolution(
 
 pub(super) fn failed_invocation_task(task: &TaskRecord, error: &anyhow::Error) -> TaskRecord {
     let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
-    detail["error"] = serde_json::json!(error.to_string());
+    let message = if error
+        .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
+        .is_some()
+    {
+        describe_runtime_error(error).operator_message
+    } else {
+        error.to_string()
+    };
+    detail["error"] = serde_json::json!(message);
     TaskRecord {
         status: TaskStatus::Failed,
         updated_at: chrono::Utc::now(),

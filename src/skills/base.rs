@@ -510,16 +510,130 @@ impl std::fmt::Display for RemoteSkillInstallFailed {
                 "remote skill install for '{}' failed with exit status {}",
                 self.package, status
             ),
-            None => write!(
-                f,
-                "remote skill install for '{}' failed before process exit",
-                self.package
-            ),
+            None => {
+                let package = safe_archive_text(&self.package, 96);
+                let cause = safe_archive_text(&self.stderr, 256);
+                write!(f, "remote skill install for '{package}' failed")?;
+                if !cause.is_empty() {
+                    write!(f, ": {cause}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
 
 impl std::error::Error for RemoteSkillInstallFailed {}
+
+#[derive(Debug, Clone, Copy)]
+enum ArchiveFetchFailureKind {
+    Timeout,
+    Connect,
+    LocalIo,
+    Other,
+}
+
+/// Typed context, rather than a replacement for the underlying archive error.
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteSkillArchiveFetchFailed {
+    pub(crate) package: String,
+    pub(crate) cause: String,
+    kind: ArchiveFetchFailureKind,
+}
+
+impl RemoteSkillArchiveFetchFailed {
+    pub(crate) fn new(package: &str, error: &anyhow::Error) -> Self {
+        let kind = if error.chain().any(|source| {
+            source
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_timeout)
+        }) {
+            ArchiveFetchFailureKind::Timeout
+        } else if error.chain().any(|source| {
+            source
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_connect)
+        }) {
+            ArchiveFetchFailureKind::Connect
+        } else if error.chain().any(|source| {
+            source
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied
+                            | std::io::ErrorKind::NotFound
+                            | std::io::ErrorKind::StorageFull
+                            | std::io::ErrorKind::ReadOnlyFilesystem
+                            | std::io::ErrorKind::WriteZero
+                    )
+                })
+        }) {
+            ArchiveFetchFailureKind::LocalIo
+        } else {
+            ArchiveFetchFailureKind::Other
+        };
+        let cause = error
+            .chain()
+            .filter_map(|source| {
+                let safe = safe_archive_text(&source.to_string(), 256);
+                (!safe.is_empty()).then_some(safe)
+            })
+            .last()
+            .unwrap_or_else(|| "unknown archive failure".into());
+        Self {
+            package: safe_archive_text(package, 96),
+            cause,
+            kind,
+        }
+    }
+
+    pub(crate) fn retryable(&self) -> bool {
+        matches!(
+            self.kind,
+            ArchiveFetchFailureKind::Timeout | ArchiveFetchFailureKind::Connect
+        )
+    }
+
+    pub(crate) fn recovery_hint(&self) -> &'static str {
+        match self.kind {
+            ArchiveFetchFailureKind::Timeout | ArchiveFetchFailureKind::Connect => {
+                "Check network connectivity and DNS, then retry the operation; this network failure may be temporary."
+            }
+            ArchiveFetchFailureKind::LocalIo => {
+                "Check local disk space, temporary-directory access, and permissions before trying again."
+            }
+            ArchiveFetchFailureKind::Other => {
+                "Check the reported archive cause, local resources, source contents, and archive limits before trying again; do not bypass archive validation."
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for RemoteSkillArchiveFetchFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "remote skill archive fetch for '{}' failed: {}",
+            self.package, self.cause
+        )
+    }
+}
+
+impl std::error::Error for RemoteSkillArchiveFetchFailed {}
+
+fn safe_archive_text(raw: &str, max_chars: usize) -> String {
+    let line = raw
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    crate::runtime_error::sanitize_runtime_error_text(line)
+        .chars()
+        .take(max_chars)
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct RemoteSkillInstallTimedOut {
@@ -1063,13 +1177,8 @@ fn fetch_github_archive(
         {
             return error.context(format!("failed to fetch remote skill archive '{package}'"));
         }
-        RemoteSkillInstallFailed {
-            package: package.to_owned(),
-            status: None,
-            stdout: String::new(),
-            stderr: error.to_string(),
-        }
-        .into()
+        let context = RemoteSkillArchiveFetchFailed::new(package, &error);
+        error.context(context)
     })
 }
 
@@ -2626,6 +2735,212 @@ mod tests {
 
     use super::*;
     use crate::types::{SkillActivationSource, SkillActivationState};
+
+    #[test]
+    fn archive_fetch_display_is_safe_bounded_and_not_a_process_exit() {
+        let package = "包".repeat(1000);
+        let failure = RemoteSkillInstallFailed {
+            package: package.clone(),
+            status: None,
+            stdout: String::new(),
+            stderr: "\nwrapper\nconnection refused\n".into(),
+        };
+        let message = failure.to_string();
+        assert!(message.ends_with("failed: connection refused"));
+        assert!(message.chars().count() < 512);
+        assert!(!message.contains("process exit"));
+        let long_cause = RemoteSkillInstallFailed {
+            stderr: "因".repeat(1000),
+            ..failure.clone()
+        }
+        .to_string();
+        assert!(long_cause.chars().count() < 512);
+        assert!(long_cause.ends_with(&"因".repeat(256)));
+        assert_eq!(
+            RemoteSkillInstallFailed {
+                package: "owner/repo".into(),
+                stderr: String::new(),
+                ..failure.clone()
+            }
+            .to_string(),
+            "remote skill install for 'owner/repo' failed"
+        );
+        assert_eq!(
+            RemoteSkillInstallFailed {
+                package: "owner/repo".into(),
+                status: Some(17),
+                ..failure
+            }
+            .to_string(),
+            "remote skill install for 'owner/repo' failed with exit status 17"
+        );
+
+        for cause in [
+            "Authorization: Bearer secret",
+            "failed https://user:password@example.com/archive?token=secret#secret",
+            "/api/callbacks/wake/secret",
+            "failed /private/secret/archive.tar",
+            r#"failed {"access_token":"secret"}"#,
+        ] {
+            let error = anyhow::anyhow!(cause);
+            let context = RemoteSkillArchiveFetchFailed::new(&package, &error);
+            let message = context.to_string();
+            assert!(!message.contains("secret"), "{message}");
+            assert!(message.chars().count() < 512);
+            assert!(!message.contains('\n'));
+            assert!(!context.retryable());
+        }
+    }
+
+    #[test]
+    fn archive_fetch_classification_does_not_guess_from_io_or_error_text() {
+        for error in [
+            anyhow::anyhow!("connection timed out"),
+            anyhow::anyhow!("GitHub archive exceeds the compressed size limit"),
+            anyhow::anyhow!("selected archive directory contains unsupported entries"),
+            anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+        ] {
+            let context = RemoteSkillArchiveFetchFailed::new("owner/repo", &error);
+            assert!(!context.retryable());
+            let wrapped = error.context(context);
+            assert!(wrapped
+                .downcast_ref::<RemoteSkillArchiveFetchFailed>()
+                .is_some());
+            assert!(!crate::runtime_error::describe_runtime_error(&wrapped).retryable);
+        }
+    }
+
+    #[test]
+    fn archive_fetch_typed_timeout_preserves_retryable_source() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(25))
+            .build()
+            .unwrap();
+        // A listening socket with no response times out locally, without DNS or external I/O.
+        let source = client.get(url).send().unwrap_err();
+        assert!(source.is_timeout());
+        let source = anyhow::Error::new(source);
+        let context = RemoteSkillArchiveFetchFailed::new("owner/repo", &source);
+        assert!(context.retryable());
+        let error = source.context(context);
+        assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+        let descriptor = crate::runtime_error::describe_runtime_error(&error);
+        assert_eq!(descriptor.code, "remote_skill_archive_fetch_failed");
+        assert!(descriptor.retryable);
+        assert!(descriptor.recovery_hint.unwrap().contains("network"));
+    }
+
+    #[test]
+    fn archive_fetch_connect_failure_keeps_type_and_no_install_artifacts() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let client = BlockingClient::new(
+            reqwest::blocking::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap(),
+            GitHubAuth::anonymous(),
+            &base,
+        )
+        .unwrap();
+        let home = tempdir().unwrap();
+        let error = install_github_remote_skill_with_client_and_archive_base(
+            home.path(),
+            "owner/repo@demo",
+            &mock_source("skills/demo"),
+            &client,
+            &base,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_connect());
+        let context = error
+            .downcast_ref::<RemoteSkillArchiveFetchFailed>()
+            .unwrap();
+        assert!(context.retryable());
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("archive fetch"));
+        assert!(rendered.contains("owner/repo@demo"));
+        assert!(error.downcast_ref::<RemoteSkillInstallFailed>().is_none());
+        assert!(!skill_lock_path(home.path()).exists());
+        assert!(!user_library_skills_root(home.path()).join("demo").exists());
+    }
+
+    #[test]
+    fn archive_fetch_invalid_archive_is_not_retryable_and_leaves_no_install() {
+        let home = tempdir().unwrap();
+        let (client, server, base) = github_mock_with_base(
+            vec![(200, "", "not a gzip archive".into())],
+            GitHubAuth::anonymous(),
+            Duration::from_secs(2),
+        );
+        let error = install_github_remote_skill_with_client_and_archive_base(
+            home.path(),
+            "owner/repo@demo",
+            &mock_source("skills/demo"),
+            &client,
+            &base,
+        )
+        .unwrap_err();
+        assert_eq!(server.join().unwrap().len(), 1);
+        let context = error
+            .downcast_ref::<RemoteSkillArchiveFetchFailed>()
+            .unwrap();
+        assert!(!context.retryable());
+        assert!(!context.cause.is_empty());
+        assert!(!skill_lock_path(home.path()).exists());
+        assert!(!user_library_skills_root(home.path()).join("demo").exists());
+    }
+
+    #[test]
+    fn archive_fetch_interrupted_body_retains_source_without_guessing_retryability() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\npartial",
+                )
+                .unwrap();
+        });
+        let client = BlockingClient::new(
+            reqwest::blocking::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap(),
+            GitHubAuth::anonymous(),
+            &base,
+        )
+        .unwrap();
+        let error = fetch_github_archive(&client, "owner", "repo", "main", &base, "owner/repo")
+            .unwrap_err();
+        server.join().unwrap();
+        let context = error
+            .downcast_ref::<RemoteSkillArchiveFetchFailed>()
+            .unwrap();
+        assert!(!context.retryable());
+        // Blocking reads may wrap reqwest in io::Error. A generic body/decode
+        // failure does not on its own identify a transient network fault.
+        assert!(error.chain().any(|source| source.is::<std::io::Error>()));
+        assert!(error.chain().any(|source| source.is::<reqwest::Error>()));
+        assert!(format!("{error:#}").contains("archive fetch"));
+    }
 
     fn github_mock_with_base(
         responses: Vec<(u16, &'static str, String)>,
