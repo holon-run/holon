@@ -100,6 +100,9 @@ export function clearAgentAccessRecords(): void {
 function terminal(status: AgentAccessStatus): boolean {
   return !["loading", "revalidating", "available", "error"].includes(status);
 }
+function retryable(status: AgentAccessStatus): boolean {
+  return !terminal(status) || status === "missing" || status === "unauthorized";
+}
 function commit(record: AccessRecord, access: AgentAccess): void {
   const previous = record.access.parent;
   const sameParent = previous?.agentId === access.parent?.agentId && previous?.supervisionId === access.parent?.supervisionId;
@@ -246,7 +249,7 @@ export function acquireAgentAccess(options: AccessOptions): () => void {
   records.set(options.key, record);
   record.users += 1;
   if (record.users === 1 && record.access.parent) loadParent(record, record.access.parent);
-  if (record.users === 1 && !terminal(record.access.status)) void load(record, true);
+  if (record.users === 1 && retryable(record.access.status)) void load(record, true);
   publish();
   const retained = record;
   return () => {
@@ -264,7 +267,7 @@ export function acquireAgentAccess(options: AccessOptions): () => void {
 
 export function retryAgentAccess(key: string): void {
   const record = records.get(key);
-  if (!record || terminal(record.access.status)) return;
+  if (!record || !retryable(record.access.status)) return;
   clearTimeout(record.timer);
   void load(record, true);
 }

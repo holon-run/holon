@@ -180,6 +180,50 @@ describe("route-selected agent admission", () => {
     },
   );
 
+  it.each([401, 403, 404])("recovers from HTTP %s on explicit retry or route reentry without automatic polling", async (code) => {
+    mocks.identity.mockRejectedValue(new RuntimeHttpError("GET", "/detail", code));
+    await render();
+    expect(current.status).toBe(code === 404 ? "missing" : "unauthorized");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(mocks.state).toHaveBeenCalledTimes(1);
+    withChild(childDetail());
+    await act(async () => current.retry());
+    expect(current.status).toBe("available");
+
+    mocks.identity.mockRejectedValue(new RuntimeHttpError("GET", "/detail", code));
+    await act(async () => current.retry());
+    expect(current.status).toBe(code === 404 ? "missing" : "unauthorized");
+    await render("other");
+    withChild(childDetail());
+    const calls = mocks.state.mock.calls.length;
+    await render();
+    expect(current.status).toBe("available");
+    expect(mocks.state).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it.each([401, 403, 404])("retains the incarnation pin when retrying HTTP %s", async (code) => {
+    await render();
+    expect(current.status).toBe("available");
+    mocks.identity.mockRejectedValue(new RuntimeHttpError("GET", "/detail", code));
+    await act(async () => current.retry());
+    expect(current.agent).toBeUndefined();
+    const replacement = childDetail();
+    replacement.identity.incarnation = 2;
+    withChild(replacement);
+    mocks.state.mockResolvedValue({ id: "private-child", incarnation: 2 });
+    await act(async () => current.retry());
+    expect(current.status).toBe("replaced");
+    expect(current.agent).toBeUndefined();
+    const calls = mocks.state.mock.calls.length;
+    await act(async () => current.retry());
+    await render("other");
+    const afterOther = mocks.state.mock.calls.length;
+    await render();
+    expect(current.status).toBe("replaced");
+    expect(afterOther).toBe(calls + 1);
+    expect(mocks.state).toHaveBeenCalledTimes(afterOther);
+  });
+
   it("does not infer a deleted identity from state 410 alone", async () => {
     const identity = deferred();
     mocks.identity.mockReturnValue(identity.promise);
