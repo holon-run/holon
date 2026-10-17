@@ -89,6 +89,27 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
       await expect(page.getByText(cachedText, { exact: true })).toBeVisible();
       await expect(page.getByText("Loading agent…", { exact: true })).toHaveCount(0);
       await expect(page.locator(".composer textarea")).toBeDisabled();
+      const accessNotice = page.locator(".conversation-sync-status .conversation-status-banner[role=status]");
+      await expect(accessNotice).toContainText("Verifying access");
+      await expect(accessNotice.locator(":scope > svg")).toBeVisible();
+      await expect(accessNotice).toHaveCSS("font-size", "13px");
+      await expect(accessNotice).toHaveCSS("display", "flex");
+      await expect(accessNotice).toHaveCSS("height", "32px");
+      await expect(accessNotice.getByRole("button")).toHaveCount(0);
+      // The existing fixed status row must remain readable on narrow screens too.
+      if (result === "available") {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await expect.poll(async () => {
+          const sidebar = await page.locator(".sidebar").boundingBox();
+          return sidebar ? sidebar.x + sidebar.width : 0;
+        }).toBeLessThanOrEqual(0);
+        await expect(accessNotice.locator(":scope > svg")).toBeInViewport();
+        await expect(accessNotice.locator(":scope > span")).toBeInViewport();
+        await expect(accessNotice.locator(":scope > span")).toHaveCSS("text-overflow", "ellipsis");
+        await page.screenshot({ path: info.outputPath("access-notice-mobile.png"), animations: "disabled" });
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await page.screenshot({ path: info.outputPath("access-notice-desktop.png"), animations: "disabled" });
+      }
       await expect.poll(() => identities).toBeGreaterThan(0);
       await expect.poll(() => states).toBeGreaterThan(0);
       expect(previewWrites).toEqual([]);
