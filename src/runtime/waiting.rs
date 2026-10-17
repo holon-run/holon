@@ -985,8 +985,9 @@ impl RuntimeHandle {
         let result_message_id = result_message.id.clone();
         let agent_wait_conditions = self
             .inner
-            .storage
-            .latest_wait_conditions_for_agent(&task.agent_id)?;
+            .runtime_db
+            .wait_conditions()
+            .snapshot_for_agent(&task.agent_id)?;
         let carries_result_trigger = |record: &WaitConditionRecord| {
             matches!(
                 record.status,

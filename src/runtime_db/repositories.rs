@@ -2496,6 +2496,18 @@ impl WaitConditionRepository<'_> {
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
     }
 
+    /// Preserve payload timestamp precision for full-record transition guards.
+    pub(crate) fn snapshot_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json FROM wait_conditions
+             WHERE agent_id = ?1 ORDER BY wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        rows.map(|payload| decode_wait_condition_payload(&payload?))
+            .collect()
+    }
+
     pub fn recent(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
         if limit == 0 {
             return Ok(Vec::new());

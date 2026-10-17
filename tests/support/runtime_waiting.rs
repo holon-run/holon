@@ -336,7 +336,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                     let receipt: serde_json::Value = serde_json::from_str(&receipt.content)?;
                     assert_eq!(
                         receipt["result"]["disposition"],
-                        "task_result_already_consumed"
+                        "task_result_already_admitted"
                     );
                     assert_eq!(receipt["result"]["continuation"], "continue_turn");
                     assert_eq!(

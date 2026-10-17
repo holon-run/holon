@@ -523,14 +523,17 @@ impl AgentProvider for FailureProvider {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        if self
-            .failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                left.checked_sub(1)
-            })
-            .is_ok()
-        {
-            return DeferredFallbackProvider.complete_turn(request).await;
+        let mut remaining = self.failures.load(Ordering::SeqCst);
+        while remaining > 0 {
+            match self.failures.compare_exchange_weak(
+                remaining,
+                remaining - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return DeferredFallbackProvider.complete_turn(request).await,
+                Err(current) => remaining = current,
+            }
         }
         Ok(ProviderTurnResponse {
             blocks: vec![ModelBlock::Text {

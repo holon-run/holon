@@ -180,6 +180,86 @@ async fn queue_progress_repairs_one_canonical_wake_without_replaying_result() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn wait_snapshot_keeps_submillisecond_precision_and_rejects_stale_payloads() {
+    for concurrent_mutation in [false, true] {
+        let harness = LifecycleHarness::new();
+        let (owner, task, _) = pending_result(&harness, QueueEntryStatus::Queued).await;
+        harness
+            .advance(std::time::Duration::from_nanos(123_456))
+            .await;
+        harness
+            .runtime()
+            .register_wait_for(
+                "default",
+                Some(owner.id.clone()),
+                WaitForWakeKind::External,
+                Some("github:holon-run/holon#3572".into()),
+                "independent business blocker".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let repository = harness.runtime().inner.runtime_db.wait_conditions();
+        let mut wait = repository
+            .snapshot_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.work_item_id.as_deref() == Some(owner.id.as_str()))
+            .unwrap();
+        assert_ne!(wait.updated_at.timestamp_subsec_nanos() % 1_000_000, 0);
+        let input = serde_json::json!({
+            "wake": "task_result",
+            "resource": task.id,
+            "work_item_id": owner.id,
+            "reason": "late exact result",
+            "delivery": "silent",
+        });
+        let result = crate::tool::tools::wait_for::prepare_settlement(
+            harness.runtime(),
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            crate::tool::tools::wait_for::parse_wait_for_args(&input).unwrap(),
+        )
+        .await
+        .unwrap();
+        let prepared = result.prepared_wait_for.as_ref().unwrap();
+        assert_eq!(
+            prepared
+                .command
+                .task_result_admission
+                .as_ref()
+                .unwrap()
+                .obligation
+                .wait_conditions,
+            vec![wait.clone()],
+        );
+        if concurrent_mutation {
+            wait.updated_at += chrono::Duration::nanoseconds(1);
+            wait.status = WaitConditionStatus::Cancelled;
+            wait.cancelled_at = Some(wait.updated_at);
+            repository.upsert(&wait).unwrap();
+        }
+        let before = harness.snapshot();
+        let commit = harness
+            .runtime()
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_wait_with_execution_protocol_and_task_expectation(
+                &prepared.command,
+                &prepared.execution_protocol,
+                prepared.expected_task.as_ref(),
+            );
+        if concurrent_mutation {
+            commit.expect_err("concurrent wait cancellation must invalidate the prepared snapshot");
+            harness.assert_unchanged(&before);
+        } else {
+            assert!(commit.is_ok(), "{commit:?}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn true_settlement_discloses_its_actual_disposition() {
     let harness = LifecycleHarness::new();
