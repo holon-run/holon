@@ -542,6 +542,37 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
     ]
 }
 
+fn minimax_m_plan_model(provider: &str) -> BuiltInModelMetadata {
+    BuiltInModelMetadata {
+        model_ref: ModelRef::new(provider_id(provider), "MiniMax-M3.1-Flash-Preview"),
+        display_name: "MiniMax M3.1 Flash Preview".into(),
+        description: "MiniMax M3.1 Flash Preview requires M Plan, an existing Token Plan, or MiniMax Code; not general API access.".into(),
+        context_window_tokens: Some(1_000_000),
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input: true,
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: vec![
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+            "max".into(),
+        ],
+        source: ModelMetadataSource::BuiltInCatalog,
+        endpoint: Some(ProviderEndpointId::parse("m-plan").expect("valid endpoint")),
+    }
+}
+
 pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
     vec![
         catalog_model(
@@ -616,6 +647,8 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
+        minimax_m_plan_model("minimax-m-plan"),
+        minimax_m_plan_model("minimax-cn-m-plan"),
         catalog_model(
             "mistral",
             "codestral-latest",

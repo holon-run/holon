@@ -247,6 +247,12 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         Generic, AnthropicCompatible, None, None, None, StaticOnly
     ),
     provider!(
+        "dashscope-coding-plan-intl" => "dashscope" @ "coding-plan-intl",
+        AnthropicMessages, "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic",
+        ["DASHSCOPE_CODING_PLAN_INTL_API_KEY"],
+        Generic, AnthropicCompatible, None, None, None, StaticOnly
+    ),
+    provider!(
         "deepseek" => "deepseek" @ "default",
         AnthropicMessages, "https://api.deepseek.com/anthropic", ["DEEPSEEK_API_KEY"],
         Generic, AnthropicCompatibleImplicitCache, DeepSeek, None, None, StaticOnly
@@ -445,6 +451,16 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         Generic, AnthropicCompatible, None, None, None, StaticOnly, HostedMiddle
     ),
     provider!(
+        "minimax-m-plan" => "minimax" @ "m-plan",
+        AnthropicMessages, "https://api.minimax.io/anthropic", ["MINIMAX_M_PLAN_API_KEY"],
+        Generic, AnthropicCompatible, None, None, None, StaticOnly
+    ),
+    provider!(
+        "minimax-cn-m-plan" => "minimax-cn" @ "m-plan",
+        AnthropicMessages, "https://api.minimax.cn/anthropic", ["MINIMAX_CN_M_PLAN_API_KEY"],
+        Generic, AnthropicCompatible, None, None, None, StaticOnly
+    ),
+    provider!(
         "vercel-ai-gateway" => "vercel-ai-gateway" @ "default",
         AnthropicMessages, "https://ai-gateway.vercel.sh",
         ["VERCEL_OIDC_TOKEN", "AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"],
@@ -472,4 +488,41 @@ pub(crate) fn provider_definition(legacy_provider: &str) -> Option<&'static Prov
     PROVIDER_DEFINITIONS
         .iter()
         .find(|definition| definition.legacy_provider == legacy_provider)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimax_subscription_credentials_are_region_and_plan_scoped() {
+        for (legacy, provider, base_url, credential_env) in [
+            (
+                "minimax-m-plan",
+                "minimax",
+                "https://api.minimax.io/anthropic",
+                "MINIMAX_M_PLAN_API_KEY",
+            ),
+            (
+                "minimax-cn-m-plan",
+                "minimax-cn",
+                "https://api.minimax.cn/anthropic",
+                "MINIMAX_CN_M_PLAN_API_KEY",
+            ),
+        ] {
+            let definition = provider_definition(legacy).unwrap();
+            assert_eq!(definition.route_provider, provider);
+            assert_eq!(definition.route_endpoint, "m-plan");
+            assert_eq!(definition.default_base_url, base_url);
+            assert_eq!(definition.credential_envs, &[credential_env]);
+            assert_eq!(
+                definition.transport,
+                ProviderTransportKind::AnthropicMessages
+            );
+            assert_eq!(definition.catalog_policy, ProviderCatalogPolicy::StaticOnly);
+        }
+        let default = provider_definition("minimax").unwrap();
+        assert_eq!(default.route_endpoint, "default");
+        assert_eq!(default.credential_envs, &["MINIMAX_API_KEY"]);
+    }
 }

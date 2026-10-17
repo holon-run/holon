@@ -65,6 +65,12 @@ fn volcengine_route_definition(
         endpoint: ProviderEndpointId::parse(endpoint).expect("valid endpoint"),
         policy: BuiltInModelRoutePolicy {
             display_name: display_name.map(str::to_owned),
+            capabilities: ModelCapabilityOverride {
+                // Coding Plan explicitly documents K2.7 images; Agent Plan
+                // eligibility alone is not evidence of the same capability.
+                image_input: (endpoint == "plan" && model == "kimi-k2.7-code").then_some(false),
+                ..ModelCapabilityOverride::default()
+            },
             ..BuiltInModelRoutePolicy::default()
         },
     }
@@ -191,6 +197,42 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             )
         }),
     );
+    // International Coding Plan has its own six-model allowlist and key.
+    // Its overview does not publish exact token limits or effort controls.
+    definitions.extend(
+        [
+            ("qwen3.7-plus", true),
+            ("qwen3.6-plus", true),
+            ("qwen3.5-plus", true),
+            ("kimi-k2.5", true),
+            ("glm-5", false),
+            ("MiniMax-M2.5", false),
+        ]
+        .into_iter()
+        .map(|(model, image_input)| {
+            BuiltInModelRouteDefinition {
+            legacy_provider: provider_id("dashscope-coding-plan-intl"),
+            model_ref: ModelRef::new(provider_id("dashscope"), model),
+            endpoint: ProviderEndpointId::parse("coding-plan-intl").expect("valid endpoint"),
+            policy: BuiltInModelRoutePolicy {
+                description: Some(
+                    "International Coding Plan; exact token limits and effort controls unconfirmed."
+                        .into(),
+                ),
+                context_window_tokens: Some(None),
+                auto_compact_token_limit: Some(None),
+                default_max_output_tokens: Some(None),
+                max_output_tokens_upper_limit: Some(None),
+                capabilities: ModelCapabilityOverride {
+                    image_input: Some(image_input),
+                    ..ModelCapabilityOverride::default()
+                },
+                reasoning_effort_options: Some(Vec::new()),
+                ..BuiltInModelRoutePolicy::default()
+            },
+        }
+        }),
+    );
     definitions.extend(
         [
             (
@@ -238,6 +280,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             "deepseek-v4.1-flash",
             "kimi-k2.8-preview",
             "kimi-k3",
+            "glm-latest",
         ]
         .into_iter()
         .map(|model| volcengine_route_definition("volcengine-agent", "plan", model, None)),
@@ -556,7 +599,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             // Volcengine API rejects max_tokens > 32768 for kimi-k2.7-code
             32_768,
             true,
-            false,
+            true,
         ),
         catalog_model(
             "volcengine-coding",
@@ -1170,9 +1213,9 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             ("bytedance-seed-code", "ByteDance Seed Code", false, true),
             ("glm-5.3-flash", "GLM-5.3 Flash", false, true),
             ("glm-5.2", "GLM-5.2", false, false),
-            ("glm-5.1", "GLM-5.1", false, false),
-            ("kimi-k2.5", "Kimi K2.5", false, true),
-            ("gpt-oss-120b", "GPT OSS 120B", false, false),
+            ("glm-5.1", "GLM-5.1", true, false),
+            ("kimi-k2.5", "Kimi K2.5", true, true),
+            ("gpt-oss-120b", "GPT OSS 120B", true, false),
             ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true),
             (
                 "deepseek-v4-flash",
@@ -1187,7 +1230,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             reviewed_subscription_model("byteplus", "coding", model, name, reasoning, image)
         }),
     );
-    // Coding documents this alias independently of Agent Plan.
+    // Both Coding and Agent Plan independently document this alias.
     // The subscription routers below do not inherit underlying capabilities.
     entries.extend([
         reviewed_subscription_model(
@@ -1289,15 +1332,16 @@ fn reviewed_byteplus_vision_and_volcengine_alias_are_endpoint_scoped() {
             assert_eq!(metadata.context_window_tokens, None);
             assert_eq!(metadata.max_output_tokens_upper_limit, None);
         }
-        let alias = ModelRouteRef::parse("volcengine@coding/glm-latest").unwrap();
-        assert!(catalog.get_route(&alias).is_some());
-        let metadata = catalog.get(&alias.model_ref()).unwrap();
-        assert!(metadata.capabilities.supports_reasoning);
-        assert_eq!(metadata.context_window_tokens, None);
-        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        for endpoint in ["coding", "plan"] {
+            let alias = ModelRouteRef::parse(&format!("volcengine@{endpoint}/glm-latest")).unwrap();
+            assert!(catalog.get_route(&alias).is_some());
+            let metadata = catalog.get(&alias.model_ref()).unwrap();
+            assert!(metadata.capabilities.supports_reasoning);
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        }
         for unsupported in [
             "volcengine@default/glm-latest",
-            "volcengine@plan/glm-latest",
             "byteplus@coding/glm-latest",
         ] {
             let route = ModelRouteRef::parse(unsupported).unwrap();
@@ -1326,6 +1370,89 @@ fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
             assert!(metadata.reasoning_effort_options.is_empty());
             let api = ModelRouteRef::parse(&format!("{provider}@default/{model}")).unwrap();
             assert!(catalog.get_route(&api).is_none(), "{}", api.as_string());
+        }
+    }
+}
+
+#[test]
+fn international_coding_plan_has_its_own_allowlist_and_unknown_limits() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        let routes = catalog
+            .list_routes()
+            .into_iter()
+            .filter(|route| {
+                route.provider.as_str() == "dashscope"
+                    && route.endpoint.as_str() == "coding-plan-intl"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(routes.len(), 6);
+        for (model, image_input) in [
+            ("qwen3.7-plus", true),
+            ("qwen3.6-plus", true),
+            ("qwen3.5-plus", true),
+            ("kimi-k2.5", true),
+            ("glm-5", false),
+            ("MiniMax-M2.5", false),
+        ] {
+            let route =
+                ModelRouteRef::parse(&format!("dashscope@coding-plan-intl/{model}")).unwrap();
+            let overrides = catalog.get_route(&route).unwrap();
+            assert_eq!(overrides.context_window_tokens, Some(None));
+            assert_eq!(overrides.default_max_output_tokens, Some(None));
+            assert_eq!(overrides.max_output_tokens_upper_limit, Some(None));
+            let policy = catalog.resolve_route_policy(
+                &route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &ContextConfig::default(),
+                8_192,
+            );
+            assert!(policy.context_window_tokens.is_none());
+            assert!(policy.max_output_tokens_upper_limit.is_none());
+            assert_eq!(policy.capabilities.image_input, image_input);
+            assert!(policy.reasoning_effort_options.is_empty());
+        }
+        for unsupported in ["qwen3-coder-plus", "qwen3.8-max", "auto", "glm-5.3"] {
+            let route =
+                ModelRouteRef::parse(&format!("dashscope@coding-plan-intl/{unsupported}")).unwrap();
+            assert!(catalog.get_route(&route).is_none());
+        }
+    }
+}
+
+#[test]
+fn reviewed_subscription_capabilities_do_not_leak_between_endpoints() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for model in ["glm-5.1", "kimi-k2.5", "gpt-oss-120b"] {
+            let route = ModelRouteRef::parse(&format!("byteplus@coding/{model}")).unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            assert!(
+                catalog
+                    .get(&route.model_ref())
+                    .unwrap()
+                    .capabilities
+                    .supports_reasoning
+            );
+            let api = ModelRouteRef::parse(&format!("byteplus@default/{model}")).unwrap();
+            assert!(catalog.get_route(&api).is_none());
+        }
+        for (endpoint, image_input) in [("coding", true), ("plan", false)] {
+            let policy = catalog.resolve_route_policy(
+                &ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k2.7-code")).unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &ContextConfig::default(),
+                8_192,
+            );
+            assert_eq!(policy.capabilities.image_input, image_input);
         }
     }
 }

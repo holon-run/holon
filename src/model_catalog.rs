@@ -236,12 +236,42 @@ impl ModelCapabilityOverride {
 pub struct BuiltInModelRoutePolicy {
     display_name: Option<String>,
     description: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_route_override"
+    )]
     context_window_tokens: Option<Option<usize>>,
     effective_context_window_percent: Option<u8>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_route_override"
+    )]
     auto_compact_token_limit: Option<Option<usize>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_route_override"
+    )]
     default_max_output_tokens: Option<Option<u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_route_override"
+    )]
     max_output_tokens_upper_limit: Option<Option<u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_route_override"
+    )]
     default_verbosity: Option<Option<ModelVerbosity>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_route_override"
+    )]
     tool_output_truncation_estimated_tokens: Option<Option<usize>>,
     capabilities: ModelCapabilityOverride,
     /// Explicit Decision wire protocol declared by the route. Decision route
@@ -250,6 +280,15 @@ pub struct BuiltInModelRoutePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     decision_protocol: Option<DecisionProtocol>,
     reasoning_effort_options: Option<Vec<String>>,
+}
+
+// Missing fields inherit; present null explicitly clears a nullable model field.
+fn deserialize_route_override<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 impl BuiltInModelRoutePolicy {
@@ -1776,6 +1815,11 @@ fn reasoning_effort_options(
             &["none", "minimal", "low", "medium", "high", "xhigh", "max"][..]
         }
         ("deepseek", _) => &["low", "high", "max"][..],
+        ("minimax" | "minimax-cn", "MiniMax-M3.1-Flash-Preview")
+            if endpoint.is_some_and(|endpoint| endpoint.as_str() == "m-plan") =>
+        {
+            &["low", "medium", "high", "xhigh", "max"][..]
+        }
         ("xai", "grok-4.3") => &["none", "low", "medium", "high"][..],
         ("xai", "grok-4.5") => &["low", "medium", "high"][..],
         ("stepfun", "step-3.7-flash") => &["low", "medium", "high"][..],
@@ -3287,7 +3331,16 @@ mod tests {
         let models = catalog
             .list()
             .into_iter()
-            .filter(|entry| entry.model_ref.provider == minimax)
+            .filter(|entry| {
+                entry.model_ref.provider == minimax
+                    && catalog
+                        .get_route(&ModelRouteRef::new(
+                            minimax.clone(),
+                            ProviderEndpointId::default_endpoint(),
+                            entry.model_ref.model.clone(),
+                        ))
+                        .is_some()
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -3323,6 +3376,59 @@ mod tests {
             assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
             assert!(model.capabilities.supports_reasoning);
             assert!(!model.capabilities.image_input);
+        }
+    }
+
+    #[test]
+    fn minimax_m31_is_available_only_on_region_scoped_m_plan_routes() {
+        let catalog = curated_catalog();
+        let model = "MiniMax-M3.1-Flash-Preview";
+        for provider in ["minimax", "minimax-cn"] {
+            let model_ref = ModelRef::parse(&format!("{provider}/{model}")).unwrap();
+            let metadata = catalog.get(&model_ref).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_000_000));
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert_eq!(
+                metadata.reasoning_effort_options,
+                ["low", "medium", "high", "xhigh", "max"]
+            );
+            let endpoint = ProviderEndpointId::parse("m-plan").unwrap();
+            assert_eq!(
+                reasoning_effort_options(&model_ref, Some(&endpoint), &metadata.capabilities),
+                ["low", "medium", "high", "xhigh", "max"]
+            );
+            let route_ref = ModelRouteRef::parse(&format!("{provider}@m-plan/{model}")).unwrap();
+            assert!(catalog.get_route(&route_ref).is_some());
+            let policy = catalog.resolve_route_policy(
+                &route_ref,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            for effort in ["low", "medium", "high", "xhigh", "max"] {
+                assert!(policy.validate_reasoning_effort(effort).is_ok());
+            }
+            for effort in ["none", "off", "minimal"] {
+                assert!(policy.validate_reasoning_effort(effort).is_err());
+            }
+            for endpoint in ["default", "responses", "m-plan-responses"] {
+                assert!(catalog
+                    .get_route(
+                        &ModelRouteRef::parse(&format!("{provider}@{endpoint}/{model}")).unwrap()
+                    )
+                    .is_none());
+                assert!(reasoning_effort_options(
+                    &model_ref,
+                    Some(&ProviderEndpointId::parse(endpoint).unwrap()),
+                    &metadata.capabilities,
+                )
+                .is_empty());
+            }
         }
     }
 
@@ -3603,6 +3709,53 @@ mod tests {
                 effective: "8000".into(),
             }]
         );
+    }
+
+    #[test]
+    fn route_policy_roundtrip_preserves_inherited_cleared_and_concrete_fields() {
+        let inherited = BuiltInModelRoutePolicy::default();
+        let cleared = BuiltInModelRoutePolicy {
+            context_window_tokens: Some(None),
+            auto_compact_token_limit: Some(None),
+            default_max_output_tokens: Some(None),
+            max_output_tokens_upper_limit: Some(None),
+            default_verbosity: Some(None),
+            tool_output_truncation_estimated_tokens: Some(None),
+            ..BuiltInModelRoutePolicy::default()
+        };
+        let concrete = BuiltInModelRoutePolicy {
+            context_window_tokens: Some(Some(100_000)),
+            auto_compact_token_limit: Some(Some(80_000)),
+            default_max_output_tokens: Some(Some(4_096)),
+            max_output_tokens_upper_limit: Some(Some(8_192)),
+            default_verbosity: Some(Some(ModelVerbosity::Low)),
+            tool_output_truncation_estimated_tokens: Some(Some(2_500)),
+            ..BuiltInModelRoutePolicy::default()
+        };
+        for policy in [&inherited, &cleared, &concrete] {
+            let json = serde_json::to_value(policy).unwrap();
+            assert_eq!(
+                serde_json::from_value::<BuiltInModelRoutePolicy>(json).unwrap(),
+                *policy,
+            );
+        }
+        let inherited_json = serde_json::to_value(inherited).unwrap();
+        let cleared_json = serde_json::to_value(cleared).unwrap();
+        for field in [
+            "context_window_tokens",
+            "auto_compact_token_limit",
+            "default_max_output_tokens",
+            "max_output_tokens_upper_limit",
+            "default_verbosity",
+            "tool_output_truncation_estimated_tokens",
+        ] {
+            assert!(inherited_json.get(field).is_none(), "{field}");
+            assert_eq!(
+                cleared_json.get(field),
+                Some(&serde_json::Value::Null),
+                "{field}"
+            );
+        }
     }
 
     #[test]

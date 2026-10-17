@@ -1,6 +1,6 @@
 # Endpoint-specific catalog review
 
-Reviewed for the **2026-10-16 Beijing time** maintenance cycle. This is an
+Initial review: **2026-10-16 Beijing time**; subsequent cycles are recorded below. This is an
 evidence record, not a claim that every account, region, subscription tier, or
 model was exercised. No credentials were read and no paid inference was called.
 
@@ -8,6 +8,128 @@ The general API catalog is not a subscription allowlist. Preserve previously
 reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
+
+## 2026-10-18 incremental review
+
+- Refreshed models.dev revision
+  `dae7c0c79d38964b123dd0cc8c64a4520d6d61816950f9ca8928bbbeab79dd85`.
+  The supplement retains the same 54 models and existing endpoint routes.
+  Artifact-only additions are two OpenRouter and three Together records; no
+  aggregator runtime routes are automatically added.
+- The [OpenRouter public model list](https://openrouter.ai/api/v1/models),
+  rechecked at 2026-10-17 20:36 UTC, agrees with all seven added/changed
+  OpenRouter records' context and output limits, including the five output-limit
+  corrections. The [Together serverless catalog](https://docs.together.ai/docs/serverless/models)
+  returned HTTP 403 during this check. Its three additions remain secondary
+  models.dev audit data, not independently verified service support or limits.
+- Rechecked the [OpenCode Go protocol table](https://opencode.ai/v2/docs/console/go/)
+  and [public model list](https://opencode.ai/inference/go/v1/models):
+  all currently documented non-Gemini routes are already covered. Do not infer
+  retirement of older IDs or route Gemini's native protocol through Chat.
+- Rechecked the [Codex model lifecycle](https://learn.chatgpt.com/docs/models).
+  The recommended `gpt-6.1-sol`/`gpt-6-luna`, documented `gpt-6-astra`, and six
+  retired ChatGPT-sign-in IDs are already covered. Account/client availability
+  still requires its own entitlement; API metadata does not grant Codex access.
+- MiniMax's [international M Plan](https://platform.minimax.io/docs/m-plan/intro),
+  [China M Plan](https://platform.minimax.cn/docs/m-plan/intro), and
+  [legacy Token Plan notice](https://platform.minimax.io/docs/m-plan/token-plan-notice.md)
+  explicitly cover `MiniMax-M3.1-Flash-Preview`.
+  The [Anthropic API reference](https://platform.minimax.io/docs/api-reference/text-anthropic-api.md)
+  limits its current eligibility to M Plan / MiniMax Code, states an exact
+  1,000,000-token context, image/video input, and five thinking efforts
+  (`low`, `medium`, `high`, `xhigh`, `max`; not disabled). Output maximum remains
+  unknown: neither the older M3 limit nor example request sizes establish it.
+  Keep this model off the ordinary `minimax@default` API route. International
+  and China subscription routes require separate, explicit credentials;
+  [China quickstart](https://platform.minimax.cn/docs/m-plan/quickstart) confirms
+  `api.minimax.cn`, not an inferred regional alias.
+  [Model lifecycle](https://platform.minimax.io/docs/guides/models-intro)
+  schedules M2.5/M2.7 subscription migration from **2026-10-19** and general API
+  retirement on **2026-11-18**. Neither has happened as of this review; retain
+  existing models and do not infer every legacy ID's new subscription eligibility.
+- [International DashScope Coding Plan](https://www.alibabacloud.com/help/en/model-studio/coding-plan)
+  directly documents the `coding-intl.dashscope.aliyuncs.com` Chat/Anthropic bases
+  and six exact IDs: `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.5-plus`, `kimi-k2.5`,
+  `glm-5`, `MiniMax-M2.5`. The first four explicitly accept images.
+  Add only that allowlist on a separately keyed Anthropic endpoint; leave exact
+  token limits and effort controls unset, rather than copy China Token Plan
+  metadata or its larger allowlist.
+  The [international Token Plan team overview](https://www.alibabacloud.com/help/en/model-studio/token-plan-team-overview)
+  confirms a separate product but exposes its exact bases only in the account
+  console. This remains an unregistered coverage gap; do not guess its host.
+- [China Coding Plan](https://help.aliyun.com/zh/model-studio/coding-plan) and
+  [Token Plan](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)
+  provided no newly confirmed model or hard-limit changes relative to the
+  existing reviewed routes. Previously recorded unsupported-evidence routes
+  remain explicitly unresolved, not newly verified. Token Plan's old
+  `qwen3.8-max-preview` ID remains compatible; its separate decision interface
+  is not a normal chat model.
+- [Xiaomi Token Plan integration](https://mimo.mi.com/docs/en-US/tokenplan/integration/opencode)
+  confirms existing V2.6 Pro/Flash limits and images. Its Singapore Token Plan
+  host is a documented regional coverage gap, not proof that every China route
+  is also available there. The [retirement notice](https://mimo.mi.com/docs/en-US/updates/deprecate)
+  stops old V2.5 IDs at **2026-10-21 10:00 UTC+8**, so retain them now; no new
+  evidence establishes V2.6 Pro Ultraspeed subscription eligibility.
+- [Step Plan](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md)
+  still lists the existing five models, including the separate router.
+  [Messages constraints](https://platform.stepfun.com/docs/zh/api-reference/chat/messages-create.md)
+  prohibit router images/documents and built-in search and ignore its effort.
+  Do not reinterpret `250K` or `1M` prose as newly confirmed exact integers.
+- [Z.AI](https://docs.z.ai/devpack/latest-model.md) and
+  [BigModel](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md) continue to
+  confirm GLM5.3/Flash with existing modality and effort boundaries. Their
+  Anthropic bases are already registered; their documented Responses/Chat
+  subscription alternatives are not yet separately registered.
+  The [Z.AI](https://docs.z.ai/devpack/notice/api-key-management.md) and
+  [BigModel](https://docs.bigmodel.cn/cn/coding-plan/notice/api-key-management.md)
+  key-classification notices, effective **2026-10-16**, make key type a billing
+  boundary. A shared Anthropic URL alone cannot establish subscription
+  entitlement or make every default API model subscription-eligible.
+- [DeepSeek Responses](https://api-docs.deepseek.com/guides/responses_api/)
+  confirms existing Flash image input and V4 Pro-only built-in search. The
+  exact model allowlist and official-URL search isolation are already covered;
+  unconfirmed Flash token limits remain unset.
+- [BytePlus Coding Plan](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview)
+  independently confirms reasoning for `glm-5.1`, `kimi-k2.5`, `gpt-oss-120b`;
+  correct these conservative capability omissions without inventing effort
+  controls or exact limits from its `k` values.
+  Its [OpenCode integration](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-ai-opencode)
+  also documents Responses/Messages alternatives, but **GPT-OSS is Chat-only**.
+  These alternative protocol endpoints are not yet separately registered;
+  never apply the whole Chat allowlist to them. The candidate BytePlus Agent
+  Plan page returned navigation without a readable body, so its eligibility,
+  bases and model list remain unknown.
+- The current [Volcengine Coding overview](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-plan-overview)
+  explicitly supports Kimi K2.7 Code images; enable that capability only on
+  `coding`, not on `plan` or the general API.
+  The [Agent Plan overview](https://docs.volcengine.com/docs/ark/agent-plan-personal-plan-overview?lang=zh)
+  is readable again this cycle, superseding the previous fetch gap.
+  Its [own integration guide](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-opencode)
+  independently confirms `glm-latest`, so add the alias to `plan` without
+  copying Coding eligibility. Kimi K3 still requires Medium/Large/Max there.
+  Both products document Chat/Messages alternatives to the registered Responses
+  endpoints, but those alternatives are not yet separately registered.
+  Continue treating `k`-unit limits as inexact; example client settings are
+  not service hard limits, and the two products' keys are not interchangeable.
+- Tencent [Coding](https://cloud.tencent.com/document/product/1772/128947),
+  [personal Token Plan](https://cloud.tencent.com/document/product/1823/130060),
+  and [enterprise regional Token Plans](https://cloud.tencent.com/document/product/1823/130659)
+  are separate coverage gaps: the current TokenHub default/messages endpoints
+  are **not** any of these subscription routes.
+  Coding currently explicitly lists `tc-code-latest`, no native multimodal
+  support, and Chat/Messages, not confirmed Responses.
+  Personal Token Plan uses lkeap for Chat/Messages and tokenhub for Responses.
+  Enterprise Guangzhou/Singapore have distinct hosts and model allowlists;
+  enterprise `auto` must not be confused with personal `tc-code-latest`.
+  Precise per-model subscription limits and protocol compatibility are not
+  established by the general API matrix, so do not auto-register those routes
+  from models.dev or generic TokenHub metadata.
+  Future retirements (Guangzhou DeepSeek Flash-0731 **2026-10-31**, MiniMax M2.7
+  **2026-11-17**) have not happened yet and are not cross-region facts.
+  Personal plan terms restrict scripts/self-hosted backends/noninteractive
+  batch use: protocol compatibility is not permission for arbitrary Holon
+  headless automation. Account/tier/usage eligibility remains the user's
+  responsibility; no paid or credential-based availability checks were made.
 
 ## 2026-10-17 incremental review
 
