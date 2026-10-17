@@ -1,8 +1,10 @@
 import {
   ArrowUp,
   ArrowDown,
+  Info,
   LoaderCircle,
   Paperclip,
+  RefreshCw,
   Square,
   Unplug,
   Gauge,
@@ -774,9 +776,19 @@ export function AgentPage({
               </div>
             ) : null}
             {conversation?.readOnlyNotice || conversation?.accessRefreshNotice ? (
-              <div className="conversation-sync-status" role="status">
-                {conversation.readOnlyNotice ?? conversation.accessRefreshNotice}
-                {conversation.onRetryAccess ? <Button variant="secondary" onClick={conversation.onRetryAccess}>{t("agentPage.retry")}</Button> : null}
+              <div className="conversation-sync-status">
+                <div className="conversation-status-banner" role="status">
+                  <Info size={14} aria-hidden="true" />
+                  <span title={conversation.readOnlyNotice ?? conversation.accessRefreshNotice}>
+                    {conversation.readOnlyNotice ?? conversation.accessRefreshNotice}
+                  </span>
+                  {conversation.onRetryAccess ? (
+                    <button type="button" onClick={conversation.onRetryAccess}>
+                      <RefreshCw size={13} aria-hidden="true" />
+                      {t("agentPage.retry")}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
           </div>

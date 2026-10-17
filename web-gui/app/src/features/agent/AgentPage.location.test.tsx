@@ -162,13 +162,27 @@ describe("AgentPage reading-position lifecycle", () => {
     expect(restored.scrollTop).toBe(900);
   });
 
-  it("shows the read-only access notice independently of transcript synchronization", async () => {
+  it.each(["readOnlyNotice", "accessRefreshNotice"] as const)("styles %s consistently with conversation status notices", async (noticeKey) => {
     const retry = vi.fn();
-    await render({ ...bundle(), readOnlyNotice: "Verifying cached history", onRetryAccess: retry },
-      { inputDisabledReason: "Verifying cached history" });
-    expect(host.querySelector(".conversation-sync-status[role=status]")?.textContent).toContain("Verifying cached history");
-    await act(async () => host.querySelector<HTMLButtonElement>(".conversation-sync-status button")?.click());
+    const notice = "Verifying cached history";
+    await render({ ...bundle(), [noticeKey]: notice, onRetryAccess: retry },
+      noticeKey === "readOnlyNotice" ? { inputDisabledReason: notice } : {});
+    const banner = host.querySelector(".conversation-sync-status .conversation-status-banner[role=status]");
+    expect(banner?.querySelector("span")?.textContent).toBe(notice);
+    expect(banner?.querySelector("span")?.title).toBe(notice);
+    expect(banner?.querySelector(":scope > svg[aria-hidden=true]")).not.toBeNull();
+    expect(banner?.querySelector("button")?.getAttribute("type")).toBe("button");
+    expect(banner?.querySelector("button svg[aria-hidden=true]")).not.toBeNull();
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(noticeKey === "readOnlyNotice");
+    await act(async () => banner?.querySelector<HTMLButtonElement>("button")?.click());
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an access notice without a retry action while verification is pending", async () => {
+    await render({ ...bundle(), readOnlyNotice: "Verifying cached history" });
+    const banner = host.querySelector(".conversation-sync-status .conversation-status-banner[role=status]");
+    expect(banner?.textContent).toBe("Verifying cached history");
+    expect(banner?.querySelector("button")).toBeNull();
   });
 
   it.each([undefined, "supervisor"])("keeps real composer status without a permanent input warning (parent=%s)", async (parentAgentId) => {
