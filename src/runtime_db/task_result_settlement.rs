@@ -11,11 +11,18 @@ use crate::{
 
 pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 
+mod exact_waiter;
 mod live_turn;
+mod obligation;
+pub(crate) use obligation::{classify_obligation_tx, TaskResultObligation};
+mod provider_handoff;
+pub(crate) use provider_handoff::transfer_provider_admitted_tx;
+mod recovery_budget;
 pub(crate) use live_turn::{
     admit_live_task_results_tx, canonical_live_turn_id_tx, recover_live_task_results_tx,
     recovery_turn_for_activation_tx,
 };
+pub(crate) use recovery_budget::{charge_recovery_admission_tx, TASK_RESULT_RECOVERY_LIMIT};
 
 #[cfg(test)]
 mod tests;
@@ -90,6 +97,18 @@ pub(crate) struct TaskResultSettlementRecord {
     pub deferred_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub next_recheck_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub recovery_epoch: u64,
+    #[serde(default)]
+    pub recovery_attempts: u32,
+    #[serde(default)]
+    pub last_recovery_root_attempt_id: Option<String>,
+    #[serde(default)]
+    pub last_recovery_admitted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub recovery_paused_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub recovery_diagnostic_at: Option<DateTime<Utc>>,
 }
 
 impl TaskResultSettlementRecord {
@@ -152,6 +171,12 @@ impl TaskResultSettlementRecord {
             deferred_reason: None,
             deferred_at: None,
             next_recheck_at: Some(now + Duration::seconds(30)),
+            recovery_epoch: 0,
+            recovery_attempts: 0,
+            last_recovery_root_attempt_id: None,
+            last_recovery_admitted_at: None,
+            recovery_paused_at: None,
+            recovery_diagnostic_at: None,
         }))
     }
 }
@@ -254,7 +279,24 @@ impl TaskResultSettlementRepository<'_> {
             }));
             let mut remaining = TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT
                 .saturating_sub(already_admitted.len() + anchor_reserved);
-            let mut records = unsettled_for_owner_tx(tx, agent_id, work_item_id, 64)?;
+            let mut records = unsettled_for_owner_tx(tx, agent_id, work_item_id, selected, 64)?;
+            if let Some(record) =
+                exact_waiter::candidate_tx(tx, agent_id, work_item_id, activation_id)?
+            {
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM messages WHERE message_id = ?1",
+                    [&record.message_id],
+                    |row| row.get(0),
+                )?;
+                let message: MessageEnvelope = serde_json::from_str(&payload)?;
+                if crate::wake_contract::agent_message_reply_reference(&message).is_none()
+                    && !records
+                        .iter()
+                        .any(|prior| prior.result_identity == record.result_identity)
+                {
+                    records.insert(0, record);
+                }
+            }
             let mut admitted = Vec::with_capacity(records.len());
             for mut record in records.drain(..) {
                 if record.created_at > now
@@ -277,6 +319,9 @@ impl TaskResultSettlementRepository<'_> {
                 }
                 if remaining == 0 {
                     break;
+                }
+                if !charge_selected_recovery_tx(tx, &mut record, activation_id, now)? {
+                    continue;
                 }
                 record.state = TaskResultSettlementState::CallerAdmitted;
                 record.activation_id = Some(activation_id.to_owned());
@@ -350,6 +395,11 @@ impl TaskResultSettlementRepository<'_> {
     ) -> Result<bool> {
         if record.state == TaskResultSettlementState::Settled {
             return Ok(false);
+        }
+        if self.db.transaction(|tx| {
+            Ok(live_turn::closed_admitted_reply_owner_tx(tx, record)?.is_some())
+        })? {
+            return Ok(true);
         }
         self.reply_source_is_consumed_for_owner(record)
     }
@@ -589,8 +639,22 @@ impl TaskResultSettlementRepository<'_> {
             };
             let mut remaining = TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT
                 .saturating_sub(already.len() + usize::from(anchor_reserved));
-            let records =
+            let mut records =
                 reply_message_candidates_tx(tx, agent_id, work_item_id, message_id, 64)?;
+            if let Some(record) = exact_waiter::candidate_tx(
+                tx, agent_id, work_item_id, activation_id,
+            )? {
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM messages WHERE message_id = ?1",
+                    [&record.message_id], |row| row.get(0),
+                )?;
+                let message: MessageEnvelope = serde_json::from_str(&payload)?;
+                if crate::wake_contract::agent_message_reply_reference(&message) == Some(message_id)
+                    && !records.iter().any(|prior| prior.result_identity == record.result_identity)
+                {
+                    records.insert(0, record);
+                }
+            }
             let mut admitted = Vec::new();
             for mut record in records {
                 if remaining == 0 {
@@ -616,22 +680,27 @@ impl TaskResultSettlementRepository<'_> {
                     let Some(prior_id) = record.activation_id.as_deref() else {
                         continue;
                     };
-                    if current.recovery_of_attempt_id.as_deref() != Some(prior_id) {
-                        continue;
-                    }
-                    let Some(prior) = reply_admission_attempt_tx(tx, agent_id, prior_id)? else {
-                        continue;
-                    };
-                    // A closed attempt is not a replay grant. Only the current
-                    // canonical attempt's interrupted predecessor owns this snapshot.
-                    if prior.state
-                        != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
-                        || prior.agent_id != current.agent_id
-                        || prior.source_message_id != current.source_message_id
-                        || prior.binding != current.binding
+                    let prior = reply_admission_attempt_tx(tx, agent_id, prior_id)?;
+                    let interrupted_replay = prior.as_ref().is_some_and(|prior| {
+                        current.recovery_of_attempt_id.as_deref() == Some(prior_id)
+                            && prior.state
+                                == crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+                            && prior.agent_id == current.agent_id
+                            && prior.source_message_id == current.source_message_id
+                            && prior.binding == current.binding
+                    });
+                    // A closed attempt alone is not a grant. A runtime recovery
+                    // wake must independently revalidate this exact obligation.
+                    if !interrupted_replay
+                        && !obligation::recovery_wake_admits_tx(
+                            tx, &record, current, work_item_id,
+                        )?
                     {
                         continue;
                     }
+                }
+                if !charge_selected_recovery_tx(tx, &mut record, activation_id, cutoff)? {
+                    continue;
                 }
                 record.state = TaskResultSettlementState::CallerAdmitted;
                 record.activation_id = Some(activation_id.to_owned());
@@ -792,9 +861,19 @@ impl TaskResultSettlementRepository<'_> {
                 return Ok(None);
             };
             if record.state != TaskResultSettlementState::Settled {
+                if record.recovery_paused_at.is_some() {
+                    return Ok(Some(record));
+                }
                 record.deferred_reason = Some(reason.to_owned());
                 record.deferred_at = Some(now);
-                record.next_recheck_at = Some(next_recheck_at);
+                record.next_recheck_at =
+                    Some(record.next_recheck_at.map_or(next_recheck_at, |existing| {
+                        if record.recovery_attempts > 0 {
+                            existing.max(next_recheck_at)
+                        } else {
+                            next_recheck_at
+                        }
+                    }));
                 record.updated_at = now;
                 defer_update_tx(tx, &record)?;
             }
@@ -815,6 +894,9 @@ impl TaskResultSettlementRepository<'_> {
                  WHERE agent_id = ?1
                    AND work_item_id = ?2
                    AND state != 'settled'
+                   AND recovery_paused_at IS NULL
+                   AND recovery_epoch = 0
+                   AND recovery_attempts = 0
                    AND next_recheck_at IS NOT NULL",
             )?;
             let records = statement
@@ -853,6 +935,7 @@ impl TaskResultSettlementRepository<'_> {
             "SELECT payload_json
              FROM task_result_settlements
              WHERE agent_id = ?1
+               AND recovery_paused_at IS NULL
                AND next_recheck_at IS NOT NULL
                AND next_recheck_at <= ?2
                AND (
@@ -954,7 +1037,7 @@ impl TaskResultSettlementRepository<'_> {
                    )
                  )
                )
-             ORDER BY created_at ASC, result_identity ASC
+             ORDER BY (recovery_paused_at IS NOT NULL), created_at ASC, result_identity ASC
              LIMIT ?3",
         )?;
         let rows = statement.query_map(params![agent_id, work_item_id, limit as i64], |row| {
@@ -979,6 +1062,7 @@ impl TaskResultSettlementRepository<'_> {
             "SELECT MIN(next_recheck_at)
              FROM task_result_settlements
              WHERE agent_id = ?1
+               AND recovery_paused_at IS NULL
                AND next_recheck_at IS NOT NULL
                AND (
                  state = 'persisted_pending'
@@ -1074,7 +1158,10 @@ fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Resul
         "UPDATE task_result_settlements
          SET state = ?2, activation_id = ?3, disposition = ?4, updated_at = ?5,
              admitted_at = ?6, settled_at = ?7, deferred_reason = ?8,
-             deferred_at = ?9, next_recheck_at = ?10, payload_json = ?11
+           deferred_at = ?9, next_recheck_at = ?10, payload_json = ?11,
+           recovery_epoch = ?12, recovery_attempts = ?13,
+           last_recovery_root_attempt_id = ?14, last_recovery_admitted_at = ?15,
+           recovery_paused_at = ?16, recovery_diagnostic_at = ?17
          WHERE result_identity = ?1",
         params![
             record.result_identity,
@@ -1090,6 +1177,12 @@ fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Resul
             record.deferred_at.map(timestamp),
             record.next_recheck_at.map(timestamp),
             payload,
+            record.recovery_epoch,
+            record.recovery_attempts,
+            record.last_recovery_root_attempt_id,
+            record.last_recovery_admitted_at.map(timestamp),
+            record.recovery_paused_at.map(timestamp),
+            record.recovery_diagnostic_at.map(timestamp),
         ],
     )?;
     Ok(())
@@ -1185,6 +1278,140 @@ fn existing_for_task_generation_tx(
     .map(|payload| serde_json::from_str(&payload))
     .transpose()
     .map_err(Into::into)
+}
+
+enum RecoverySnapshotScope {
+    NormalInput,
+    RecoveryRoot(String),
+    Invalid,
+}
+
+fn recovery_snapshot_scope_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    activation_id: &str,
+) -> Result<RecoverySnapshotScope> {
+    use crate::types::{AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageOrigin};
+    let Some(attempt) = reply_admission_attempt_tx(tx, agent_id, activation_id)? else {
+        return Ok(RecoverySnapshotScope::NormalInput);
+    };
+    let Some(source_id) = attempt.source_message_id.as_deref() else {
+        return Ok(RecoverySnapshotScope::NormalInput);
+    };
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [source_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(RecoverySnapshotScope::NormalInput);
+    };
+    let source: MessageEnvelope = serde_json::from_str(&payload)?;
+    if !matches!(&source.origin, MessageOrigin::System { subsystem } if subsystem == "task_result_recovery")
+    {
+        return Ok(RecoverySnapshotScope::NormalInput);
+    }
+    if attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
+        || source.agent_id != agent_id
+        || source.authority_class != AuthorityClass::RuntimeInstruction
+        || source.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+        || source.admission_context != Some(AdmissionContext::RuntimeOwned)
+    {
+        return Ok(RecoverySnapshotScope::Invalid);
+    }
+    let mut root = attempt;
+    let mut seen = std::collections::BTreeSet::from([root.attempt_id.clone()]);
+    while let Some(prior_id) = root.recovery_of_attempt_id.as_deref() {
+        let Some(prior) = reply_admission_attempt_tx(tx, agent_id, prior_id)? else {
+            return Ok(RecoverySnapshotScope::Invalid);
+        };
+        if prior.source_message_id != root.source_message_id {
+            break;
+        }
+        if seen.len() >= 64
+            || !seen.insert(prior.attempt_id.clone())
+            || prior.binding != root.binding
+            || prior.state != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+        {
+            return Ok(RecoverySnapshotScope::Invalid);
+        }
+        root = prior;
+    }
+    Ok(RecoverySnapshotScope::RecoveryRoot(root.attempt_id))
+}
+
+impl TaskResultSettlementRepository<'_> {
+    /// Ineligible recovery roots must not reserve snapshot slots or bytes.
+    /// Normal authorized input can still deliver a paused result.
+    pub(crate) fn recovery_snapshot_candidates_for_owner(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        activation_id: &str,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<TaskResultSettlementRecord>> {
+        self.db.transaction(|tx| {
+            let RecoverySnapshotScope::RecoveryRoot(root) =
+                recovery_snapshot_scope_tx(tx, agent_id, activation_id)?
+            else {
+                return Ok(Vec::new());
+            };
+            recovery_budget::candidates_for_owner_tx(tx, agent_id, work_item_id, &root, now, limit)
+        })
+    }
+
+    pub(crate) fn filter_recovery_snapshot_candidates(
+        &self,
+        agent_id: &str,
+        activation_id: &str,
+        records: &[TaskResultSettlementRecord],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<TaskResultSettlementRecord>> {
+        self.db.transaction(|tx| {
+            let root = match recovery_snapshot_scope_tx(tx, agent_id, activation_id)? {
+                RecoverySnapshotScope::NormalInput => return Ok(records.to_vec()),
+                RecoverySnapshotScope::Invalid => return Ok(Vec::new()),
+                RecoverySnapshotScope::RecoveryRoot(root) => root,
+            };
+            let mut eligible = Vec::with_capacity(records.len());
+            for record in records {
+                let Some(current) = latest_for_message_tx(tx, &record.message_id)? else {
+                    continue;
+                };
+                if current.agent_id == agent_id
+                    && current.result_identity == record.result_identity
+                    && recovery_budget::recovery_admission_eligible_tx(tx, &current, &root, now)?
+                {
+                    eligible.push(current);
+                }
+            }
+            Ok(eligible)
+        })
+    }
+}
+
+/// Budget is charged with the selected snapshot, not scanner probes or fallback
+/// hops. Reload after charging so the admission write preserves retry metadata.
+fn charge_selected_recovery_tx(
+    tx: &Transaction<'_>,
+    record: &mut TaskResultSettlementRecord,
+    activation_id: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let root = match recovery_snapshot_scope_tx(tx, &record.agent_id, activation_id)? {
+        RecoverySnapshotScope::NormalInput => return Ok(true),
+        RecoverySnapshotScope::Invalid => return Ok(false),
+        RecoverySnapshotScope::RecoveryRoot(root) => root,
+    };
+    if !charge_recovery_admission_tx(tx, &record.result_identity, &root, now)? {
+        return Ok(false);
+    }
+    *record = latest_for_message_tx(tx, &record.message_id)?
+        .ok_or_else(|| anyhow::anyhow!("charged result disappeared during snapshot admission"))?;
+    Ok(true)
 }
 
 fn interrupted_predecessor_owns_record_tx(
@@ -1296,6 +1523,7 @@ fn unsettled_for_owner_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     work_item_id: Option<&str>,
+    selected: Option<&std::collections::BTreeSet<String>>,
     limit: usize,
 ) -> Result<Vec<TaskResultSettlementRecord>> {
     records_tx(
@@ -1304,6 +1532,7 @@ fn unsettled_for_owner_tx(
          FROM task_result_settlements
          WHERE agent_id = ?1
            AND work_item_id IS ?2
+           AND (?4 IS NULL OR result_identity IN (SELECT value FROM json_each(?4)))
            AND NOT EXISTS (
              SELECT 1 FROM messages
              WHERE messages.message_id = task_result_settlements.message_id
@@ -1327,7 +1556,12 @@ fn unsettled_for_owner_tx(
            )
          ORDER BY created_at ASC, result_identity ASC
          LIMIT ?3",
-        params![agent_id, work_item_id, limit as i64],
+        params![
+            agent_id,
+            work_item_id,
+            limit as i64,
+            selected.map(serde_json::to_string).transpose()?,
+        ],
     )
 }
 

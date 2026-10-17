@@ -1383,6 +1383,13 @@
           "false"
         ],
         "required": false
+      },
+      {
+        "long": "rearm-task-result",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
       }
     ],
     "aliases": []

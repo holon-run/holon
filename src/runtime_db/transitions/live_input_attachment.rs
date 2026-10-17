@@ -678,7 +678,14 @@ fn live_binding_matches_tx(
     tx: &Transaction<'_>,
     command: &LiveInputAttachmentCommand,
 ) -> Result<bool> {
-    let expected = &command.expected_attempt;
+    canonical_input_binding_matches_tx(tx, &command.expected_attempt, &command.expected_turn)
+}
+
+pub(super) fn canonical_input_binding_matches_tx(
+    tx: &Transaction<'_>,
+    expected: &ExecutionAttempt,
+    turn: &TurnRecord,
+) -> Result<bool> {
     let agent_id = &expected.agent_id;
     let Some(agent) = agent_state_tx(tx, agent_id)? else {
         return Ok(false);
@@ -686,19 +693,19 @@ fn live_binding_matches_tx(
     if agent.status != AgentStatus::AwakeRunning
         || agent.current_execution_binding.as_ref().is_none_or(|binding| {
             binding.activation_id.as_deref() != Some(expected.attempt_id.as_str())
-                || binding.turn_id != command.expected_turn.turn_id
-                || binding.owner.as_ref() != Some(&command.expected_turn.effective_owner())
+                || binding.turn_id != turn.turn_id
+                || binding.owner.as_ref() != Some(&turn.effective_owner())
                 || expected.source_message_id.as_deref() != Some(binding.source_message_id.as_str())
                 || !matches!(binding.admission_provenance.as_ref(),
                     Some(crate::types::ExecutionAdmissionProvenance::Canonical { activation_id, .. })
                         if activation_id == &expected.attempt_id)
         })
-        || agent.current_turn_id.as_deref() != Some(command.expected_turn.turn_id.as_str())
-        || agent.current_run_id != command.expected_turn.run_id
+        || agent.current_turn_id.as_deref() != Some(turn.turn_id.as_str())
+        || agent.current_run_id != turn.run_id
         || expected
             .run_id
             .as_ref()
-            .is_some_and(|run| command.expected_turn.run_id.as_ref() != Some(run))
+            .is_some_and(|run| turn.run_id.as_ref() != Some(run))
     {
         return Ok(false);
     }
@@ -719,11 +726,11 @@ fn live_binding_matches_tx(
         || expected.state != ExecutionAttemptState::Open
         || expected.terminal_outcome_id.is_some()
         || expected.terminal_at.is_some()
-        || canonical_owner != command.expected_turn.effective_owner()
+        || canonical_owner != turn.effective_owner()
         || expected
             .source_message_id
             .as_ref()
-            .is_none_or(|source| !command.expected_turn.input_message_ids.contains(source))
+            .is_none_or(|source| !turn.input_message_ids.contains(source))
     {
         return Ok(false);
     }
@@ -759,7 +766,7 @@ fn live_binding_matches_tx(
     let payload: Option<String> = tx
         .query_row(
             "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
-            [&command.expected_turn.turn_id],
+            [&turn.turn_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -767,8 +774,8 @@ fn live_binding_matches_tx(
         .map(|text| serde_json::from_str::<TurnRecord>(&text))
         .transpose()?
         .as_ref()
-        != Some(&command.expected_turn)
-        || command.expected_turn.terminal.is_some()
+        != Some(turn)
+        || turn.terminal.is_some()
     {
         return Ok(false);
     }
@@ -777,7 +784,7 @@ fn live_binding_matches_tx(
          WHERE agent_id = ?1 AND json_extract(payload_json, '$.turn_id') = ?2
            AND json_extract(payload_json, '$.status') = 'deferred'
            AND json_extract(payload_json, '$.tool_name') IN ('WaitFor', 'CompleteWorkItem'))",
-        params![agent_id, command.expected_turn.turn_id],
+        params![agent_id, turn.turn_id],
         |row| row.get::<_, bool>(0),
     )?;
     Ok(!pending_report)

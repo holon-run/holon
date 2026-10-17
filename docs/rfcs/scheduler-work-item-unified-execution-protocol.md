@@ -430,6 +430,7 @@ Each of the following is one business transition, not a command sequence:
 - targeted yield from source WorkItem to target WorkItem;
 - operator input attachment to a running attempt;
 - orphan queue claim to restart recovery.
+- provider-failure predecessor to fallback admitted-result snapshot.
 
 Each transition validates the source identity and generation, updates the
 target lifecycle, closes or records attempt outcome when applicable, and

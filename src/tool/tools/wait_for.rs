@@ -323,6 +323,26 @@ fn immediate_result(
     outcome: WaitForRegistrationOutcome,
     disclosure: &WaitForOwnerDisclosure,
 ) -> Result<ToolResult> {
+    let (outcome, recovery_message_id) = match outcome {
+        WaitForRegistrationOutcome::TaskResultRecoveryQueued {
+            task_id,
+            result_message_id,
+            recovery_message_id,
+            wait_condition_id,
+        } => (
+            WaitForRegistrationOutcome::TaskResultQueued {
+                task_id,
+                result_message_id,
+                wait_condition_id,
+            },
+            Some(recovery_message_id),
+        ),
+        outcome => (outcome, None),
+    };
+    let already_admitted = matches!(
+        &outcome,
+        WaitForRegistrationOutcome::TaskResultAlreadyAdmitted { .. }
+    );
     match outcome {
         WaitForRegistrationOutcome::TaskResultQueued {
             task_id,
@@ -332,6 +352,11 @@ fn immediate_result(
             let mut summary = format!(
                 "yield and reenter for exact task result message {result_message_id}; the triggered wait preserves result admission"
             );
+            if let Some(recovery_id) = recovery_message_id.as_deref() {
+                summary = format!(
+                    "yield and reenter through canonical recovery wake {recovery_id} for pending task result {result_message_id}; the original message was not requeued"
+                );
+            }
             if let Some(note) = disclosure.ignore_note() {
                 summary = format!("{summary}; {note}");
             }
@@ -342,6 +367,7 @@ fn immediate_result(
                     "continuation": WaitForContinuation::YieldAndReenter,
                     "task_id": task_id,
                     "result_message_id": result_message_id,
+                    "recovery_message_id": recovery_message_id,
                     "wait_condition_id": wait_condition_id,
                     "waiter_work_item_id": disclosure.waiter_work_item_id,
                     "requested_work_item_id": disclosure.requested_work_item_id,
@@ -356,9 +382,10 @@ fn immediate_result(
         WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
             task_id,
             result_message_id,
+            settlement_disposition,
         } => {
             let mut summary = format!(
-                "continue the current turn; task result was already consumed: {result_message_id}; no wait registered"
+                "continue the current turn; task result {result_message_id} settled as {settlement_disposition:?}; no wait registered"
             );
             if let Some(note) = disclosure.ignore_note() {
                 summary = format!("{summary}; {note}");
@@ -366,10 +393,76 @@ fn immediate_result(
             Ok(ToolResult::success(
                 NAME,
                 json!({
-                    "disposition": "task_result_already_consumed",
+                    "disposition": "task_result_settled",
+                    "settlement_disposition": settlement_disposition,
                     "continuation": WaitForContinuation::ContinueTurn,
                     "task_id": task_id,
                     "result_message_id": result_message_id,
+                    "waiter_work_item_id": disclosure.waiter_work_item_id,
+                    "requested_work_item_id": disclosure.requested_work_item_id,
+                    "owner_selection": disclosure.owner_selection.as_str(),
+                }),
+                Some(summary),
+            ))
+        }
+        WaitForRegistrationOutcome::TaskResultAlreadyAdmitted {
+            task_id,
+            result_message_id,
+            activation_id,
+        }
+        | WaitForRegistrationOutcome::TaskResultInFlight {
+            task_id,
+            result_message_id,
+            activation_id,
+        } => {
+            let disposition = if already_admitted {
+                "task_result_already_admitted"
+            } else {
+                "task_result_in_flight"
+            };
+            let mut summary = if already_admitted {
+                format!("continue the current turn; task result {result_message_id} is admitted to this activation, not yet settled; no wait registered")
+            } else {
+                format!("continue the current turn; task result {result_message_id} is claimed by another active attempt; no duplicate wait registered")
+            };
+            if let Some(note) = disclosure.ignore_note() {
+                summary = format!("{summary}; {note}");
+            }
+            Ok(ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": disposition,
+                    "continuation": WaitForContinuation::ContinueTurn,
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                    "activation_id": activation_id,
+                    "waiter_work_item_id": disclosure.waiter_work_item_id,
+                    "requested_work_item_id": disclosure.requested_work_item_id,
+                    "owner_selection": disclosure.owner_selection.as_str(),
+                }),
+                Some(summary),
+            ))
+        }
+        WaitForRegistrationOutcome::TaskResultUnavailable {
+            task_id,
+            result_message_id,
+            reason,
+        } => {
+            let mut summary = format!(
+                "continue the current turn; task result {result_message_id}: {reason}; no wait registered or recovery budget reset"
+            );
+            if let Some(note) = disclosure.ignore_note() {
+                summary = format!("{summary}; {note}");
+            }
+            Ok(ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": "task_result_unavailable",
+                    "continuation": WaitForContinuation::ContinueTurn,
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                    "requires_operator": reason == "recovery_paused_requires_operator",
+                    "reason": reason,
                     "waiter_work_item_id": disclosure.waiter_work_item_id,
                     "requested_work_item_id": disclosure.requested_work_item_id,
                     "owner_selection": disclosure.owner_selection.as_str(),
@@ -411,6 +504,9 @@ fn immediate_result(
         }
         WaitForRegistrationOutcome::Registered { .. } => {
             unreachable!("registered wait is handled by settle_impl")
+        }
+        WaitForRegistrationOutcome::TaskResultRecoveryQueued { .. } => {
+            unreachable!("recovery outcome was normalized above")
         }
     }
 }

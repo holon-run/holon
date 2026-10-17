@@ -145,6 +145,11 @@ impl RuntimeHandle {
         let model_selection = TurnModelSelection::from_message(message)?;
         self.reconfigure_provider_for_turn(model_selection.fallback_model())
             .await?;
+        let provider_inputs_recovered = if model_selection.recovery.is_some() {
+            self.recover_provider_result_inputs(message).await?
+        } else {
+            false
+        };
         if let Some(recovery) = model_selection.recovery.as_ref() {
             let source = crate::runtime::provider_recovery::resolve_for_context(
                 &self.inner.storage,
@@ -193,7 +198,8 @@ impl RuntimeHandle {
             .latest(&default_external_ingress.external_trigger_id)?;
         let context_config = self.current_context_config().await;
 
-        let live_recovered = Box::pin(self.recover_interrupted_live_inputs(message)).await?;
+        let live_recovered = provider_inputs_recovered
+            || Box::pin(self.recover_interrupted_live_inputs(message)).await?;
         // Recovery restores the admitted snapshot; it must not select a new
         // idle batch or reapply the per-batch limit to cumulative live evidence.
         let mut idle_results_checked = live_recovered;

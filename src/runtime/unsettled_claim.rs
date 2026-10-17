@@ -13,6 +13,7 @@ pub(crate) struct UnsettledClaimFacts {
 pub(crate) enum ReplayFence {
     ExactReplayable,
     CurrentCanonicalLifecycle,
+    InitialProviderRecovery,
     Revoked,
     Missing,
     Ambiguous,
@@ -65,10 +66,13 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
             reason: "task_result_wait_missing",
         };
     }
-    // Lifecycle delivery moves its canonical activation along a validated recovery
-    // lineage. Other recovery attempts remain bounded to one replay.
+    // A cross-message provider edge is not an already-used same-message replay.
+    // Only validated initial provider attempts receive this narrow exception.
     if facts.recovery_of_attempt_id.is_some()
-        && facts.replay_fence != ReplayFence::CurrentCanonicalLifecycle
+        && !matches!(
+            facts.replay_fence,
+            ReplayFence::CurrentCanonicalLifecycle | ReplayFence::InitialProviderRecovery
+        )
     {
         return UnsettledClaimDecision::InterruptAndQuarantine {
             reason: "bounded_replay_exhausted",
@@ -76,7 +80,9 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
     }
     if matches!(
         facts.replay_fence,
-        ReplayFence::ExactReplayable | ReplayFence::CurrentCanonicalLifecycle
+        ReplayFence::ExactReplayable
+            | ReplayFence::CurrentCanonicalLifecycle
+            | ReplayFence::InitialProviderRecovery
     ) {
         return UnsettledClaimDecision::InterruptAndRequeue {
             reason: "exact_fence_replay",
@@ -148,6 +154,20 @@ mod tests {
             plan_unsettled_claim(&UnsettledClaimFacts {
                 replay_fence: ReplayFence::CurrentCanonicalLifecycle,
                 recovery_of_attempt_id: Some("attempt:original".into()),
+                ..facts()
+            }),
+            UnsettledClaimDecision::InterruptAndRequeue {
+                reason: "exact_fence_replay",
+            }
+        );
+    }
+
+    #[test]
+    fn initial_provider_edge_keeps_one_same_message_replay() {
+        assert_eq!(
+            plan_unsettled_claim(&UnsettledClaimFacts {
+                replay_fence: ReplayFence::InitialProviderRecovery,
+                recovery_of_attempt_id: Some("attempt:provider-source".into()),
                 ..facts()
             }),
             UnsettledClaimDecision::InterruptAndRequeue {

@@ -142,7 +142,7 @@ async fn run_immediate_wait_continuation(delivery: &'static str, claimed: bool, 
         disposition: if claimed {
             "task_result_claimed_by_other_waiter"
         } else {
-            "task_result_already_consumed"
+            "task_result_settled"
         },
         pending_runtime: Mutex::new(None),
     });
@@ -212,9 +212,43 @@ async fn run_immediate_wait_continuation(delivery: &'static str, claimed: bool, 
     *provider.pending_runtime.lock().await = None;
 }
 
+async fn commit_wait_dependency(
+    runtime: &RuntimeHandle,
+    message: &MessageEnvelope,
+    parent_turn_id: &str,
+) {
+    let task_id = message.task_id.as_deref().unwrap();
+    let mut task = runtime.task_record(task_id).await.unwrap().unwrap();
+    assert_eq!(task.work_item_id, message.work_item_id);
+    task.status = TaskStatus::Completed;
+    task.parent_message_id = Some(message.id.clone());
+    task.updated_at = runtime.now();
+    task.detail = Some(serde_json::json!({
+        "wait_policy": "blocking",
+        "rejoin_obligation_id": task_id,
+        "rejoin_generation": 1,
+        "parent_turn_id": parent_turn_id,
+    }));
+    runtime
+        .commit_terminal_task_result(&task, "task_completed", message)
+        .await
+        .unwrap();
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&message.id)
+        .unwrap()
+        .expect("terminal dependency must have a durable result obligation");
+    assert_eq!(settlement.task_id, task.id);
+    assert_eq!(settlement.work_item_id, task.work_item_id);
+    assert_eq!(settlement.rejoin_generation, 1);
+    assert_eq!(settlement.parent_turn_id, parent_turn_id);
+}
+
 async fn complete_immediate_wait_dependency(runtime: &RuntimeHandle, claimed: bool) {
     let task_id = "task-immediate-continuation";
-    let message = MessageEnvelope::new(
+    let mut message = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
         MessageOrigin::Task {
@@ -230,13 +264,8 @@ async fn complete_immediate_wait_dependency(runtime: &RuntimeHandle, claimed: bo
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
-    let mut task = runtime.task_record(task_id).await.unwrap().unwrap();
-    task.status = TaskStatus::Completed;
-    task.parent_message_id = Some(message.id.clone());
-    runtime
-        .persist_task_transition_with_message(&task, "task_status_updated", &message)
-        .await
-        .unwrap();
+    message.task_id = Some(task_id.into());
+    commit_wait_dependency(runtime, &message, "turn-immediate-wait-parent").await;
     if claimed {
         let claimant = runtime
             .create_work_item("original waiter".into(), None, None, Vec::new())
@@ -258,6 +287,35 @@ async fn complete_immediate_wait_dependency(runtime: &RuntimeHandle, claimed: bo
             WaitForRegistrationOutcome::TaskResultQueued { .. }
         ));
     } else {
+        let repository = runtime.inner.runtime_db.task_result_settlements();
+        assert!(repository
+            .admit_message(
+                "default",
+                &message.id,
+                "attempt-immediate-delivered",
+                Utc::now(),
+            )
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            repository
+                .settle_activation(
+                    "default",
+                    "attempt-immediate-delivered",
+                    crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered,
+                    Utc::now(),
+                )
+                .unwrap(),
+            1
+        );
+        runtime
+            .inner
+            .agent
+            .lock()
+            .await
+            .queue
+            .pop_next_matching(|entry| entry.id == message.id)
+            .expect("committed result must be queued before consumption");
         runtime
             .storage()
             .append_queue_entry(&QueueEntryRecord {
@@ -769,7 +827,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
     } else {
         None
     };
-    let task_result = MessageEnvelope::new(
+    let mut task_result = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
         MessageOrigin::Task {
@@ -785,6 +843,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
+    task_result.task_id = Some("task-atomic-wait".into());
     let task_ready = matches!(scenario, AtomicWaitScenario::TaskReady);
     let task_wait = matches!(
         scenario,
@@ -794,17 +853,20 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         mark_blocking_task(&runtime, "task-atomic-wait").await;
     }
     if task_ready {
-        let mut task = runtime
-            .task_record("task-atomic-wait")
-            .await
-            .unwrap()
-            .unwrap();
-        task.status = TaskStatus::Completed;
-        task.parent_message_id = Some(task_result.id.clone());
-        task.updated_at = Utc::now();
-        runtime.storage().append_task(&task).unwrap();
-        runtime.storage().append_message(&task_result).unwrap();
+        commit_wait_dependency(&runtime, &task_result, "turn-atomic-wait-parent").await;
     }
+    let task_queue_before_preparation = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&task_result.id)
+        .unwrap();
+    let task_settlement_before_preparation = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&task_result.id)
+        .unwrap();
     let state_before_preparation = runtime.agent_state().await.unwrap();
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let (mut result, mut tool_execution) = registry
@@ -834,13 +896,24 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         .latest_wait_conditions_for_agent("default")
         .unwrap()
         .is_empty());
-    assert!(runtime
-        .inner
-        .runtime_db
-        .queue_entries()
-        .latest(&task_result.id)
-        .unwrap()
-        .is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&task_result.id)
+            .unwrap(),
+        task_queue_before_preparation
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(&task_result.id)
+            .unwrap(),
+        task_settlement_before_preparation
+    );
     let state = runtime.agent_state().await.unwrap();
     tool_execution.turn_index = state.turn_index;
     tool_execution.turn_id = state.current_turn_id.clone();
@@ -947,13 +1020,24 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         QueueEntryStatus::Dequeued
     );
     assert!(runtime.storage().read_recent_briefs(10).unwrap().is_empty());
-    assert!(runtime
-        .inner
-        .runtime_db
-        .queue_entries()
-        .latest(&task_result.id)
-        .unwrap()
-        .is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&task_result.id)
+            .unwrap(),
+        task_queue_before_preparation
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(&task_result.id)
+            .unwrap(),
+        task_settlement_before_preparation
+    );
 
     let concurrent_message = if matches!(scenario, AtomicWaitScenario::ConcurrentEnqueue) {
         Some(
@@ -985,16 +1069,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
     };
     let state_before_commit = runtime.agent_state().await.unwrap();
     if matches!(scenario, AtomicWaitScenario::TaskCompletes) {
-        let mut task = runtime
-            .task_record("task-atomic-wait")
-            .await
-            .unwrap()
-            .unwrap();
-        task.status = TaskStatus::Completed;
-        task.parent_message_id = Some(task_result.id.clone());
-        task.updated_at = Utc::now();
-        runtime.storage().append_task(&task).unwrap();
-        runtime.storage().append_message(&task_result).unwrap();
+        commit_wait_dependency(&runtime, &task_result, "turn-atomic-wait-parent").await;
     }
     assert!(runtime
         .commit_queue_terminal_settlement(

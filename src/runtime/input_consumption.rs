@@ -140,9 +140,17 @@ pub(crate) fn render_recovered_operator_inputs(
     turn: &TurnRecord,
     seen_messages: &mut std::collections::BTreeSet<String>,
 ) -> Result<Option<String>> {
-    if turn.replay.is_none() || turn.live_input_batches.is_empty() {
+    if turn.replay.is_none() {
         return Ok(None);
     }
+    render_admitted_operator_inputs(storage, turn, seen_messages)
+}
+
+pub(crate) fn render_admitted_operator_inputs(
+    storage: &AppStorage,
+    turn: &TurnRecord,
+    seen_messages: &mut std::collections::BTreeSet<String>,
+) -> Result<Option<String>> {
     let batched: std::collections::BTreeSet<_> = turn
         .idle_input_batch
         .iter()
@@ -477,6 +485,7 @@ impl RuntimeHandle {
                 "task_result_owner_key",
                 "task_result_rejoin_generation",
                 "task_result_parent_turn_id",
+                "wait_id",
             ]
             .iter()
             .any(|key| source.source_refs.get(*key) != anchor.source_refs.get(*key))
@@ -498,8 +507,9 @@ impl RuntimeHandle {
         let Some(record) = repository.latest_for_message(message_id)? else {
             return Ok(false);
         };
+        let mut consuming_record = record.clone();
+        consuming_record.work_item_id = work_item_id.map(str::to_owned);
         if record.agent_id != anchor.agent_id
-            || record.work_item_id.as_deref() != work_item_id
             || (record.state
                 == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
                 && record.disposition
@@ -508,20 +518,39 @@ impl RuntimeHandle {
                     ))
             || anchor.source_refs.get("task_result_identity") != Some(&record.result_identity)
             || anchor.source_refs.get("task_result_owner_key")
-                != Some(&task_result_recovery::recovery_owner_key(&record))
+                != Some(&task_result_recovery::recovery_owner_key(&consuming_record))
             || anchor.source_refs.get("task_result_rejoin_generation")
                 != Some(&record.rejoin_generation.to_string())
             || anchor.source_refs.get("task_result_parent_turn_id") != Some(&record.parent_turn_id)
         {
             return Ok(false);
         }
-        // A command/child selector is grounded in its terminal task and result,
-        // not in a consumed agent reply. Neither kind of owner wake grants a
-        // different captured owner or bypasses the current task fence.
+        let exact_waiter = repository
+            .exact_waiter_recovery_candidate(
+                &anchor.agent_id,
+                work_item_id,
+                binding
+                    .activation_id
+                    .as_deref()
+                    .expect("canonical activation checked above"),
+            )?
+            .is_some_and(|candidate| candidate.result_identity == record.result_identity);
+        if record.work_item_id.as_deref() != work_item_id && !exact_waiter {
+            return Ok(false);
+        }
+        // The persisted exact wait can change the consuming owner, never the
+        // task's captured owner or the original result's durable source fence.
         if repository.non_reply_source_matches_owner(&record)? {
             return Ok(true);
         }
-        repository.reply_source_is_consumed_for_owner(&record)
+        if record.state
+            == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+        {
+            repository.reply_source_is_consumed_for_owner(&record)
+        } else {
+            Ok(repository.reply_source_is_recoverable(&record)?
+                || (exact_waiter && repository.reply_source_is_consumed(&record)?))
+        }
     }
 
     /// Budget a fixed candidate set before the source ledger admits results.
@@ -642,30 +671,49 @@ impl RuntimeHandle {
         }
         let mut admitted = repository.admitted_for_activation(&anchor.agent_id, activation_id)?;
         let cutoff = turn.created_at;
+        // The frozen input cutoff is not the recovery budget's clock.
+        let admission_at = self.now();
         let snapshot = guard.queue.input_snapshot(INPUT_BATCH_SCAN);
-        let mut candidates = repository.unsettled_for_owner(
-            &anchor.agent_id,
-            binding.work_item_id.as_deref(),
-            INPUT_BATCH_SCAN,
-        )?;
+        let mut candidates = if result_recovery {
+            repository.recovery_snapshot_candidates_for_owner(
+                &anchor.agent_id,
+                binding.work_item_id.as_deref(),
+                activation_id,
+                admission_at,
+                INPUT_BATCH_SCAN,
+            )?
+        } else {
+            repository.unsettled_for_owner(
+                &anchor.agent_id,
+                binding.work_item_id.as_deref(),
+                INPUT_BATCH_SCAN,
+            )?
+        };
+        let exact_waiter = if result_recovery {
+            repository.exact_waiter_recovery_candidate(
+                &anchor.agent_id,
+                binding.work_item_id.as_deref(),
+                activation_id,
+            )?
+        } else {
+            None
+        };
+        if let Some(record) = exact_waiter.as_ref() {
+            candidates.insert(0, record.clone());
+        }
         // A shared body is not a shared grant. Only individually eligible
         // canonical waiters may join this original reply's activation.
         candidates.extend(anchor_replies);
+        if result_recovery {
+            candidates = repository.filter_recovery_snapshot_candidates(
+                &anchor.agent_id,
+                activation_id,
+                &candidates,
+                admission_at,
+            )?;
+        }
         let mut candidate_ids = std::collections::BTreeSet::new();
         candidates.retain(|record| candidate_ids.insert(record.result_identity.clone()));
-        candidates.sort_by_key(|record| {
-            (
-                record.state
-                    != crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted,
-                anchor_reply_order
-                    .get(&record.result_identity)
-                    .copied()
-                    .unwrap_or(usize::MAX),
-                record.created_at,
-                record.result_identity.clone(),
-            )
-        });
-        candidates.truncate(INPUT_BATCH_SCAN);
         let recovering = attempt.recovery_of_attempt_id.as_deref();
         if let Some(prior_id) = recovering {
             let prior = execution.attempts.get(prior_id);
@@ -683,7 +731,16 @@ impl RuntimeHandle {
                 .iter()
                 .map(|record| record.result_identity.as_str())
                 .collect();
-            candidates.retain(|record| previous_ids.contains(record.result_identity.as_str()));
+            if previous_ids.is_empty() && admitted.is_empty() && result_recovery {
+                // A crash before the first admission leaves no result snapshot
+                // to restore. Revalidate only this canonical source's promise,
+                // never refill its empty batch from unrelated owner results.
+                candidates.retain(|record| {
+                    anchor.source_refs.get("task_result_identity") == Some(&record.result_identity)
+                });
+            } else {
+                candidates.retain(|record| previous_ids.contains(record.result_identity.as_str()));
+            }
             candidates.extend(previous.into_iter().filter(|record| {
                 !admitted
                     .iter()
@@ -692,6 +749,21 @@ impl RuntimeHandle {
             let mut identities = std::collections::BTreeSet::new();
             candidates.retain(|record| identities.insert(record.result_identity.clone()));
         }
+        // Source selection precedes capacity: unrelated older results must not
+        // evict an interrupted recovery's immutable promised identity.
+        candidates.sort_by_key(|record| {
+            (
+                record.state
+                    != crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted,
+                anchor_reply_order
+                    .get(&record.result_identity)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                record.created_at,
+                record.result_identity.clone(),
+            )
+        });
+        candidates.truncate(INPUT_BATCH_SCAN);
         // Include the canonical reply's independently promised identities in
         // the same fixed scan, even if their reducer notifications lag behind.
         let mut scanned = anchor_result_messages;
@@ -752,6 +824,10 @@ impl RuntimeHandle {
                 if (reply_id == anchor.id
                     && anchor_reply_order.contains_key(&record.result_identity))
                     || repository.reply_source_is_recoverable(&record)?
+                    || (exact_waiter
+                        .as_ref()
+                        .is_some_and(|exact| exact.result_identity == record.result_identity)
+                        && repository.reply_source_is_consumed(&record)?)
                 {
                     reply_sources.insert(record.result_identity.clone(), reply_id.to_owned());
                     eligible_results.push(record);
@@ -866,7 +942,7 @@ impl RuntimeHandle {
             }
             selected.insert(record.result_identity);
         }
-        if selected.is_empty() {
+        if selected.is_empty() && admitted.is_empty() {
             return Ok(false);
         }
         let mut reply_selection =
@@ -884,13 +960,32 @@ impl RuntimeHandle {
             .filter(|identity| !reply_sources.contains_key(*identity))
             .cloned()
             .collect();
+        if result_recovery && turn.idle_input_batch.is_none() {
+            // Preserve the validated source before admission moves its result
+            // out of the closed predecessor. A batch alone grants no result.
+            let mut recovery_turn = turn.clone();
+            recovery_turn.idle_input_batch = Some(IdleInputBatchRecord {
+                anchor_message_id: anchor.id.clone(),
+                activation_id: Some(activation_id.to_owned()),
+                sender_agent_id: String::new(),
+                cutoff,
+                max_items: 1,
+                max_bytes,
+                rendered_bytes: anchor_bytes,
+                items: vec![anchor_item],
+            });
+            self.inner.storage.append_turn(&recovery_turn)?;
+        }
+        if selected.is_empty() {
+            return Ok(result_recovery && !admitted.is_empty());
+        }
         let mut admitted = repository.admit_unsettled_snapshot(
             &anchor.agent_id,
             binding.work_item_id.as_deref(),
             activation_id,
             (!is_reply_anchor && !result_recovery).then_some(anchor.id.as_str()),
             Some(&ordinary_selection),
-            cutoff,
+            admission_at,
         )?;
         for (reply_id, identities) in reply_selection {
             admitted.extend(repository.admit_reply_message_snapshot(
@@ -899,7 +994,7 @@ impl RuntimeHandle {
                 &reply_id,
                 activation_id,
                 &identities,
-                cutoff,
+                admission_at,
             )?);
         }
         self.inner.storage.append_event(&AuditEvent::legacy(
@@ -913,6 +1008,61 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(!admitted.is_empty())
+    }
+
+    pub(super) async fn recover_provider_result_inputs(
+        &self,
+        anchor: &MessageEnvelope,
+    ) -> Result<bool> {
+        let guard = self.inner.agent.lock().await;
+        let state = &guard.state;
+        let binding = state
+            .current_execution_binding
+            .as_ref()
+            .ok_or_else(|| anyhow!("provider result handoff has no current binding"))?;
+        let activation_id = binding
+            .activation_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("provider result handoff has no activation"))?;
+        if binding.source_message_id != anchor.id
+            || guard
+                .current_run_abort
+                .as_ref()
+                .is_some_and(|abort| abort.token.is_cancelled())
+        {
+            bail!("provider result handoff execution changed");
+        }
+        let execution = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&anchor.agent_id)?
+            .ok_or_else(|| anyhow!("provider result handoff execution missing"))?;
+        let attempt = execution
+            .attempts
+            .get(activation_id)
+            .ok_or_else(|| anyhow!("provider result handoff attempt missing"))?;
+        let turn = self
+            .inner
+            .storage
+            .read_turn_by_id(&binding.turn_id)?
+            .ok_or_else(|| anyhow!("provider result handoff turn missing"))?;
+        let commit = self
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_provider_result_handoff(
+                attempt,
+                &turn,
+                self.now(),
+                self.take_transition_fault(),
+            )?;
+        if !commit.applied {
+            bail!("provider result handoff does not match canonical predecessor evidence");
+        }
+        drop(guard);
+        self.apply_transition_commit(commit).await;
+        Ok(true)
     }
 
     /// Restore durable live evidence before any idle-start selection can claim input.

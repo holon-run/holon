@@ -2941,6 +2941,7 @@ mod tests {
                     json,
                     apply,
                     no_backup,
+                    ..
                 },
         } = cli.command
         else {
@@ -2972,6 +2973,7 @@ mod tests {
                     json,
                     apply,
                     no_backup,
+                    ..
                 },
         } = cli.command
         else {
@@ -2993,6 +2995,59 @@ mod tests {
                 selector[0],
                 selector[1],
             ])
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn debug_scheduler_recovery_rearm_requires_explicit_identity_agent_and_apply() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "scheduler-recovery",
+            "--agent",
+            "pm",
+            "--apply",
+            "--rearm-task-result",
+            "result-a",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::SchedulerRecovery {
+                    rearm_task_result, ..
+                },
+        } = cli.command
+        else {
+            panic!("expected debug scheduler-recovery command");
+        };
+        assert_eq!(rearm_task_result.as_deref(), Some("result-a"));
+        for args in [
+            vec!["--rearm-task-result", "result-a"],
+            vec!["--agent", "pm", "--rearm-task-result", "result-a"],
+            vec!["--apply", "--rearm-task-result", "result-a"],
+            vec![
+                "--agent",
+                "pm",
+                "--apply",
+                "--all-affected",
+                "--rearm-task-result",
+                "result-a",
+            ],
+            vec![
+                "--agent",
+                "pm",
+                "--apply",
+                "--message-id",
+                "message-a",
+                "--rearm-task-result",
+                "result-a",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(
+                ["holon", "debug", "scheduler-recovery"]
+                    .into_iter()
+                    .chain(args)
+            )
             .is_err());
         }
     }
@@ -4251,6 +4306,7 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             all_affected,
             json,
             apply,
+            rearm_task_result,
             no_backup,
         } => print_scheduler_recovery_report(
             &config,
@@ -4259,6 +4315,7 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             all_affected,
             json,
             apply,
+            rearm_task_result,
             no_backup,
         ),
         DebugCommands::SchedulerRecoveryFixture {
@@ -4332,8 +4389,14 @@ fn print_scheduler_recovery_report(
     all_affected: bool,
     json: bool,
     apply: bool,
+    rearm_task_result: Option<String>,
     no_backup: bool,
 ) -> Result<()> {
+    if rearm_task_result.is_some() && cli_invocation_context()?.is_some() {
+        return Err(anyhow!(
+            "agent_scope_denied: task-result recovery rearm requires operator mode"
+        ));
+    }
     let runtime_db = RuntimeDb::open_for_scheduler_recovery(
         config.runtime_db_path(),
         config.runtime_db_lock_path(),
@@ -4360,16 +4423,23 @@ fn print_scheduler_recovery_report(
         } else {
             holon::runtime::SchedulerRecoveryBackupPolicy::Required
         };
-        apply_result = Some((
+        let applied = if let Some(identity) = rearm_task_result.as_deref() {
+            holon::runtime::rearm_scheduler_task_result_recovery(
+                &runtime_db,
+                &agent_id,
+                identity,
+                backup_policy,
+            )?
+        } else {
             holon::runtime::apply_scheduler_recovery_plan_with_backup_policy(
                 &storage,
                 &runtime_db,
                 &agent_id,
                 &report,
                 backup_policy,
-            )?,
-            backup_policy,
-        ));
+            )?
+        };
+        apply_result = Some((applied, backup_policy));
         report = holon::runtime::scheduler_recovery_report(&storage, &runtime_db, &agent_id)?;
         filter_scheduler_recovery_report(&mut report, message_id.as_deref(), false)?;
     }
@@ -4430,13 +4500,19 @@ fn print_scheduler_recovery_report(
     }
     for result in report.pending_task_results {
         println!(
-            "- pending_task_result:{} task={} owner={:?} state={} deferred={:?} next_recheck={:?}",
+            "- pending_task_result:{} identity={} task={} owner={:?} state={} deferred={:?} next_recheck={:?} epoch={} attempts={}/{} paused_at={:?} root={:?}",
             result.message_id,
+            result.result_identity,
             result.task_id,
             result.owner,
             result.state,
             result.deferred_reason,
             result.next_recheck_at,
+            result.recovery_epoch,
+            result.recovery_attempts,
+            result.recovery_attempt_limit,
+            result.recovery_paused_at,
+            result.last_recovery_root_attempt_id,
         );
     }
     if report.pending_task_results_truncated {
