@@ -1947,12 +1947,19 @@ pub struct SchedulerRecoveryReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SchedulerPendingTaskResult {
+    pub result_identity: String,
     pub task_id: String,
     pub message_id: String,
     pub owner: crate::types::TurnOwner,
     pub state: String,
     pub deferred_reason: Option<String>,
     pub next_recheck_at: Option<DateTime<Utc>>,
+    pub recovery_epoch: u64,
+    pub recovery_attempts: u32,
+    pub recovery_attempt_limit: u32,
+    pub last_recovery_root_attempt_id: Option<String>,
+    pub recovery_paused_at: Option<DateTime<Utc>>,
+    pub recovery_diagnostic_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2370,6 +2377,7 @@ pub fn scheduler_recovery_report(
     let pending_task_results = pending_task_results
         .into_iter()
         .map(|record| SchedulerPendingTaskResult {
+            result_identity: record.result_identity,
             task_id: record.task_id,
             message_id: record.message_id,
             owner: record.work_item_id.map_or_else(
@@ -2386,6 +2394,12 @@ pub fn scheduler_recovery_report(
             .into(),
             deferred_reason: record.deferred_reason,
             next_recheck_at: record.next_recheck_at,
+            recovery_epoch: record.recovery_epoch,
+            recovery_attempts: record.recovery_attempts,
+            recovery_attempt_limit: crate::runtime_db::task_result_settlement::TASK_RESULT_RECOVERY_LIMIT,
+            last_recovery_root_attempt_id: record.last_recovery_root_attempt_id,
+            recovery_paused_at: record.recovery_paused_at,
+            recovery_diagnostic_at: record.recovery_diagnostic_at,
         })
         .collect();
     Ok(SchedulerRecoveryReport {
@@ -2420,6 +2434,27 @@ pub fn apply_scheduler_recovery_plan(
 pub enum SchedulerRecoveryBackupPolicy {
     Required,
     SkipApproved,
+}
+
+/// Operator-only callers must authorize this identity-targeted repair before use.
+pub fn rearm_scheduler_task_result_recovery(
+    runtime_db: &RuntimeDb,
+    agent_id: &str,
+    result_identity: &str,
+    backup_policy: SchedulerRecoveryBackupPolicy,
+) -> Result<(usize, Option<std::path::PathBuf>)> {
+    let backup_path = match backup_policy {
+        SchedulerRecoveryBackupPolicy::Required => {
+            Some(runtime_db.create_verified_backup("task-result-recovery-rearm")?)
+        }
+        SchedulerRecoveryBackupPolicy::SkipApproved => None,
+    };
+    let changed = runtime_db.task_result_settlements().rearm_recovery(
+        agent_id,
+        result_identity,
+        Utc::now(),
+    )?;
+    Ok((usize::from(changed), backup_path))
 }
 
 pub fn apply_scheduler_recovery_plan_with_backup_policy(
@@ -6674,9 +6709,30 @@ impl RuntimeHandle {
 
             // A replay keeps its ingress turn hint; the durable attachment
             // identifies which attempt's turn bootstrap must reconcile.
+            let initial_provider_recovery = execution_state.as_ref().is_some_and(|state| {
+                provider_recovery::resolve(&self.inner.storage, &message, state)
+                    .is_ok_and(|source| source.is_initial_attempt(&message, &attempt))
+            });
             let attachment_turn_id = self.inner.runtime_db.transaction(|tx| {
                 crate::runtime_db::task_result_settlement::canonical_live_turn_id_tx(tx, &attempt)
-            })?;
+            })?.or_else(|| {
+                // Before handoff there is no batch attachment yet. The persisted
+                // canonical binding still proves this initial fallback's turn.
+                let binding = guard.state.current_execution_binding.as_ref()?;
+                let turn = turns.iter().find(|turn| turn.turn_id == binding.turn_id)?;
+                (initial_provider_recovery
+                    && binding.activation_id.as_deref() == Some(activation_id.as_str())
+                    && binding.source_message_id == message.id
+                    && binding.owner.as_ref() == Some(&owner)
+                    && guard.state.current_turn_id.as_ref() == Some(&turn.turn_id)
+                    && turn.effective_owner() == owner
+                    && turn.trigger.as_ref().and_then(|trigger| trigger.message_id.as_ref())
+                        == Some(&message.id)
+                    && matches!(binding.admission_provenance.as_ref(),
+                        Some(ExecutionAdmissionProvenance::Canonical { activation_id: admitted, .. })
+                            if admitted == &activation_id))
+                .then(|| turn.turn_id.clone())
+            });
             let terminal_turn = turns.iter().find(|turn| {
                 turn.terminal.is_some()
                     && turn
@@ -6760,6 +6816,8 @@ impl RuntimeHandle {
                         unsettled_claim::ReplayFence::Revoked
                     } else if current_canonical_lifecycle {
                         unsettled_claim::ReplayFence::CurrentCanonicalLifecycle
+                    } else if initial_provider_recovery {
+                        unsettled_claim::ReplayFence::InitialProviderRecovery
                     } else if work_queue_claim || canonical_first_attempt {
                         unsettled_claim::ReplayFence::ExactReplayable
                     } else {

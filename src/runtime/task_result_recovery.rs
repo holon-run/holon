@@ -1,10 +1,17 @@
 use super::*;
 use crate::domain::execution_protocol::WorkItemExecutionState;
+use crate::runtime_db::task_result_settlement::TaskResultObligation;
 use crate::runtime_db::TaskResultSettlementDisposition;
 use sha2::{Digest, Sha256};
 
 const RESULT_RECHECK_SECONDS: i64 = 30;
 const RESULT_RECHECK_LIMIT: usize = 8;
+
+#[cfg(test)]
+mod budget_tests;
+
+#[cfg(test)]
+mod repeated_failure_tests;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -59,6 +66,243 @@ pub(super) fn outstanding_recovery_message_id(
 }
 
 impl RuntimeHandle {
+    async fn enqueue_exact_recovery_continuation(
+        &self,
+        result_message_id: &str,
+        predecessor: &WaitConditionRecord,
+        mut message: MessageEnvelope,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolCommand, SetWorkItemWaiting, WaitReference, WorkItemExecutionRecord,
+        };
+        use crate::runtime_db::transitions::{
+            AgentStateMutation, ExecutionProtocolTransition, WaitTaskResultAdmission,
+            WaitTaskResultObligation, WaitTransitionCommand, WorkItemMutation,
+        };
+
+        let repository = self.inner.runtime_db.task_result_settlements();
+        let Some(record) = repository.latest_for_message(result_message_id)? else {
+            return Ok(false);
+        };
+        if repository
+            .exact_waiter_recovery_continuation(&record, now)?
+            .as_ref()
+            != Some(predecessor)
+        {
+            return Ok(false);
+        }
+        let state = self.agent_state().await?;
+        if state.status == AgentStatus::Stopped {
+            return Ok(false);
+        }
+        let mut successor = predecessor.clone();
+        successor.id = crate::ids::wait_condition_id();
+        successor.status = crate::types::WaitConditionStatus::Triggered;
+        successor.created_at = now;
+        successor.updated_at = now;
+        successor.resolved_at = None;
+        successor.cancelled_at = None;
+        successor.turn_id = None;
+        successor.trigger_message_id = Some(message.id.clone());
+        successor.triggered_at = Some(now);
+        successor.continuation = Some(serde_json::json!({
+            "created_by": "WaitFor",
+            "wake": "task_result",
+            "resource": record.task_id,
+            "task_result_recovery_predecessor_wait_id": predecessor.id,
+            "task_result_recovery_predecessor_activation_id": record.activation_id,
+            "clear_blocker_on_task_result": false,
+        }));
+        message
+            .source_refs
+            .insert("wait_id".into(), successor.id.clone());
+        let source_id = predecessor
+            .trigger_message_id()
+            .expect("verified exact trigger");
+        let Some(execution) = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&record.agent_id)?
+        else {
+            return Ok(false);
+        };
+        if execution.open_attempt().is_some() {
+            return Ok(false);
+        }
+        let mut execution_protocol = ExecutionProtocolTransition::default();
+        let mut work_items = Vec::new();
+        let mut index_changes = Vec::new();
+        if let Some(owner_id) = successor.work_item_id.as_deref() {
+            let Some(owner) = self.inner.runtime_db.work_items().latest(owner_id)? else {
+                return Ok(false);
+            };
+            let Some(expected) = execution.work_items.get(owner_id).cloned() else {
+                return Ok(false);
+            };
+            if owner.state != WorkItemState::Open
+                || matches!(
+                    expected.state,
+                    WorkItemExecutionState::InFlight { .. }
+                        | WorkItemExecutionState::Terminal { .. }
+                )
+            {
+                return Ok(false);
+            }
+            let updated = WorkItemRecord {
+                revision: owner.revision + 1,
+                updated_at: now,
+                ..owner.clone()
+            };
+            index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
+            execution_protocol
+                .commands
+                .push(ExecutionProtocolCommand::SetWorkItemWaiting(Box::new(
+                    SetWorkItemWaiting {
+                        command_id: format!("task-result-recovery-wait:{}", successor.id),
+                        work_item_id: owner.id,
+                        record: WorkItemExecutionRecord {
+                            source_revision: updated.revision,
+                            state: WorkItemExecutionState::Waiting {
+                                generation: expected.generation() + 1,
+                                wait: WaitReference {
+                                    wait_id: successor.id.clone(),
+                                },
+                            },
+                        },
+                        expected: Some(expected),
+                    },
+                )));
+            work_items.push(WorkItemMutation::Update {
+                expected_revision: owner.revision,
+                record: updated,
+            });
+        }
+        let commit = self
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_wait_with_execution_protocol(
+                &WaitTransitionCommand {
+                    agent_id: record.agent_id.clone(),
+                    work_items,
+                    expected_wait_conditions: Vec::new(),
+                    wait_conditions: vec![successor.clone()],
+                    timer_wake: None,
+                    task_result_admission: Some(WaitTaskResultAdmission {
+                        expected: None,
+                        record: QueueEntryRecord {
+                            message_id: message.id.clone(),
+                            agent_id: message.agent_id.clone(),
+                            priority: message.priority.clone(),
+                            status: QueueEntryStatus::Queued,
+                            created_at: message.created_at,
+                            updated_at: now,
+                        },
+                        message,
+                        obligation: WaitTaskResultObligation {
+                            expected: record,
+                            current_activation_id: None,
+                            waiter_work_item_id: predecessor.work_item_id.clone(),
+                            canonical_recovery: true,
+                            source_message_id: source_id.into(),
+                            source_queue: self
+                                .inner
+                                .runtime_db
+                                .queue_entries()
+                                .latest(source_id)?,
+                            wait_conditions: self
+                                .inner
+                                .storage
+                                .latest_wait_conditions_for_agent(&state.id)?,
+                        },
+                    }),
+                    agent_state: Some(AgentStateMutation {
+                        expected: Some(Box::new(state.clone())),
+                        record: Box::new(state),
+                    }),
+                    audit_events: vec![AuditEvent::legacy(
+                        "task_result_exact_continuation_recovery_queued",
+                        serde_json::json!({
+                            "wait_condition_id": successor.id,
+                            "predecessor_wait_condition_id": predecessor.id,
+                            "work_item_id": predecessor.work_item_id,
+                            "result_message_id": result_message_id,
+                        }),
+                    )],
+                    index_changes,
+                    notify_scheduler: true,
+                    fault: self.take_transition_fault(),
+                },
+                &execution_protocol,
+            )?;
+        let applied = commit.applied;
+        self.apply_transition_commit(commit).await;
+        Ok(applied)
+    }
+
+    fn publish_paused_task_result_diagnostics(&self, agent_id: &str) -> Result<()> {
+        loop {
+            let records = self
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .unreported_paused(agent_id, RESULT_RECHECK_LIMIT)?;
+            if records.is_empty() {
+                return Ok(());
+            }
+            for record in records {
+                let Some(paused_at) = record.recovery_paused_at else {
+                    continue;
+                };
+                let mut brief = BriefRecord::new(
+                    agent_id,
+                    crate::types::BriefKind::Failure,
+                    format!(
+                        "Automatic task-result recovery paused: task={}, result={}, owner={}, \
+                     root={}, reason=recovery_budget_exhausted, attempts={}/{}. \
+                     The result remains pending. Operator repair: \
+                     holon debug scheduler-recovery --agent {} --apply --rearm-task-result {}",
+                        record.task_id,
+                        record.result_identity,
+                        record.work_item_id.as_deref().unwrap_or("agent_lifecycle"),
+                        record
+                            .last_recovery_root_attempt_id
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        record.recovery_attempts,
+                        crate::runtime_db::task_result_settlement::TASK_RESULT_RECOVERY_LIMIT,
+                        agent_id,
+                        record.result_identity,
+                    ),
+                    Some(record.message_id.clone()),
+                    Some(record.task_id.clone()),
+                );
+                brief.id = format!(
+                    "brief_task_result_recovery_{}_{}",
+                    record.result_identity, record.recovery_epoch
+                );
+                brief.created_at = paused_at;
+                brief.work_item_id = record.work_item_id.clone();
+                // No turn binding or model input: this is an operator diagnostic,
+                // not a completion report or another recovery wake.
+                let event = crate::types::brief_created_event_for(&brief)?;
+                self.inner
+                    .storage
+                    .append_brief_with_created_event(&brief, &event)?;
+                self.inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .mark_recovery_diagnostic(
+                        &record.result_identity,
+                        record.recovery_epoch,
+                        self.now(),
+                    )?;
+            }
+        }
+    }
+
     /// Rechecks are eligibility probes, not permission to consume a wait.
     pub(super) async fn emit_due_task_result_recovery(&self) -> Result<bool> {
         let state = self.agent_state().await?;
@@ -66,6 +310,7 @@ impl RuntimeHandle {
             return Ok(false);
         }
         let now = self.now();
+        self.publish_paused_task_result_diagnostics(&state.id)?;
         let records = self
             .inner
             .runtime_db
@@ -86,6 +331,43 @@ impl RuntimeHandle {
         let mut queued_owners = std::collections::BTreeSet::new();
         let mut enqueued = false;
         for record in records {
+            let exact_continuation = self
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .exact_waiter_recovery_continuation(&record, now)?;
+            let consuming_owner = exact_continuation
+                .as_ref()
+                .map_or(record.work_item_id.as_deref(), |wait| {
+                    wait.work_item_id.as_deref()
+                });
+            let deferred_reason = match self
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .classify_obligation(&record, None, consuming_owner)?
+            {
+                TaskResultObligation::Recoverable => None,
+                TaskResultObligation::AlreadyAdmitted { .. }
+                | TaskResultObligation::InFlight { .. } => Some("canonical_admission_in_flight"),
+                TaskResultObligation::ClaimedByOtherWaiter { .. } => {
+                    Some("claimed_by_other_waiter")
+                }
+                TaskResultObligation::InvalidOrStale => Some("invalid_or_stale_obligation"),
+                TaskResultObligation::Settled { .. } | TaskResultObligation::Paused => continue,
+            };
+            if let Some(reason) = deferred_reason {
+                self.inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .mark_deferred(
+                        &record.message_id,
+                        reason,
+                        now,
+                        now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS),
+                    )?;
+                continue;
+            }
             let mut reason = "awaiting_canonical_admission";
             let mut eligible = true;
             if execution
@@ -111,12 +393,13 @@ impl RuntimeHandle {
                         .settle_owner_unavailable(&record.message_id, disposition, now)?;
                     continue;
                 }
-                if owner.as_ref().is_some_and(|owner| !owner.is_runnable())
-                    || execution.as_ref().is_some_and(|execution| {
-                        execution.work_items.get(work_item_id).is_none_or(|work| {
-                            !matches!(work.state, WorkItemExecutionState::Runnable { .. })
-                        })
-                    })
+                if exact_continuation.is_none()
+                    && (owner.as_ref().is_some_and(|owner| !owner.is_runnable())
+                        || execution.as_ref().is_some_and(|execution| {
+                            execution.work_items.get(work_item_id).is_none_or(|work| {
+                                !matches!(work.state, WorkItemExecutionState::Runnable { .. })
+                            })
+                        }))
                 {
                     eligible = false;
                     reason = "owner_not_runnable";
@@ -124,7 +407,7 @@ impl RuntimeHandle {
             }
             if waits
                 .iter()
-                .any(|wait| wait.work_item_id == record.work_item_id)
+                .any(|wait| wait.work_item_id.as_deref() == consuming_owner)
             {
                 eligible = false;
                 reason = "owner_has_unresolved_wait";
@@ -178,16 +461,15 @@ impl RuntimeHandle {
                     now,
                     now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS),
                 )?;
-            let owner_key = recovery_owner_key(&record);
+            let mut consuming_record = record.clone();
+            consuming_record.work_item_id = consuming_owner.map(str::to_owned);
+            let owner_key = recovery_owner_key(&consuming_record);
             if !eligible || !queued_owners.insert(owner_key.clone()) {
                 continue;
             }
-            if let Some(message_id) = outstanding_recovery_message_id(
-                self,
-                &state.id,
-                record.work_item_id.as_deref(),
-                &owner_key,
-            )? {
+            if let Some(message_id) =
+                outstanding_recovery_message_id(self, &state.id, consuming_owner, &owner_key)?
+            {
                 tracing::debug!(
                     agent_id = %state.id,
                     work_item_id = ?record.work_item_id,
@@ -214,7 +496,7 @@ impl RuntimeHandle {
                 AdmissionContext::RuntimeOwned,
             );
             message.id = recovery_message_id();
-            message.work_item_id = record.work_item_id;
+            message.work_item_id = consuming_owner.map(str::to_owned);
             message
                 .source_refs
                 .insert("task_result_owner_key".into(), owner_key);
@@ -228,12 +510,23 @@ impl RuntimeHandle {
             );
             message
                 .source_refs
-                .insert("task_result_message_id".into(), record.message_id);
+                .insert("task_result_message_id".into(), record.message_id.clone());
             message
                 .source_refs
                 .insert("task_result_identity".into(), record.result_identity);
-            self.enqueue(message).await?;
-            enqueued = true;
+            if let Some(predecessor) = exact_continuation {
+                enqueued |= self
+                    .enqueue_exact_recovery_continuation(
+                        &record.message_id,
+                        &predecessor,
+                        message,
+                        now,
+                    )
+                    .await?;
+            } else {
+                self.enqueue(message).await?;
+                enqueued = true;
+            }
         }
         Ok(enqueued)
     }
@@ -288,6 +581,12 @@ mod tests {
             deferred_reason: None,
             deferred_at: None,
             next_recheck_at: None,
+            recovery_epoch: 0,
+            recovery_attempts: 0,
+            last_recovery_root_attempt_id: None,
+            last_recovery_admitted_at: None,
+            recovery_paused_at: None,
+            recovery_diagnostic_at: None,
         };
         let owner_key = recovery_owner_key(&record);
         record.rejoin_generation = 2;

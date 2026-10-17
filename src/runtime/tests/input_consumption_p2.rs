@@ -573,7 +573,21 @@ async fn claim(runtime: &RuntimeHandle) -> scheduler_executor::ScheduledMessage 
         }
         Box::pin(process(runtime, scheduled)).await;
     }
-    panic!("expected canonical model reentry");
+    panic!(
+        "expected canonical model reentry; queue: {:?}; execution: {:?}",
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .recent(Some("default"), 8)
+            .unwrap(),
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap(),
+    );
 }
 
 async fn process(runtime: &RuntimeHandle, scheduled: scheduler_executor::ScheduledMessage) {
@@ -1083,12 +1097,12 @@ async fn assert_batchless_ancestor_restart(defect: Option<&str>) {
 
 #[tokio::test]
 async fn p2_interrupted_restart_restores_mixed_operator_and_live_inputs() {
-    assert_mixed_operator_live_restart(None, false).await;
+    Box::pin(assert_mixed_operator_live_restart(None, false)).await;
 }
 
 #[tokio::test]
 async fn p2_repeated_lifecycle_restart_restores_mixed_operator_and_live_inputs() {
-    assert_mixed_operator_live_restart(None, true).await;
+    Box::pin(assert_mixed_operator_live_restart(None, true)).await;
 }
 
 #[tokio::test]
@@ -1099,7 +1113,7 @@ async fn p2_mixed_operator_recovery_requires_admission_evidence() {
         "queued",
         "wrong_authority",
     ] {
-        assert_mixed_operator_live_restart(Some(defect), false).await;
+        Box::pin(assert_mixed_operator_live_restart(Some(defect), false)).await;
     }
 }
 
@@ -2104,15 +2118,521 @@ async fn p2_interrupted_restart_recovers_nine_live_results_without_identity_migr
 
 #[tokio::test]
 async fn p2_provider_fallback_keeps_nine_live_results_reachable_once() {
-    assert_provider_fallback_keeps_live_results(1).await;
+    Box::pin(assert_provider_fallback_keeps_live_results(1)).await;
 }
 
 #[tokio::test]
 async fn p2_two_provider_fallbacks_keep_ancestor_live_results_reachable_once() {
-    assert_provider_fallback_keeps_live_results(2).await;
+    Box::pin(assert_provider_fallback_keeps_live_results(2)).await;
 }
 
 async fn assert_provider_fallback_keeps_live_results(fallback_count: usize) {
+    Box::pin(assert_provider_result_handoff(
+        fallback_count,
+        ProviderHandoffCheck::Normal,
+    ))
+    .await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProviderHandoffCheck {
+    Normal,
+    Mixed,
+    Atomic,
+    RestartClaimOnly,
+    RestartBeforeTransfer,
+    RestartAfterTransfer,
+}
+
+#[tokio::test]
+async fn p2_provider_result_handoff_rolls_back_every_precommit_fault() {
+    Box::pin(assert_provider_result_handoff(
+        1,
+        ProviderHandoffCheck::Atomic,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn p2_provider_result_handoff_survives_restart_before_transfer() {
+    Box::pin(assert_provider_result_handoff(
+        1,
+        ProviderHandoffCheck::RestartBeforeTransfer,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn p2_provider_result_handoff_survives_restart_after_transfer() {
+    Box::pin(assert_provider_result_handoff(
+        1,
+        ProviderHandoffCheck::RestartAfterTransfer,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn p2_provider_result_handoff_survives_restart_then_another_fallback() {
+    Box::pin(assert_provider_result_handoff(
+        2,
+        ProviderHandoffCheck::RestartBeforeTransfer,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn p2_provider_result_handoff_survives_claim_only_restart_then_another_fallback() {
+    Box::pin(assert_provider_result_handoff(
+        2,
+        ProviderHandoffCheck::RestartClaimOnly,
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn p2_provider_result_handoff_preserves_mixed_operator_and_ordinary_inputs() {
+    Box::pin(assert_provider_result_handoff(
+        1,
+        ProviderHandoffCheck::Mixed,
+    ))
+    .await;
+}
+
+fn assert_provider_result_handoff(
+    fallback_count: usize,
+    check: ProviderHandoffCheck,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()>>> {
+    // Keep the large fixture future out of its caller's construction frame.
+    Box::pin(async move {
+        let data = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let provider = Arc::new(LiveProvider::default());
+        let runtime = RuntimeHandle::new(
+            "default",
+            data.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(LiveFallbackProvider {
+                live: provider.clone(),
+            }),
+            "default".into(),
+            ContextConfig {
+                recent_messages: 1,
+                ..live_context_config()
+            },
+        )
+        .unwrap();
+        *provider.runtime.lock().await = Some(runtime.clone());
+        let receiver = owner(&runtime, "p2 fallback receiver").await;
+        let mut first_inputs = vec![result(Some(&receiver), TaskKind::CommandTask, true, 9)];
+        if check == ProviderHandoffCheck::Mixed {
+            first_inputs.extend([
+                ordinary(Some(&receiver), "p2-provider-peer", true),
+                Injection {
+                    source: Source::Operator,
+                    owner: Some(receiver.clone()),
+                    count: 1,
+                    body_bytes: 16,
+                },
+            ]);
+        }
+        *provider.steps.lock().await = vec![
+            Step {
+                inputs: first_inputs,
+                reply: Reply::PairedTools,
+            },
+            Step {
+                inputs: Vec::new(),
+                reply: Reply::PairedTools,
+            },
+            Step {
+                inputs: Vec::new(),
+                reply: Reply::Fallback,
+            },
+        ];
+        provider
+            .steps
+            .lock()
+            .await
+            .extend((1..fallback_count).map(|_| Step {
+                inputs: Vec::new(),
+                reply: Reply::Fallback,
+            }));
+        Box::pin(run(&runtime, Some(&receiver))).await;
+        let source_turn = latest_turn(&runtime);
+        let sources = provider.sources.lock().await.clone();
+        assert_eq!(
+            sources.len(),
+            if check == ProviderHandoffCheck::Mixed {
+                11
+            } else {
+                9
+            }
+        );
+        let live_sources: Vec<_> = sources
+            .iter()
+            .filter(|id| {
+                runtime
+                    .storage()
+                    .read_message_by_id(id)
+                    .unwrap()
+                    .unwrap()
+                    .authority_class
+                    != AuthorityClass::OperatorInstruction
+            })
+            .cloned()
+            .collect();
+        assert_eq!(live_ids(&source_turn), live_sources);
+        assert_eq!(source_turn.live_input_batches.len(), 2);
+        assert!(matches!(
+            source_turn.terminal.as_ref().unwrap().kind,
+            TurnTerminalKind::DeferredToFallback | TurnTerminalKind::ProviderFailedNeedsRecovery,
+        ));
+        let bodies = source_bodies(&runtime, &sources);
+        let before: Vec<_> = sources
+            .iter()
+            .filter_map(|source| {
+                runtime
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .latest_for_message(source)
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(before.len(), 9);
+        let runtime = if matches!(
+            check,
+            ProviderHandoffCheck::Atomic
+                | ProviderHandoffCheck::RestartClaimOnly
+                | ProviderHandoffCheck::RestartBeforeTransfer
+                | ProviderHandoffCheck::RestartAfterTransfer
+        ) {
+            let scheduled = Box::pin(claim(&runtime)).await;
+            let claimed_activation = match scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .as_ref()
+            {
+                Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) => {
+                    activation_id.clone()
+                }
+                _ => panic!("fallback claim must carry its canonical activation"),
+            };
+            if check != ProviderHandoffCheck::RestartClaimOnly {
+                Box::pin(runtime.begin_interactive_turn_with_provenance(
+                    Some(&scheduled.message),
+                    None,
+                    None,
+                    scheduled.dispatch_plan.execution_admission_provenance,
+                ))
+                .await
+                .unwrap();
+                runtime
+                    .record_incoming_transcript_entry(&scheduled.message)
+                    .unwrap();
+            }
+            if check == ProviderHandoffCheck::Atomic {
+                let current = latest_turn(&runtime);
+                let state = runtime.agent_state().await.unwrap();
+                let activation = state
+                    .current_execution_binding
+                    .as_ref()
+                    .unwrap()
+                    .activation_id
+                    .as_deref()
+                    .unwrap();
+                let execution = runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap()
+                    .unwrap();
+                let attempt = &execution.attempts[activation];
+                for fault in PRE_COMMIT_FAULTS {
+                    assert!(
+                        runtime
+                            .inner
+                            .runtime_db
+                            .transitions()
+                            .commit_provider_result_handoff(
+                                attempt,
+                                &current,
+                                runtime.now(),
+                                Some(fault),
+                            )
+                            .is_err(),
+                        "{fault:?}"
+                    );
+                    assert_eq!(latest_turn(&runtime), current);
+                    for original in &before {
+                        assert_eq!(
+                            &runtime
+                                .inner
+                                .runtime_db
+                                .task_result_settlements()
+                                .latest_for_message(&original.message_id)
+                                .unwrap()
+                                .unwrap(),
+                            original
+                        );
+                    }
+                }
+                let mut stale = attempt.clone();
+                stale.source_message_id = Some("unrelated-source".into());
+                assert!(
+                    !runtime
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .commit_provider_result_handoff(&stale, &current, runtime.now(), None,)
+                        .unwrap()
+                        .applied
+                );
+                let mut invalid_source = source_turn.clone();
+                invalid_source.terminal.as_mut().unwrap().kind = TurnTerminalKind::Interrupted;
+                runtime
+                    .inner
+                    .runtime_db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+                            rusqlite::params![
+                                serde_json::to_string(&invalid_source)?,
+                                source_turn.turn_id
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(runtime
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .commit_provider_result_handoff(attempt, &current, runtime.now(), None,)
+                    .is_err());
+                assert_eq!(latest_turn(&runtime), current);
+                for original in &before {
+                    assert_eq!(
+                        &runtime
+                            .inner
+                            .runtime_db
+                            .task_result_settlements()
+                            .latest_for_message(&original.message_id)
+                            .unwrap()
+                            .unwrap(),
+                        original
+                    );
+                }
+                runtime
+                    .inner
+                    .runtime_db
+                    .transaction(|tx| {
+                        tx.execute(
+                            "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+                            rusqlite::params![
+                                serde_json::to_string(&source_turn)?,
+                                source_turn.turn_id
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(
+                    runtime
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .commit_provider_result_handoff(attempt, &current, runtime.now(), None,)
+                        .unwrap()
+                        .applied
+                );
+                let recovered = latest_turn(&runtime);
+                let count = runtime
+                    .storage()
+                    .read_recent_events(100)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.kind == "provider_task_results_transferred")
+                    .count();
+                assert_eq!(count, 1);
+                assert!(
+                    runtime
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .commit_provider_result_handoff(attempt, &recovered, runtime.now(), None,)
+                        .unwrap()
+                        .applied
+                );
+                assert_eq!(
+                    runtime
+                        .storage()
+                        .read_recent_events(100)
+                        .unwrap()
+                        .iter()
+                        .filter(|event| event.kind == "provider_task_results_transferred")
+                        .count(),
+                    count
+                );
+                assert_eq!(provider.requests.lock().await.len(), 3);
+                return;
+            }
+            if check == ProviderHandoffCheck::RestartAfterTransfer {
+                assert!(
+                    Box::pin(runtime.recover_provider_result_inputs(&scheduled.message))
+                        .await
+                        .unwrap()
+                );
+            }
+            let interrupted_turn_id = (check != ProviderHandoffCheck::RestartClaimOnly)
+                .then(|| latest_turn(&runtime).turn_id);
+            *provider.runtime.lock().await = None;
+            drop(runtime);
+            let reopened = RuntimeHandle::new(
+                "default",
+                data.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(LiveFallbackProvider {
+                    live: provider.clone(),
+                }),
+                "default".into(),
+                live_context_config(),
+            )
+            .unwrap();
+            *provider.runtime.lock().await = Some(reopened.clone());
+            assert_eq!(
+                Box::pin(reopened.recover_scheduler_bootstrap_claims())
+                    .await
+                    .unwrap(),
+                1
+            );
+            if let Some(interrupted_turn_id) = interrupted_turn_id {
+                assert_eq!(
+                    reopened
+                        .storage()
+                        .read_turn_by_id(&interrupted_turn_id)
+                        .unwrap()
+                        .unwrap()
+                        .terminal
+                        .as_ref()
+                        .map(|terminal| terminal.kind),
+                    Some(TurnTerminalKind::Interrupted),
+                );
+            } else {
+                assert_eq!(latest_turn(&reopened), source_turn);
+            }
+            assert_eq!(
+                reopened
+                    .inner
+                    .runtime_db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap()
+                    .unwrap()
+                    .attempts[&claimed_activation]
+                    .state,
+                crate::domain::execution_protocol::ExecutionAttemptState::Interrupted,
+            );
+            reopened
+        } else {
+            runtime
+        };
+        for _ in 0..fallback_count {
+            let predecessor = latest_turn(&runtime);
+            let scheduled = Box::pin(claim(&runtime)).await;
+            if matches!(
+                check,
+                ProviderHandoffCheck::Normal | ProviderHandoffCheck::Mixed
+            ) {
+                assert_eq!(
+                    scheduled.message.source_refs.get("source_turn_id"),
+                    Some(&predecessor.turn_id),
+                );
+            }
+            Box::pin(process(&runtime, scheduled)).await;
+            assert_eq!(
+                latest_turn(&runtime).live_input_batches.len(),
+                source_turn.live_input_batches.len()
+            );
+        }
+
+        let requests = provider.requests.lock().await;
+        assert_eq!(
+            requests.len(),
+            3 + fallback_count,
+            "fallback must produce a new actual provider request"
+        );
+        assert_eq!(assert_request_tool_pairs(&requests[2]), 4);
+        for request in requests.iter().skip(3) {
+            assert_request_tool_pairs(request);
+            let recovered = visible(request);
+            let recovery_batches = request
+                .prompt_frame
+                .context_blocks
+                .iter()
+                .filter(|block| {
+                    block
+                        .text
+                        .contains("Provider recovery evidence from source turn")
+                })
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for body in &bodies {
+                assert_eq!(
+                    recovered.matches(body.as_str()).count(),
+                    1,
+                    "fallback live evidence"
+                );
+                if check != ProviderHandoffCheck::Mixed {
+                    assert_eq!(
+                        recovery_batches.matches(body.as_str()).count(),
+                        1,
+                        "ancestor live evidence must not depend on recent history"
+                    );
+                }
+            }
+        }
+        drop(requests);
+        for original in before {
+            let after = runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(&original.message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(after.result_identity, original.result_identity);
+            assert_eq!(after.work_item_id, original.work_item_id);
+            assert_eq!(after.rejoin_generation, original.rejoin_generation);
+            assert_ne!(after.activation_id, original.activation_id);
+            assert_eq!(after.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                after.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+        }
+        assert_eq!(
+            runtime
+                .storage()
+                .read_turn_by_id(&source_turn.turn_id)
+                .unwrap()
+                .unwrap()
+                .live_input_batches,
+            source_turn.live_input_batches,
+        );
+        assert_eq!(
+            latest_turn(&runtime).live_input_batches.len(),
+            source_turn.live_input_batches.len()
+        );
+    })
+}
+
+#[tokio::test]
+async fn p2_provider_fallback_restart_preserves_operator_without_live_batches() {
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(LiveProvider::default());
@@ -2132,125 +2652,112 @@ async fn assert_provider_fallback_keeps_live_results(fallback_count: usize) {
     )
     .unwrap();
     *provider.runtime.lock().await = Some(runtime.clone());
-    let receiver = owner(&runtime, "p2 fallback receiver").await;
+    let receiver = owner(&runtime, "p2 batchless fallback operator").await;
     *provider.steps.lock().await = vec![
         Step {
-            inputs: vec![result(Some(&receiver), TaskKind::CommandTask, true, 9)],
-            reply: Reply::PairedTools,
-        },
-        Step {
-            inputs: Vec::new(),
-            reply: Reply::PairedTools,
-        },
-        Step {
             inputs: Vec::new(),
             reply: Reply::Fallback,
+        },
+        Step {
+            inputs: vec![Injection {
+                source: Source::Operator,
+                owner: None,
+                count: 1,
+                body_bytes: 6000,
+            }],
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Interrupt,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Final,
         },
     ];
-    provider
-        .steps
-        .lock()
-        .await
-        .extend((1..fallback_count).map(|_| Step {
-            inputs: Vec::new(),
-            reply: Reply::Fallback,
-        }));
-    run(&runtime, Some(&receiver)).await;
-    let source_turn = latest_turn(&runtime);
-    let sources = provider.sources.lock().await.clone();
-    assert_eq!(sources.len(), 9);
-    assert_eq!(live_ids(&source_turn), sources);
-    assert_eq!(source_turn.live_input_batches.len(), 2);
-    assert!(matches!(
-        source_turn.terminal.as_ref().unwrap().kind,
-        TurnTerminalKind::DeferredToFallback | TurnTerminalKind::ProviderFailedNeedsRecovery,
+    Box::pin(run(&runtime, Some(&receiver))).await;
+    let scheduled = Box::pin(claim(&runtime)).await;
+    let fallback_message_id = scheduled.message.id.clone();
+    let mut processing = Box::pin(runtime.process_message_with_plan_deferred(
+        scheduled.message,
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
     ));
-    let bodies = source_bodies(&runtime, &sources);
-    let before: Vec<_> = sources
-        .iter()
-        .map(|source| {
-            runtime
-                .inner
-                .runtime_db
-                .task_result_settlements()
-                .latest_for_message(source)
-                .unwrap()
-                .unwrap()
-        })
-        .collect();
-    for _ in 0..fallback_count {
-        let predecessor = latest_turn(&runtime);
-        let scheduled = Box::pin(claim(&runtime)).await;
-        assert_eq!(
-            scheduled.message.source_refs.get("source_turn_id"),
-            Some(&predecessor.turn_id),
-        );
-        Box::pin(process(&runtime, scheduled)).await;
-        assert!(latest_turn(&runtime).live_input_batches.is_empty());
+    tokio::select! {
+        outcome = &mut processing => panic!("fallback must remain in flight: {:?}", outcome.err()),
+        ready = tokio::time::timeout(std::time::Duration::from_secs(10), provider.interrupted.notified()) => ready.unwrap(),
     }
+    drop(processing);
+    let predecessor = latest_turn(&runtime);
+    let operator_id = provider.sources.lock().await[0].clone();
+    let operator = runtime
+        .storage()
+        .read_message_by_id(&operator_id)
+        .unwrap()
+        .unwrap();
+    let body = message_text(&operator.body);
+    assert!(predecessor.live_input_batches.is_empty());
+    assert!(predecessor.input_message_ids.contains(&operator_id));
+    assert_eq!(provider.requests.lock().await.len(), 3);
 
-    let requests = provider.requests.lock().await;
+    *provider.runtime.lock().await = None;
+    drop(runtime);
+    let reopened = RuntimeHandle::new(
+        "default",
+        data.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(LiveFallbackProvider {
+            live: provider.clone(),
+        }),
+        "default".into(),
+        ContextConfig {
+            recent_messages: 1,
+            ..live_context_config()
+        },
+    )
+    .unwrap();
+    *provider.runtime.lock().await = Some(reopened.clone());
     assert_eq!(
-        requests.len(),
-        3 + fallback_count,
-        "fallback must produce a new actual provider request"
+        Box::pin(reopened.recover_scheduler_bootstrap_claims())
+            .await
+            .unwrap(),
+        1
     );
-    assert_eq!(assert_request_tool_pairs(&requests[2]), 4);
-    for request in requests.iter().skip(3) {
-        assert_request_tool_pairs(request);
-        let recovered = visible(request);
-        let recovery_batches = request
-            .prompt_frame
-            .context_blocks
-            .iter()
-            .filter(|block| {
-                block
-                    .text
-                    .contains("Provider recovery evidence from source turn")
-            })
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for body in &bodies {
-            assert_eq!(
-                recovered.matches(body.as_str()).count(),
-                1,
-                "fallback live evidence"
-            );
-            assert_eq!(
-                recovery_batches.matches(body.as_str()).count(),
-                1,
-                "ancestor live evidence must not depend on recent history"
-            );
-        }
-    }
-    drop(requests);
-    for original in before {
-        let after = runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .latest_for_message(&original.message_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            after, original,
-            "fallback must not readmit an already delivered identity"
-        );
-        // A separate fallback activation cannot settle the failed source.
-        assert_eq!(after.state, TaskResultSettlementState::CallerAdmitted);
-        assert_eq!(after.disposition, None);
-    }
+    let scheduled = Box::pin(claim(&reopened)).await;
+    assert_eq!(scheduled.message.id, fallback_message_id);
+    Box::pin(process(&reopened, scheduled)).await;
+    let recovered = latest_turn(&reopened);
+    assert!(recovered.live_input_batches.is_empty());
+    assert!(recovered.input_message_ids.contains(&operator_id));
+    assert_eq!(recovered.effective_owner(), predecessor.effective_owner());
     assert_eq!(
-        runtime
+        reopened
             .storage()
-            .read_turn_by_id(&source_turn.turn_id)
+            .read_message_by_id(&operator_id)
             .unwrap()
-            .unwrap()
-            .live_input_batches,
-        source_turn.live_input_batches,
+            .unwrap(),
+        operator
     );
-    assert!(latest_turn(&runtime).live_input_batches.is_empty());
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 4);
+    let request = &requests[3];
+    assert_request_tool_pairs(request);
+    let text = visible(request);
+    assert_eq!(text.matches(body.as_str()).count(), 1);
+    for provenance in [
+        operator_id.as_str(),
+        "p2-operator",
+        "operator_instruction",
+        "http_control_prompt",
+        "control_authenticated",
+    ] {
+        assert!(text.contains(provenance), "{provenance}");
+    }
+    assert!(request.prompt_frame.context_blocks.iter().any(|block| {
+        block.text.contains("Recovered operator interjection") && block.text.contains(body.as_str())
+    }));
 }
 
 #[tokio::test]

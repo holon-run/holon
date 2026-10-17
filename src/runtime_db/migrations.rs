@@ -3935,6 +3935,28 @@ CREATE INDEX IF NOT EXISTS idx_agent_template_remote_source_syncs_retry
   ON agent_template_remote_source_syncs(next_retry_at, retry_count);
 "#,
     },
+    Migration {
+        version: 83,
+        name: "task_result_recovery_budget",
+        sql: r#"
+ALTER TABLE task_result_settlements ADD COLUMN recovery_epoch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_result_settlements ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE task_result_settlements ADD COLUMN last_recovery_root_attempt_id TEXT;
+ALTER TABLE task_result_settlements ADD COLUMN last_recovery_admitted_at TEXT;
+ALTER TABLE task_result_settlements ADD COLUMN recovery_paused_at TEXT;
+ALTER TABLE task_result_settlements ADD COLUMN recovery_diagnostic_at TEXT;
+CREATE TABLE task_result_recovery_admissions (
+  result_identity TEXT NOT NULL REFERENCES task_result_settlements(result_identity) ON DELETE CASCADE,
+  recovery_epoch INTEGER NOT NULL,
+  root_attempt_id TEXT NOT NULL,
+  admitted_at TEXT NOT NULL,
+  PRIMARY KEY (result_identity, recovery_epoch, root_attempt_id)
+);
+CREATE INDEX idx_task_result_recovery_paused
+  ON task_result_settlements(agent_id, recovery_paused_at)
+  WHERE recovery_paused_at IS NOT NULL AND state != 'settled';
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

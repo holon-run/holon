@@ -6,6 +6,8 @@
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod live_input_attachment;
+mod provider_result_handoff;
+mod wait_task_result;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
 pub(crate) use live_input_attachment::LiveInputAttachmentCommand;
 
@@ -193,7 +195,10 @@ pub(crate) struct WaitTaskResultAdmission {
     pub message: MessageEnvelope,
     pub expected: Option<QueueEntryRecord>,
     pub record: QueueEntryRecord,
+    pub obligation: wait_task_result::WaitTaskResultObligation,
 }
+
+pub(crate) use wait_task_result::WaitTaskResultObligation;
 
 fn admit_wait_task_result_tx(
     tx: &Transaction<'_>,
@@ -202,6 +207,7 @@ fn admit_wait_task_result_tx(
     let Some(admission) = admission else {
         return Ok(false);
     };
+    wait_task_result::validate_obligation_tx(tx, admission)?;
     let existing = tx
         .query_row(
             "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
@@ -219,6 +225,9 @@ fn admit_wait_task_result_tx(
         .into());
     }
     validate_queue_mutation_tx(tx, &QueueMutation::Upsert(admission.record.clone()))?;
+    if admission.obligation.canonical_recovery {
+        append_message_tx(tx, &admission.message)?;
+    }
     upsert_queue_entry_tx(tx, &admission.record)
 }
 

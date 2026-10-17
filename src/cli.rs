@@ -721,6 +721,12 @@ pub enum DebugCommands {
         json: bool,
         #[arg(long)]
         apply: bool,
+        #[arg(
+            long,
+            requires_all = ["apply", "agent"],
+            conflicts_with_all = ["all_affected", "message_id"]
+        )]
+        rearm_task_result: Option<String>,
         #[arg(long, requires = "apply")]
         no_backup: bool,
     },

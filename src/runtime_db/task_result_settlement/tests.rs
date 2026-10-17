@@ -3,6 +3,9 @@ use chrono::{Duration, TimeZone};
 use tempfile::tempdir;
 
 mod live_turn;
+mod obligation;
+mod recovery_admission;
+mod recovery_budget;
 
 fn runtime_db() -> (tempfile::TempDir, RuntimeDb) {
     let dir = tempdir().unwrap();
@@ -36,6 +39,12 @@ fn pending_record(index: usize) -> TaskResultSettlementRecord {
         deferred_reason: None,
         deferred_at: None,
         next_recheck_at: Some(created_at + Duration::seconds(30)),
+        recovery_epoch: 0,
+        recovery_attempts: 0,
+        last_recovery_root_attempt_id: None,
+        last_recovery_admitted_at: None,
+        recovery_paused_at: None,
+        recovery_diagnostic_at: None,
     }
 }
 

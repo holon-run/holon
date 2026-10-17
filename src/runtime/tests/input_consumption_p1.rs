@@ -12,21 +12,470 @@ struct BatchProvider {
     before_complete: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
+#[derive(Clone, Default)]
+struct ResultFallbackProvider {
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl AgentProvider for ResultFallbackProvider {
+    fn select_model_lineage(
+        &self,
+        _: &crate::config::ModelRouteRef,
+    ) -> Option<Arc<dyn AgentProvider>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut requests = self.requests.lock().await;
+        requests.push(
+            request
+                .prompt_frame
+                .context_blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .chain(
+                    request
+                        .conversation
+                        .iter()
+                        .filter_map(|message| match message {
+                            ConversationMessage::UserText(text) => Some(text.as_str()),
+                            _ => None,
+                        }),
+                )
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if requests.len() == 1 {
+            return Err(provider_turn_error(
+                "primary HTTP 400 contract_error before model output",
+                ProviderAttemptTimeline {
+                    attempts: vec![ProviderAttemptRecord {
+                        provider: "openai".into(),
+                        model_ref: "openai/gpt-5.4".into(),
+                        attempt: 1,
+                        max_attempts: 1,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: Some(1),
+                        failure_kind: Some("contract_error".into()),
+                        disposition: Some("fail_fast".into()),
+                        outcome: ProviderAttemptOutcome::FailFastAborted,
+                        advanced_to_fallback: true,
+                        backoff_ms: None,
+                        backoff_source: None,
+                        token_usage: None,
+                        cache_usage: None,
+                        provider_message_id: None,
+                        provider_request_id: None,
+                        provider_http_trace_id: None,
+                        transport_timeline: None,
+                        transport_diagnostics: None,
+                    }],
+                    aggregated_token_usage: None,
+                    requested_model_ref: "openai/gpt-5.4".into(),
+                    active_model_ref: None,
+                    winning_model_ref: None,
+                    pending_fallback_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+                    pending_fallback_disposition: Some(
+                        crate::provider::ProviderFallbackDisposition::Immediate,
+                    ),
+                },
+                anyhow!("HTTP 400 contract_error"),
+            ));
+        }
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "result handled".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn task_result_provider_fallback_transfers_initial_snapshot_and_converges() {
+    assert_task_result_provider_fallback().await;
+}
+
+fn assert_task_result_provider_fallback(
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()>>> {
+    Box::pin(async move {
+        for kind in [TaskKind::CommandTask, TaskKind::ChildAgentTask] {
+            for (status, count) in [
+                (TaskStatus::Completed, 1usize),
+                (TaskStatus::Completed, 2),
+                (TaskStatus::Completed, 8),
+                (TaskStatus::Completed, 9),
+                (TaskStatus::Completed, 17),
+                (TaskStatus::Failed, 1),
+                (TaskStatus::Cancelled, 1),
+            ] {
+                let provider = Arc::new(ResultFallbackProvider::default());
+                let harness = LifecycleHarness::with_provider(provider.clone());
+                let runtime = harness.runtime();
+                let mut messages = Vec::new();
+                for index in 0..count {
+                    let task_id = format!("fallback-result-{index}");
+                    let mut message = MessageEnvelope::new(
+                        "default",
+                        MessageKind::TaskResult,
+                        MessageOrigin::Task {
+                            task_id: task_id.clone(),
+                        },
+                        AuthorityClass::RuntimeInstruction,
+                        Priority::Normal,
+                        MessageBody::Text {
+                            text: format!("fallback-evidence-{index}"),
+                        },
+                    )
+                    .with_admission(
+                        MessageDeliverySurface::TaskRejoin,
+                        AdmissionContext::RuntimeOwned,
+                    );
+                    message.metadata = Some(serde_json::json!({
+                        "task_id": task_id, "task_kind": kind.as_str(),
+                        "task_status": status, "task_result_id": message.id,
+                        "task_detail": {
+                            "rejoin_obligation_id": task_id, "rejoin_generation": 1,
+                            "parent_turn_id": "fallback-result-parent", "terminal_reentry": true,
+                        },
+                    }));
+                    let task = TaskRecord {
+                        id: task_id.clone(),
+                        agent_id: "default".into(),
+                        kind,
+                        status: status.clone(),
+                        created_at: harness.now(),
+                        updated_at: harness.now(),
+                        parent_message_id: Some(message.id.clone()),
+                        work_item_id: None,
+                        summary: None,
+                        recovery: None,
+                        detail: Some(serde_json::json!({
+                            "rejoin_obligation_id": task_id, "rejoin_generation": 1,
+                            "parent_turn_id": "fallback-result-parent", "terminal_reentry": true,
+                        })),
+                    };
+                    if kind == TaskKind::CommandTask {
+                        Box::pin(runtime.commit_terminal_task_result(
+                            &task,
+                            "task_completed",
+                            &message,
+                        ))
+                        .await
+                        .unwrap();
+                    } else {
+                        Box::pin(runtime.commit_terminal_child_task_result(
+                            &task,
+                            "task_completed",
+                            &message,
+                            None,
+                        ))
+                        .await
+                        .unwrap();
+                    }
+                    messages.push(message.id);
+                }
+                let first = Box::pin(claim_model_input(runtime)).await;
+                Box::pin(process_scheduled(runtime, first)).await;
+                assert_eq!(
+                    provider.requests.lock().await.len(),
+                    1,
+                    "primary request for {kind:?}/{status:?}/{count}"
+                );
+                let before: Vec<_> = messages
+                    .iter()
+                    .map(|id| {
+                        runtime
+                            .inner
+                            .runtime_db
+                            .task_result_settlements()
+                            .latest_for_message(id)
+                            .unwrap()
+                            .unwrap()
+                    })
+                    .collect();
+                assert_eq!(
+                    before
+                        .iter()
+                        .filter(|record| {
+                            record.state ==
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
+                        })
+                        .count(),
+                    count.min(8)
+                );
+                let recovery_message = runtime
+                    .inner
+                    .agent
+                    .lock()
+                    .await
+                    .queue
+                    .input_snapshot(64)
+                    .into_iter()
+                    .find(|message| {
+                        super::super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message)
+                    })
+                    .expect("primary failure must enqueue its fallback");
+                let execution = runtime
+                    .runtime_db()
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("default")
+                    .unwrap()
+                    .unwrap();
+                super::super::provider_recovery::resolve(
+                    runtime.storage(),
+                    &recovery_message,
+                    &execution,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("invalid fallback for {kind:?}/{status:?}/{count}: {error:#}")
+                });
+                let fallback = Box::pin(claim_model_input(runtime)).await;
+                assert!(
+                super::super::turn::TurnModelSelection::message_has_provider_recovery_provenance(
+                    &fallback.message
+                )
+            );
+                Box::pin(process_scheduled(runtime, fallback)).await;
+                {
+                    let requests = provider.requests.lock().await;
+                    assert_eq!(requests.len(), 2);
+                    for index in 0..count.min(8) {
+                        assert!(requests[1].contains(&format!("fallback-evidence-{index}")));
+                    }
+                    if count > 8 {
+                        assert!(!requests[1].contains("fallback-evidence-8"));
+                    }
+                }
+                for _ in 0..count * 3 {
+                    if runtime.inner.agent.lock().await.queue.is_empty() {
+                        break;
+                    }
+                    let poll = Box::pin(
+                        scheduler_executor::SchedulerDecisionExecutor::new(runtime).poll(),
+                    )
+                    .await
+                    .unwrap();
+                    if let scheduler_executor::RunLoopPoll::Message(scheduled) = poll {
+                        Box::pin(process_scheduled(runtime, scheduled)).await;
+                    }
+                }
+                for id in &messages {
+                    let record = runtime
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .latest_for_message(id)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                    record.state,
+                    crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                );
+                    assert_eq!(
+                        record.disposition,
+                        Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+                    );
+                }
+                assert_eq!(provider.requests.lock().await.len(), count.div_ceil(8) + 1);
+                let turns = runtime.storage().read_recent_turns(100).unwrap().len();
+                let briefs = runtime.storage().read_recent_briefs(100).unwrap().len();
+                for _ in 0..6 {
+                    harness.advance(std::time::Duration::from_secs(600)).await;
+                    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+                }
+                assert_eq!(
+                    runtime.storage().read_recent_turns(100).unwrap().len(),
+                    turns
+                );
+                assert_eq!(
+                    runtime.storage().read_recent_briefs(100).unwrap().len(),
+                    briefs
+                );
+                assert_eq!(provider.requests.lock().await.len(), count.div_ceil(8) + 1);
+            }
+        }
+    })
+}
+
 async fn start_without_provider(runtime: &RuntimeHandle) -> MessageEnvelope {
-    let scheduled = claim_model_input(runtime).await;
-    runtime
-        .begin_interactive_turn_with_provenance(
-            Some(&scheduled.message),
-            None,
-            None,
-            scheduled.dispatch_plan.execution_admission_provenance,
-        )
-        .await
-        .unwrap();
+    let scheduled = Box::pin(claim_model_input(runtime)).await;
+    Box::pin(runtime.begin_interactive_turn_with_provenance(
+        Some(&scheduled.message),
+        None,
+        None,
+        scheduled.dispatch_plan.execution_admission_provenance,
+    ))
+    .await
+    .unwrap();
     runtime
         .record_incoming_transcript_entry(&scheduled.message)
         .unwrap();
     scheduled.message
+}
+
+#[tokio::test(start_paused = true)]
+async fn p1_paused_and_backoff_results_do_not_reserve_recovery_capacity() {
+    assert_budgeted_recovery_capacity().await;
+}
+
+fn assert_budgeted_recovery_capacity() -> std::pin::Pin<Box<impl std::future::Future<Output = ()>>>
+{
+    Box::pin(async move {
+        use crate::runtime_db::task_result_settlement::{
+            charge_recovery_admission_tx, TaskResultSettlementState,
+        };
+
+        for paused in [false, true] {
+            let provider = Arc::new(BatchProvider::default());
+            let mut harness = LifecycleHarness::with_provider(provider.clone());
+            let runtime = harness.runtime();
+            let owner = runtime
+                .create_work_item("recovery capacity".into(), None, None, Vec::new())
+                .await
+                .unwrap();
+            let mut blocked = Vec::new();
+            for index in 0..64 {
+                let id = publish_owner_result_with_reentry(
+                    runtime,
+                    &owner.id,
+                    format!("blocked-{index}"),
+                    "older result",
+                    Priority::Normal,
+                    TaskKind::CommandTask,
+                    false,
+                )
+                .await;
+                let record = runtime
+                    .runtime_db()
+                    .task_result_settlements()
+                    .admit_message("default", &id, "closed-source-admission", runtime.now())
+                    .unwrap()
+                    .unwrap();
+                let message = runtime.storage().read_message_by_id(&id).unwrap().unwrap();
+                runtime
+                    .storage()
+                    .append_queue_entry(&QueueEntryRecord {
+                        message_id: id,
+                        agent_id: message.agent_id,
+                        priority: message.priority,
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: runtime.now(),
+                    })
+                    .unwrap();
+                blocked.push(record);
+            }
+            for root in 0..if paused { 5 } else { 1 } {
+                let now = harness.runtime().now();
+                for record in &blocked {
+                    harness
+                        .runtime()
+                        .runtime_db()
+                        .transaction(|tx| {
+                            assert!(charge_recovery_admission_tx(
+                                tx,
+                                &record.result_identity,
+                                &format!("older-root-{root}"),
+                                now,
+                            )?);
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+                if paused {
+                    harness.advance(std::time::Duration::from_secs(600)).await;
+                }
+            }
+            let runtime = harness.runtime();
+            let fresh = publish_owner_result_with_reentry(
+                runtime,
+                &owner.id,
+                "fresh-result".into(),
+                "new result must reach model",
+                Priority::Normal,
+                TaskKind::CommandTask,
+                false,
+            )
+            .await;
+            let message = runtime
+                .storage()
+                .read_message_by_id(&fresh)
+                .unwrap()
+                .unwrap();
+            runtime
+                .storage()
+                .append_queue_entry(&QueueEntryRecord {
+                    message_id: fresh.clone(),
+                    agent_id: message.agent_id,
+                    priority: message.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: runtime.now(),
+                })
+                .unwrap();
+            let before: Vec<_> = blocked
+                .iter()
+                .map(|record| {
+                    runtime
+                        .runtime_db()
+                        .task_result_settlements()
+                        .latest_for_message(&record.message_id)
+                        .unwrap()
+                        .unwrap()
+                })
+                .collect();
+            harness.restart();
+            let runtime = harness.runtime();
+            let record = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&fresh)
+                .unwrap()
+                .unwrap();
+            let (wake, _) = runtime
+                .task_result_repair_source(&record, Some(&owner.id))
+                .unwrap();
+            runtime.enqueue(wake).await.unwrap();
+            let scheduled = Box::pin(claim_model_input(runtime)).await;
+            let admitted = Box::pin(process_result_batch(runtime, scheduled)).await;
+            assert_eq!(admitted.len(), 1, "paused={paused}");
+            assert_eq!(admitted[0].result_identity, record.result_identity);
+            assert_eq!(admitted[0].recovery_attempts, 1);
+            assert_eq!(admitted[0].last_recovery_admitted_at, Some(runtime.now()));
+            assert_eq!(provider.requests.lock().await.len(), 1);
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(&fresh)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                TaskResultSettlementState::Settled,
+            );
+            for record in before {
+                assert_eq!(
+                    runtime
+                        .runtime_db()
+                        .task_result_settlements()
+                        .latest_for_message(&record.message_id)
+                        .unwrap()
+                        .unwrap(),
+                    record,
+                    "ineligible result must reserve no capacity or extra charge",
+                );
+            }
+        }
+    })
 }
 
 async fn claim_model_input(runtime: &RuntimeHandle) -> scheduler_executor::ScheduledMessage {
@@ -664,6 +1113,10 @@ async fn publish_owner_result_with_reentry(
 
 #[tokio::test(start_paused = true)]
 async fn p1_command_and_child_recovery_wakes_drain_pending_results_once() {
+    Box::pin(assert_command_and_child_recovery_wakes_drain_pending_results_once()).await;
+}
+
+async fn assert_command_and_child_recovery_wakes_drain_pending_results_once() {
     use crate::runtime_db::task_result_settlement::{
         TaskResultSettlementDisposition, TaskResultSettlementState,
     };
@@ -1539,6 +1992,305 @@ async fn p1_shared_reply_recovery_reuses_admitted_waiters_before_overflow() {
         );
     }
     assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn p1_closed_admitted_reply_recovers_through_fenced_runtime_wake() {
+    use crate::runtime_db::task_result_settlement::{
+        TaskResultSettlementDisposition, TaskResultSettlementState,
+    };
+    for (count, reject_corrupt_wakes) in [(1usize, false), (3, false), (9, false), (1, true)] {
+        let provider = Arc::new(BatchProvider::default());
+        let mut harness = LifecycleHarness::with_provider(provider.clone());
+        let runtime = harness.runtime();
+        let owner = runtime
+            .create_work_item(
+                "closed reply recovery".into(),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        runtime.pick_work_item(owner.id.clone()).await.unwrap();
+        let (reply, results) = publish_shared_reply(
+            runtime,
+            &vec![owner.id.clone(); count],
+            "closed reply recovery full body",
+        )
+        .await;
+        let source = Box::pin(start_without_provider(runtime)).await;
+        Box::pin(runtime.admit_idle_task_results(&source, 24 * 1024))
+            .await
+            .unwrap();
+        // Close a real canonical admission before any provider request. This
+        // covers the source-terminal / fallback-enqueue crash window.
+        let mut terminal = Box::pin(runtime.build_turn_aborted_record(
+            "pre-request provider handoff fixture",
+            None,
+            0,
+        ))
+        .await;
+        terminal.kind = TurnTerminalKind::DeferredToFallback;
+        terminal.no_brief_reason = None;
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Failure,
+            "pre-request provider handoff fixture",
+            Some(source.id.clone()),
+            None,
+        );
+        brief.turn_id = Some(terminal.turn_id.clone());
+        brief.work_item_id = Some(owner.id.clone());
+        runtime
+            .storage()
+            .append_brief_with_created_event(
+                &brief,
+                &crate::types::brief_created_event_for(&brief).unwrap(),
+            )
+            .unwrap();
+        let turn_record = runtime.build_turn_record(&terminal).await.unwrap();
+        let transition = turn::TurnTerminalTransition {
+            terminal,
+            turn_record,
+            prepared_work_item_completion: None,
+            prepared_wait_for: None,
+            terminal_tool_executions: Vec::new(),
+        };
+        assert!(runtime
+            .commit_queue_terminal_settlement(
+                QueueEntryRecord {
+                    message_id: source.id,
+                    agent_id: source.agent_id,
+                    priority: source.priority,
+                    status: QueueEntryStatus::Processed,
+                    created_at: source.created_at,
+                    updated_at: runtime.now(),
+                },
+                Vec::new(),
+                true,
+                Some(&transition),
+            )
+            .await
+            .unwrap());
+        assert!(provider.requests.lock().await.is_empty());
+        let repository = runtime.runtime_db().task_result_settlements();
+        let admitted: Vec<_> = results
+            .iter()
+            .filter_map(|id| {
+                repository
+                    .latest_for_message(id)
+                    .unwrap()
+                    .filter(|record| record.state == TaskResultSettlementState::CallerAdmitted)
+            })
+            .collect();
+        assert!(!admitted.is_empty() && admitted.len() <= count.min(8));
+        for record in &admitted {
+            assert_eq!(record.disposition, None);
+        }
+        let original_stamp = runtime
+            .storage()
+            .read_message_by_id(&reply)
+            .unwrap()
+            .unwrap()
+            .turn_id;
+        harness.restart();
+        let runtime = harness.runtime();
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap();
+        harness.advance(std::time::Duration::from_secs(31)).await;
+        assert!(
+            runtime.emit_due_task_result_recovery().await.unwrap(),
+            "recovery must be due: {:?}",
+            runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&admitted[0].message_id)
+                .unwrap()
+        );
+        let scheduled = Box::pin(claim_model_input(runtime)).await;
+        assert!(matches!(&scheduled.message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"));
+        if reject_corrupt_wakes {
+            let source = &scheduled.message;
+            Box::pin(
+                runtime.begin_interactive_turn_with_provenance(
+                    Some(source),
+                    None,
+                    None,
+                    scheduled
+                        .dispatch_plan
+                        .execution_admission_provenance
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+            runtime.record_incoming_transcript_entry(source).unwrap();
+            let state = runtime.agent_state().await.unwrap();
+            let activation = state
+                .current_execution_binding
+                .as_ref()
+                .unwrap()
+                .activation_id
+                .as_deref()
+                .unwrap();
+            let selected = admitted
+                .iter()
+                .map(|record| record.result_identity.clone())
+                .collect();
+            let repository = runtime.runtime_db().task_result_settlements();
+            let original = repository
+                .latest_for_message(&admitted[0].message_id)
+                .unwrap()
+                .unwrap();
+            for mutation in [
+                "identity",
+                "generation",
+                "parent",
+                "selector",
+                "owner",
+                "trust",
+                "surface",
+                "admission",
+            ] {
+                let mut corrupt = source.clone();
+                match mutation {
+                    "identity" => {
+                        corrupt
+                            .source_refs
+                            .insert("task_result_identity".into(), "foreign".into());
+                    }
+                    "generation" => {
+                        corrupt
+                            .source_refs
+                            .insert("task_result_rejoin_generation".into(), "99".into());
+                    }
+                    "parent" => {
+                        corrupt
+                            .source_refs
+                            .insert("task_result_parent_turn_id".into(), "foreign".into());
+                    }
+                    "selector" => {
+                        corrupt
+                            .source_refs
+                            .insert("task_result_message_id".into(), "foreign".into());
+                    }
+                    "owner" => corrupt.work_item_id = Some("foreign".into()),
+                    "trust" => corrupt.authority_class = AuthorityClass::ExternalEvidence,
+                    "surface" => {
+                        corrupt.delivery_surface = Some(MessageDeliverySurface::HttpControlPrompt)
+                    }
+                    "admission" => {
+                        corrupt.admission_context = Some(AdmissionContext::ControlAuthenticated)
+                    }
+                    _ => unreachable!(),
+                }
+                runtime
+                    .runtime_db()
+                    .transaction(|tx| {
+                        tx.execute(
+                            "UPDATE messages SET payload_json = ?1 WHERE message_id = ?2",
+                            rusqlite::params![serde_json::to_string(&corrupt)?, source.id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                assert!(
+                    repository
+                        .admit_reply_message_snapshot(
+                            "default",
+                            Some(&owner.id),
+                            &reply,
+                            activation,
+                            &selected,
+                            Utc::now(),
+                        )
+                        .unwrap()
+                        .is_empty(),
+                    "{mutation}"
+                );
+                assert_eq!(
+                    repository
+                        .latest_for_message(&original.message_id)
+                        .unwrap()
+                        .unwrap(),
+                    original
+                );
+            }
+            runtime
+                .runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE messages SET payload_json = ?1 WHERE message_id = ?2",
+                        rusqlite::params![serde_json::to_string(source)?, source.id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(
+                repository
+                    .admit_reply_message_snapshot(
+                        "default",
+                        Some(&owner.id),
+                        &reply,
+                        activation,
+                        &selected,
+                        Utc::now(),
+                    )
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                repository
+                    .latest_for_message(&original.message_id)
+                    .unwrap()
+                    .unwrap()
+                    .recovery_attempts,
+                1
+            );
+            assert!(provider.requests.lock().await.is_empty());
+            continue;
+        }
+        let recovered = Box::pin(process_result_batch(runtime, scheduled)).await;
+        for original in &admitted {
+            assert!(
+                recovered
+                    .iter()
+                    .any(|record| record.result_identity == original.result_identity),
+                "missing admission; recovered: {:?}; current: {:?}",
+                recovered,
+                runtime
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(&original.message_id)
+                    .unwrap()
+            );
+            let record = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&original.message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                record.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+            assert_eq!(record.recovery_attempts, 1);
+            assert_eq!(record.work_item_id, original.work_item_id);
+        }
+        assert_eq!(provider.requests.lock().await.len(), 1);
+        assert_eq!(
+            runtime
+                .storage()
+                .read_message_by_id(&reply)
+                .unwrap()
+                .unwrap()
+                .turn_id,
+            original_stamp,
+        );
+    }
 }
 
 #[tokio::test]

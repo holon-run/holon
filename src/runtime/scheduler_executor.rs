@@ -1265,6 +1265,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(false);
         }
+        if message.source_refs.contains_key("wait_id") {
+            return Ok(self
+                .runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .exact_waiter_recovery_source(message)?
+                .is_some());
+        }
         if let Some(owner_key) = message.source_refs.get("task_result_owner_key") {
             let records = self
                 .runtime
@@ -1396,12 +1405,29 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             Ok(task) => task.as_ref(),
             Err(_) => return Ok(CanonicalClaimOutcome::ReduceOnly),
         };
-        let Some(candidate) = scheduler::canonical_activation_candidate(
-            message,
-            dispatch_plan.continuation_resolution.as_ref(),
-            task,
-        )?
-        else {
+        let repaired_wait = matches!(
+            &message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
+        ) && self
+            .runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .exact_waiter_recovery_source(message)?
+            .is_some();
+        let candidate = if repaired_wait {
+            Some(scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: message.work_item_id.clone(),
+                correlated_wait: message.source_refs.get("wait_id").cloned(),
+            })
+        } else {
+            scheduler::canonical_activation_candidate(
+                message,
+                dispatch_plan.continuation_resolution.as_ref(),
+                task,
+            )?
+        };
+        let Some(candidate) = candidate else {
             return Ok(if model_reentry {
                 CanonicalClaimOutcome::RejectQueued {
                     scenario_class:
@@ -1430,8 +1456,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
         let original_candidate = candidate.clone();
-        let mut scenario =
-            scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?;
+        let existing_execution = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&message.agent_id)?;
+        let interrupted_exact_wait = if repaired_wait {
+            self.interrupted_exact_wait_recovery(message, existing_execution.as_ref())?
+        } else {
+            None
+        };
+        let mut scenario = match &interrupted_exact_wait {
+            Some((scenario, _)) => Some(scenario.clone()),
+            None => {
+                scheduler::resolve_canonical_activation_scenario(projection, message, candidate)?
+            }
+        };
         if scenario.is_none() && task.is_some_and(TaskRecord::terminal_reentry) {
             if let scheduler::CanonicalActivationCandidate::ExactTaskRejoin {
                 task_id,
@@ -1501,12 +1542,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             ));
         };
 
-        let existing_execution = self
-            .runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&message.agent_id)?;
         if scenario.work_item_id().is_none() {
             return self.plan_canonical_lifecycle_activation_claim(
                 message,
@@ -1675,7 +1710,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let authoritative_work = existing_execution
             .as_ref()
             .and_then(|state| state.work_items.get(work_item_id));
-        let interrupted_task_result_attempt = if matches!(
+        let interrupted_task_result_attempt = if let Some((_, attempt)) = interrupted_exact_wait {
+            Some(attempt)
+        } else if matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. }
         ) {
@@ -1906,6 +1943,96 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
+    fn interrupted_exact_wait_recovery(
+        &self,
+        message: &MessageEnvelope,
+        execution: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+    ) -> Result<
+        Option<(
+            scheduler::CanonicalActivationScenario,
+            crate::domain::execution_protocol::ExecutionAttempt,
+        )>,
+    > {
+        use crate::domain::execution_protocol::{
+            ExecutionAttemptState, ExecutionSourceIdentity, ExecutionWaitIngress,
+            WorkItemExecutionState,
+        };
+
+        let Some(execution) = execution else {
+            return Ok(None);
+        };
+        let Some(work_item_id) = message.work_item_id.as_ref() else {
+            return Ok(None);
+        };
+        if !self
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)?
+            .is_some_and(|queue| queue.status == QueueEntryStatus::Interrupted)
+        {
+            return Ok(None);
+        }
+        let Some(wait) = self
+            .runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .exact_waiter_recovery_replay_wait(message)?
+        else {
+            return Ok(None);
+        };
+        if !execution.work_items.get(work_item_id).is_some_and(|work| {
+            matches!(
+                &work.state,
+                WorkItemExecutionState::Runnable {
+                    recovery_ref: Some(recovery_ref),
+                    ..
+                } if recovery_ref == "interrupted"
+            )
+        }) {
+            return Ok(None);
+        }
+        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: crate::domain::scheduler::SchedulerOwner::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
+            wait_id: wait.id.clone(),
+        };
+        let expected_source = ExecutionSourceIdentity::TriggeredWait {
+            wait_id: wait.id,
+            trigger_message_id: message.id.clone(),
+            ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+        };
+        // Resolved waits stay terminal. Only their interrupted canonical leaf
+        // can replay the same immutable source, never a replacement wait.
+        let matching = execution
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt.state == ExecutionAttemptState::Interrupted
+                    && attempt.source.identity == expected_source
+                    && message.message_seq == Some(attempt.source.generation)
+                    && attempt.admitted_fences.source_revision == attempt.source.generation
+                    && canonical_lifecycle_attempt_lineage_is_valid(
+                        execution,
+                        message,
+                        &scenario,
+                        &attempt.attempt_id,
+                    )
+                    && !execution.attempts.values().any(|successor| {
+                        successor.recovery_of_attempt_id.as_deref()
+                            == Some(attempt.attempt_id.as_str())
+                    })
+            })
+            .collect::<Vec<_>>();
+        let [attempt] = matching.as_slice() else {
+            return Ok(None);
+        };
+        Ok(Some((scenario, (*attempt).clone())))
+    }
+
     fn plan_canonical_lifecycle_activation_claim(
         &self,
         message: &MessageEnvelope,
@@ -1913,6 +2040,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         existing_execution: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     ) -> Result<CanonicalClaimOutcome> {
+        let repaired_wait = matches!(
+            &message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
+        ) && self
+            .runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .exact_waiter_recovery_source(message)?
+            .is_some();
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactWaitResume { owner, wait_id }
                 if owner
@@ -1935,7 +2072,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                     | crate::types::WaitConditionStatus::Resolved
                             )
                             && condition.trigger_message_id() == Some(message.id.as_str())
-                            && scheduler::message_matches_wait_condition(message, condition)
+                            && (scheduler::message_matches_wait_condition(message, condition)
+                                || (repaired_wait
+                                    && message.source_refs.get("wait_id") == Some(wait_id)))
                     });
                 if matching.is_none() {
                     return Ok(CanonicalClaimOutcome::RejectQueued {
@@ -2002,8 +2141,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: "canonical_execution_attempt_replay_conflict",
             });
         }
-        let recovery_of_attempt_id = if let Some(source) = provider_source {
-            Some(source.predecessor.attempt_id)
+        let recovery_of_attempt_id = if provider_source.is_some() {
+            let Some(predecessor) =
+                self.provider_recovery_source_attempt_id(message, existing_execution.as_ref())?
+            else {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_provider_recovery_replay_exhausted",
+                });
+            };
+            Some(predecessor)
         } else {
             match self.canonical_lifecycle_recovery(
                 message,
@@ -2506,11 +2653,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let Some(execution) = execution else {
             return Ok(None);
         };
-        Ok(
+        let Ok(source) =
             super::provider_recovery::resolve(&self.runtime.inner.storage, message, execution)
-                .ok()
-                .map(|source| source.predecessor.attempt_id),
-        )
+        else {
+            return Ok(None);
+        };
+        let interrupted = self
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)?
+            .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted);
+        Ok(if interrupted {
+            source
+                .interrupted_initial_attempt(message, execution)
+                .map(|attempt| attempt.attempt_id.clone())
+        } else {
+            Some(source.predecessor.attempt_id)
+        })
     }
 
     async fn defer_or_quarantine_queue_head(

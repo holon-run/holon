@@ -1146,6 +1146,219 @@ fn completed_reply_attachment_tx(
         .filter(|attached| attached.turn_id == turn_id))
 }
 
+pub(super) fn closed_admitted_reply_owner_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<Option<crate::types::TurnOwner>> {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+    use crate::types::TurnTerminalKind;
+
+    if record.state != TaskResultSettlementState::CallerAdmitted
+        || !super::record_matches_durable_task_tx(tx, record)?
+        || super::latest_for_message_tx(tx, &record.message_id)?.as_ref() != Some(record)
+    {
+        return Ok(None);
+    }
+    let Some(id) = record.activation_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(attempt) = super::reply_admission_attempt_tx(tx, &record.agent_id, id)? else {
+        return Ok(None);
+    };
+    if !matches!(
+        attempt.state,
+        ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
+    ) {
+        return Ok(None);
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [&record.message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let result: MessageEnvelope = serde_json::from_str(&payload)?;
+    let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&result) else {
+        return Ok(None);
+    };
+    let turn = if let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? {
+        turn
+    } else {
+        // Batchless initial reply anchors are identified by their canonical
+        // attempt and source, never by a different message's recovery lineage.
+        if attempt.source_message_id.as_deref() != Some(reply_id)
+            || attempt.recovery_of_attempt_id.is_some()
+        {
+            return Ok(None);
+        }
+        let payload: Option<String> = tx
+            .query_row(
+                "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+                params![record.agent_id, attempt.turn_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(payload) = payload else {
+            return Ok(None);
+        };
+        serde_json::from_str::<TurnRecord>(&payload)?
+    };
+    Ok((turn_matches_attempt_source(&turn, &attempt)
+        && (turn.input_message_ids.iter().any(|id| id == reply_id)
+            || admitted_recovery_snapshot_matches_tx(tx, record, &attempt, &turn)?)
+        && turn.terminal.as_ref().is_some_and(|terminal| {
+            matches!(
+                terminal.kind,
+                TurnTerminalKind::Aborted
+                    | TurnTerminalKind::Interrupted
+                    | TurnTerminalKind::DeferredToFallback
+                    | TurnTerminalKind::ProviderFailedNeedsRecovery
+            )
+        }))
+    .then(|| turn.effective_owner()))
+}
+
+/// Recovery renders admitted results separately from the wake's ordinary input
+/// batch. Its selected-identity ledger, not processed queue state, is the grant.
+fn admitted_recovery_snapshot_matches_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    turn: &TurnRecord,
+) -> Result<bool> {
+    use crate::domain::execution_protocol::{
+        ExecutionAttemptState, ExecutionSourceIdentity, ExecutionWaitIngress,
+    };
+
+    let Some(source_id) = attempt.source_message_id.as_deref() else {
+        return Ok(false);
+    };
+    let Some(source) = message_tx(tx, source_id)? else {
+        return Ok(false);
+    };
+    let canonical_source = match &attempt.source.identity {
+        ExecutionSourceIdentity::QueueMessage { message_id }
+        | ExecutionSourceIdentity::InternalFollowup { message_id } => message_id == source_id,
+        ExecutionSourceIdentity::TriggeredWait {
+            trigger_message_id,
+            ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+            ..
+        } => trigger_message_id == source_id,
+        _ => false,
+    };
+    if !canonical_source
+        || source.id != source_id
+        || source.agent_id != record.agent_id
+        || source.work_item_id.as_deref() != turn.effective_owner().work_item_id()
+        || source.kind != MessageKind::InternalFollowup
+        || !matches!(&source.origin, MessageOrigin::System { subsystem } if subsystem == "task_result_recovery")
+        || source.authority_class != AuthorityClass::RuntimeInstruction
+        || source.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+        || source.admission_context != Some(AdmissionContext::RuntimeOwned)
+    {
+        return Ok(false);
+    }
+    let Some(selector) = source.source_refs.get("task_result_message_id") else {
+        return Ok(false);
+    };
+    let Some(anchor) = super::latest_for_message_tx(tx, selector)? else {
+        return Ok(false);
+    };
+    if !super::record_matches_durable_task_tx(tx, &anchor)?
+        || anchor.agent_id != record.agent_id
+        || source.source_refs.get("task_result_identity") != Some(&anchor.result_identity)
+        || source.source_refs.get("task_result_parent_turn_id") != Some(&anchor.parent_turn_id)
+        || source.source_refs.get("task_result_rejoin_generation")
+            != Some(&anchor.rejoin_generation.to_string())
+        || (anchor.result_identity != record.result_identity
+            && (anchor.work_item_id.as_deref() != source.work_item_id.as_deref()
+                || record.work_item_id != source.work_item_id))
+    {
+        return Ok(false);
+    }
+    let mut root = attempt.clone();
+    let mut seen = BTreeSet::from([root.attempt_id.clone()]);
+    while let Some(prior_id) = root.recovery_of_attempt_id.as_deref() {
+        let Some(prior) = super::reply_admission_attempt_tx(tx, &record.agent_id, prior_id)? else {
+            return Ok(false);
+        };
+        if prior.source_message_id != root.source_message_id {
+            break;
+        }
+        if seen.len() >= 64
+            || !seen.insert(prior.attempt_id.clone())
+            || prior.binding != root.binding
+            || prior.state != ExecutionAttemptState::Interrupted
+        {
+            return Ok(false);
+        }
+        root = prior;
+    }
+    // Rearming resets the budget epoch, not the last admitted snapshot's grant.
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_result_recovery_admissions
+         WHERE result_identity = ?1 AND root_attempt_id = ?2 AND recovery_epoch <= ?3)",
+        params![
+            record.result_identity,
+            root.attempt_id,
+            record.recovery_epoch
+        ],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub(super) fn closed_recovery_admission_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+) -> Result<
+    Option<(
+        crate::domain::execution_protocol::ExecutionAttempt,
+        TurnRecord,
+    )>,
+> {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    if record.state != TaskResultSettlementState::CallerAdmitted
+        || !super::record_matches_durable_task_tx(tx, record)?
+        || super::latest_for_message_tx(tx, &record.message_id)?.as_ref() != Some(record)
+    {
+        return Ok(None);
+    }
+    let Some(activation_id) = record.activation_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(attempt) = super::reply_admission_attempt_tx(tx, &record.agent_id, activation_id)?
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        attempt.state,
+        ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
+    ) {
+        return Ok(None);
+    }
+    let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? else {
+        return Ok(None);
+    };
+    if !turn.terminal.as_ref().is_some_and(|terminal| {
+        matches!(
+            terminal.kind,
+            TurnTerminalKind::Interrupted
+                | TurnTerminalKind::DeferredToFallback
+                | TurnTerminalKind::ProviderFailedNeedsRecovery
+        )
+    }) || !admitted_recovery_snapshot_matches_tx(tx, record, &attempt, &turn)?
+    {
+        return Ok(None);
+    }
+    Ok(Some((attempt, turn)))
+}
+
 pub(super) fn consumed_reply_owner_matches_tx(
     tx: &Transaction<'_>,
     task: &TaskRecord,

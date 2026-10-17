@@ -8,6 +8,8 @@ use crate::types::{
 };
 use chrono::{DateTime, Utc};
 
+mod task_result_repair;
+
 struct ReplacedWaitConditions {
     records: Vec<WaitConditionRecord>,
     cancelled_ids: Vec<String>,
@@ -32,6 +34,19 @@ fn task_wait_preserves_blocker(
 impl PreparedWaitForSettlement {
     pub(crate) fn outcome(&self) -> WaitForRegistrationOutcome {
         if let Some(admission) = self.command.task_result_admission.as_ref() {
+            if admission.obligation.canonical_recovery {
+                return WaitForRegistrationOutcome::TaskResultRecoveryQueued {
+                    task_id: self
+                        .expected_task
+                        .as_ref()
+                        .expect("task admission expectation")
+                        .id
+                        .clone(),
+                    result_message_id: admission.obligation.source_message_id.clone(),
+                    recovery_message_id: admission.message.id.clone(),
+                    wait_condition_id: self.registration.condition.id.clone(),
+                };
+            }
             WaitForRegistrationOutcome::TaskResultQueued {
                 task_id: self
                     .expected_task
@@ -131,9 +146,31 @@ pub(crate) enum WaitForRegistrationOutcome {
         result_message_id: String,
         wait_condition_id: String,
     },
+    TaskResultRecoveryQueued {
+        task_id: String,
+        result_message_id: String,
+        recovery_message_id: String,
+        wait_condition_id: String,
+    },
     TaskResultAlreadyConsumed {
         task_id: String,
         result_message_id: String,
+        settlement_disposition: crate::runtime_db::TaskResultSettlementDisposition,
+    },
+    TaskResultAlreadyAdmitted {
+        task_id: String,
+        result_message_id: String,
+        activation_id: String,
+    },
+    TaskResultInFlight {
+        task_id: String,
+        result_message_id: String,
+        activation_id: String,
+    },
+    TaskResultUnavailable {
+        task_id: String,
+        result_message_id: String,
+        reason: String,
     },
     TaskResultClaimedByOtherWaiter {
         task_id: String,
@@ -283,6 +320,11 @@ impl RuntimeHandle {
                 task_id,
                 result_message_id,
                 wait_condition_id: _,
+            }
+            | WaitForRegistrationOutcome::TaskResultRecoveryQueued {
+                task_id,
+                result_message_id,
+                ..
             } => Err(RuntimeError::validation(
                 "task_result_already_queued",
                 format!(
@@ -293,13 +335,23 @@ impl RuntimeHandle {
             WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
                 task_id,
                 result_message_id,
+                settlement_disposition,
             } => Err(RuntimeError::validation(
-                "task_result_already_consumed",
+                "task_result_settled",
                 format!(
-                    "task {task_id} result was already consumed: {result_message_id}"
+                    "task {task_id} result {result_message_id} settled: {settlement_disposition:?}"
                 ),
             )
             .into()),
+            WaitForRegistrationOutcome::TaskResultAlreadyAdmitted { task_id, .. }
+            | WaitForRegistrationOutcome::TaskResultInFlight { task_id, .. }
+            | WaitForRegistrationOutcome::TaskResultUnavailable { task_id, .. } => {
+                Err(RuntimeError::validation(
+                    "task_result_wait_not_registered",
+                    format!("task {task_id} result does not require a new wait"),
+                )
+                .into())
+            }
             WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter {
                 task_id,
                 result_message_id,
@@ -821,6 +873,83 @@ impl RuntimeHandle {
                 .with_safe_context("task_id", &task.id)
                 .with_safe_context("result_message_id", &result_message_id)
             })?;
+        let settlement_record = self
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(&result_message_id)?;
+        let Some(settlement_record) = settlement_record else {
+            return Ok(PrepareWaitForOutcome::Immediate(
+                WaitForRegistrationOutcome::TaskResultUnavailable {
+                    task_id: task.id,
+                    result_message_id,
+                    reason: "legacy_untracked_result".into(),
+                },
+            ));
+        };
+        let state = self.agent_state().await?;
+        let current_activation_id = state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.activation_id.as_deref());
+        use crate::runtime_db::task_result_settlement::TaskResultObligation;
+        let obligation = self
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .classify_obligation(
+                &settlement_record,
+                current_activation_id,
+                waiter_work_item_id.as_deref(),
+            )?;
+        let immediate = match obligation {
+            TaskResultObligation::AlreadyAdmitted { activation_id } => {
+                Some(WaitForRegistrationOutcome::TaskResultAlreadyAdmitted {
+                    task_id: task.id.clone(),
+                    result_message_id: result_message_id.clone(),
+                    activation_id,
+                })
+            }
+            TaskResultObligation::InFlight { activation_id } => {
+                Some(WaitForRegistrationOutcome::TaskResultInFlight {
+                    task_id: task.id.clone(),
+                    result_message_id: result_message_id.clone(),
+                    activation_id,
+                })
+            }
+            TaskResultObligation::Settled { disposition } => {
+                Some(WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
+                    task_id: task.id.clone(),
+                    result_message_id: result_message_id.clone(),
+                    settlement_disposition: disposition,
+                })
+            }
+            TaskResultObligation::ClaimedByOtherWaiter {
+                wait_condition_id,
+                work_item_id,
+            } => Some(WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter {
+                task_id: task.id.clone(),
+                result_message_id: result_message_id.clone(),
+                wait_condition_id,
+                claimed_by_work_item_id: work_item_id,
+            }),
+            TaskResultObligation::Paused | TaskResultObligation::InvalidOrStale => {
+                Some(WaitForRegistrationOutcome::TaskResultUnavailable {
+                    task_id: task.id.clone(),
+                    result_message_id: result_message_id.clone(),
+                    reason: if obligation == TaskResultObligation::Paused {
+                        "recovery_paused_requires_operator"
+                    } else {
+                        "invalid_or_stale_result"
+                    }
+                    .into(),
+                })
+            }
+            TaskResultObligation::Recoverable => None,
+        };
+        if let Some(outcome) = immediate {
+            return Ok(PrepareWaitForOutcome::Immediate(outcome));
+        }
         let result_message = if let Some(reply_id) =
             crate::wake_contract::agent_message_reply_reference(&result_message)
         {
@@ -838,24 +967,22 @@ impl RuntimeHandle {
             .latest_queue_entries()?
             .into_iter()
             .find(|entry| entry.message_id == result_message_id);
-        if existing_entry.as_ref().is_some_and(|entry| {
+        let source_message_id = result_message_id.clone();
+        let source_queue = existing_entry.clone();
+        let canonical_recovery = existing_entry.as_ref().is_some_and(|entry| {
             matches!(
                 entry.status,
                 QueueEntryStatus::Dequeued
                     | QueueEntryStatus::Interjected
                     | QueueEntryStatus::Processed
-                    | QueueEntryStatus::Aborted
-                    | QueueEntryStatus::Dropped
-                    | QueueEntryStatus::Quarantined
             )
-        }) {
-            return Ok(PrepareWaitForOutcome::Immediate(
-                WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
-                    task_id: task.id,
-                    result_message_id,
-                },
-            ));
-        }
+        });
+        let (result_message, existing_entry) = if canonical_recovery {
+            self.task_result_repair_source(&settlement_record, waiter_work_item_id.as_deref())?
+        } else {
+            (result_message, existing_entry)
+        };
+        let result_message_id = result_message.id.clone();
         let agent_wait_conditions = self
             .inner
             .storage
@@ -908,7 +1035,7 @@ impl RuntimeHandle {
         // admission. Without this record the terminal result can be resolved
         // as liveness_only and the agent never re-enters the model.
         let current_turn_id = self.agent_state().await?.current_turn_id.clone();
-        let condition = existing_condition.unwrap_or_else(|| WaitConditionRecord {
+        let mut condition = existing_condition.unwrap_or_else(|| WaitConditionRecord {
             id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
             agent_id: task.agent_id.clone(),
             work_item_id: waiter_work_item_id.clone(),
@@ -938,6 +1065,19 @@ impl RuntimeHandle {
             trigger_message_id: Some(result_message_id.clone()),
             triggered_at: Some(now),
         });
+        let mut result_message = result_message;
+        if canonical_recovery {
+            condition.status = WaitConditionStatus::Triggered;
+            condition.resolved_at = None;
+            condition.updated_at = now;
+            condition.trigger_message_id = Some(result_message.id.clone());
+            condition.triggered_at = Some(now);
+            if existing_entry.is_none() {
+                result_message
+                    .source_refs
+                    .insert("wait_id".into(), condition.id.clone());
+            }
+        }
         let replaced = replace_wait_conditions(
             self.inner
                 .storage
@@ -1101,7 +1241,8 @@ impl RuntimeHandle {
             .len()
             .saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
-        committed_state.total_message_count = self.inner.storage.count_messages()?;
+        committed_state.total_message_count = self.inner.storage.count_messages()?
+            + usize::from(canonical_recovery && existing_entry.is_none());
         scheduler::apply_message_wake_projection(&mut committed_state);
         if let (Some(work_item_id), Some(updated)) =
             (waiter_work_item_id.as_deref(), work_item.as_ref())
@@ -1157,6 +1298,15 @@ impl RuntimeHandle {
                             message: result_message,
                             expected: existing_entry,
                             record: queue_entry,
+                            obligation: crate::runtime_db::transitions::WaitTaskResultObligation {
+                                expected: settlement_record,
+                                current_activation_id: current_activation_id.map(str::to_owned),
+                                waiter_work_item_id,
+                                canonical_recovery,
+                                source_message_id,
+                                source_queue,
+                                wait_conditions: agent_wait_conditions,
+                            },
                         },
                     ),
                     agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {

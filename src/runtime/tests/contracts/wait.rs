@@ -6,6 +6,8 @@ use crate::types::{
 };
 use chrono::DateTime;
 
+mod obligation;
+
 fn task_result_message(task_id: &str) -> MessageEnvelope {
     MessageEnvelope::new(
         "default",
@@ -68,6 +70,27 @@ fn late_task_result_message(task_id: &str, work_item_id: &str) -> MessageEnvelop
     message.work_item_id = Some(work_item_id.into());
     message.turn_id = Some("turn-late-task-result".into());
     message
+}
+
+async fn persist_unqueued_terminal_result(
+    harness: &LifecycleHarness,
+    task: &TaskRecord,
+    message: &MessageEnvelope,
+) {
+    harness
+        .runtime()
+        .persist_task_transition_with_message(task, "task_status_updated", message)
+        .await
+        .unwrap();
+    // Model the durable result before queue admission, including its obligation.
+    harness
+        .runtime()
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .ensure_pending(task, message, harness.now())
+        .unwrap()
+        .expect("terminal fixture has a result obligation");
 }
 
 fn persist_open_work_execution(
@@ -376,11 +399,7 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
             .unwrap();
         let result_message = late_task_result_message("task-late-atomic", &work_item.id);
         let terminal = terminal_task_with_result(&running, &result_message, harness.now());
-        harness
-            .runtime()
-            .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
-            .await
-            .unwrap();
+        persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
         persist_open_work_execution(&harness, &work_item, "attempt-late-atomic");
         let before = harness.snapshot();
         let execution_before = harness
@@ -543,11 +562,7 @@ async fn wait_tool_classifies_before_requesting_final_report_without_mutation() 
         if completed {
             let message = late_task_result_message(&running.id, &work_item.id);
             let terminal = terminal_task_with_result(&running, &message, harness.now());
-            harness
-                .runtime()
-                .persist_task_transition_with_message(&terminal, "task_status_updated", &message)
-                .await
-                .unwrap();
+            persist_unqueued_terminal_result(&harness, &terminal, &message).await;
         }
         let before = harness.snapshot();
         for delivery in ["silent", "final"] {
@@ -627,11 +642,8 @@ async fn wait_tool_classifies_before_requesting_final_report_without_mutation() 
 }
 
 #[tokio::test]
-async fn late_task_result_terminal_queue_states_are_already_consumed() {
+async fn revoked_task_result_queue_states_are_unavailable_not_consumed() {
     for status in [
-        QueueEntryStatus::Dequeued,
-        QueueEntryStatus::Interjected,
-        QueueEntryStatus::Processed,
         QueueEntryStatus::Aborted,
         QueueEntryStatus::Dropped,
         QueueEntryStatus::Quarantined,
@@ -645,11 +657,7 @@ async fn late_task_result_terminal_queue_states_are_already_consumed() {
         let running = running_task("task-late-consumed", &work_item.id, harness.now());
         let result_message = late_task_result_message("task-late-consumed", &work_item.id);
         let terminal = terminal_task_with_result(&running, &result_message, harness.now());
-        harness
-            .runtime()
-            .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
-            .await
-            .unwrap();
+        persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
         harness
             .runtime()
             .storage()
@@ -679,10 +687,12 @@ async fn late_task_result_terminal_queue_states_are_already_consumed() {
 
         assert!(matches!(
             outcome,
-            WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
+            WaitForRegistrationOutcome::TaskResultUnavailable {
                 task_id,
                 result_message_id,
+                reason,
             } if task_id == terminal.id && result_message_id == result_message.id
+                && reason == "invalid_or_stale_result"
         ));
         harness.assert_unchanged(&before);
         for delivery in ["silent", "final"] {
@@ -748,11 +758,7 @@ async fn late_task_result_agent_scope_registers_triggered_wait_and_replaces_stal
     result_message.task_id = Some("task-late-agent-scope".into());
     result_message.turn_id = Some("turn-late-task-agent-scope".into());
     let terminal = terminal_task_with_result(&running, &result_message, harness.now());
-    harness
-        .runtime()
-        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
-        .await
-        .unwrap();
+    persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
 
     let outcome = harness
         .runtime()
@@ -988,13 +994,10 @@ async fn terminal_task_result_fast_path_registers_requested_waiter() {
         AdmissionContext::RuntimeOwned,
     );
     result_message.task_id = Some("task-terminal-cross-owner".into());
+    result_message.work_item_id = Some(task_owner.id.clone());
     result_message.turn_id = Some("turn-terminal-cross-owner".into());
     let terminal = terminal_task_with_result(&running, &result_message, harness.now());
-    harness
-        .runtime()
-        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
-        .await
-        .unwrap();
+    persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
 
     // The terminal fast path settles the requested waiter even when the
     // task belongs to another WorkItem (#3124).
@@ -1071,13 +1074,10 @@ async fn terminal_fast_path_validates_requested_waiter_before_registering() {
         AdmissionContext::RuntimeOwned,
     );
     result_message.task_id = Some("task-terminal-unknown-waiter".into());
+    result_message.work_item_id = Some(task_owner.id.clone());
     result_message.turn_id = Some("turn-terminal-unknown-waiter".into());
     let terminal = terminal_task_with_result(&running, &result_message, harness.now());
-    harness
-        .runtime()
-        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
-        .await
-        .unwrap();
+    persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
 
     // The terminal fast path keeps the explicit-waiter ownership and
     // open-state restrictions of a normal registration (#3124).
@@ -1130,13 +1130,10 @@ async fn second_terminal_waiter_reports_claimed_waiter_without_duplicate_trigger
         AdmissionContext::RuntimeOwned,
     );
     result_message.task_id = Some("task-terminal-two-waiters".into());
+    result_message.work_item_id = Some(task_owner.id.clone());
     result_message.turn_id = Some("turn-terminal-two-waiters".into());
     let terminal = terminal_task_with_result(&running, &result_message, harness.now());
-    harness
-        .runtime()
-        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
-        .await
-        .unwrap();
+    persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
 
     let first = harness
         .runtime()

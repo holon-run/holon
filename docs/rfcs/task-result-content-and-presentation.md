@@ -17,8 +17,9 @@ task wait to the original response message. Admission reconciles accepted replie
 before the original message can outrun its asynchronous monitor. The original
 message claims the existing exact-wait authority and resolves the wait in the
 same transaction as its canonical activation. Reference signals are reducer-only.
-Late WaitFor uses the same original message and reports continue-turn when that
-message was already consumed. An explicit waiter in another WorkItem admits the
+Late WaitFor uses the same original message and the settlement obligation, not
+queue processing alone, to distinguish delivered, currently admitted, in-flight,
+recoverable and paused results. An explicit waiter in another WorkItem admits the
 promised task's settlement with its exact-wait activation; unrelated owners that
 observe the same reply retain their separate obligations. Cancellation does not consume the peer delivery.
 
@@ -30,6 +31,13 @@ current same-agent wait constraint; this change does not introduce general
 multi-owner notification fan-out or strict request/reply matching. Once the original
 reply is processed, non-selected observations settle as `reply_consumed_elsewhere`
 without claiming delivery to those owners or scheduling further rechecks.
+
+Provider fallback atomically inherits the validated predecessor's unsettled
+admission grant and input evidence before its first request. Successful terminal
+settlement belongs to the receiving activation; the immutable result, source
+message, captured task owner and ingress turn do not change. This includes live
+inputs and exact waiters in a different WorkItem. Failed attempts do not fabricate
+delivery. See [bounded input consumption](bounded-input-consumption.md).
 
 Runtime task results are presentation data, distinct from assistant responses.
 Model-reentry tasks publish their normal model response without a synthetic

@@ -226,6 +226,32 @@ live identities also require membership in its persisted batch.
 Recovery follows the persisted successor replay edge; claim-local envelope
 annotations are not immutable source evidence.
 
+### Provider fallback handoff
+
+A pre-output provider failure does not settle its admitted task results. Before
+the fallback's first provider request, one transaction revalidates the canonical
+open attempt, owner/control fences, durable provider recovery directive and
+complete terminal predecessor chain. It transfers only those predecessors'
+unsettled admitted result identities to the new activation. It never requeues
+an original result message, rewrites an ingress turn, migrates the captured task
+owner, or selects other pending inputs. An inherited exact-wait grant may belong
+to a different WorkItem from the captured task owner.
+
+The transaction persists inherited input evidence and audit references with the
+activation rebind. Existing provider-recovery context renders the validated root,
+initial batches and predecessor turns; pending results are read from the current
+activation. Inherited live batches retain immutable safe points and count toward
+the four-batch, 32-identity, 96-KiB cumulative limit, rather than being clipped by
+the eight-result initial admission limit. Reentry is idempotent; same-message
+interrupted fallback attempts require their own persisted replay edges in
+addition to provider lineage. Original input envelopes and source snapshots
+remain unchanged. Context that cannot preserve admitted evidence must fail
+closed, not silently consume hidden results.
+
+Only the accepted terminal of the receiving activation records model delivery.
+A failed fallback leaves its obligation pending for another validated handoff
+or bounded recovery. Queue claim/processing alone is never that terminal fact.
+
 ## Ordinary wake hints and external events
 
 Ordinary wake hints mean "check durable sources" and coalesce by recipient agent,

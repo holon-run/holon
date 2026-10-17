@@ -801,11 +801,13 @@ pub fn build_context_with_default_external_ingress(
         true,
     ));
     if let Some(source) = recovery_source.as_ref() {
-        let parts: Vec<_> = source
-            .source_turns
-            .iter()
-            .filter_map(|turn| render_recovery_input_batches(turn, &mut seen_messages))
-            .collect();
+        let mut parts = Vec::new();
+        for turn in &source.source_turns {
+            if let Some(content) = render_recovery_input_batches(storage, turn, &mut seen_messages)?
+            {
+                parts.push(content);
+            }
+        }
         if !parts.is_empty() {
             let section = turn_section("recovery_input_batches", parts.join("\n"));
             candidates.push(context_candidate(section.clone(), Some(section), true));
@@ -1490,9 +1492,10 @@ fn render_pending_task_result_records_excluding(
 }
 
 fn render_recovery_input_batches(
+    storage: &AppStorage,
     turn: &TurnRecord,
     seen_messages: &mut BTreeSet<String>,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let mut parts = Vec::new();
     if let Some(batch) = turn.idle_input_batch.as_ref() {
         let mut visible = batch.clone();
@@ -1506,13 +1509,20 @@ fn render_recovery_input_batches(
     if let Some(content) = render_live_input_batches(&turn.live_input_batches, seen_messages) {
         parts.push(content);
     }
-    (!parts.is_empty()).then(|| {
+    if let Some(content) = crate::runtime::input_consumption::render_admitted_operator_inputs(
+        storage,
+        turn,
+        seen_messages,
+    )? {
+        parts.push(content);
+    }
+    Ok((!parts.is_empty()).then(|| {
         format!(
             "Provider recovery evidence from source turn {} (original provenance):\n{}",
             turn.turn_id,
             parts.join("\n")
         )
-    })
+    }))
 }
 
 fn render_live_input_batches(
@@ -7976,7 +7986,11 @@ mod tests {
         ];
         let mut seen =
             BTreeSet::from(["root".into(), "current-input".into(), "current-idle".into()]);
-        let rendered = render_recovery_input_batches(&source, &mut seen).unwrap();
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let rendered = render_recovery_input_batches(&storage, &source, &mut seen)
+            .unwrap()
+            .unwrap();
         assert!(rendered.contains("source turn validated-source-turn (original provenance)"));
         assert!(!rendered.contains("already anchored"));
         assert!(!rendered.contains("already projected"));
