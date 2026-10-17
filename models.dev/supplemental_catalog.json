@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "5087b02d80c580601ae37826c6bfd37b84dd49545d34fc909ab7a9b123a12e31",
-  "adapter_version": "0.52.0 (5eb18b18-dirty)",
+  "upstream_revision": "f11359f4b3df31af3e62211d3585e8eec01c3c9dc88d9997d413621159335eeb",
+  "adapter_version": "0.52.0 (f366db50-dirty)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -240,32 +240,6 @@
         "low",
         "medium",
         "xhigh"
-      ],
-      "source": "models_dev_supplement"
-    },
-    {
-      "model_ref": "deepseek/deepseek-flash",
-      "display_name": "DeepSeek V4.1 Flash",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "low",
-        "high",
-        "max"
       ],
       "source": "models_dev_supplement"
     },

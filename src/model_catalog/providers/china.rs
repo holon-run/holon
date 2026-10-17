@@ -73,8 +73,9 @@ fn volcengine_route_definition(
 // Eligibility comes from the separate Coding/Agent Plan lists, not API models.
 // Public limits use "k" without an exact numeric definition; leave hard token
 // limits unset rather than inherit conflicting API or third-party values.
-fn reviewed_coding_model(
+fn reviewed_subscription_model(
     provider: &str,
+    endpoint: &str,
     model: &str,
     display_name: &str,
     supports_reasoning: bool,
@@ -89,7 +90,7 @@ fn reviewed_coding_model(
         model_ref: ModelRef::new(provider_id(provider), model),
         display_name: display_name.into(),
         description: format!(
-            "{provider} coding subscription {display_name}; exact token limits unconfirmed.{tier_note}"
+            "{provider} {endpoint} subscription {display_name}; exact token limits unconfirmed.{tier_note}"
         ),
         context_window_tokens: None,
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
@@ -107,7 +108,7 @@ fn reviewed_coding_model(
         },
         reasoning_effort_options: Vec::new(),
         source: ModelMetadataSource::ConservativeBuiltin,
-        endpoint: Some(ProviderEndpointId::parse("coding").expect("valid endpoint")),
+        endpoint: Some(ProviderEndpointId::parse(endpoint).expect("valid endpoint")),
     }
 }
 
@@ -1155,7 +1156,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ]
         .into_iter()
         .map(|(model, name, reasoning, image)| {
-            reviewed_coding_model("volcengine", model, name, reasoning, image)
+            reviewed_subscription_model("volcengine", "coding", model, name, reasoning, image)
         }),
     );
     // Reviewed independently against BytePlus Coding Plan, never copied from
@@ -1165,8 +1166,8 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             ("ark-code-latest", "Ark Code Latest", false, false),
             ("dola-seed-2.0-pro", "Dola Seed 2.0 Pro", false, false),
             ("dola-seed-2.0-lite", "Dola Seed 2.0 Lite", false, false),
-            ("dola-seed-2.0-code", "Dola Seed 2.0 Code", false, false),
-            ("bytedance-seed-code", "ByteDance Seed Code", false, false),
+            ("dola-seed-2.0-code", "Dola Seed 2.0 Code", false, true),
+            ("bytedance-seed-code", "ByteDance Seed Code", false, true),
             ("glm-5.3-flash", "GLM-5.3 Flash", false, true),
             ("glm-5.2", "GLM-5.2", false, false),
             ("glm-5.1", "GLM-5.1", false, false),
@@ -1183,9 +1184,37 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         ]
         .into_iter()
         .map(|(model, name, reasoning, image)| {
-            reviewed_coding_model("byteplus", model, name, reasoning, image)
+            reviewed_subscription_model("byteplus", "coding", model, name, reasoning, image)
         }),
     );
+    // Coding documents this alias independently of Agent Plan.
+    // The subscription routers below do not inherit underlying capabilities.
+    entries.extend([
+        reviewed_subscription_model(
+            "volcengine",
+            "coding",
+            "glm-latest",
+            "GLM-5.3 Latest",
+            true,
+            false,
+        ),
+        reviewed_subscription_model(
+            "dashscope",
+            "token-plan",
+            "auto",
+            "Token Plan Auto",
+            false,
+            false,
+        ),
+        reviewed_subscription_model(
+            "stepfun",
+            "plan",
+            "step-router-v1",
+            "Step Router V1",
+            false,
+            false,
+        ),
+    ]);
     // Endpoint eligibility is reviewed against the official Token Plan list.
     // Limits and tool support come from models.dev's alibaba-token-plan-cn,
     // not from the underlying vendors' API catalogs or official hard limits.
@@ -1243,5 +1272,60 @@ fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
     for endpoint in ["coding", "plan"] {
         let auto = ModelRouteRef::parse(&format!("volcengine@{endpoint}/Auto")).unwrap();
         assert!(catalog.get_route(&auto).is_none());
+    }
+}
+
+#[test]
+fn reviewed_byteplus_vision_and_volcengine_alias_are_endpoint_scoped() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for model in ["dola-seed-2.0-code", "bytedance-seed-code"] {
+            let route = ModelRouteRef::parse(&format!("byteplus@coding/{model}")).unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert!(metadata.capabilities.image_input);
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        }
+        let alias = ModelRouteRef::parse("volcengine@coding/glm-latest").unwrap();
+        assert!(catalog.get_route(&alias).is_some());
+        let metadata = catalog.get(&alias.model_ref()).unwrap();
+        assert!(metadata.capabilities.supports_reasoning);
+        assert_eq!(metadata.context_window_tokens, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        for unsupported in [
+            "volcengine@default/glm-latest",
+            "volcengine@plan/glm-latest",
+            "byteplus@coding/glm-latest",
+        ] {
+            let route = ModelRouteRef::parse(unsupported).unwrap();
+            assert!(catalog.get_route(&route).is_none(), "{unsupported}");
+        }
+    }
+}
+
+#[test]
+fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for (provider, endpoint, model) in [
+            ("dashscope", "token-plan", "auto"),
+            ("stepfun", "plan", "step-router-v1"),
+        ] {
+            let route = ModelRouteRef::parse(&format!("{provider}@{endpoint}/{model}")).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert!(!metadata.capabilities.image_input);
+            assert!(!metadata.capabilities.supports_reasoning);
+            assert!(metadata.reasoning_effort_options.is_empty());
+            let api = ModelRouteRef::parse(&format!("{provider}@default/{model}")).unwrap();
+            assert!(catalog.get_route(&api).is_none(), "{}", api.as_string());
+        }
     }
 }

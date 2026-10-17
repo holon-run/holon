@@ -432,6 +432,28 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("deepseek"), "deepseek-flash"),
+            display_name: "DeepSeek Flash".into(),
+            description: "DeepSeek Flash with image input through the Responses API.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: None,
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(
+                ProviderEndpointId::parse("responses").expect("valid built-in endpoint"),
+            ),
+        },
         fireworks_model(
             "accounts/fireworks/models/kimi-k2p6",
             "Kimi K2.6",

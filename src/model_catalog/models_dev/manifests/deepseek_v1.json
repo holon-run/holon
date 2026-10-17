@@ -8,12 +8,12 @@
       "transport": "openai_responses",
       "route_registration": "deepseek@responses",
       "model_id": {
-        "mode": "exact_or_pattern",
-        "allow": ["deepseek-v4-pro", "deepseek-v4-flash"]
+        "mode": "exact",
+        "allow": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"]
       },
       "capability_ceiling": {
         "tool_calling": true,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
         "reasoning": true,
         "structured_output": false
@@ -26,7 +26,7 @@
       "enabled": false,
       "provenance": {
         "owner": "holon",
-        "reviewed_at": "2026-08-31"
+        "reviewed_at": "2026-10-17"
       }
     }
   ]

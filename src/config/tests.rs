@@ -3761,13 +3761,40 @@ fn runtime_model_catalog_exposes_deepseek_responses_without_changing_default_rou
         responses_route.endpoint.runtime_config.base_url,
         "https://api.deepseek.com/v1"
     );
-    assert!(
-        responses_route
-            .endpoint
+    let search = responses_route
+        .endpoint
+        .runtime_config
+        .builtin_web_search
+        .as_ref()
+        .unwrap();
+    assert!(search.enabled);
+    assert_eq!(search.kind, ProviderNativeWebSearchKind::DeepSeek);
+    assert_eq!(search.advertised_tool_type, "web_search");
+    assert_eq!(search.backend_kind, "deepseek_web_search");
+    assert_eq!(
+        default_route
+            .provider_config()
+            .builtin_web_search
+            .as_ref()
+            .unwrap()
+            .advertised_tool_type,
+        "web_search_20250305"
+    );
+    // The default-derived endpoint retains the search seed; model resolution
+    // above translates it to the documented Responses tool contract.
+    assert_eq!(
+        catalog
+            .provider_endpoints
+            .iter()
+            .find(|endpoint| endpoint.provider.as_str() == "deepseek"
+                && endpoint.endpoint.as_str() == "responses")
+            .unwrap()
             .runtime_config
             .builtin_web_search
-            .is_none(),
-        "DeepSeek Responses ignores built-in tools, including web_search"
+            .as_ref()
+            .unwrap()
+            .advertised_tool_type,
+        "web_search_20250305"
     );
 
     assert_eq!(
@@ -3776,6 +3803,225 @@ fn runtime_model_catalog_exposes_deepseek_responses_without_changing_default_rou
             .as_string(),
         "deepseek@default/deepseek-v4-pro"
     );
+}
+
+#[test]
+fn runtime_model_catalog_deepseek_responses_search_is_model_specific() {
+    let mut fixture = test_app_config("deepseek/deepseek-v4-pro", &[]);
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    let mut runtime = built_ins.get(&deepseek).unwrap().clone();
+    runtime.credential = Some("test-deepseek-key".into());
+    fixture.config.providers.insert(deepseek, runtime);
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    for model in [
+        "deepseek-v4-pro",
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v3.2",
+    ] {
+        // Metadata resolution covers unknown/new model IDs without requiring catalog entries.
+        let metadata = catalog
+            .resolve_explicit_model_metadata(
+                &ContextConfig::default(),
+                &route_ref(&format!("deepseek@responses/{model}")),
+            )
+            .unwrap();
+        let supports_search = model == "deepseek-v4-pro";
+        assert_eq!(
+            metadata
+                .endpoint
+                .runtime_config
+                .builtin_web_search
+                .is_some(),
+            supports_search,
+            "{model} must only advertise documented Responses search"
+        );
+        let provider = crate::provider::OpenAiProvider::from_runtime_config(
+            &metadata.endpoint.runtime_config,
+            model,
+            1_024,
+            &fixture.config.home_dir,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::provider::AgentProvider::builtin_web_search(&provider).is_some(),
+            supports_search,
+            "{model} provider must preserve the model-specific search contract"
+        );
+    }
+}
+
+#[test]
+fn runtime_model_catalog_deepseek_responses_search_respects_disabled_configuration() {
+    let mut fixture = test_app_config("deepseek/deepseek-v4-pro", &[]);
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    for search in [
+        None,
+        Some(ProviderBuiltinWebSearchConfig {
+            enabled: false,
+            kind: ProviderNativeWebSearchKind::DeepSeek,
+            advertised_tool_type: "web_search_20250305".into(),
+            backend_kind: "deepseek_web_search".into(),
+        }),
+    ] {
+        let mut runtime = built_ins.get(&deepseek).unwrap().clone();
+        runtime.builtin_web_search = search;
+        fixture.config.providers.insert(deepseek.clone(), runtime);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+        let route = catalog
+            .resolve_explicit_model_route(
+                &ContextConfig::default(),
+                &route_ref("deepseek@responses/deepseek-v4-pro"),
+                ModelRouteCapability::Turn,
+            )
+            .unwrap();
+        assert!(route.provider_config().builtin_web_search.is_none());
+    }
+}
+
+#[test]
+fn runtime_model_catalog_deepseek_responses_search_respects_default_url_override() {
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    for (base_url, expected_responses_url, supports_search) in [
+        (
+            "https://api.deepseek.com/anthropic",
+            "https://api.deepseek.com/v1",
+            true,
+        ),
+        (
+            "https://api.deepseek.com/v1/",
+            "https://api.deepseek.com/v1",
+            true,
+        ),
+        (
+            "https://private.example/anthropic",
+            "https://private.example/v1",
+            false,
+        ),
+        (
+            "https://private.example/v1",
+            "https://private.example/v1",
+            false,
+        ),
+        (
+            "https://api.deepseek.com.private.example/anthropic",
+            "https://api.deepseek.com.private.example/v1",
+            false,
+        ),
+    ] {
+        let mut fixture = test_app_config("deepseek/deepseek-v4-pro", &[]);
+        let settings = HashMap::from([("HOLON_DEEPSEEK_BASE_URL".into(), base_url.into())]);
+        let built_ins = built_in_provider_registry_with_settings(&settings).unwrap();
+        let mut runtime = built_ins.get(&deepseek).unwrap().clone();
+        assert_eq!(runtime.base_url, base_url);
+        runtime.credential = Some("test-deepseek-key".into());
+        fixture.config.providers.insert(deepseek.clone(), runtime);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+        let route = catalog
+            .resolve_explicit_model_route(
+                &ContextConfig::default(),
+                &route_ref("deepseek@responses/deepseek-v4-pro"),
+                ModelRouteCapability::Turn,
+            )
+            .unwrap();
+        assert_eq!(route.provider_config().base_url, expected_responses_url);
+        assert_eq!(
+            route.provider_config().builtin_web_search.is_some(),
+            supports_search,
+            "search must stay isolated for default URL {base_url}"
+        );
+        let provider = crate::provider::OpenAiProvider::from_runtime_config(
+            route.provider_config(),
+            "deepseek-v4-pro",
+            1_024,
+            &fixture.config.home_dir,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::provider::AgentProvider::builtin_web_search(&provider).is_some(),
+            supports_search,
+            "provider must preserve search isolation for default URL {base_url}"
+        );
+    }
+}
+
+#[test]
+fn runtime_model_catalog_deepseek_responses_search_respects_private_endpoint_override() {
+    let mut fixture = test_app_config("deepseek/deepseek-v4-pro", &[]);
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    let responses = ProviderEndpointId::parse("responses").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    let runtime = built_ins.get(&deepseek).unwrap();
+    let mut stored_config = HolonConfigFile::default();
+    stored_config.providers.insert(
+        deepseek.clone(),
+        ProviderConfigFile {
+            transport: runtime.transport,
+            base_url: runtime.base_url.clone(),
+            auth: runtime.auth.clone(),
+            endpoints: BTreeMap::from([(
+                responses.clone(),
+                ProviderEndpointConfigFile {
+                    transport: Some(ProviderTransportKind::OpenAiResponses),
+                    base_url: Some("https://private.example/deepseek/v1".into()),
+                    ..Default::default()
+                },
+            )]),
+            plans: BTreeMap::from([(
+                "private".into(),
+                ProviderPlanConfigFile {
+                    endpoint: Some(responses.clone()),
+                },
+            )]),
+            ..Default::default()
+        },
+    );
+    fixture.config.providers = super::builtin_providers::resolve_provider_registry(
+        &stored_config,
+        &HashMap::new(),
+        &CredentialStoreFile::default(),
+    )
+    .unwrap();
+    assert!(
+        fixture.config.providers[&deepseek]
+            .builtin_web_search
+            .as_ref()
+            .unwrap()
+            .enabled
+    );
+    let private = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::parse("deepseek-private").unwrap())
+        .unwrap();
+    private.credential = Some("test-deepseek-key".into());
+    assert_eq!(private.route_provider, deepseek);
+    assert_eq!(private.route_endpoint, responses);
+    assert!(private.builtin_web_search.is_none());
+
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let route = catalog
+        .resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref("deepseek@responses/deepseek-v4-pro"),
+            ModelRouteCapability::Turn,
+        )
+        .unwrap();
+    assert_eq!(
+        route.provider_config().base_url,
+        "https://private.example/deepseek/v1"
+    );
+    assert!(route.provider_config().builtin_web_search.is_none());
+    let provider = crate::provider::OpenAiProvider::from_runtime_config(
+        route.provider_config(),
+        "deepseek-v4-pro",
+        1_024,
+        &fixture.config.home_dir,
+    )
+    .unwrap();
+    assert!(crate::provider::AgentProvider::builtin_web_search(&provider).is_none());
 }
 
 #[test]

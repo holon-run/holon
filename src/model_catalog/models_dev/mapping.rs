@@ -288,7 +288,22 @@ mod tests {
         assert_eq!(entry.route_registration, "deepseek@responses");
         assert!(!entry.enabled);
         assert_eq!(entry.provenance.owner, "holon");
-        assert_eq!(entry.provenance.reviewed_at.as_deref(), Some("2026-08-31"));
+        assert_eq!(entry.provenance.reviewed_at.as_deref(), Some("2026-10-17"));
+        assert_eq!(entry.model_id.mode, ModelIdMatchMode::Exact);
+        assert_eq!(entry.model_id.allow.len(), 3);
+        for model in ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"] {
+            assert!(is_model_allowed(&entry.model_id, model));
+        }
+        for model in [
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deepseek-flash-preview",
+            "deepseek-v4.1-flash",
+        ] {
+            assert!(!is_model_allowed(&entry.model_id, model));
+        }
+        // A provider ceiling permits vision; only model metadata can assert it.
+        assert!(entry.capability_ceiling.image_input);
     }
 
     #[test]

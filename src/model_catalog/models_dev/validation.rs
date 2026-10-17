@@ -1096,6 +1096,58 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_manifest_permits_flash_vision_without_allowing_similar_ids() {
+        let raw = include_str!("manifests/deepseek_v1.json");
+        let mut manifest = ProviderMappingManifest::parse(raw).unwrap();
+        let mut snapshot = deepseek_snapshot();
+        let models = &mut snapshot.providers.get_mut("deepseek").unwrap().models;
+        let mut flash = models.get("deepseek-v4-flash").unwrap().clone();
+        flash.id = "deepseek-flash".into();
+        flash.name = Some("DeepSeek Flash".into());
+        flash.attachment = Some(true);
+        flash
+            .modalities
+            .as_mut()
+            .unwrap()
+            .input
+            .push("image".into());
+        flash.limit = None;
+        models.insert(flash.id.clone(), flash.clone());
+        flash.id = "deepseek-flash-preview".into();
+        models.insert(flash.id.clone(), flash);
+
+        let engine = ValidationEngine::new();
+        let report = engine.validate(&manifest, Some(&snapshot));
+        assert!(!report.has_errors());
+        assert_eq!(report.offerings.len(), 2);
+        assert!(report.offerings.iter().any(|offering| {
+            offering.model_identity == "deepseek-flash"
+                && offering.route_registration == "deepseek@responses"
+                && offering.callability == Callability::DiscoveryOnly
+        }));
+        assert!(!report
+            .offerings
+            .iter()
+            .any(|offering| offering.model_identity == "deepseek-flash-preview"));
+        assert!(!report
+            .entries
+            .iter()
+            .any(|entry| entry.code == "capability_widening_image_input"));
+        assert!(report.entries.iter().any(|entry| {
+            entry.code == "model_outside_allowlist"
+                && entry.entry_identity.as_deref() == Some("deepseek/deepseek-flash-preview")
+        }));
+
+        // A closed ceiling would suppress Flash's documented vision.
+        manifest.providers[0].capability_ceiling.image_input = false;
+        let report = engine.validate(&manifest, Some(&snapshot));
+        assert!(report.entries.iter().any(|entry| {
+            entry.code == "capability_widening_image_input"
+                && entry.entry_identity.as_deref() == Some("deepseek/deepseek-flash")
+        }));
+    }
+
+    #[test]
     fn rejects_deepseek_transport_mismatch() {
         let engine = ValidationEngine::new();
         let mut entry = deepseek_entry();

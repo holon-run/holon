@@ -2139,6 +2139,40 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_flash_responses_vision_does_not_inherit_v4_metadata() {
+        let catalog = BuiltInModelCatalog::from_legacy_definitions();
+        let model_ref = ModelRef::parse("deepseek/deepseek-flash").unwrap();
+        let metadata = catalog.get(&model_ref).unwrap();
+        assert!(metadata.capabilities.image_input);
+        assert!(!metadata.capabilities.image_generation);
+        assert!(metadata.capabilities.supports_reasoning);
+        assert_eq!(metadata.context_window_tokens, None);
+        assert_eq!(metadata.default_max_output_tokens, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        assert_eq!(metadata.auto_compact_token_limit, None);
+        let responses = ModelRouteRef::parse("deepseek@responses/deepseek-flash").unwrap();
+        assert!(catalog.get_route(&responses).is_some());
+        assert_eq!(
+            catalog.preferred_route_for_model(&model_ref),
+            Some(responses)
+        );
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse("deepseek@default/deepseek-flash").unwrap())
+            .is_none());
+        for model in ["deepseek-v4-pro", "deepseek-v4-flash"] {
+            let metadata = catalog
+                .get(&ModelRef::new(provider_id("deepseek"), model))
+                .unwrap();
+            assert!(!metadata.capabilities.image_input, "{model}");
+        }
+        for model in ["deepseek-flash-preview", "deepseek-v4.1-flash"] {
+            assert!(catalog
+                .get(&ModelRef::new(provider_id("deepseek"), model))
+                .is_none());
+        }
+    }
+
+    #[test]
     fn deepseek_catalog_tracks_current_api_models() {
         let catalog = curated_catalog();
 
@@ -4215,7 +4249,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 35);
+        assert_eq!(models.len(), 37);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert!(model.reasoning_effort_options.is_empty());
@@ -4244,6 +4278,8 @@ mod tests {
             "space-bunny",
             "step-5-preview-free",
             "cat-jam-free",
+            "step-5-preview",
+            "beam-free",
         ] {
             assert_eq!(
                 catalog
@@ -4300,6 +4336,27 @@ mod tests {
     }
 
     #[test]
+    fn opencode_go_preserves_historical_ids_without_aliasing_current_ids() {
+        let catalog = curated_catalog();
+        let provider = provider_id("opencode-go");
+        for (id, older_id) in [
+            ("step-5-preview", "step-5-preview-free"),
+            ("beam-free", "cat-jam-free"),
+        ] {
+            let model_ref = ModelRef::new(provider.clone(), id);
+            let metadata = catalog.get(&model_ref).unwrap();
+            assert_eq!(metadata.model_ref, model_ref);
+            assert_eq!(catalog.canonicalize_model_ref(&model_ref), model_ref);
+
+            // Missing from today's public list is not retirement evidence.
+            let older_ref = ModelRef::new(provider.clone(), older_id);
+            assert!(catalog.get(&older_ref).is_some(), "{older_id}");
+            assert_eq!(catalog.canonicalize_model_ref(&older_ref), older_ref);
+            assert_ne!(older_ref, model_ref);
+        }
+    }
+
+    #[test]
     fn opencode_go_new_metadata_uses_advisory_go_specific_models_dev_limits() {
         let catalog = curated_catalog();
         for (id, context, output, image_input) in [
@@ -4324,6 +4381,8 @@ mod tests {
             ("longcat-2.5-preview-free", 1_000_000, 131_072, true),
             ("step-5-preview-free", 1_000_000, 65_536, true),
             ("cat-jam-free", 262_144, 131_072, false),
+            ("step-5-preview", 1_000_000, 65_536, true),
+            ("beam-free", 1_048_576, 131_072, false),
         ] {
             let metadata = catalog
                 .get(&ModelRef::new(provider_id("opencode-go"), id))
@@ -4372,7 +4431,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 46);
+        assert_eq!(models.len(), 48);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
