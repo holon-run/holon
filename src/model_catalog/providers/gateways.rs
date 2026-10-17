@@ -125,6 +125,8 @@ fn opencode_go_models_dev_entries() -> Vec<BuiltInModelMetadata> {
         ("longcat-2.5-preview-free", "LongCat 2.5 Preview Free", 1_000_000, 131_072, true, None),
         ("step-5-preview-free", "Step 5 Preview Free", 1_000_000, 65_536, true, None),
         ("cat-jam-free", "Cat Jam Free", 262_144, 131_072, false, None),
+        ("step-5-preview", "Step 5 Preview", 1_000_000, 65_536, true, None),
+        ("beam-free", "Beam Free", 1_048_576, 131_072, false, None),
     ]
     .into_iter()
     .map(|(id, name, context, output, image_input, endpoint)| {

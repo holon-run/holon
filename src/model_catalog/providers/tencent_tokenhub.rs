@@ -216,9 +216,10 @@ const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
     ),
 ];
 
-// Confirmed language-model IDs in the TokenHub API table. The table does not
-// establish per-model Messages support or exact limits, so keep them chat-only.
-const TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS: &[&str] = &[
+// The TokenHub protocol matrix confirms Chat and Messages for these IDs, but
+// does not establish exact limits or capabilities.
+// https://cloud.tencent.com/document/product/1823/130079
+const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
     "hy4-preview",
     "deepseek/deepseek-flash",
     "deepseek-v4-flash-202605",
@@ -230,6 +231,7 @@ const TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS: &[&str] = &[
     "deepseek/deepseek-v4-flash-vision-exp",
     "deepseek-v4-flash-0731",
     "deepseek-v4-pro-0813",
+    "deepseek-v4.1-flash",
     "glm-5.3",
     "glm-5.3-flash",
     "glm-5.3-flashx",
@@ -238,11 +240,15 @@ const TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS: &[&str] = &[
     "mimo-v2.6-pro",
     "mimo-v2.6-flash",
     "mimo-v2.5-pro",
+    "step-5-preview",
 ];
+
+#[cfg(test)]
+const TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS: &[&str] = &["hy-mt2-pro", "hy-mt2-plus", "hy-mt2-lite"];
 
 pub(crate) fn is_tencent_tokenhub_model_id(id: &str) -> bool {
     TENCENT_TOKENHUB_MODELS.iter().any(|model| model.0 == id)
-        || TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS.contains(&id)
+        || TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS.contains(&id)
 }
 
 #[cfg(test)]
@@ -250,10 +256,10 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
     TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| tencent_tokenhub_model(model.0, model.1, model.2, model.3, model.4, model.5))
-        .chain(TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS.iter().map(|id| {
+        .chain(TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS.iter().map(|id| {
             let mut entry = tencent_tokenhub_model(id, id, None, None, false, false);
-            entry.description = "Official TokenHub language-model ID; exact endpoint limits, \
-                                 capabilities and Messages support unconfirmed."
+            entry.description = "Official TokenHub language-model ID with Chat and Messages \
+                                 support; exact endpoint limits and capabilities unconfirmed."
                 .into();
             entry
         }))
@@ -264,9 +270,12 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
 pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
     TENCENT_TOKENHUB_MODELS
         .iter()
-        .map(|model| BuiltInModelRouteDefinition {
+        .map(|model| model.0)
+        .filter(|id| !TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS.contains(id))
+        .chain(TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS.iter().copied())
+        .map(|id| BuiltInModelRouteDefinition {
             legacy_provider: provider_id("tencent-tokenhub-messages"),
-            model_ref: ModelRef::new(provider_id("tencent-tokenhub"), model.0),
+            model_ref: ModelRef::new(provider_id("tencent-tokenhub"), id),
             endpoint: ProviderEndpointId::parse("messages").expect("valid endpoint"),
             policy: BuiltInModelRoutePolicy::default(),
         })
@@ -274,9 +283,9 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
 }
 
 #[test]
-fn tokenhub_new_language_ids_do_not_inherit_messages_routes_or_vendor_limits() {
-    let catalog = BuiltInModelCatalog::new();
-    for id in TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS {
+fn tokenhub_protocol_matrix_routes_do_not_inherit_vendor_limits() {
+    let catalog = BuiltInModelCatalog::from_legacy_definitions();
+    for id in TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS {
         assert!(is_tencent_tokenhub_model_id(id));
         let model = ModelRef::new(provider_id("tencent-tokenhub"), *id);
         let metadata = catalog.get(&model).unwrap();
@@ -294,7 +303,7 @@ fn tokenhub_new_language_ids_do_not_inherit_messages_routes_or_vendor_limits() {
             ProviderEndpointId::parse("messages").unwrap(),
             model.model,
         );
-        assert!(catalog.get_route(&messages).is_none());
+        assert!(catalog.get_route(&messages).is_some(), "{id}");
     }
     for model in TENCENT_TOKENHUB_MODELS {
         let messages = ModelRouteRef::new(
@@ -302,6 +311,11 @@ fn tokenhub_new_language_ids_do_not_inherit_messages_routes_or_vendor_limits() {
             ProviderEndpointId::parse("messages").unwrap(),
             model.0,
         );
-        assert!(catalog.get_route(&messages).is_some());
+        assert_eq!(
+            catalog.get_route(&messages).is_some(),
+            !TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS.contains(&model.0),
+            "{}",
+            model.0
+        );
     }
 }

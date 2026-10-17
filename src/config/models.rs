@@ -562,10 +562,31 @@ impl RuntimeModelCatalog {
                 },
             );
         }
+        let mut endpoint = endpoint.clone();
+        if canonical_route_ref.provider.as_str() == "deepseek"
+            && canonical_route_ref.endpoint.as_str() == "responses"
+            && endpoint.runtime_config.transport == ProviderTransportKind::OpenAiResponses
+        {
+            // Responses search is model-specific, not an endpoint-wide capability.
+            endpoint.runtime_config.builtin_web_search =
+                if canonical_model_ref.model == "deepseek-v4-pro" {
+                    endpoint
+                        .runtime_config
+                        .builtin_web_search
+                        .take()
+                        .filter(|search| search.enabled)
+                        .map(|mut search| {
+                            search.advertised_tool_type = "web_search".into();
+                            search
+                        })
+                } else {
+                    None
+                };
+        }
         Some(ResolvedModelRouteMetadata {
             route_ref: canonical_route_ref,
             model_ref: canonical_model_ref,
-            endpoint: endpoint.clone(),
+            endpoint,
             policy,
             capabilities,
         })
@@ -937,12 +958,17 @@ impl RuntimeModelCatalog {
 }
 
 fn deepseek_responses_runtime_config(default: &ProviderRuntimeConfig) -> ProviderRuntimeConfig {
+    let base_url = deepseek_responses_base_url(&default.base_url);
+    // Official search support must not leak into a private default-derived endpoint.
+    let builtin_web_search = (base_url == "https://api.deepseek.com/v1")
+        .then(|| default.builtin_web_search.clone())
+        .flatten();
     ProviderRuntimeConfig {
         id: default.id.clone(),
         route_provider: default.route_provider.clone(),
         route_endpoint: ProviderEndpointId::parse("responses").expect("valid built-in endpoint"),
         transport: ProviderTransportKind::OpenAiResponses,
-        base_url: deepseek_responses_base_url(&default.base_url),
+        base_url,
         auth: default.auth.clone(),
         credential: default.credential.clone(),
         credential_store_path: default.credential_store_path.clone(),
@@ -950,7 +976,7 @@ fn deepseek_responses_runtime_config(default: &ProviderRuntimeConfig) -> Provide
         originator: None,
         reasoning_effort: default.reasoning_effort.clone(),
         context_management: Default::default(),
-        builtin_web_search: None,
+        builtin_web_search,
     }
 }
 
