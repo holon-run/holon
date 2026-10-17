@@ -1,6 +1,13 @@
 {
   "schema": 1,
   "templates": {
+    "3d-producer": {
+      "category": "content",
+      "zh-CN": {
+        "name": "3D 制作人",
+        "summary": "持续维护共享 3D 资产与可编辑场景，将已确认的创作需求转为经过验证的浏览器游戏与动画成片。"
+      }
+    },
     "code-health-steward": {
       "category": "engineering",
       "zh-CN": {

@@ -1,0 +1,51 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/3d-production-workflow"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/uxc"
+path = "skills/uxc"
+
+# The upstream README declares MIT licensing at this reviewed revision.
+[[skills]]
+kind = "github"
+repo = "CloudAI-X/threejs-skills"
+path = "skills/threejs-fundamentals"
+ref = "b1c623076c661fc9b03dac19292e825a5d106823"
+
+[[skills]]
+kind = "github"
+repo = "CloudAI-X/threejs-skills"
+path = "skills/threejs-loaders"
+ref = "b1c623076c661fc9b03dac19292e825a5d106823"
+
+[[skills]]
+kind = "github"
+repo = "CloudAI-X/threejs-skills"
+path = "skills/threejs-interaction"
+ref = "b1c623076c661fc9b03dac19292e825a5d106823"
+
+[[skills]]
+kind = "github"
+repo = "CloudAI-X/threejs-skills"
+path = "skills/threejs-animation"
+ref = "b1c623076c661fc9b03dac19292e825a5d106823"
+
+[[skills]]
+kind = "github"
+repo = "CloudAI-X/threejs-skills"
+path = "skills/threejs-materials"
+ref = "b1c623076c661fc9b03dac19292e825a5d106823"
+
+[[skills]]
+kind = "github"
+repo = "CloudAI-X/threejs-skills"
+path = "skills/threejs-lighting"
+ref = "b1c623076c661fc9b03dac19292e825a5d106823"
