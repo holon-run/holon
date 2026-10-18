@@ -2,6 +2,7 @@
 mod budget;
 mod planner;
 mod render;
+mod replay_reference;
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
 // Re-import budget helpers for use within this module.
@@ -9,6 +10,7 @@ use budget::{estimate_text_tokens, truncate_section_content};
 use planner::{
     plan_context, ContextCandidate, ContextCandidatePolicy, DropTier, RetentionPriority,
 };
+use replay_reference::{classify_message_reference, MessageReferenceClass};
 // Re-import render helpers for use within this module.
 #[cfg(test)]
 use render::trust_label;
@@ -1081,58 +1083,61 @@ fn hydrate_recent_turn_references(
         .iter()
         .map(|tool| tool.id.clone())
         .collect::<BTreeSet<_>>();
+    let mut diagnosed_references = BTreeSet::new();
 
     for record in turn_records {
-        for message_id in &record.input_message_ids {
-            if message_ids.contains(message_id) {
+        let trigger_message_id = record
+            .trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_ref());
+        for (message_id, reference_kind) in record
+            .input_message_ids
+            .iter()
+            .map(|id| (id, "input"))
+            .chain(trigger_message_id.map(|id| (id, "trigger")))
+        {
+            if message_ids.contains(message_id)
+                || !diagnosed_references.insert((record.turn_id.as_str(), message_id.as_str()))
+            {
                 continue;
             }
             if let Some(message) = storage.read_message_by_id(message_id)? {
-                if turn_record_owns_object(record, message.turn_id.as_deref()) {
-                    message_ids.insert(message.id.clone());
-                    messages.push(message);
-                } else {
-                    tracing::warn!(
-                        turn_id = %record.turn_id,
-                        message_id = %message_id,
-                        object_turn_id = ?message.turn_id,
-                        "recent_turns ignored cross-turn input message reference"
-                    );
+                match classify_message_reference(storage, record, &message)? {
+                    MessageReferenceClass::OwnedByTurn => {
+                        message_ids.insert(message.id.clone());
+                        messages.push(message);
+                    }
+                    MessageReferenceClass::VerifiedReplayReference => {
+                        tracing::debug!(
+                            turn_id = %crate::runtime_error::safe_runtime_evidence_id(&record.turn_id),
+                            message_id = %crate::runtime_error::safe_runtime_evidence_id(message_id),
+                            object_turn_id = ?message.turn_id.as_deref()
+                                .map(crate::runtime_error::safe_runtime_evidence_id),
+                            reference_kind,
+                            reference_class = "verified_replay_reference",
+                            "recent_turns ignored verified historical replay message reference"
+                        );
+                    }
+                    MessageReferenceClass::ForeignOrUnverifiableReference => {
+                        tracing::warn!(
+                            turn_id = %crate::runtime_error::safe_runtime_evidence_id(&record.turn_id),
+                            message_id = %crate::runtime_error::safe_runtime_evidence_id(message_id),
+                            object_turn_id = ?message.turn_id.as_deref()
+                                .map(crate::runtime_error::safe_runtime_evidence_id),
+                            reference_kind,
+                            reference_class = "foreign_or_unverifiable_reference",
+                            "recent_turns ignored foreign or unverifiable cross-turn message reference"
+                        );
+                    }
                 }
             } else {
                 tracing::warn!(
-                    turn_id = %record.turn_id,
-                    message_id = %message_id,
-                    "recent_turns turn record references missing input message"
+                    turn_id = %crate::runtime_error::safe_runtime_evidence_id(&record.turn_id),
+                    message_id = %crate::runtime_error::safe_runtime_evidence_id(message_id),
+                    reference_kind,
+                    reference_class = "foreign_or_unverifiable_reference",
+                    "recent_turns turn record references missing message"
                 );
-            }
-        }
-
-        if let Some(message_id) = record
-            .trigger
-            .as_ref()
-            .and_then(|trigger| trigger.message_id.as_ref())
-        {
-            if !message_ids.contains(message_id) {
-                if let Some(message) = storage.read_message_by_id(message_id)? {
-                    if turn_record_owns_object(record, message.turn_id.as_deref()) {
-                        message_ids.insert(message.id.clone());
-                        messages.push(message);
-                    } else {
-                        tracing::warn!(
-                            turn_id = %record.turn_id,
-                            message_id = %message_id,
-                            object_turn_id = ?message.turn_id,
-                            "recent_turns ignored cross-turn trigger message reference"
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        turn_id = %record.turn_id,
-                        message_id = %message_id,
-                        "recent_turns turn record references missing trigger message"
-                    );
-                }
             }
         }
 
@@ -4400,6 +4405,534 @@ mod tests {
         assert!(recent_turns.contains(&format!("message_ref=message:{}", operator.id)));
         assert!(recent_turns.contains("Rendered from DB turn record."));
         assert!(recent_turns.contains("brief_ref=brief:brief-db-context"));
+    }
+
+    struct ReplayReferenceFixture {
+        _dir: tempfile::TempDir,
+        storage: AppStorage,
+        turns: Vec<TurnRecord>,
+        anchor: MessageEnvelope,
+        follower: MessageEnvelope,
+        attempts: Vec<crate::domain::execution_protocol::ExecutionAttempt>,
+    }
+
+    fn save_replay_reference_attempt(
+        storage: &AppStorage,
+        attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    ) {
+        let db = storage.runtime_db().unwrap().unwrap();
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO execution_protocol_attempts (
+                   agent_id, attempt_id, lifecycle_state, source_identity_json,
+                   source_generation, recovery_of_attempt_id, terminal_outcome_id, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(agent_id, attempt_id) DO UPDATE SET
+                   lifecycle_state = excluded.lifecycle_state,
+                   source_identity_json = excluded.source_identity_json,
+                   recovery_of_attempt_id = excluded.recovery_of_attempt_id,
+                   payload_json = excluded.payload_json",
+                rusqlite::params![
+                    attempt.agent_id,
+                    attempt.attempt_id,
+                    serde_json::to_value(attempt.state)?.as_str().unwrap(),
+                    serde_json::to_string(&attempt.source.identity)?,
+                    attempt.source.generation,
+                    attempt.recovery_of_attempt_id,
+                    attempt.terminal_outcome_id,
+                    serde_json::to_string(attempt)?,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn replay_reference_fixture(restarts: usize) -> ReplayReferenceFixture {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let make_message = |id: &str| {
+            let mut message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: Some("operator:test".into()),
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "private replay prompt SECRET_REPLAY_BODY".into(),
+                },
+            );
+            message.id = id.into();
+            message.turn_id = Some("turn-replay-0".into());
+            message
+                .source_refs
+                .insert("private_source".into(), "SECRET_REPLAY_SOURCE".into());
+            message
+        };
+        let anchor = make_message("msg_aaaaaaaa");
+        let follower = make_message("msg_bbbbbbbb");
+        storage.append_message(&anchor).unwrap();
+        storage.append_message(&follower).unwrap();
+        let items = [&anchor, &follower]
+            .into_iter()
+            .map(|message| crate::types::IdleInputBatchItem {
+                message_id: message.id.clone(),
+                source_ref: format!("message:{}", message.id),
+                rendered: "private admitted snapshot SECRET_REPLAY_SNAPSHOT".into(),
+            })
+            .collect::<Vec<_>>();
+        let mut turns = Vec::new();
+        let mut attempts = Vec::new();
+        for index in 0..=restarts {
+            let activation_id = format!("activation-replay-{index}");
+            let mut turn = TurnRecord::new("default", format!("turn-replay-{index}"), index as u64);
+            turn.current_work_item_id = Some("work-replay".into());
+            if index > 0 {
+                // Explicit owner and the source's legacy effective owner agree.
+                turn.owner = Some(crate::types::TurnOwner::WorkItem {
+                    work_item_id: "work-replay".into(),
+                });
+                turn.replay = Some(crate::types::TurnReplayProvenance {
+                    source_message_id: anchor.id.clone(),
+                    source_turn_id: format!("turn-replay-{}", index - 1),
+                    reason: "interrupted_queue_claim_reentry".into(),
+                    prior_terminal: None,
+                });
+            }
+            turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&anchor));
+            turn.input_message_ids = vec![anchor.id.clone(), follower.id.clone()];
+            turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+                anchor_message_id: anchor.id.clone(),
+                activation_id: Some(activation_id.clone()),
+                sender_agent_id: "sender-test".into(),
+                cutoff: anchor.created_at,
+                max_items: 8,
+                max_bytes: 24 * 1024,
+                rendered_bytes: items.iter().map(|item| item.rendered.len()).sum(),
+                items: items.clone(),
+            });
+            if index < restarts {
+                turn.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
+                    &crate::types::TurnTerminalRecord {
+                        turn_id: turn.turn_id.clone(),
+                        turn_index: turn.turn_index,
+                        kind: crate::types::TurnTerminalKind::Interrupted,
+                        reason: Some("interrupted_queue_claim_reentry".into()),
+                        last_assistant_message: None,
+                        no_brief_reason: None,
+                        checkpoint: None,
+                        completed_at: chrono::Utc::now(),
+                        duration_ms: 0,
+                    },
+                ));
+            }
+            storage.append_turn(&turn).unwrap();
+            let attempt = serde_json::from_value(json!({
+                "attempt_id": activation_id,
+                "agent_id": "default",
+                "source_message_id": anchor.id,
+                "source": {
+                    "identity": {"kind": "queue_message", "message_id": anchor.id},
+                    "generation": 1,
+                },
+                "binding": {"kind": "work_item", "work_item_id": "work-replay"},
+                "provenance": {
+                    "origin": "operator", "trust": "operator_instruction", "priority": "normal",
+                },
+                "admitted_fences": {
+                    "source_revision": 1, "agent_control_revision": 1, "host_registry_revision": 1,
+                },
+                "state": if index == restarts { "settled" } else { "interrupted" },
+                // Canonical attempt ingress need not be the immediate predecessor.
+                "turn_id": "turn-replay-0",
+                "recovery_of_attempt_id": index.checked_sub(1)
+                    .map(|index| format!("activation-replay-{index}")),
+                "admitted_at": anchor.created_at.to_rfc3339(),
+            }))
+            .unwrap();
+            save_replay_reference_attempt(&storage, &attempt);
+            turns.push(turn);
+            attempts.push(attempt);
+        }
+        ReplayReferenceFixture {
+            _dir: dir,
+            storage,
+            turns,
+            anchor,
+            follower,
+            attempts,
+        }
+    }
+
+    #[test]
+    fn replay_reference_classifies_anchor_follower_and_repeated_restarts() {
+        for restarts in [1, 3, 64] {
+            let fixture = replay_reference_fixture(restarts);
+            let replay = fixture.turns.last().unwrap();
+            for message in [&fixture.anchor, &fixture.follower] {
+                assert_eq!(
+                    classify_message_reference(&fixture.storage, replay, message).unwrap(),
+                    MessageReferenceClass::VerifiedReplayReference,
+                    "{restarts} restarts, {}",
+                    message.id,
+                );
+                assert!(!turn_record_owns_object(replay, message.turn_id.as_deref()));
+                assert_eq!(
+                    classify_message_reference(&fixture.storage, &fixture.turns[0], message)
+                        .unwrap(),
+                    MessageReferenceClass::OwnedByTurn,
+                );
+            }
+            let mut hydrated = Vec::new();
+            hydrate_recent_turn_references(
+                &fixture.storage,
+                std::slice::from_ref(replay),
+                &mut hydrated,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert!(
+                hydrated.is_empty(),
+                "historical bodies must remain unhydrated"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_reference_rejects_foreign_and_unverifiable_evidence() {
+        use crate::domain::execution_protocol::{
+            ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
+        };
+        for mutation in [
+            "owner",
+            "agent",
+            "trigger",
+            "source_message",
+            "reason",
+            "source_missing",
+            "source_member",
+            "source_snapshot",
+            "source_activation",
+            "current_snapshot",
+            "attempt_missing",
+            "attempt_owner",
+            "attempt_source",
+            "source_identity",
+            "not_interrupted",
+            "predecessor_missing",
+            "turn_cycle",
+            "attempt_cycle",
+            "message_ingress",
+            "anchor_ingress",
+            "attempt_ingress",
+            "predecessor_ingress",
+            "message_agent",
+            "source_snapshot_missing",
+            "current_source_identity",
+        ] {
+            let mut fixture = replay_reference_fixture(3);
+            let mut replay = fixture.turns.last().unwrap().clone();
+            let mut source = fixture.turns[2].clone();
+            let mut attempt = fixture.attempts[3].clone();
+            let mut prior = fixture.attempts[2].clone();
+            match mutation {
+                "owner" => source.current_work_item_id = Some("work-foreign".into()),
+                "agent" => source.agent_id = "foreign-agent".into(),
+                "trigger" => source.trigger.as_mut().unwrap().message_id = Some("foreign".into()),
+                "source_message" => {
+                    replay.replay.as_mut().unwrap().source_message_id = "foreign".into()
+                }
+                "reason" => replay.replay.as_mut().unwrap().reason = "unproven_replay".into(),
+                "source_missing" => {
+                    replay.replay.as_mut().unwrap().source_turn_id = "missing".into()
+                }
+                "source_member" => source
+                    .input_message_ids
+                    .retain(|id| id != &fixture.follower.id),
+                "source_snapshot" => source
+                    .idle_input_batch
+                    .as_mut()
+                    .unwrap()
+                    .items
+                    .pop()
+                    .map(|_| ())
+                    .unwrap(),
+                "source_activation" => {
+                    source.idle_input_batch.as_mut().unwrap().activation_id = Some("foreign".into())
+                }
+                "current_snapshot" => replay.idle_input_batch = None,
+                "source_snapshot_missing" => source.idle_input_batch = None,
+                "attempt_missing" => {
+                    replay.idle_input_batch.as_mut().unwrap().activation_id = Some("missing".into())
+                }
+                "attempt_owner" => {
+                    attempt.binding = ExecutionBinding::WorkItem {
+                        work_item_id: "foreign".into(),
+                    }
+                }
+                "attempt_source" => prior.source_message_id = Some("foreign".into()),
+                "source_identity" => {
+                    prior.source.identity = ExecutionSourceIdentity::QueueMessage {
+                        message_id: "foreign".into(),
+                    }
+                }
+                "current_source_identity" => {
+                    attempt.source.identity = ExecutionSourceIdentity::QueueMessage {
+                        message_id: "foreign".into(),
+                    }
+                }
+                "not_interrupted" => prior.state = ExecutionAttemptState::Settled,
+                "predecessor_missing" => attempt.recovery_of_attempt_id = Some("missing".into()),
+                "turn_cycle" => {
+                    source.replay.as_mut().unwrap().source_turn_id = replay.turn_id.clone()
+                }
+                "attempt_cycle" => prior.recovery_of_attempt_id = Some(attempt.attempt_id.clone()),
+                "message_ingress" => fixture.follower.turn_id = Some("foreign".into()),
+                "attempt_ingress" => attempt.turn_id = Some("foreign".into()),
+                "predecessor_ingress" => prior.turn_id = Some("foreign".into()),
+                "message_agent" => fixture.follower.agent_id = "foreign".into(),
+                "anchor_ingress" => {
+                    fixture.anchor.turn_id = Some("foreign".into());
+                    fixture
+                        .storage
+                        .runtime_db()
+                        .unwrap()
+                        .unwrap()
+                        .connection()
+                        .unwrap()
+                        .execute(
+                            "UPDATE messages SET payload_json = ?2 WHERE message_id = ?1",
+                            rusqlite::params![
+                                fixture.anchor.id,
+                                serde_json::to_string(&fixture.anchor).unwrap(),
+                            ],
+                        )
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            // Change the effective owner, not only its legacy compatibility field.
+            if mutation == "owner" {
+                source.owner = None;
+            }
+            // Simulate persisted legacy/corrupt evidence without changing canonical
+            // immutable turn identity through the normal write contract.
+            fixture
+                .storage
+                .runtime_db()
+                .unwrap()
+                .unwrap()
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE turn_records SET payload_json = ?2 WHERE turn_id = ?1",
+                    rusqlite::params![source.turn_id, serde_json::to_string(&source).unwrap()],
+                )
+                .unwrap();
+            save_replay_reference_attempt(&fixture.storage, &attempt);
+            save_replay_reference_attempt(&fixture.storage, &prior);
+            assert_eq!(
+                classify_message_reference(&fixture.storage, &replay, &fixture.follower).unwrap(),
+                MessageReferenceClass::ForeignOrUnverifiableReference,
+                "{mutation}",
+            );
+        }
+    }
+
+    #[test]
+    fn replay_reference_requires_interrupted_terminal_for_every_attached_ancestor() {
+        use crate::types::TurnTerminalKind;
+
+        for source_index in 0..3 {
+            for terminal_kind in [
+                None,
+                Some(TurnTerminalKind::Completed),
+                Some(TurnTerminalKind::Aborted),
+            ] {
+                let fixture = replay_reference_fixture(3);
+                let mut source = fixture.turns[source_index].clone();
+                source.terminal = terminal_kind.map(|kind| {
+                    let mut terminal = source.terminal.clone().unwrap();
+                    terminal.kind = kind;
+                    terminal
+                });
+                fixture
+                    .storage
+                    .runtime_db()
+                    .unwrap()
+                    .unwrap()
+                    .connection()
+                    .unwrap()
+                    .execute(
+                        "UPDATE turn_records SET payload_json = ?2 WHERE turn_id = ?1",
+                        rusqlite::params![source.turn_id, serde_json::to_string(&source).unwrap()],
+                    )
+                    .unwrap();
+                let replay = fixture.turns.last().unwrap();
+                for message in [&fixture.anchor, &fixture.follower] {
+                    assert_eq!(
+                        classify_message_reference(&fixture.storage, replay, message).unwrap(),
+                        MessageReferenceClass::ForeignOrUnverifiableReference,
+                        "ancestor {source_index}, terminal {terminal_kind:?}",
+                    );
+                }
+                let diagnostic = replay_reference_diagnostics(&fixture, replay);
+                assert!(diagnostic.contains("WARN"));
+                assert!(!diagnostic.contains("verified historical replay message reference"));
+                assert_eq!(
+                    diagnostic
+                        .matches("foreign or unverifiable cross-turn message reference")
+                        .count(),
+                    2,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replay_reference_rejects_missing_legacy_evidence_and_lineage_overflow() {
+        let fixture = replay_reference_fixture(65);
+        assert_eq!(
+            classify_message_reference(
+                &fixture.storage,
+                fixture.turns.last().unwrap(),
+                &fixture.anchor,
+            )
+            .unwrap(),
+            MessageReferenceClass::ForeignOrUnverifiableReference,
+        );
+        let mut legacy = fixture.turns[1].clone();
+        legacy.idle_input_batch = None;
+        assert_eq!(
+            classify_message_reference(&fixture.storage, &legacy, &fixture.anchor).unwrap(),
+            MessageReferenceClass::ForeignOrUnverifiableReference,
+        );
+    }
+
+    struct ReplayDiagnosticWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for ReplayDiagnosticWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn replay_reference_diagnostics(fixture: &ReplayReferenceFixture, turn: &TurnRecord) -> String {
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer_output = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || ReplayDiagnosticWriter(writer_output.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut messages = Vec::new();
+            hydrate_recent_turn_references(
+                &fixture.storage,
+                &[turn.clone(), turn.clone()],
+                &mut messages,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert!(messages.is_empty());
+        });
+        let bytes = output.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn replay_reference_diagnostics_are_private_deduplicated_and_build_local() {
+        let fixture = replay_reference_fixture(2);
+        let replay = fixture.turns.last().unwrap();
+        for _ in 0..2 {
+            let diagnostic = replay_reference_diagnostics(&fixture, replay);
+            assert_eq!(
+                diagnostic
+                    .matches("verified historical replay message reference")
+                    .count(),
+                2
+            );
+            assert!(!diagnostic.contains("WARN"));
+            assert!(diagnostic.contains(&fixture.anchor.id));
+            assert!(diagnostic.contains(&fixture.follower.id));
+            assert!(!diagnostic.contains("SECRET_REPLAY"));
+            assert!(!diagnostic.contains("private replay prompt"));
+        }
+        let mut unverifiable = replay.clone();
+        unverifiable.replay.as_mut().unwrap().reason = "SECRET_REPLAY_REASON".into();
+        let diagnostic = replay_reference_diagnostics(&fixture, &unverifiable);
+        assert_eq!(
+            diagnostic
+                .matches("foreign or unverifiable cross-turn message reference")
+                .count(),
+            2
+        );
+        assert!(diagnostic.contains("WARN"));
+        assert!(!diagnostic.contains("SECRET_REPLAY"));
+        assert!(!diagnostic.contains("corrupt"));
+    }
+
+    #[test]
+    fn replay_reference_diagnostics_redact_malformed_input_reference_ids() {
+        let fixture = replay_reference_fixture(0);
+        let mut turn = TurnRecord::new("default", "turn_SENTINEL_INPUT_TURN", 1);
+        turn.input_message_ids = vec![
+            "msg_SENTINEL_INPUT_REFERENCE".into(),
+            "https://capability.invalid/SENTINEL_INPUT_CAPABILITY".into(),
+        ];
+
+        let diagnostic = replay_reference_diagnostics(&fixture, &turn);
+
+        assert_eq!(
+            diagnostic
+                .matches("turn record references missing message")
+                .count(),
+            2
+        );
+        assert!(diagnostic.contains("WARN"));
+        assert!(diagnostic.contains("turn_id=redacted_invalid_id"));
+        assert!(diagnostic.contains("message_id=redacted_invalid_id"));
+        assert!(!diagnostic.contains("SENTINEL"));
+        assert!(!diagnostic.contains("capability.invalid"));
+    }
+
+    #[test]
+    fn replay_reference_diagnostics_redact_malformed_stored_object_turn_id() {
+        let fixture = replay_reference_fixture(0);
+        let mut message = fixture.anchor.clone();
+        message.id = "msg_SENTINEL_STORED_REFERENCE".into();
+        message.turn_id = Some("https://capability.invalid/SENTINEL_STORED_TURN".into());
+        fixture.storage.append_message(&message).unwrap();
+        let mut turn = TurnRecord::new("default", "turn_SENTINEL_REFERENCE_TURN", 1);
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+
+        let diagnostic = replay_reference_diagnostics(&fixture, &turn);
+
+        assert_eq!(
+            diagnostic
+                .matches("foreign or unverifiable cross-turn message reference")
+                .count(),
+            1
+        );
+        assert!(diagnostic.contains("WARN"));
+        assert!(diagnostic.contains("turn_id=redacted_invalid_id"));
+        assert!(diagnostic.contains("message_id=redacted_invalid_id"));
+        assert!(diagnostic.contains("object_turn_id=Some(\"redacted_invalid_id\")"));
+        assert!(!diagnostic.contains("SENTINEL"));
+        assert!(!diagnostic.contains("capability.invalid"));
     }
 
     #[test]

@@ -556,8 +556,34 @@ fn slim_state_failure_artifact(
         .take(STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT)
         .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT))
         .collect();
-    artifact.metadata = artifact
-        .metadata
+    let mut metadata: Vec<_> = artifact.metadata.into_iter().collect();
+    if artifact.kind.starts_with("idle_input_recovery_") {
+        // Keep the actionable rejection and committed processing states within
+        // the existing slim-response budget, ahead of generic message metadata.
+        metadata.sort_by_key(|(key, _)| {
+            (
+                !matches!(
+                    key.as_str(),
+                    "operation"
+                        | "stage"
+                        | "predicate"
+                        | "field"
+                        | "recovery_disposition"
+                        | "queue_status"
+                        | "turn_status"
+                        | "attempt_status"
+                        | "message_id"
+                        | "turn_id"
+                        | "activation_id"
+                        | "predecessor_activation_id"
+                        | "source_turn_id"
+                        | "batch_activation_id"
+                ),
+                key.clone(),
+            )
+        });
+    }
+    artifact.metadata = metadata
         .into_iter()
         .take(STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT)
         .map(|(key, value)| {
@@ -980,6 +1006,46 @@ mod tests {
             key.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
                 && value.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
         }));
+    }
+
+    #[test]
+    fn state_bootstrap_preserves_idle_recovery_predicate_and_processing_states() {
+        let mut metadata = std::collections::BTreeMap::from([
+            ("predicate".to_string(), "activation_mismatch".to_string()),
+            ("field".into(), "batch.activation_id".into()),
+            ("recovery_disposition".into(), "rejected".into()),
+            ("queue_status".into(), "aborted".into()),
+            ("turn_status".into(), "aborted".into()),
+            ("attempt_status".into(), "interrupted".into()),
+            ("source_turn_id".into(), "turn_abc".into()),
+        ]);
+        for index in 0..32 {
+            metadata.insert(format!("a-generic-{index}"), "generic".into());
+        }
+        let artifact: FailureArtifact = serde_json::from_value(serde_json::json!({
+            "category": "runtime",
+            "kind": "idle_input_recovery_activation_mismatch",
+            "summary": "Recovery rejected",
+            "context": {},
+            "metadata": metadata,
+        }))
+        .unwrap();
+        let slim = super::slim_state_failure_artifact(artifact);
+        assert_eq!(
+            slim.metadata.len(),
+            STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT
+        );
+        for key in [
+            "predicate",
+            "field",
+            "recovery_disposition",
+            "queue_status",
+            "turn_status",
+            "attempt_status",
+            "source_turn_id",
+        ] {
+            assert_eq!(slim.metadata[key], metadata[key]);
+        }
     }
 
     #[test]

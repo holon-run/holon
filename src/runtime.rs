@@ -2742,6 +2742,8 @@ fn runtime_error_queue_settlement(
             QueueEntryStatus::Interrupted,
             "task_transition_retry_exhausted",
         )
+    } else if error.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
+        (QueueEntryStatus::Aborted, "idle_input_recovery_rejected")
     } else {
         (QueueEntryStatus::Aborted, "runtime_error")
     }
@@ -6325,7 +6327,12 @@ impl RuntimeHandle {
                             let descriptor = describe_runtime_error(&err);
                             let terminal = self
                                 .build_turn_aborted_record(
-                                    "runtime_error",
+                                    if err.is::<crate::runtime_error::IdleInputRecoveryRejection>()
+                                    {
+                                        "idle_input_recovery_rejected"
+                                    } else {
+                                        "runtime_error"
+                                    },
                                     None,
                                     u64::try_from(processing_started.elapsed().as_millis())
                                         .unwrap_or(u64::MAX),
@@ -6338,6 +6345,7 @@ impl RuntimeHandle {
                                 code = %descriptor.code,
                                 retryable = descriptor.retryable,
                                 error = %descriptor.operator_message,
+                                safe_context = ?descriptor.safe_context,
                                 "failed to process message"
                             );
                             let (queue_status, settlement_reason) =
@@ -6362,6 +6370,11 @@ impl RuntimeHandle {
                                             "error": descriptor.operator_message,
                                             "recovery_hint": descriptor.recovery_hint,
                                             "safe_context": descriptor.safe_context,
+                                            "recovery_processing": err.is::<crate::runtime_error::IdleInputRecoveryRejection>().then(|| serde_json::json!({
+                                                "queue_status": queue_status,
+                                                "turn_status": "aborted",
+                                                "attempt_status": "interrupted",
+                                            })),
                                             "source_chain": descriptor.source_chain,
                                             "token_usage": provider_attempt_timeline(&err)
                                                 .and_then(|timeline| timeline.aggregated_token_usage.clone()),
@@ -6375,6 +6388,8 @@ impl RuntimeHandle {
                                             "message_kind": message.kind.clone(),
                                             "status": queue_status,
                                             "reason": settlement_reason,
+                                            "rejection_code": err.is::<crate::runtime_error::IdleInputRecoveryRejection>().then_some(&descriptor.code),
+                                            "rejection_field": err.downcast_ref::<crate::runtime_error::IdleInputRecoveryRejection>().map(|rejection| rejection.field),
                                         }),
                                     ),
                                 ],

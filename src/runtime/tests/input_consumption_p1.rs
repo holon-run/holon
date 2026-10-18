@@ -6,6 +6,8 @@ use crate::types::{
     QueueEntryRecord, TurnOwner, WorkItemPlanStatus,
 };
 
+mod recovery_diagnostics;
+
 #[derive(Default)]
 struct BatchProvider {
     requests: Mutex<Vec<ProviderTurnRequest>>,
@@ -3872,6 +3874,26 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
         "prior_source",
         "prior_binding",
         "source_turn",
+        "prior_none",
+        "replay_reason",
+        "replay_message",
+        "source_agent",
+        "source_record_id",
+        "source_owner",
+        "source_trigger",
+        "batch_anchor",
+        "batch_first",
+        "item_count",
+        "rendered_bytes",
+        "max_bytes",
+        "global_bytes",
+        "duplicate_item",
+        "source_ref",
+        "message_missing",
+        "message_agent",
+        "queue_missing",
+        "queue_agent",
+        "queue_status",
     ] {
         let (home, host, sender, target, provider) = fixture().await;
         let first = send(&sender, &target, "one", "original request").await;
@@ -3975,7 +3997,7 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
             assert!(provider.requests.lock().await.is_empty());
             continue;
         }
-        let anchor = start_without_provider(&target).await;
+        let mut anchor = start_without_provider(&target).await;
         assert_eq!(anchor.id, first);
         let mut recovered = target.storage().read_recent_turns(1).unwrap().remove(0);
         if invalid_evidence.starts_with("prior_") {
@@ -4002,13 +4024,14 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
                 .recovery_of_attempt_id
                 .clone()
                 .unwrap();
-            let corrupt = if invalid_evidence == "prior_id" {
+            let corrupt = if matches!(invalid_evidence, "prior_id" | "prior_none") {
                 execution.attempts.get_mut(&activation_id).unwrap()
             } else {
                 execution.attempts.get_mut(&prior_id).unwrap()
             };
             match invalid_evidence {
                 "prior_id" => corrupt.recovery_of_attempt_id = Some("foreign-attempt".into()),
+                "prior_none" => corrupt.recovery_of_attempt_id = None,
                 "prior_state" => {
                     corrupt.state =
                         crate::domain::execution_protocol::ExecutionAttemptState::Settled;
@@ -4059,14 +4082,191 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
                     .unwrap(),
                 1
             );
+        } else {
+            source = target
+                .storage()
+                .read_turn_by_id(&source.turn_id)
+                .unwrap()
+                .unwrap();
+            let source_key = source.turn_id.clone();
+            let batch = source.idle_input_batch.as_mut().unwrap();
+            match invalid_evidence {
+                "replay_reason" => {
+                    anchor.source_refs.insert(
+                        "replay_reason".into(),
+                        "sentinel-secret?token=credential".into(),
+                    );
+                }
+                "replay_message" => {
+                    recovered.replay.as_mut().unwrap().source_message_id = second.clone()
+                }
+                "source_agent" => source.agent_id = "sentinel-secret?token=credential".into(),
+                "source_record_id" => source.turn_id = "sentinel-secret?token=credential".into(),
+                "source_owner" => source.owner = Some(TurnOwner::Command),
+                "source_trigger" => {
+                    source.trigger.as_mut().unwrap().message_id = Some(second.clone())
+                }
+                "batch_anchor" => batch.anchor_message_id = second.clone(),
+                "batch_first" => batch.items[0].message_id = second.clone(),
+                "item_count" => {
+                    batch.items.resize(9, batch.items[0].clone());
+                    batch.rendered_bytes = input_consumption::render_batch(batch).len();
+                }
+                "rendered_bytes" => batch.rendered_bytes += 1,
+                "max_bytes" => batch.max_bytes = batch.rendered_bytes - 1,
+                "global_bytes" => batch.max_bytes = input_consumption::INPUT_BATCH_BYTES + 1,
+                "duplicate_item" => {
+                    batch.items.push(batch.items[1].clone());
+                    batch.rendered_bytes = input_consumption::render_batch(batch).len();
+                }
+                "source_ref" => {
+                    batch.items[1].source_ref = "sentinel-secret?token=credential".into();
+                    batch.rendered_bytes = input_consumption::render_batch(batch).len();
+                }
+                "message_missing" => {
+                    let missing = "msg_deadbeef".to_string();
+                    batch.items[1].message_id = missing.clone();
+                    batch.items[1].source_ref = format!("message:{missing}");
+                    source.input_message_ids.push(missing);
+                    batch.rendered_bytes = input_consumption::render_batch(batch).len();
+                }
+                "message_agent" => {
+                    let mut message = target
+                        .storage()
+                        .read_message_by_id(&second)
+                        .unwrap()
+                        .unwrap();
+                    message.agent_id = "foreign-agent".into();
+                    target
+                        .inner
+                        .runtime_db
+                        .connection()
+                        .unwrap()
+                        .execute(
+                            "UPDATE messages SET payload_json = ?1 WHERE evidence_id = ?2",
+                            rusqlite::params![serde_json::to_string(&message).unwrap(), second],
+                        )
+                        .unwrap();
+                }
+                "queue_missing" => {
+                    target
+                        .inner
+                        .runtime_db
+                        .connection()
+                        .unwrap()
+                        .execute("DELETE FROM queue_entries WHERE message_id = ?1", [&second])
+                        .unwrap();
+                }
+                "queue_agent" | "queue_status" => {
+                    let mut queue = target
+                        .inner
+                        .runtime_db
+                        .queue_entries()
+                        .latest(&second)
+                        .unwrap()
+                        .unwrap();
+                    if invalid_evidence == "queue_agent" {
+                        queue.agent_id = "foreign-agent".into();
+                    } else {
+                        queue.status = QueueEntryStatus::Queued;
+                    }
+                    target
+                        .inner
+                        .runtime_db
+                        .connection()
+                        .unwrap()
+                        .execute(
+                            "UPDATE queue_entries SET payload_json = ?1 WHERE message_id = ?2",
+                            rusqlite::params![serde_json::to_string(&queue).unwrap(), second],
+                        )
+                        .unwrap();
+                }
+                _ => {}
+            }
+            for (key, record) in [(&source_key, &source), (&recovered.turn_id, &recovered)] {
+                target
+                    .inner
+                    .runtime_db
+                    .connection()
+                    .unwrap()
+                    .execute(
+                        "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+                        rusqlite::params![serde_json::to_string(record).unwrap(), key],
+                    )
+                    .unwrap();
+            }
         }
-        assert!(
-            target
-                .attach_idle_sender_inputs(&anchor, 24 * 1024)
-                .await
-                .is_err(),
-            "{invalid_evidence}"
-        );
+        let follower_before = target
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&second)
+            .unwrap();
+        let error = target
+            .attach_idle_sender_inputs(&anchor, 24 * 1024)
+            .await
+            .expect_err(invalid_evidence);
+        let descriptor = crate::runtime_error::describe_runtime_error(&error);
+        let (predicate, field) = match invalid_evidence {
+            "activation" => ("activation_mismatch", "batch.activation_id"),
+            "input" => (
+                "attachment_evidence_mismatch",
+                "attachment.source_membership",
+            ),
+            "prior_id" => ("predecessor_missing", "predecessor"),
+            "prior_state" => ("predecessor_not_interrupted", "predecessor.state"),
+            "prior_agent" => ("predecessor_agent_mismatch", "predecessor.agent"),
+            "prior_source" => ("predecessor_source_mismatch", "predecessor.source_message"),
+            "prior_binding" => ("predecessor_binding_mismatch", "predecessor.binding"),
+            "source_turn" => ("replay_source_mismatch", "replay.source_selector"),
+            "prior_none" => ("predecessor_missing", "attempt.recovery_of_attempt_id"),
+            "replay_reason" => ("replay_reason_mismatch", "replay.reason"),
+            "replay_message" => ("replay_message_mismatch", "replay.source_message"),
+            "source_agent" => ("source_agent_mismatch", "source.agent"),
+            "source_record_id" => ("replay_source_mismatch", "source.turn_id"),
+            "source_owner" => ("owner_mismatch", "source.owner"),
+            "source_trigger" => ("source_trigger_mismatch", "source.trigger.message"),
+            "batch_anchor" => ("batch_anchor_mismatch", "batch.anchor_message"),
+            "batch_first" => ("batch_anchor_mismatch", "batch.first_item"),
+            "item_count" => ("batch_integrity_mismatch", "batch.item_count"),
+            "rendered_bytes" => ("batch_integrity_mismatch", "batch.rendered_bytes"),
+            "max_bytes" => ("batch_integrity_mismatch", "batch.max_bytes"),
+            "global_bytes" => ("batch_integrity_mismatch", "batch.global_byte_budget"),
+            "duplicate_item" => ("attachment_evidence_mismatch", "attachment.duplicate_item"),
+            "source_ref" => ("attachment_evidence_mismatch", "attachment.source_ref"),
+            "message_missing" => ("attachment_evidence_mismatch", "attachment.message_missing"),
+            "message_agent" => ("attachment_evidence_mismatch", "attachment.message_agent"),
+            "queue_missing" => ("attachment_evidence_mismatch", "attachment.queue_missing"),
+            "queue_agent" => ("attachment_evidence_mismatch", "attachment.queue_agent"),
+            "queue_status" => ("attachment_evidence_mismatch", "attachment.queue_status"),
+            _ => unreachable!(),
+        };
+        if invalid_evidence == "prior_agent" {
+            // The repository partition invariant rejects this before admission.
+            // Do not relabel a storage invariant error as an attach rejection.
+            assert!(error
+                .to_string()
+                .contains("stored execution protocol state is invalid"));
+            assert!(!error.is::<crate::runtime_error::IdleInputRecoveryRejection>());
+        } else {
+            assert_eq!(
+                descriptor.code,
+                format!("idle_input_recovery_{predicate}"),
+                "{invalid_evidence}: {error:#}"
+            );
+            assert_eq!(descriptor.safe_context["field"], field);
+            assert_eq!(
+                descriptor.domain,
+                crate::runtime_error::RuntimeErrorDomain::Validation
+            );
+            assert!(!descriptor.retryable);
+        }
+        assert!(!serde_json::to_string(&descriptor)
+            .unwrap()
+            .contains("original request"));
+        assert!(!serde_json::to_string(&descriptor)
+            .unwrap()
+            .contains("sentinel-secret"));
         let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
         assert_eq!(turn.input_message_ids, [first]);
         assert!(turn.idle_input_batch.is_none());
@@ -4076,10 +4276,8 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
                 .runtime_db
                 .queue_entries()
                 .latest(&second)
-                .unwrap()
-                .unwrap()
-                .status,
-            QueueEntryStatus::Interjected
+                .unwrap(),
+            follower_before
         );
         assert!(provider.requests.lock().await.is_empty());
     }

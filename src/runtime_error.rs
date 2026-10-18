@@ -15,6 +15,10 @@ use crate::{
 const SOURCE_CHAIN_MAX_ENTRIES: usize = 8;
 const ERROR_TEXT_MAX_CHARS: usize = 512;
 
+mod idle_input_recovery;
+pub(crate) use idle_input_recovery::safe_recovery_id as safe_runtime_evidence_id;
+pub(crate) use idle_input_recovery::{IdleInputRecoveryPredicate, IdleInputRecoveryRejection};
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeErrorDomain {
@@ -146,6 +150,10 @@ impl std::fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
+    if let Some(rejection) = error.downcast_ref::<IdleInputRecoveryRejection>() {
+        // Do not copy outer error contexts that may contain rejected evidence.
+        return rejection.descriptor();
+    }
     let source_chain = collect_runtime_error_source_chain(error);
 
     if let Some(runtime_error) = error.downcast_ref::<RuntimeError>().or_else(|| {
@@ -537,6 +545,12 @@ fn is_safe_context_key(key: &str) -> bool {
             | "expected_revision"
             | "actual_revision"
             | "operation"
+            | "predicate"
+            | "recovery_disposition"
+            | "activation_id"
+            | "predecessor_activation_id"
+            | "source_turn_id"
+            | "batch_activation_id"
             | "io_kind"
             | "os_error"
     )

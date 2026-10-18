@@ -7,8 +7,8 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::domain::execution_protocol::{
-    self, ExecutionOutcomeRecord, ExecutionProtocolCommand, ExecutionProtocolState,
-    ExecutionTransition, WorkItemExecutionState,
+    self, ExecutionAttempt, ExecutionOutcomeRecord, ExecutionProtocolCommand,
+    ExecutionProtocolState, ExecutionTransition, WorkItemExecutionState,
 };
 use crate::{
     runtime_db::transitions::{
@@ -1038,6 +1038,28 @@ fn validate_admission_authority_tx(
 }
 
 impl RuntimeTransitionRepository<'_> {
+    /// Read historical canonical evidence without loading the execution partition.
+    pub(crate) fn execution_attempt_by_id(
+        &self,
+        agent_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<ExecutionAttempt>> {
+        let connection = self.db.connection()?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json FROM execution_protocol_attempts
+                 WHERE agent_id = ?1 AND attempt_id = ?2",
+                params![agent_id, attempt_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let attempt = payload
+            .map(|payload| serde_json::from_str::<ExecutionAttempt>(&payload))
+            .transpose()?;
+        Ok(attempt
+            .filter(|attempt| attempt.agent_id == agent_id && attempt.attempt_id == attempt_id))
+    }
+
     pub(crate) fn load_execution_authority_fences(
         &self,
         agent_id: &str,
