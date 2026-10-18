@@ -56,7 +56,9 @@ test("warm history is visible before real identity/state responses and stays rea
     await expect(page.locator(".message-list")).toContainText(marker);
     const warmHistoryVisibleMs = performance.now() - warmStarted;
     await expect(page.getByText("Loading agent…", { exact: true })).toHaveCount(0);
-    await expect(page.locator(".composer textarea")).toBeDisabled();
+    await expect(page.locator(".composer textarea")).toBeEnabled();
+    await page.locator(".composer textarea").fill("Draft before real access resolves");
+    await expect(page.locator(".composer .send-button")).toBeDisabled();
     // Real responses have not been substituted: only their delivery is held.
     // Waiting for both requests also guards against identity -> state serialization.
     await expect.poll(() => identityRequests).toBeGreaterThan(0);
@@ -73,7 +75,8 @@ test("warm history is visible before real identity/state responses and stays rea
     });
     preview = false;
     release();
-    await expect(page.locator(".composer textarea")).toBeEnabled();
+    await expect(page.locator(".composer .send-button")).toBeEnabled();
+    await expect(page.locator(".composer textarea")).toHaveValue("Draft before real access resolves");
     await expect(page.locator(".message-list")).toContainText(marker);
   } finally {
     release();

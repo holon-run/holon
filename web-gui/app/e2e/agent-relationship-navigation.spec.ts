@@ -51,18 +51,22 @@ for (const supervised of [false, true]) {
       try {
         await page.goto(`/agents/${agentId}/conversation`, { waitUntil: "domcontentloaded" });
         await expect(page.locator(".conversation-sync-status")).toContainText("cached history is read-only");
-        await expect(page.locator(".composer textarea")).toBeDisabled();
-        release();
         await expect(page.locator(".composer textarea")).toBeEnabled();
+        await page.locator(".composer textarea").fill("Draft before agent access resolves");
+        await expect(page.locator(".composer .send-button")).toBeDisabled();
+        release();
+        await expect(page.locator(".composer .send-button")).toBeEnabled();
 
         gate = new Promise<void>((resolve) => { release = resolve; });
         await page.reload({ waitUntil: "domcontentloaded" });
         await expect(page.locator(".conversation-sync-status")).toContainText("cached history is read-only");
-        await expect(page.locator(".composer textarea")).toBeDisabled();
+        await expect(page.locator(".composer textarea")).toBeEnabled();
+        await expect(page.locator(".composer textarea")).toHaveValue("Draft before agent access resolves");
+        await expect(page.locator(".composer .send-button")).toBeDisabled();
         await expect(page.locator(".message-list")).toBeVisible();
         await page.screenshot({ path: info.outputPath("refresh-read-only.png") });
         release();
-        await expect(page.locator(".composer textarea")).toBeEnabled();
+        await expect(page.locator(".composer .send-button")).toBeEnabled();
         await expect(page.getByText(/Messages go directly to this subagent/)).toHaveCount(0);
         const back = page.getByRole("link", { name: "Back to parent agent", exact: true });
         await expect(back).toHaveCount(supervised ? 1 : 0);
