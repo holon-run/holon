@@ -6,8 +6,8 @@ const agentId = "bootstrap-agent";
 const buddyId = "e2e-agent";
 const cachedText = "Previously verified conversation history.";
 
-for (const result of ["available", "forbidden", "missing", "replaced"] as const) {
-  test(`warm conversation is read-only before parallel revalidation: ${result}`, async ({
+for (const result of ["available", "offline", "forbidden", "missing", "replaced"] as const) {
+  test(`warm history is read-only but drafts remain editable before revalidation: ${result}`, async ({
     page, context, request,
   }, info) => {
     const session = sessionFor(info, "warm-preview");
@@ -48,6 +48,12 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
     let identities = 0;
     let states = 0;
     let preview = true;
+    let offline = result === "offline";
+    const prompts: Record<string, unknown>[] = [];
+    await page.route(`**/api/control/agents/${agentId}/prompt`, async (route) => {
+      prompts.push(route.request().postDataJSON());
+      await route.fulfill({ json: { message_id: "draft-input" } });
+    });
     const previewWrites: string[] = [];
     page.on("request", (outgoing) => {
       if (preview && outgoing.method() === "POST"
@@ -58,6 +64,10 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
     await page.route(`**/api/control/agents/${agentId}/detail`, async (route) => {
       identities++;
       await gate;
+      if (offline) {
+        await route.abort("internetdisconnected");
+        return;
+      }
       if (result === "forbidden" || result === "missing") {
         await route.fulfill({
           status: result === "forbidden" ? 403 : 404,
@@ -73,6 +83,10 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
     await page.route(`**/api/agents/${agentId}/state`, async (route) => {
       states++;
       await gate;
+      if (offline) {
+        await route.abort("internetdisconnected");
+        return;
+      }
       const response = await route.fetch();
       const state = await response.json();
       if (result === "replaced") state.agent.identity.incarnation = 2;
@@ -88,7 +102,18 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
       // A missing access/cache split therefore fails rather than passing after a timeout.
       await expect(page.getByText(cachedText, { exact: true })).toBeVisible();
       await expect(page.getByText("Loading agent…", { exact: true })).toHaveCount(0);
-      await expect(page.locator(".composer textarea")).toBeDisabled();
+      const textarea = page.locator(".composer textarea");
+      const send = page.locator(".composer .send-button");
+      await expect(textarea).toBeEnabled();
+      await textarea.fill("Draft typed before verification");
+      await page.locator(".composer-file-input").setInputFiles({
+        name: "draft.txt", mimeType: "text/plain", buffer: Buffer.from("Local attachment"),
+      });
+      await expect(page.locator(".composer-attachments")).toContainText("draft.txt");
+      await expect(send).toBeDisabled();
+      await textarea.press("Enter");
+      await page.locator("form.composer").evaluate((form: HTMLFormElement) => form.requestSubmit());
+      expect(prompts).toEqual([]);
       const accessNotice = page.locator(".conversation-sync-status .conversation-status-banner[role=status]");
       await expect(accessNotice).toContainText("Verifying access");
       await expect(accessNotice.locator(":scope > svg")).toBeVisible();
@@ -115,12 +140,35 @@ for (const result of ["available", "forbidden", "missing", "replaced"] as const)
       expect(previewWrites).toEqual([]);
       preview = false;
       release();
-      if (result === "available") {
-        await expect(page.locator(".composer textarea")).toBeEnabled();
+      if (result === "offline") {
+        await expect(accessNotice).toContainText("Agent refresh is delayed");
+        await expect(textarea).toBeEnabled();
+        await textarea.fill("Draft edited while offline");
+        await textarea.press("Enter");
+        await page.locator("form.composer").evaluate((form: HTMLFormElement) => form.requestSubmit());
+        await expect(send).toBeDisabled();
+        expect(prompts).toEqual([]);
+        offline = false;
+        await accessNotice.getByRole("button").click();
+      }
+      if (result === "available" || result === "offline") {
+        const draft = result === "offline" ? "Draft edited while offline" : "Draft typed before verification";
+        await expect(textarea).toHaveValue(draft);
+        await expect(send).toBeEnabled();
+        await expect(page.locator(".composer-attachments")).toContainText("draft.txt");
+        expect(prompts).toEqual([]);
         await expect(page.getByText(cachedText, { exact: true })).toBeVisible();
+        await send.click();
+        await expect.poll(() => prompts.length).toBe(1);
+        expect(prompts[0]).toMatchObject({
+          text: draft, expected_incarnation: 1,
+          attachments: [{ name: "draft.txt", media_type: "text/plain" }],
+        });
+        await expect(textarea).toHaveValue("");
       } else {
         await expect(page.getByText(cachedText, { exact: true })).toHaveCount(0);
         await expect(page.locator(".composer textarea:enabled")).toHaveCount(0);
+        expect(prompts).toEqual([]);
       }
     } finally {
       release();

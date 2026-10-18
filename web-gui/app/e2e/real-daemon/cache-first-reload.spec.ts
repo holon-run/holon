@@ -101,7 +101,9 @@ async function expectReadonlyCache(page: Page): Promise<void> {
   await expect(page.locator('.agent-row[title*="default"]')).toBeVisible();
   await expect(page.locator(".message-list")).toContainText(MARKER);
   await expect(page.getByText("Loading agent…", { exact: true })).toHaveCount(0);
-  await expect(page.locator(".composer textarea")).toBeDisabled();
+  await expect(page.locator(".composer textarea")).toBeEnabled();
+  await page.locator(".composer textarea").fill("Draft while real access is pending");
+  await expect(page.locator(".composer .send-button")).toBeDisabled();
 }
 
 test("reload restores persisted roster and conversation before real bootstrap and access responses", async ({
@@ -142,7 +144,8 @@ test("reload restores persisted roster and conversation before real bootstrap an
     expect(readWrites).toEqual([]);
     identity.release();
     state.release();
-    await expect(page.locator(".composer textarea")).toBeEnabled();
+    await expect(page.locator(".composer .send-button")).toBeEnabled();
+    await expect(page.locator(".composer textarea")).toHaveValue("Draft while real access is pending");
     await expect.poll(() => conversationStatus(page)).toBe("ready");
     await expect(page.locator(".message-list")).toContainText(MARKER);
   } finally {
@@ -186,7 +189,8 @@ test("reload keeps private caches hidden until session confirmation even while b
     bootstrap.release();
     identity.release();
     state.release();
-    await expect(page.locator(".composer textarea")).toBeEnabled();
+    await expect(page.locator(".composer .send-button")).toBeEnabled();
+    await expect(page.locator(".composer textarea")).toHaveValue("Draft while real access is pending");
     await expect.poll(() => conversationStatus(page)).toBe("ready");
     await expect(page.locator(".message-list")).toContainText(MARKER);
   } finally {
