@@ -13,9 +13,9 @@ use url::{form_urlencoded, Url};
 use crate::{
     tool::ToolError,
     web::{
-        policy::timeout, WebCommandOutputConfig, WebCommandResultMapping, WebConfig,
-        WebFetchConfig, WebProviderCapabilityMetadata, WebProviderConfig, WebProviderKind,
-        WebProviderSupportStatus, WebSearchMode,
+        deepseek_tool_url, policy::timeout, WebCommandOutputConfig, WebCommandResultMapping,
+        WebConfig, WebFetchConfig, WebProviderCapabilityMetadata, WebProviderConfig,
+        WebProviderKind, WebProviderSupportStatus, WebSearchMode,
     },
 };
 
@@ -630,6 +630,9 @@ async fn search_configured_provider(
         WebProviderKind::Tavily => {
             tavily_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::DeepSeek => {
+            deepseek_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
         WebProviderKind::Exa => {
             exa_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
@@ -646,7 +649,7 @@ async fn search_configured_provider(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, tencent_cloud_wsa, bocha, tavily, exa, perplexity, or firecrawl provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, tencent_cloud_wsa, bocha, tavily, deepseek, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
@@ -1383,6 +1386,139 @@ fn bocha_search_url(base_url: &str) -> String {
     } else {
         format!("{base_url}/v1/web-search")
     }
+}
+
+async fn deepseek_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    if query.trim().is_empty() || !(1..=128).contains(&query.chars().count()) {
+        return Err(search_error(
+            "invalid_request",
+            "DeepSeek search query must contain 1 to 128 Unicode characters",
+            provider_id,
+            "shorten the query or choose another WebSearch provider",
+        ));
+    }
+    if provider.api_key.trim().is_empty() {
+        return Err(search_error(
+            "provider_unavailable",
+            "DeepSeek requires an API key (set credential_profile on the provider)",
+            provider_id,
+            "add a credential_profile with an api_key in the credential store",
+        ));
+    }
+    let url = deepseek_tool_url(provider, "search").map_err(|_| {
+        search_error(
+            "provider_unavailable",
+            "DeepSeek base_url is invalid",
+            provider_id,
+            "configure an HTTP(S) DeepSeek base_url",
+        )
+    })?;
+    let client = Client::builder()
+        .timeout(timeout(fetch_config))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client
+        .post(url)
+        .bearer_auth(&provider.api_key)
+        .json(&json!({
+            "query": query,
+            "count": max_results.clamp(1, 50),
+            "need_content": false,
+        }))
+        .send()
+        .await
+        .map_err(|_| {
+            search_error(
+                "network_failed",
+                "DeepSeek search request failed",
+                provider_id,
+                "retry later or check the provider configuration",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            "provider_unavailable"
+        } else if status == StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("DeepSeek search returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: Value = serde_json::from_str(&body).map_err(|_| {
+        search_error(
+            "parse_failed",
+            "DeepSeek search returned invalid JSON",
+            provider_id,
+            "retry later or check the provider configuration",
+        )
+    })?;
+    let entries = payload
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            search_error(
+                "parse_failed",
+                "DeepSeek search response did not include a results array",
+                provider_id,
+                "retry later or check the provider configuration",
+            )
+        })?;
+    let results = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let title = entry.get("title")?.as_str()?.to_string();
+            let mut url = Url::parse(entry.get("url")?.as_str()?.trim()).ok()?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return None;
+            }
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url: url.to_string(),
+                    snippet: entry
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .filter(|summary| !summary.trim().is_empty())
+                        .or_else(|| entry.get("snippet").and_then(Value::as_str))
+                        .map(str::to_string),
+                    published_at: entry
+                        .get("date")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    ..ProviderRawSearchResult::default()
+                },
+            )
+        })
+        .take(max_results.min(50))
+        .collect::<Vec<_>>();
+    if !entries.is_empty() && results.is_empty() && max_results != 0 {
+        return Err(search_error(
+            "parse_failed",
+            "DeepSeek search returned no parseable search results",
+            provider_id,
+            "try another query or check the provider response format",
+        ));
+    }
+    Ok(results)
 }
 
 async fn tavily_search(
@@ -3004,6 +3140,267 @@ mod tests {
             .unwrap_err();
         let tool_error = ToolError::from_anyhow(&error);
         assert_eq!(tool_error.kind, "response_too_large");
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_request_mapping_and_limit() {
+        let router = axum::Router::new().route(
+            "/v1/tools/search",
+            axum::routing::post(
+                |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                    assert_eq!(headers["authorization"], "Bearer test-key-123");
+                    assert_eq!(headers["content-type"], "application/json");
+                    assert_eq!(
+                        body,
+                        json!({"query": "搜索🦀", "count": 2, "need_content": false})
+                    );
+                    axum::Json(json!({
+                        "results": [
+                            {"title": "Unsafe", "url": "javascript:alert(1)"},
+                            {
+                                "title": " First ",
+                                "url": "https://user:secret@example.com/one#section",
+                                "summary": " Summary ",
+                                "snippet": "not preferred",
+                                "content": "not exposed",
+                                "date": "2026-10-18",
+                                "unmapped_field": "not exposed"
+                            },
+                            {
+                                "title": "Second",
+                                "url": "https://example.com/two",
+                                "summary": " \n ",
+                                "snippet": " Fallback "
+                            },
+                            {"title": "Third", "url": "https://example.com/three"}
+                        ]
+                    }))
+                },
+            ),
+        );
+        let base_url = deepseek_mock_server(router).await;
+        let provider = test_provider(WebProviderKind::DeepSeek, &base_url);
+        let results = deepseek_search(
+            "搜索🦀",
+            2,
+            "deepseek_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 2);
+        let first = &results[0];
+        assert_eq!(first.title, "First");
+        assert_eq!(first.url, "https://example.com/one#section");
+        assert_eq!(first.snippet.as_deref(), Some("Summary"));
+        assert_eq!(first.published_at.as_deref(), Some("2026-10-18"));
+        assert_eq!(
+            first.canonical_url.as_deref(),
+            Some("https://example.com/one")
+        );
+        assert_eq!(first.display_url.as_deref(), Some("example.com/one"));
+        assert_eq!(first.source, "deepseek_test");
+        assert_eq!(first.rank, Some(2));
+        assert!(first.metadata.is_none());
+        assert!(first.language.is_none());
+        assert!(first.region.is_none());
+        assert_eq!(results[1].snippet.as_deref(), Some("Fallback"));
+    }
+
+    async fn deepseek_mock_server(router: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_count_is_capped() {
+        let router = axum::Router::new().route(
+            "/v1/tools/search",
+            axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
+                assert_eq!(body["count"], 50);
+                axum::Json(json!({
+                    "results": (0..55)
+                        .map(|i| json!({
+                            "title": format!("Result {i}"),
+                            "url": format!("https://example.com/{i}"),
+                            "snippet": "snippet without summary"
+                        }))
+                        .collect::<Vec<_>>()
+                }))
+            }),
+        );
+        let base_url = deepseek_mock_server(router).await;
+        let provider = test_provider(WebProviderKind::DeepSeek, &base_url);
+        let results = deepseek_search("test", 99, "deepseek_test", &provider, &test_fetch_config())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 50);
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("snippet without summary")
+        );
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_empty_results_succeeds() {
+        let router = axum::Router::new().route(
+            "/v1/tools/search",
+            axum::routing::post(|| async { axum::Json(empty_results_json()) }),
+        );
+        let base_url = deepseek_mock_server(router).await;
+        let config = test_search_config(
+            vec![(
+                "deepseek_test",
+                test_provider(WebProviderKind::DeepSeek, &base_url),
+            )],
+            vec!["deepseek_test"],
+            WebSearchMode::Single,
+        );
+        let response = search(
+            WebSearchRequest {
+                query: "no matches".to_string(),
+                max_results: Some(5),
+                provider: Some("deepseek_test".to_string()),
+            },
+            &config,
+        )
+        .await
+        .unwrap();
+        assert!(response.results.is_empty());
+        assert!(response.citations.is_empty());
+        assert_eq!(response.provider, "deepseek_test");
+        assert_eq!(
+            response.provider_attempts[0].status,
+            WebSearchProviderAttemptStatus::Success
+        );
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_http_errors_are_redacted() {
+        for (status, expected_kind) in [
+            (StatusCode::UNAUTHORIZED, "provider_unavailable"),
+            (StatusCode::FORBIDDEN, "provider_unavailable"),
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "network_failed"),
+            (StatusCode::FOUND, "network_failed"),
+        ] {
+            let router = axum::Router::new().route(
+                "/v1/tools/search",
+                axum::routing::post(move || async move {
+                    (status, "private response: test-key-123 response-secret")
+                }),
+            );
+            let base_url = deepseek_mock_server(router).await;
+            let provider = test_provider(WebProviderKind::DeepSeek, &base_url);
+            let error =
+                deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
+                    .await
+                    .unwrap_err();
+            assert_eq!(ToolError::from_anyhow(&error).kind, expected_kind);
+            let diagnostic = format!("{error:?}");
+            assert!(!diagnostic.contains("test-key-123"));
+            assert!(!diagnostic.contains("response-secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_invalid_payloads_are_redacted() {
+        for body in [
+            "not JSON response-secret test-key-123",
+            r#"{"response-secret":"test-key-123"}"#,
+            r#"{"results":{}}"#,
+            r#"{"results":[{"title":"invalid","url":"file:///private"}]}"#,
+        ] {
+            let router = axum::Router::new().route(
+                "/v1/tools/search",
+                axum::routing::post(move || async move { body }),
+            );
+            let base_url = deepseek_mock_server(router).await;
+            let provider = test_provider(WebProviderKind::DeepSeek, &base_url);
+            let error =
+                deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
+                    .await
+                    .unwrap_err();
+            assert_eq!(ToolError::from_anyhow(&error).kind, "parse_failed");
+            let diagnostic = format!("{error:?}");
+            assert!(!diagnostic.contains("response-secret"));
+            assert!(!diagnostic.contains("test-key-123"));
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_missing_api_key_is_error() {
+        let mut provider = test_provider(WebProviderKind::DeepSeek, "http://127.0.0.1:1");
+        provider.api_key.clear();
+        let error = deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert_eq!(ToolError::from_anyhow(&error).kind, "provider_unavailable");
+        assert!(error.to_string().contains("requires an API key"));
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_unicode_query_boundaries() {
+        let router = axum::Router::new().route(
+            "/v1/tools/search",
+            axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
+                let query = body["query"].as_str().unwrap();
+                assert!((1..=128).contains(&query.chars().count()));
+                assert_eq!(body["count"], 1);
+                axum::Json(empty_results_json())
+            }),
+        );
+        let base_url = deepseek_mock_server(router).await;
+        let provider = test_provider(WebProviderKind::DeepSeek, &base_url);
+        for query in ["🦀".to_string(), "🦀".repeat(128), "a".repeat(128)] {
+            assert!(
+                deepseek_search(&query, 1, "deepseek_test", &provider, &test_fetch_config(),)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        for query in [
+            String::new(),
+            " \t\n".into(),
+            "🦀".repeat(129),
+            "a".repeat(129),
+        ] {
+            let error =
+                deepseek_search(&query, 1, "deepseek_test", &provider, &test_fetch_config())
+                    .await
+                    .unwrap_err();
+            assert_eq!(ToolError::from_anyhow(&error).kind, "invalid_request");
+        }
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_invalid_base_url_is_redacted() {
+        let provider = test_provider(WebProviderKind::DeepSeek, "invalid secret-base-url");
+        let error = deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert_eq!(ToolError::from_anyhow(&error).kind, "provider_unavailable");
+        assert!(!format!("{error:?}").contains("secret-base-url"));
+    }
+
+    #[tokio::test]
+    async fn deepseek_search_response_byte_limit() {
+        let router = axum::Router::new().route(
+            "/v1/tools/search",
+            axum::routing::post(|| async { "x".repeat(SEARCH_RESPONSE_BYTES + 1) }),
+        );
+        let base_url = deepseek_mock_server(router).await;
+        let provider = test_provider(WebProviderKind::DeepSeek, &base_url);
+        let error = deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert_eq!(ToolError::from_anyhow(&error).kind, "response_too_large");
     }
 
     #[tokio::test]

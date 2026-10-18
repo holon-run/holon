@@ -21,6 +21,7 @@ Holon Agent 内置两个网络工具，用于检索和搜索公开网络。它�
 | `url` | 是 | 要抓取的 HTTP 或 HTTPS URL |
 | `max_chars` | 否 | 返回的最大字符数（默认：无硬性上限） |
 | `extract_mode` | 否 | 如何从响应中提取内容 |
+| `provider` | 否 | 显式选择 `kind=deepseek` 的付费远程抓取；省略则保持本地 HTTP |
 
 ### 提取模式
 
@@ -53,6 +54,33 @@ WebFetch { url: "https://example.com/docs/api", max_chars: 5000 }
 
 运行时抓取该 URL，应用 Holon 的网络策略，提取可读文本，并返回结果。
 
+### DeepSeek 独立 Search / Fetch
+
+引用已有 DeepSeek API key profile，不要把密钥写入配置：
+
+```sh
+holon config set web.providers.deepseek.kind deepseek
+holon config set web.providers.deepseek.credential_profile deepseek:default
+```
+
+把 `deepseek:default` 换成实际 profile 名称。无需切换对话模型或 transport，
+其他模型也可通过通用工具使用：
+
+```text
+WebSearch { query: "DeepSeek API 文档", provider: "deepseek", max_results: 5 }
+WebFetch { url: "https://api-docs.deepseek.com/", provider: "deepseek", max_chars: 5000 }
+```
+
+Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运算符，
+查询须为 1–128 个 Unicode 字符，空结果是合法响应。Fetch 只支持 `auto`，
+返回 Markdown。两种 API 均独立计费，不包含在模型 token 费用中。
+
+远程抓取会向 DeepSeek 披露目标 URL。Holon 校验初始公共 URL 并限制输出，
+后续 DNS、重定向由服务方控制，无法在本地检查。因此设置了自定义 host 规则
+或重定向上限时会拒绝远程抓取；需要这些策略或 `text`/`raw` 时请省略 `provider`。
+远程来源信息为 `source=deepseek_remote`、`final_url=null`，`status` 表示
+**提供商 API** 状态，不冒充源站 HTTP 状态；哈希和字节数描述返回的 Markdown。
+
 ## WebSearch
 
 `WebSearch` 通过 Holon 的网络提供商注册表搜索网络，返回带引用的结构化结果。
@@ -79,6 +107,8 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选：
   `holon config set web.providers.bocha.credential_profile <profile>`。
 - **模型原生搜索**：部分模型提供商（OpenAI、Anthropic）通过自家 API 支持原生网络搜索。
   在 "Auto" 模式下，Holon 会优先使用它们。
+- **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
+  任意对话模型均可使用。
 
 所有提供商返回的搜索结果都会标准化为一致格式，包含标题、URL 和摘要文本。引用会被保留，
 以便 Agent 用 `WebFetch` 跟进读取完整页面。

@@ -2,6 +2,7 @@ use crate::config::CredentialStoreFile;
 
 pub mod fetch;
 pub mod policy;
+mod remote_fetch;
 pub mod search;
 
 use std::collections::BTreeMap;
@@ -9,6 +10,29 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+pub(crate) fn deepseek_tool_url(provider: &WebProviderConfig, tool: &str) -> Result<url::Url> {
+    let base = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.deepseek.com/v1");
+    let mut url = url::Url::parse(base).map_err(|_| anyhow!("invalid DeepSeek base URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "DeepSeek base URL must be HTTP(S) with a host and no credentials, query, or fragment"
+        ));
+    }
+    let path = url.path().trim_end_matches('/');
+    let prefix = if path.is_empty() { "/v1" } else { path };
+    url.set_path(&format!("{prefix}/tools/{tool}"));
+    Ok(url)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebConfig {
@@ -414,6 +438,8 @@ pub enum WebProviderKind {
     DuckDuckGo,
     Searxng,
     Brave,
+    #[serde(rename = "deepseek")]
+    DeepSeek,
     TencentCloudWsa,
     Bocha,
     Tavily,
@@ -431,10 +457,11 @@ impl WebProviderKind {
     ///
     /// Missing entries are not caught at compile time, so keep this in sync
     /// when adding or removing enum variants.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::DuckDuckGo,
         Self::Searxng,
         Self::Brave,
+        Self::DeepSeek,
         Self::TencentCloudWsa,
         Self::Bocha,
         Self::Tavily,
@@ -461,6 +488,7 @@ impl WebProviderKind {
             WebProviderKind::DuckDuckGo => "duck_duck_go",
             WebProviderKind::Searxng => "searxng",
             WebProviderKind::Brave => "brave",
+            WebProviderKind::DeepSeek => "deepseek",
             WebProviderKind::TencentCloudWsa => "tencent_cloud_wsa",
             WebProviderKind::Bocha => "bocha",
             WebProviderKind::Tavily => "tavily",
@@ -476,6 +504,18 @@ impl WebProviderKind {
 
     pub fn capabilities(&self) -> WebProviderCapabilityMetadata {
         match self {
+            WebProviderKind::DeepSeek => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Research,
+                supports_domain_filter: true,
+                supports_freshness: true,
+                supports_region_or_language: true,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 75,
+                status: WebProviderSupportStatus::Supported,
+            },
             WebProviderKind::DuckDuckGo => WebProviderCapabilityMetadata {
                 auth: WebProviderAuthClass::None,
                 cost_class: WebProviderCostClass::Free,
@@ -845,5 +885,66 @@ mod tests {
             WebProviderKind::Command.capabilities().status,
             WebProviderSupportStatus::Supported
         );
+    }
+
+    #[test]
+    fn deepseek_kind_and_endpoint_contract() {
+        let mut provider =
+            WebProviderConfig::from_file("deepseek", &provider_file(WebProviderKind::DeepSeek))
+                .unwrap();
+        assert_eq!(serde_json::to_value(provider.kind).unwrap(), "deepseek");
+        assert_eq!(
+            serde_json::from_str::<WebProviderKind>("\"deepseek\"").unwrap(),
+            WebProviderKind::DeepSeek
+        );
+        assert_eq!(
+            deepseek_tool_url(&provider, "fetch").unwrap().as_str(),
+            "https://api.deepseek.com/v1/tools/fetch"
+        );
+        for base in [
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/",
+            "https://api.deepseek.com/v1",
+            "https://api.deepseek.com/v1/",
+        ] {
+            provider.base_url = Some(base.into());
+            assert_eq!(
+                deepseek_tool_url(&provider, "search").unwrap().as_str(),
+                "https://api.deepseek.com/v1/tools/search"
+            );
+        }
+        for base in [
+            "not a url",
+            "file:///etc/passwd",
+            "https://user:secret@example.com",
+            "https://example.com?secret=1",
+            "https://example.com/#secret",
+        ] {
+            provider.base_url = Some(base.into());
+            let error = deepseek_tool_url(&provider, "fetch")
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("secret"));
+        }
+        let metadata = provider.kind.capabilities();
+        assert_eq!(metadata.auth, WebProviderAuthClass::ApiKey);
+        assert_eq!(metadata.status, WebProviderSupportStatus::Supported);
+    }
+
+    #[test]
+    fn deepseek_reuses_llm_credential_profile_without_serializing_key() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::DeepSeek);
+        provider.credential_profile = Some("deepseek:default".into());
+        file.providers.insert("deepseek".into(), provider);
+        let config = materialize_web_config(
+            &file,
+            &credential_store_with("deepseek:default", "secret-fixture"),
+        )
+        .unwrap();
+        assert_eq!(config.providers["deepseek"].api_key, "secret-fixture");
+        assert!(!serde_json::to_string(&config)
+            .unwrap()
+            .contains("secret-fixture"));
     }
 }

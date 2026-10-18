@@ -45,6 +45,7 @@ make test-live-openai
 make test-live-anthropic
 make test-live-codex
 make test-live-xai
+make test-live-deepseek-web
 make test-live-images
 make test-live-runtime
 ```
@@ -56,6 +57,15 @@ credential-free default CI.
 `make test-live-anthropic` includes the Anthropic prompt-cache baseline and the
 broader Anthropic-compatible provider matrix. It may require multiple
 provider-specific credentials and incur higher cost than the baseline target.
+
+`make test-live-deepseek-web` uses the configured default LLM (or
+`HOLON_LIVE_DEEPSEEK_WEB_MODEL`) to emit production WebSearch/WebFetch calls,
+executes one Search and one Fetch request through Holon's web adapters, and
+returns both results to the LLM for a completion acknowledgement. Web requests
+use `DEEPSEEK_API_KEY` or the configured DeepSeek LLM credential; neither secrets
+nor response bodies are printed. It does not change the running daemon's web
+configuration. Three LLM turns and DeepSeek's independent Search/Fetch requests
+incur charges.
 
 ## Required configuration
 

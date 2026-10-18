@@ -1010,6 +1010,22 @@ fn set_get_and_unset_round_trip_command_task_output_safety_policy() {
 #[test]
 fn set_get_and_unset_round_trip_web_config() {
     let mut config = HolonConfigFile::default();
+    set_config_key(&mut config, "web.providers.deepseek.kind", "deepseek").unwrap();
+    set_config_key(
+        &mut config,
+        "web.providers.deepseek.credential_profile",
+        "deepseek:default",
+    )
+    .unwrap();
+    assert_eq!(
+        get_config_key(&config, "web.providers.deepseek.kind").unwrap(),
+        json!("deepseek")
+    );
+    assert_eq!(
+        get_config_key(&config, "web.providers.deepseek.credential_profile").unwrap(),
+        json!("deepseek:default")
+    );
+    unset_config_key(&mut config, "web.providers.deepseek").unwrap();
     set_config_key(&mut config, "web.fetch.enabled", "true").unwrap();
     set_config_key(
         &mut config,

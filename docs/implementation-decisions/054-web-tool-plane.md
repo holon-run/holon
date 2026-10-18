@@ -6,11 +6,14 @@ model-facing tools:
 - `WebFetch` fetches one explicit `http` or `https` URL through runtime policy.
 - `WebSearch` routes a query through Holon's web provider registry.
 
-`WebFetch` is runtime-native because its real contract is not just HTTP. The
+By default, `WebFetch` is runtime-native because its real contract is not just HTTP. The
 runtime owns SSRF checks, redirect checks, response limits, extraction,
 external-content wrapping, and tool-ledger provenance. External formatters may
 be added later, but they should operate on already-fetched bytes instead of
-fetching URLs themselves.
+fetching URLs themselves. Explicit remote Fetch is a separate opt-in contract,
+not a formatter or an automatic fallback: see
+[Explicit remote WebFetch](../rfcs/remote-web-fetch.md) for the third-party
+fetch, policy, and provenance boundaries.
 
 `WebSearch` is model-facing but provider-routed. DuckDuckGo Lite is used only as
 a key-free best-effort fallback, while SearXNG is the first self-hosted

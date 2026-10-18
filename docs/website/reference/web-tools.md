@@ -23,6 +23,7 @@ documentation, or API responses.
 | `url` | yes | HTTP or HTTPS URL to fetch |
 | `max_chars` | no | Maximum characters to return (default: no hard limit) |
 | `extract_mode` | no | How to extract content from the response |
+| `provider` | no | Configured `kind=deepseek` provider for explicit paid remote Fetch; omitted means local HTTP |
 
 ### Extract modes
 
@@ -57,6 +58,36 @@ WebFetch { url: "https://example.com/docs/api", max_chars: 5000 }
 The runtime fetches the URL, applies Holon's web policy, extracts readable
 text, and returns the result.
 
+### DeepSeek remote Search and Fetch
+
+Reuse an existing DeepSeek API key profile; do not put the key in config:
+
+```sh
+holon config set web.providers.deepseek.kind deepseek
+holon config set web.providers.deepseek.credential_profile deepseek:default
+```
+
+Replace `deepseek:default` with your actual profile name. No model or transport
+change is needed: any conversation model can use these tools.
+
+```text
+WebSearch { query: "DeepSeek API documentation", provider: "deepseek", max_results: 5 }
+WebFetch { url: "https://api-docs.deepseek.com/", provider: "deepseek", max_chars: 5000 }
+```
+
+Search supports DeepSeek's query operators (`site:`, `-site:`, `lang:`,
+`after:`, `before:`); queries must contain 1–128 Unicode characters. Empty
+search results are valid. Fetch returns Markdown and only accepts `auto`.
+Both APIs are billed separately from model tokens.
+
+Remote Fetch discloses the URL to DeepSeek. Holon checks the initial public URL
+and limits output, but the service controls downstream DNS and redirects.
+Remote Fetch rejects custom host rules and redirect limits; omit `provider`
+for local policy enforcement or `text`/`raw` extraction. Remote provenance has
+`source=deepseek_remote`, `final_url=null`, and the **provider API** HTTP status,
+not a claimed source-page status. Its hash and byte count describe the
+returned Markdown.
+
 ## WebSearch
 
 `WebSearch` searches the web through Holon's web provider registry and returns
@@ -85,6 +116,8 @@ Holon uses a provider-based search model with multiple provider options:
   credential profile. Configure with
   `holon config set web.providers.bocha.kind bocha` and
   `holon config set web.providers.bocha.credential_profile <profile>`.
+- **DeepSeek** — independent Search/Fetch APIs using a DeepSeek API key profile
+  (`kind=deepseek`), available to any conversation model.
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these when available.
