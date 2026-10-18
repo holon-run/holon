@@ -2409,7 +2409,7 @@
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 10000,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3217,7 +3217,7 @@
       "model_ref": "openai-codex/gpt-5.6-luna",
       "display_name": "GPT-5.6-Luna (Codex)",
       "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 372000,
+      "context_window_tokens": 272000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
@@ -3238,7 +3238,7 @@
       "model_ref": "openai-codex/gpt-5.6-sol",
       "display_name": "GPT-5.6-Sol (Codex)",
       "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 372000,
+      "context_window_tokens": 272000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
@@ -3259,7 +3259,7 @@
       "model_ref": "openai-codex/gpt-5.6-terra",
       "display_name": "GPT-5.6-Terra (Codex)",
       "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
-      "context_window_tokens": 372000,
+      "context_window_tokens": 272000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
@@ -3298,6 +3298,27 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "openai-codex/gpt-6-luna",
+      "display_name": "GPT-6-Luna (Codex)",
+      "description": "Codex default context from OpenAI codex-rs/models-manager/models.json, not the general API context or output limit.",
+      "context_window_tokens": 272000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": "low",
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": true
+      },
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "openai-codex/gpt-6-sol",
       "display_name": "GPT-6-Sol (Codex)",
       "description": "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.",
@@ -3313,6 +3334,27 @@
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
+        "supports_reasoning": true,
+        "interactive_exec": true
+      },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "openai-codex/gpt-6.1-sol",
+      "display_name": "GPT-6.1-Sol (Codex)",
+      "description": "Codex default context from OpenAI codex-rs/models-manager/models.json; account-specific or opt-in larger windows are not global defaults.",
+      "context_window_tokens": 272000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": "low",
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": true
       },
@@ -9229,7 +9271,27 @@
       }
     },
     {
+      "route_ref": "openai-codex@default/gpt-6-luna",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "openai-codex@default/gpt-6-sol",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "openai-codex@default/gpt-6.1-sol",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10859,6 +10921,286 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash-0731",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4-flash-202605",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4-pro-0813",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4-pro-202606",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek/deepseek-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek/deepseek-v4-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek/deepseek-v4-flash-0731",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek/deepseek-v4-flash-vision-exp",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek/deepseek-v4-pro-0813",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/glm-5.2",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/glm-5.3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/glm-5.3-flashx",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/hy3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/hy4-preview",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/kimi-k2.6",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/mimo-v2.5-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/mimo-v2.6-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/mimo-v2.6-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/minimax-m2.7",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/minimax-m3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/qwen3.5-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/qwen3.5-plus",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "together@default/MiniMaxAI/MiniMax-M2.7",
       "policy": {
         "display_name": null,
@@ -12228,6 +12570,118 @@
       "target": "tencent-tokenhub/youtu-vita"
     },
     {
+      "alias": "tencent-tokenhub-responses/deepseek-v4-flash",
+      "target": "tencent-tokenhub/deepseek-v4-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4-flash-0731",
+      "target": "tencent-tokenhub/deepseek-v4-flash-0731"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4-flash-202605",
+      "target": "tencent-tokenhub/deepseek-v4-flash-202605"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4-pro",
+      "target": "tencent-tokenhub/deepseek-v4-pro"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4-pro-0813",
+      "target": "tencent-tokenhub/deepseek-v4-pro-0813"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4-pro-202606",
+      "target": "tencent-tokenhub/deepseek-v4-pro-202606"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4.1-flash",
+      "target": "tencent-tokenhub/deepseek-v4.1-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek/deepseek-flash",
+      "target": "tencent-tokenhub/deepseek/deepseek-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek/deepseek-v4-flash",
+      "target": "tencent-tokenhub/deepseek/deepseek-v4-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek/deepseek-v4-flash-0731",
+      "target": "tencent-tokenhub/deepseek/deepseek-v4-flash-0731"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek/deepseek-v4-flash-vision-exp",
+      "target": "tencent-tokenhub/deepseek/deepseek-v4-flash-vision-exp"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek/deepseek-v4-pro",
+      "target": "tencent-tokenhub/deepseek/deepseek-v4-pro"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek/deepseek-v4-pro-0813",
+      "target": "tencent-tokenhub/deepseek/deepseek-v4-pro-0813"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/glm-5.2",
+      "target": "tencent-tokenhub/glm-5.2"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/glm-5.3",
+      "target": "tencent-tokenhub/glm-5.3"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/glm-5.3-flash",
+      "target": "tencent-tokenhub/glm-5.3-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/glm-5.3-flashx",
+      "target": "tencent-tokenhub/glm-5.3-flashx"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/hy3",
+      "target": "tencent-tokenhub/hy3"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/hy4-preview",
+      "target": "tencent-tokenhub/hy4-preview"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/kimi-k2.6",
+      "target": "tencent-tokenhub/kimi-k2.6"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/kimi-k3",
+      "target": "tencent-tokenhub/kimi-k3"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/mimo-v2.5-pro",
+      "target": "tencent-tokenhub/mimo-v2.5-pro"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/mimo-v2.6-flash",
+      "target": "tencent-tokenhub/mimo-v2.6-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/mimo-v2.6-pro",
+      "target": "tencent-tokenhub/mimo-v2.6-pro"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/minimax-m2.7",
+      "target": "tencent-tokenhub/minimax-m2.7"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/minimax-m3",
+      "target": "tencent-tokenhub/minimax-m3"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/qwen3.5-flash",
+      "target": "tencent-tokenhub/qwen3.5-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/qwen3.5-plus",
+      "target": "tencent-tokenhub/qwen3.5-plus"
+    },
+    {
       "alias": "volcengine-agent/MiniMax-M3",
       "target": "volcengine/MiniMax-M3"
     },
@@ -12498,6 +12952,10 @@
       "model_ref": "tencent-tokenhub/hy3"
     },
     {
+      "provider": "tencent-tokenhub-responses",
+      "model_ref": "tencent-tokenhub/hy3"
+    },
+    {
       "provider": "together",
       "model_ref": "together/MiniMaxAI/MiniMax-M3"
     },
@@ -12662,6 +13120,10 @@
     {
       "provider": "tencent-tokenhub-messages",
       "route_ref": "tencent-tokenhub@messages/hy3"
+    },
+    {
+      "provider": "tencent-tokenhub-responses",
+      "route_ref": "tencent-tokenhub@responses/hy3"
     },
     {
       "provider": "together",
@@ -13330,8 +13792,16 @@
       "route_ref": "openai-codex@default/gpt-6-astra"
     },
     {
+      "model_ref": "openai-codex/gpt-6-luna",
+      "route_ref": "openai-codex@default/gpt-6-luna"
+    },
+    {
       "model_ref": "openai-codex/gpt-6-sol",
       "route_ref": "openai-codex@default/gpt-6-sol"
+    },
+    {
+      "model_ref": "openai-codex/gpt-6.1-sol",
+      "route_ref": "openai-codex@default/gpt-6.1-sol"
     },
     {
       "model_ref": "openai/gpt-5.3",

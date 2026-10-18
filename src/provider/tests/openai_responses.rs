@@ -440,6 +440,93 @@ async fn openai_from_config_uses_resolved_max_output_override_on_the_wire() {
 }
 
 #[tokio::test]
+async fn tokenhub_responses_replays_full_history_without_remote_compaction() {
+    let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured_bodies.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_for_server = attempts.clone();
+    let compact_attempts = Arc::new(AtomicUsize::new(0));
+    let compact_for_server = compact_attempts.clone();
+    let base_url = spawn_test_server(
+        Router::new()
+            .route(
+                "/responses",
+                post(move |Json(body): Json<Value>| {
+                    let captured = captured_for_server.clone();
+                    let attempts = attempts_for_server.clone();
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            Json(openai_tool_call_response("resp_1"))
+                        } else {
+                            Json(openai_text_response("resp_2", "done"))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/responses/compact",
+                post(move || {
+                    let attempts = compact_for_server.clone();
+                    async move {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                }),
+            ),
+    )
+    .await;
+    let fixture = test_config("openai/gpt-5.4", &[], Some("test-key"), None, false);
+    let mut config = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai())
+        .unwrap()
+        .clone();
+    config.id = ProviderId::parse("tencent-tokenhub-responses").unwrap();
+    config.route_provider = ProviderId::parse("tencent-tokenhub").unwrap();
+    config.route_endpoint = ProviderEndpointId::parse("responses").unwrap();
+    config.base_url = base_url;
+    config.builtin_web_search = None;
+    let provider = OpenAiProvider::from_runtime_config_with_compaction_policy_and_context_window(
+        &config,
+        "glm-5.2",
+        1024,
+        None,
+        fixture.config.home_dir.as_path(),
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 1,
+        },
+    )
+    .unwrap();
+    let mut request = provider_turn_request_with_prompt_frame();
+    request.tools = vec![tool_spec_named("ExecCommand")];
+    provider.complete_turn(request).await.unwrap();
+    let mut followup = provider_continuation_request_with_prompt_frame();
+    followup.tools = vec![tool_spec_named("ExecCommand")];
+    provider.complete_turn(followup).await.unwrap();
+
+    let bodies = captured_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    for body in bodies.iter() {
+        assert!(body.get("previous_response_id").is_none());
+        assert_eq!(body["store"], json!(false));
+        assert_ne!(body["stream"], json!(true));
+        let tools = body["tools"].as_array().expect("declared function tool");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], json!("function"));
+        assert_eq!(tools[0]["name"], json!("ExecCommand"));
+    }
+    let replay = bodies[1]["input"].as_array().unwrap();
+    assert!(replay.len() > bodies[0]["input"].as_array().unwrap().len());
+    assert!(replay.iter().any(|item| item["type"] == "function_call"));
+    assert!(replay
+        .iter()
+        .any(|item| item["type"] == "function_call_output"));
+    assert_eq!(compact_attempts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn deepseek_responses_streams_and_replays_full_history_across_provider_restart() {
     let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_for_server = captured_bodies.clone();

@@ -1803,6 +1803,8 @@ fn reasoning_effort_options(
     }
 
     let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+        ("openai-codex", "gpt-6.1-sol") => &["low", "medium", "high", "xhigh", "max", "ultra"][..],
+        ("openai-codex", "gpt-6-luna") => &["low", "medium", "high", "xhigh", "max"][..],
         ("openai-codex", "gpt-6-astra" | "gpt-6-sol") => {
             &["low", "medium", "high", "xhigh", "max"][..]
         }
@@ -2002,6 +2004,62 @@ mod tests {
                     .get(&ModelRef::new(ProviderId::openai_codex(), model_id))
                     .is_none());
             }
+        }
+    }
+
+    #[test]
+    fn codex_context_defaults_do_not_inherit_general_api_limits() {
+        for catalog in [BuiltInModelCatalog::new(), curated_catalog()] {
+            assert_eq!(
+                catalog.preferred_model_for_provider(&ProviderId::openai_codex()),
+                Some(ModelRef::new(ProviderId::openai_codex(), "gpt-6-astra"))
+            );
+            for model in [
+                "gpt-6.1-sol",
+                "gpt-6-luna",
+                "gpt-6-astra",
+                "gpt-6-sol",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+            ] {
+                let model_ref = ModelRef::new(ProviderId::openai_codex(), model);
+                let metadata = catalog.get(&model_ref).unwrap();
+                assert_eq!(metadata.context_window_tokens, Some(272_000), "{model}");
+                assert_eq!(metadata.default_max_output_tokens, None, "{model}");
+                assert_eq!(metadata.max_output_tokens_upper_limit, None, "{model}");
+                assert_eq!(metadata.effective_context_window_percent, 95, "{model}");
+                assert_eq!(metadata.source, ModelMetadataSource::BuiltInCatalog);
+            }
+        }
+        let catalog = curated_catalog();
+        for model in ["gpt-6.1-sol", "gpt-6-luna"] {
+            let model_ref = ModelRef::new(ProviderId::openai_codex(), model);
+            let policy = catalog.resolve_policy(
+                &model_ref,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(policy.prompt_budget_estimated_tokens, 258_400);
+            assert_eq!(policy.runtime_max_output_tokens, 8192);
+            assert!(policy.capabilities.parallel_tool_calls);
+            assert!(policy.capabilities.image_input);
+            assert!(policy.capabilities.interactive_exec);
+            assert!(policy.validate_reasoning_effort("max").is_ok());
+            assert!(policy.validate_reasoning_effort("none").is_err());
+            assert_eq!(
+                policy.validate_reasoning_effort("ultra").is_ok(),
+                model == "gpt-6.1-sol"
+            );
+            let api_catalog = BuiltInModelCatalog::new();
+            let api = api_catalog
+                .get(&ModelRef::new(ProviderId::openai(), model))
+                .unwrap();
+            assert_eq!(api.context_window_tokens, Some(1_050_000));
+            assert_eq!(api.max_output_tokens_upper_limit, Some(128_000));
         }
     }
 
@@ -2320,7 +2378,7 @@ mod tests {
         let codex_sol = catalog
             .get(&ModelRef::parse("openai-codex/gpt-5.6-sol").unwrap())
             .unwrap();
-        assert_eq!(codex_sol.context_window_tokens, Some(372_000));
+        assert_eq!(codex_sol.context_window_tokens, Some(272_000));
         assert_eq!(
             reasoning_effort_options(
                 &codex_sol.model_ref,
@@ -3082,7 +3140,7 @@ mod tests {
             ("kilo-auto/frontier", 1_000_000, 128_000, true),
             ("kilo-auto/balanced", 1_000_000, 65_536, true),
             ("kilo-auto/efficient", 1_000_000, 65_536, true),
-            ("kilo-auto/free", 256_000, 10_000, false),
+            ("kilo-auto/free", 256_000, 32_768, false),
         ];
 
         for (model, context, output, image_input) in expected {

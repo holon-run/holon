@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "dae7c0c79d38964b123dd0cc8c64a4520d6d61816950f9ca8928bbbeab79dd85",
-  "adapter_version": "0.52.0 (6d4fe7a5-dirty)",
+  "upstream_revision": "6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
+  "adapter_version": "0.53.0 (31c59baf-dirty)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -246,7 +246,7 @@
     {
       "model_ref": "deepseek/deepseek-v4-flash-vision-exp",
       "display_name": "DeepSeek V4 Flash Vision Exp",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -699,63 +699,6 @@
       },
       "reasoning_effort_options": [
         "none",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
-      "source": "models_dev_supplement"
-    },
-    {
-      "model_ref": "openai-codex/gpt-6-luna",
-      "display_name": "GPT-6 Luna",
-      "description": "OpenAI's most efficient model for focused, high-volume tasks",
-      "context_window_tokens": 1050000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 997500,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
-      "source": "models_dev_supplement"
-    },
-    {
-      "model_ref": "openai-codex/gpt-6.1-sol",
-      "display_name": "GPT-6.1 Sol",
-      "description": "Near-Astra performance for complex coding, computer use, and professional work at a lower cost.",
-      "context_window_tokens": 1050000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 997500,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
         "low",
         "medium",
         "high",

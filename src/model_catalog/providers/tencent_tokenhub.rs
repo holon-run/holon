@@ -246,6 +246,40 @@ const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
 #[cfg(test)]
 const TENCENT_TOKENHUB_CHAT_ONLY_MODEL_IDS: &[&str] = &["hy-mt2-pro", "hy-mt2-plus", "hy-mt2-lite"];
 
+// Reviewed independently of Chat/Messages: the protocol matrix excludes
+// several models and marks GLM-5.2 as compatibility mode.
+#[cfg(test)]
+const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
+    "hy4-preview",
+    "hy3",
+    "deepseek/deepseek-flash",
+    "deepseek-v4-flash-202605",
+    "deepseek/deepseek-v4-flash-0731",
+    "deepseek/deepseek-v4-flash",
+    "deepseek-v4-pro-202606",
+    "deepseek/deepseek-v4-pro-0813",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4-pro-0813",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.3-flashx",
+    "glm-5.2",
+    "kimi-k3",
+    "kimi-k2.6",
+    "minimax-m3",
+    "minimax-m2.7",
+    "qwen3.5-flash",
+    "qwen3.5-plus",
+    "mimo-v2.6-pro",
+    "mimo-v2.6-flash",
+    "mimo-v2.5-pro",
+];
+
 pub(crate) fn is_tencent_tokenhub_model_id(id: &str) -> bool {
     TENCENT_TOKENHUB_MODELS.iter().any(|model| model.0 == id)
         || TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS.contains(&id)
@@ -279,7 +313,48 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             endpoint: ProviderEndpointId::parse("messages").expect("valid endpoint"),
             policy: BuiltInModelRoutePolicy::default(),
         })
+        .chain(
+            TENCENT_TOKENHUB_RESPONSES_MODEL_IDS
+                .iter()
+                .map(|id| BuiltInModelRouteDefinition {
+                    legacy_provider: provider_id("tencent-tokenhub-responses"),
+                    model_ref: ModelRef::new(provider_id("tencent-tokenhub"), *id),
+                    endpoint: ProviderEndpointId::parse("responses").expect("valid endpoint"),
+                    policy: BuiltInModelRoutePolicy::default(),
+                }),
+        )
         .collect()
+}
+
+#[test]
+fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
+    let catalog = BuiltInModelCatalog::from_legacy_definitions();
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 28);
+    for id in TENCENT_TOKENHUB_MODELS
+        .iter()
+        .map(|model| model.0)
+        .chain(TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS.iter().copied())
+    {
+        let route = ModelRouteRef::new(
+            provider_id("tencent-tokenhub"),
+            ProviderEndpointId::parse("responses").unwrap(),
+            id,
+        );
+        assert_eq!(
+            catalog.get_route(&route).is_some(),
+            TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.contains(&id),
+            "{id}"
+        );
+    }
+    for id in TENCENT_TOKENHUB_RESPONSES_MODEL_IDS {
+        let route = ModelRouteRef::new(
+            provider_id("tencent-tokenhub"),
+            ProviderEndpointId::parse("responses").unwrap(),
+            *id,
+        );
+        let definition = catalog.get_route(&route).expect("reviewed Responses ID");
+        assert_eq!(definition, &BuiltInModelRoutePolicy::default());
+    }
 }
 
 #[test]

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-dae7c0c79d38964b123dd0cc8c64a4520d6d61816950f9ca8928bbbeab79dd85",
+  "revision": "models-dev-6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
   "upstream": {
     "source": "models.dev",
-    "revision": "dae7c0c79d38964b123dd0cc8c64a4520d6d61816950f9ca8928bbbeab79dd85",
-    "fetched_at": "2026-10-17T20:56:58.180445182+00:00",
-    "content_sha256": "dae7c0c79d38964b123dd0cc8c64a4520d6d61816950f9ca8928bbbeab79dd85",
-    "adapter_version": "0.52.0 (6d4fe7a5-dirty)"
+    "revision": "6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
+    "fetched_at": "2026-10-18T20:51:37.444984533+00:00",
+    "content_sha256": "6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
+    "adapter_version": "0.53.0 (31c59baf-dirty)"
   },
   "models": [
     {
@@ -2564,8 +2564,8 @@
     },
     {
       "model_ref": "deepseek/deepseek-flash",
-      "display_name": "DeepSeek V4.1 Flash",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "display_name": "DeepSeek V4.1 Flash 1017",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -2591,7 +2591,7 @@
     {
       "model_ref": "deepseek/deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -2617,7 +2617,7 @@
     {
       "model_ref": "deepseek/deepseek-v4-flash-vision-exp",
       "display_name": "DeepSeek V4 Flash Vision Exp",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -13404,8 +13404,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13431,8 +13431,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19891,6 +19891,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/unbiased/pareto-26.10",
+      "display_name": "Pareto 26.10",
+      "description": "Multimodal model for analyzing text, images, documents, and rich media",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/unbiased/pareto-26.9",
       "display_name": "Pareto 26.9",
       "description": "Multimodal model for analyzing text, images, documents, and rich media",
@@ -20612,8 +20633,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943717,
-      "max_output_tokens_upper_limit": 943717,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20824,8 +20845,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21123,9 +21144,9 @@
       "model_ref": "openrouter/~unbiased/pareto-latest",
       "display_name": "Pareto Latest",
       "description": "Multimodal model for analyzing text, images, documents, and rich media",
-      "context_window_tokens": 262144,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 131072,
       "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
@@ -22724,6 +22745,33 @@
     },
     {
       "model_ref": "venice/deepseek-v4-1-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/deepseek-v4-1-flash-1017",
       "display_name": "DeepSeek V4.1 Flash",
       "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
       "context_window_tokens": 1000000,

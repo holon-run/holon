@@ -95,7 +95,7 @@ pub(super) fn kilocode_entries() -> Vec<BuiltInModelMetadata> {
             65_536,
             true,
         ),
-        kilocode_auto_model("kilo-auto/free", "Kilo Auto Free", 256_000, 10_000, false),
+        kilocode_auto_model("kilo-auto/free", "Kilo Auto Free", 256_000, 32_768, false),
     ]
 }
 

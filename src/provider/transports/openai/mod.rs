@@ -400,6 +400,15 @@ impl OpenAiProvider {
                     continuation: OpenAiResponsesContinuationContract::FullHistoryOnly,
                     remote_compaction: OpenAiResponsesRemoteCompactionContract::Unsupported,
                 }
+            } else if provider_config.route_provider.as_str() == "tencent-tokenhub"
+                && provider_config.route_endpoint.as_str() == "responses"
+            {
+                // The compatibility subset requires complete input history.
+                OpenAiResponsesEndpointContract {
+                    transport: OpenAiResponsesTransportContract::StandardJson,
+                    continuation: OpenAiResponsesContinuationContract::FullHistoryOnly,
+                    remote_compaction: OpenAiResponsesRemoteCompactionContract::Unsupported,
+                }
             } else if provider_config.id.as_str() == "xai" {
                 OpenAiResponsesEndpointContract {
                     transport: OpenAiResponsesTransportContract::StandardJson,

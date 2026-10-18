@@ -377,6 +377,11 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         Generic, AnthropicCompatible, None, None, None, StaticOnly
     ),
     provider!(
+        "tencent-tokenhub-responses" => "tencent-tokenhub" @ "responses",
+        OpenAiResponses, "https://tokenhub.tencentmaas.com/v1", ["TOKENHUB_API_KEY"],
+        Generic, Default, None, None, None, StaticOnly
+    ),
+    provider!(
         "together" => "together" @ "default",
         OpenAiChatCompletions, "https://api.together.xyz/v1", ["TOGETHER_API_KEY"],
         Generic, Default, None, None, None, StaticOnly
