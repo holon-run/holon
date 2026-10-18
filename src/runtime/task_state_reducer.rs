@@ -168,6 +168,41 @@ impl RuntimeHandle {
             None
         };
         let latest_task = self.inner.runtime_db.tasks().latest(&task.id)?;
+        if transition.admit_result_message
+            && task.is_child_agent_task()
+            && task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail["source_message_id"].as_str())
+                .is_some()
+        {
+            if let Some(latest) = latest_task
+                .as_ref()
+                .filter(|latest| is_terminal_task_status(&latest.status))
+            {
+                anyhow::ensure!(
+                    latest.status == task.status,
+                    "conflicting supervised invocation terminal status"
+                );
+                for key in [
+                    "source_message_id",
+                    "target_incarnation",
+                    "activation_id",
+                    "turn_id",
+                    "completion_ref",
+                    "output_summary",
+                ] {
+                    anyhow::ensure!(
+                        latest.detail.as_ref().and_then(|detail| detail.get(key))
+                            == task.detail.as_ref().and_then(|detail| detail.get(key)),
+                        "conflicting supervised invocation terminal evidence"
+                    );
+                }
+                // The first publication committed task/result/obligation together.
+                // Do not create a new result or reopen a consumed queue entry.
+                return Ok(());
+            }
+        }
         if should_ignore_task_update(latest_task.clone(), task) {
             return Ok(());
         }
@@ -269,7 +304,9 @@ impl RuntimeHandle {
         #[cfg(test)]
         self.inject_task_transition_conflict_if_armed().await?;
         #[cfg(test)]
-        self.inject_terminal_task_transition_conflict_if_armed()?;
+        if transition.admit_result_message {
+            self.inject_terminal_task_transition_conflict_if_armed()?;
+        }
         let existing_queue_entry = transition
             .message_evidence
             .filter(|_| transition.admit_result_message)
@@ -514,7 +551,7 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    fn inject_terminal_task_transition_conflicts(&self, count: usize) {
+    pub(crate) fn inject_terminal_task_transition_conflicts(&self, count: usize) {
         self.inner
             .terminal_task_transition_conflicts_remaining
             .store(count, Ordering::SeqCst);
@@ -1631,6 +1668,163 @@ mod tests {
                 .map(|stored| stored.id),
             Some(message.id)
         );
+    }
+
+    #[tokio::test]
+    async fn supervised_terminal_publication_is_atomic_and_preserves_settlement() {
+        use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
+        use crate::runtime_db::transitions::TransitionFaultPoint;
+
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let runtime = runtime();
+            let mut running = task("task-source-bound", TaskStatus::Running, false);
+            running.detail = Some(json!({
+                "source_message_id": "original-source",
+                "target_incarnation": 1,
+                "parent_turn_id": "parent-turn",
+                "rejoin_obligation_id": "task-source-bound",
+                "rejoin_generation": 1,
+            }));
+            runtime
+                .persist_task_transition(&running, "task_created")
+                .await
+                .unwrap();
+            let mut terminal = running.clone();
+            terminal.status = TaskStatus::Completed;
+            terminal.detail.as_mut().unwrap()["activation_id"] = json!("original-attempt");
+            terminal.detail.as_mut().unwrap()["turn_id"] = json!("original-turn");
+            terminal.detail.as_mut().unwrap()["output_summary"] = json!("original-result");
+            let mut message = task_result_message(&running.id);
+            message.id = format!("message:child-invocation-result:{}", running.id);
+            terminal.parent_message_id = Some(message.id.clone());
+            runtime.inject_next_transition_fault(fault);
+            assert!(
+                runtime
+                    .commit_terminal_task_result(&terminal, "task_status_updated", &message,)
+                    .await
+                    .is_err(),
+                "{fault:?}"
+            );
+            assert_eq!(
+                runtime
+                    .inner
+                    .storage
+                    .latest_task_record(&running.id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                TaskStatus::Running
+            );
+            assert!(runtime
+                .inner
+                .storage
+                .read_message_by_id(&message.id)
+                .unwrap()
+                .is_none());
+            assert!(runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&message.id)
+                .unwrap()
+                .is_none());
+            assert!(runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(&message.id)
+                .unwrap()
+                .is_none());
+            // Two publishers converge on the same atomic task/result/obligation.
+            let (first, second) = tokio::join!(
+                runtime.commit_terminal_task_result(&terminal, "task_status_updated", &message),
+                runtime.commit_terminal_task_result(&terminal, "task_status_updated", &message),
+            );
+            first.unwrap();
+            second.unwrap();
+            let repository = runtime.inner.runtime_db.task_result_settlements();
+            let mut settlement = repository.latest_for_message(&message.id).unwrap().unwrap();
+            let identity = settlement.result_identity.clone();
+            for state in [
+                TaskResultSettlementState::PersistedPending,
+                TaskResultSettlementState::CallerAdmitted,
+                TaskResultSettlementState::Settled,
+            ] {
+                match state {
+                    TaskResultSettlementState::PersistedPending => {}
+                    TaskResultSettlementState::CallerAdmitted => {
+                        repository
+                            .admit_message("default", &message.id, "parent-attempt", Utc::now())
+                            .unwrap()
+                            .expect("original result must admit");
+                    }
+                    TaskResultSettlementState::Settled => {
+                        assert_eq!(repository.settle_activation("default", "parent-attempt",
+                            crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::ModelDelivered,
+                            Utc::now()).unwrap(), 1);
+                    }
+                }
+                settlement = repository.latest_for_message(&message.id).unwrap().unwrap();
+                assert_eq!(settlement.state, state);
+                let queue = runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&message.id)
+                    .unwrap();
+                runtime
+                    .commit_terminal_task_result(&terminal, "task_status_updated", &message)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    repository.latest_for_message(&message.id).unwrap(),
+                    Some(settlement.clone())
+                );
+                assert_eq!(settlement.result_identity, identity);
+                assert_eq!(
+                    runtime
+                        .inner
+                        .runtime_db
+                        .queue_entries()
+                        .latest(&message.id)
+                        .unwrap(),
+                    queue
+                );
+            }
+            for key in [
+                "source_message_id",
+                "target_incarnation",
+                "activation_id",
+                "turn_id",
+                "completion_ref",
+                "output_summary",
+            ] {
+                let mut conflicting = terminal.clone();
+                conflicting.detail.as_mut().unwrap()[key] = json!("different-evidence");
+                assert!(
+                    runtime
+                        .commit_terminal_task_result(&conflicting, "task_status_updated", &message,)
+                        .await
+                        .is_err(),
+                    "{key}"
+                );
+            }
+            let mut conflicting = terminal.clone();
+            conflicting.status = TaskStatus::Failed;
+            assert!(runtime
+                .commit_terminal_task_result(&conflicting, "task_status_updated", &message,)
+                .await
+                .is_err());
+            assert_eq!(
+                repository.latest_for_message(&message.id).unwrap(),
+                Some(settlement)
+            );
+        }
     }
 
     #[tokio::test]

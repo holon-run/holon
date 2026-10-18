@@ -50,6 +50,50 @@ command results, retain a visible outcome.
 Task IDs and complete raw output belong in the inspector. Pending inputs retain
 their existing background-event placement. Historical evidence is preserved.
 
+## Supervised invocation recovery
+
+A result-bearing new child is bound to its original task-origin input, not the
+child's latest turn, brief, observability phase, or agent-wide idle state. Source
+message/turn linkage and the parent task's child/incarnation target are committed
+atomically with the original child queue admission. Recovery never resends the
+delegated prompt. Legacy records may recover linkage only from one matching
+task-origin input with the same parent/supervision identity; missing or ambiguous
+evidence fails closed. A missing baseline is not replaced with the current turn.
+
+The host reuses the canonical invocation walker for original source admission,
+recovery successors, exact wait identities, task-result continuations and
+WorkItem handoffs. A yielded caller remains pending until that caller completes;
+the intervening WorkItem's completion is not the invocation result. Results use
+the exact terminal turn transcript or completion brief. Later unrelated turns,
+tasks and waits cannot replace an already proven result. Active blockers without
+source ownership cannot be ignored. Missing canonical evidence, conflicting
+identity and ambiguous/cyclic continuations are recovery-blocked, not completion.
+
+`task.detail.recovery_diagnostic` distinguishes normal `pending` from
+`recovery_blocked`, with typed reason/stage, target incarnation and bounded retry
+state. Source/terminal references remain in task detail; diagnostics contain no
+prompt, report body or arbitrary error chain. Unchanged diagnostics are not
+rewritten on every probe. Reattachment is supervision registration, not a child
+restart or proof of result publication.
+Diagnostic deduplication advances only after a successful write; a failed write
+must retry the unchanged reason after storage recovers, without logging every
+probe.
+
+Terminal task/result/queue/settlement publication continues through the existing
+atomic task transition, with one stable result identity per invocation. Repeated
+matching publication is a no-op; conflicting source/terminal evidence is rejected.
+The existing three transaction-conflict retries remain unchanged. If publication
+still fails, the monitor retains responsibility with capped-backoff rechecks and,
+when writable, persists a commit-stage recovery diagnostic. An unavailable store
+cannot promise a durable diagnostic: the runtime emits a structured content-free
+failure and the active task/source remains restart-recoverable.
+
+`Retain` does not delete a child. Legacy `DeleteOnTerminal` keeps its existing
+transactional deletion admission. Result publication does not imply delivery,
+admission or consumption: captured owner, exact wait generation, source/consumption
+fences and automatic admission budgets remain unchanged. Existing-agent
+message-observation handles and command recovery retain their separate semantics.
+
 ## Conversation process projection
 
 TaskResult remains a canonical turn input, not a new server activity. Clients

@@ -39,6 +39,20 @@ enum WorkItemReadinessMutation {
     Resume,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ChildInvocationRecoveryState {
+    Pending,
+    RecoveryBlocked,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ChildInvocationRecoveryStage {
+    Resolve,
+    Commit,
+}
+
 #[derive(Debug, Clone)]
 struct TaskMessageSnapshot {
     state: TaskStatus,
@@ -598,7 +612,17 @@ impl RuntimeHandle {
         child_turn_baseline: u64,
         delivery_id: Option<String>,
         task_detail: serde_json::Value,
+        recovered: bool,
     ) -> Result<TaskRecord> {
+        let mut task_handles = self.inner.task_handles.lock().await;
+        if matches!(task_handles.get(&task.id), Some(command_task::ManagedTaskHandle::Async(handle)) if !handle.is_finished())
+        {
+            return Ok(self
+                .inner
+                .storage
+                .latest_task_record(&task.id)?
+                .unwrap_or(task));
+        }
         let queued_task = TaskRecord {
             updated_at: Utc::now(),
             detail: Some(self.task_detail_preserving_rejoin_contract(&task, task_detail.clone())),
@@ -617,24 +641,31 @@ impl RuntimeHandle {
             Some(TaskRecoverySpec::AgentInvocation {
                 lifecycle_disposition,
                 ..
+            })
+            | Some(TaskRecoverySpec::ChildAgentTask {
+                lifecycle_disposition,
+                ..
             }) => *lifecycle_disposition,
             _ => AgentLifecycleDisposition::Retain,
         };
-        let mut task_handles = self.inner.task_handles.lock().await;
         let handle = tokio::spawn(async move {
-            let _ = runtime
+            if runtime
                 .monitor_spawned_child_agent_task(
                     task_record,
                     authority_class,
                     worktree,
-                    false,
+                    recovered,
                     lifecycle_disposition,
                     child_agent_id,
                     child_turn_baseline,
                     delivery_id,
                     task_detail,
                 )
-                .await;
+                .await
+                .is_err()
+            {
+                tracing::error!("supervised invocation monitor exited with a storage failure; active task remains recoverable");
+            }
             runtime.release_completed_task_handle(&task_id).await;
         });
         task_handles.insert(
@@ -1184,7 +1215,7 @@ impl RuntimeHandle {
                             .and_then(|value| value.as_u64())
                         {
                             Some(value) => value,
-                            None => bridge.child_turn_index(&child_agent_id).await?,
+                            None => 0,
                         };
                         Ok::<(String, u64, serde_json::Value), anyhow::Error>((
                             child_agent_id,
@@ -1572,10 +1603,100 @@ impl RuntimeHandle {
         })
     }
 
+    async fn persist_child_invocation_diagnostic(
+        &self,
+        task_id: &str,
+        state: ChildInvocationRecoveryState,
+        reason: crate::host::ChildInvocationReason,
+        stage: ChildInvocationRecoveryStage,
+        retry_attempt: u32,
+    ) -> Result<()> {
+        let Some(mut task) = self.inner.storage.latest_task_record(task_id)? else {
+            return Ok(());
+        };
+        if task_state_reducer::is_terminal_task_status(&task.status) {
+            return Ok(());
+        }
+        let incarnation = task.target().and_then(|target| target.incarnation);
+        let diagnostic = serde_json::json!({
+            "state": state,
+            "reason": reason,
+            "stage": stage,
+            "target_incarnation": incarnation,
+            "retry_attempt": retry_attempt,
+        });
+        let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+        if detail.get("recovery_diagnostic") == Some(&diagnostic) {
+            return Ok(());
+        }
+        detail["recovery_diagnostic"] = diagnostic;
+        task.detail = Some(detail);
+        task.updated_at = self.now();
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "supervised_child_task_recovery_diagnostic",
+        ))
+        .await
+    }
+
     pub(super) async fn monitor_spawned_child_agent_task(
         &self,
         task_record: TaskRecord,
         authority_class: AuthorityClass,
+        worktree: bool,
+        recovered: bool,
+        lifecycle_disposition: AgentLifecycleDisposition,
+        child_agent_id: String,
+        child_turn_baseline: u64,
+        delivery_id: Option<String>,
+        task_detail: serde_json::Value,
+    ) -> Result<()> {
+        let mut retry_attempt = 0u32;
+        loop {
+            if self
+                .monitor_spawned_child_agent_task_once(
+                    task_record.clone(),
+                    authority_class.clone(),
+                    worktree,
+                    recovered,
+                    lifecycle_disposition,
+                    child_agent_id.clone(),
+                    child_turn_baseline,
+                    delivery_id.clone(),
+                    task_detail.clone(),
+                )
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+            retry_attempt = retry_attempt.saturating_add(1).min(5);
+            if self
+                .persist_child_invocation_diagnostic(
+                    &task_record.id,
+                    ChildInvocationRecoveryState::RecoveryBlocked,
+                    crate::host::ChildInvocationReason::StorageUnavailable,
+                    ChildInvocationRecoveryStage::Resolve,
+                    retry_attempt,
+                )
+                .await
+                .is_err()
+                && retry_attempt == 1
+            {
+                tracing::error!(
+                    reason = "storage_unavailable",
+                    stage = "monitor",
+                    "supervised invocation storage failed; monitor retains recovery responsibility"
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(1u64 << retry_attempt)).await;
+        }
+    }
+
+    async fn monitor_spawned_child_agent_task_once(
+        &self,
+        task_record: TaskRecord,
+        _authority_class: AuthorityClass,
         worktree: bool,
         recovered: bool,
         lifecycle_disposition: AgentLifecycleDisposition,
@@ -1589,65 +1710,104 @@ impl RuntimeHandle {
         };
         let agent_id = self.agent_id().await?;
 
-        let running_message = MessageEnvelope {
-            metadata: Some(serde_json::json!({
-                "task_id": task_record.id,
-                "task_kind": task_record.kind,
-                "task_status": "running",
-                "task_summary": task_record.summary,
-                "task_recovery": task_record.recovery,
-                "work_item_id": task_record.work_item_id.clone(),
-                "task_detail": task_detail.clone(),
-            })),
-            ..MessageEnvelope::new(
-                agent_id.clone(),
-                MessageKind::TaskStatus,
-                MessageOrigin::Task {
-                    task_id: task_record.id.clone(),
-                },
-                authority_class.clone(),
-                Priority::Background,
-                MessageBody::Text {
-                    text: if recovered {
-                        format!(
-                            "{} restarted after recovery: {}",
-                            if worktree {
-                                "worktree child agent"
-                            } else {
-                                "child agent"
-                            },
-                            task_record.summary.clone().unwrap_or_default()
-                        )
-                    } else {
-                        format!(
-                            "{} started: {}",
-                            if worktree {
-                                "worktree child agent"
-                            } else {
-                                "child agent"
-                            },
-                            task_record.summary.clone().unwrap_or_default()
-                        )
-                    },
-                },
-            )
-            .with_admission(
-                MessageDeliverySurface::TaskRejoin,
-                AdmissionContext::RuntimeOwned,
-            )
+        // Project running state directly: a queued TaskStatus snapshot could
+        // otherwise overwrite a newer recovery diagnostic or source binding.
+        let latest = self
+            .inner
+            .storage
+            .latest_task_record(&task_record.id)?
+            .unwrap_or_else(|| task_record.clone());
+        if task_state_reducer::is_terminal_task_status(&latest.status) {
+            return Ok(());
+        }
+        let running = TaskRecord {
+            status: TaskStatus::Running,
+            updated_at: self.now(),
+            ..latest
         };
-        let _ = self.enqueue(running_message).await;
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &running,
+            if recovered {
+                "supervised_child_task_monitor_reattached"
+            } else {
+                "task_status_updated"
+            },
+        ))
+        .await?;
 
         let task_detail_for_result = task_detail.clone();
-        let result = bridge
-            .await_agent_invocation_terminal_result(
-                &child_agent_id,
-                child_turn_baseline,
-                delivery_id.as_deref(),
-                &task_record.id,
-                worktree,
-            )
-            .await;
+        let result = if delivery_id.is_some() {
+            bridge
+                .await_agent_invocation_terminal_result(
+                    &child_agent_id,
+                    child_turn_baseline,
+                    delivery_id.as_deref(),
+                    &task_record.id,
+                    worktree,
+                )
+                .await
+        } else {
+            use crate::host::{ChildInvocationReason, ChildInvocationResolution};
+            let mut last_diagnostic = None;
+            let mut diagnostic_write_failed = false;
+            loop {
+                let mut bound_task = task_record.clone();
+                bound_task.detail = Some(task_detail_for_result.clone());
+                match self.inner.storage.latest_task_record(&task_record.id) {
+                    Ok(Some(latest)) => {
+                        if task_state_reducer::is_terminal_task_status(&latest.status) {
+                            return Ok(());
+                        }
+                        bound_task = latest;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {}
+                }
+                let (state, reason) = match bridge
+                    .resolve_supervised_invocation(&bound_task, &child_agent_id, worktree)
+                    .await
+                {
+                    Ok(ChildInvocationResolution::Ready(result)) => break Ok(result),
+                    Ok(ChildInvocationResolution::Pending(reason)) => {
+                        (ChildInvocationRecoveryState::Pending, reason)
+                    }
+                    Ok(ChildInvocationResolution::RecoveryBlocked(reason)) => {
+                        (ChildInvocationRecoveryState::RecoveryBlocked, reason)
+                    }
+                    Err(_) => (
+                        ChildInvocationRecoveryState::RecoveryBlocked,
+                        ChildInvocationReason::StorageUnavailable,
+                    ),
+                };
+                if last_diagnostic != Some((state, reason)) {
+                    if self
+                        .persist_child_invocation_diagnostic(
+                            &task_record.id,
+                            state,
+                            reason,
+                            ChildInvocationRecoveryStage::Resolve,
+                            0,
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        last_diagnostic = Some((state, reason));
+                        diagnostic_write_failed = false;
+                    } else if !diagnostic_write_failed {
+                        diagnostic_write_failed = true;
+                        tracing::error!(reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(
+                    if state == ChildInvocationRecoveryState::Pending {
+                        100
+                    } else {
+                        1000
+                    },
+                ))
+                .await;
+            }
+        };
         let (mut text, status, mut task_detail) = match result {
             Ok(result) => {
                 let mut detail = task_detail_for_result.clone();
@@ -1668,6 +1828,9 @@ impl RuntimeHandle {
                 task_detail_for_result.clone(),
             ),
         };
+        if let Some(detail) = task_detail.as_object_mut() {
+            detail.remove("recovery_diagnostic");
+        }
         if worktree && task_detail.get("worktree").is_none() {
             if let Some(worktree_detail) = task_detail_for_result.get("worktree").cloned() {
                 task_detail["worktree"] = worktree_detail;
@@ -1766,7 +1929,9 @@ impl RuntimeHandle {
         }
         task_detail["output_summary"] = serde_json::json!(text.clone());
         let result_message = MessageEnvelope {
-            turn_id: Some(crate::ids::turn_id()),
+            id: format!("message:child-invocation-result:{}", task_record.id),
+            turn_id: Some(format!("turn:child-invocation-result:{}", task_record.id)),
+            created_at: task_record.created_at,
             metadata: Some(metadata),
             ..MessageEnvelope::new(
                 agent_id.clone(),
@@ -1797,36 +1962,48 @@ impl RuntimeHandle {
                 requested_by: "parent_task_terminal".into(),
                 cascade_private_children: false,
             });
-        match self
-            .commit_terminal_child_task_result(
-                &terminal_task,
-                "task_status_updated",
-                &result_message,
-                agent_deletion,
-            )
-            .await
-        {
-            Ok(true) => {
-                if let Err(error) = bridge.activate_agent_deletion(&child_agent_id).await {
-                    tracing::warn!(
-                        task_id = %terminal_task.id,
-                        child_agent_id,
-                        error = %error,
-                        "terminal child deletion job persisted but coordinator activation failed"
-                    );
+        let mut retry_attempt = 0u32;
+        loop {
+            match self
+                .commit_terminal_child_task_result(
+                    &terminal_task,
+                    "task_status_updated",
+                    &result_message,
+                    agent_deletion.clone(),
+                )
+                .await
+            {
+                Ok(deletion_requested) => {
+                    if deletion_requested
+                        && bridge
+                            .activate_agent_deletion(&child_agent_id)
+                            .await
+                            .is_err()
+                    {
+                        tracing::warn!("terminal child deletion job is durable but coordinator activation failed");
+                    }
+                    return Ok(());
+                }
+                Err(_) => {
+                    retry_attempt = retry_attempt.saturating_add(1).min(5);
+                    if self
+                        .persist_child_invocation_diagnostic(
+                            &task_record.id,
+                            ChildInvocationRecoveryState::RecoveryBlocked,
+                            crate::host::ChildInvocationReason::MonitorCommitFailed,
+                            ChildInvocationRecoveryStage::Commit,
+                            retry_attempt,
+                        )
+                        .await
+                        .is_err()
+                        && retry_attempt == 1
+                    {
+                        tracing::error!("supervised invocation commit and diagnostic storage failed; monitor retains recovery responsibility");
+                    }
+                    tokio::time::sleep(Duration::from_secs(1u64 << retry_attempt)).await;
                 }
             }
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(
-                    task_id = %terminal_task.id,
-                    error = %error,
-                    "failed to atomically persist terminal task status and child lifecycle disposition"
-                );
-            }
         }
-
-        Ok(())
     }
 
     pub(crate) async fn interrupt_active_tasks(
@@ -1935,7 +2112,7 @@ impl RuntimeHandle {
                 continue;
             }
 
-            let (prompt, authority_class, worktree, invocation_target) =
+            let (_prompt, authority_class, worktree, invocation_target) =
                 match task.recovery.as_ref() {
                     Some(TaskRecoverySpec::AgentInvocation {
                         prompt,
@@ -1990,41 +2167,28 @@ impl RuntimeHandle {
                 continue;
             };
 
-            if !bridge.reusable_agent_exists(&target_agent_id).await? {
-                remaining.push(task);
-                continue;
-            }
-
-            let recovery_result = if invocation_target.is_some() {
-                let child_turn_baseline = task
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail.get("child_turn_baseline"))
-                    .and_then(serde_json::Value::as_u64);
-                if let Some(child_turn_baseline) = child_turn_baseline {
-                    let delivery_id = detail_string(&task.detail, "delivery_id");
-                    let task_detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
-                    self.start_agent_invocation_monitor(
-                        task.clone(),
-                        authority_class,
-                        worktree,
-                        target_agent_id.clone(),
-                        child_turn_baseline,
-                        delivery_id,
-                        task_detail,
-                    )
-                    .await
-                    .map(|_| ())
-                } else {
-                    Err(anyhow!(
-                        "legacy existing-agent invocation {} is missing its durable turn baseline",
-                        task.id
-                    ))
-                }
-            } else {
-                self.spawn_child_agent_task(task.clone(), prompt, authority_class, worktree, true)
-                    .await
-            };
+            // Reattach supervision only. Missing legacy linkage is diagnosed by
+            // the source resolver, never replaced by a new prompt or baseline.
+            let child_turn_baseline = task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail["child_turn_baseline"].as_u64())
+                .unwrap_or(0);
+            let delivery_id = detail_string(&task.detail, "delivery_id");
+            let task_detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+            let recovery_result = self
+                .start_agent_invocation_monitor(
+                    task.clone(),
+                    authority_class,
+                    worktree,
+                    target_agent_id.clone(),
+                    child_turn_baseline,
+                    delivery_id,
+                    task_detail,
+                    true,
+                )
+                .await
+                .map(|_| ());
             match recovery_result {
                 Ok(()) => reattached.push(task),
                 Err(error) => {

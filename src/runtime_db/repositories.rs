@@ -3722,6 +3722,26 @@ impl MessageRepository<'_> {
         Ok(records)
     }
 
+    pub fn supervised_invocation_sources(
+        &self,
+        child_agent_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<MessageEnvelope>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM messages
+             WHERE agent_id = ?1
+               AND json_extract(payload_json, '$.origin.kind') = 'task'
+               AND json_extract(payload_json, '$.origin.task_id') = ?2
+             LIMIT 2",
+        )?;
+        let rows = statement.query_map(params![child_agent_id, task_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| decode_message_payload(&row?)).collect()
+    }
+
     pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<MessageEnvelope>> {
         let connection = self.db.connection()?;
         if let Some(agent_id) = agent_id {
@@ -5661,6 +5681,28 @@ pub(crate) fn task_transition(
 ) -> Result<StateTransitionOutcome> {
     if existing == incoming {
         return Ok(StateTransitionOutcome::Idempotent);
+    }
+    if existing
+        .target()
+        .is_some_and(|target| target.kind == crate::types::TaskTargetKind::ChildAgent)
+        && existing
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.get("source_message_id"))
+            .is_some()
+    {
+        for key in [
+            "source_message_id",
+            "source_turn_id",
+            "child_agent_id",
+            "target",
+        ] {
+            anyhow::ensure!(
+                existing.detail.as_ref().and_then(|detail| detail.get(key))
+                    == incoming.detail.as_ref().and_then(|detail| detail.get(key)),
+                "supervised_invocation_source_binding_conflict: {key}"
+            );
+        }
     }
     if is_terminal_task_status(&existing.status) {
         if is_terminal_task_status(&incoming.status) && task_terminal_payload_eq(existing, incoming)

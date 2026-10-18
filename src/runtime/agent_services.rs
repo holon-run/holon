@@ -346,6 +346,7 @@ impl AgentInvocationService<'_> {
                             admitted.child_turn_baseline,
                             admitted.delivery_id,
                             admitted.task_detail,
+                            false,
                         )
                         .await?;
                     Ok(AgentInvocationReceipt {
