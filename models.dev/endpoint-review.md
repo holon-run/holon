@@ -9,6 +9,109 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-19 incremental review
+
+- Refreshed models.dev revision
+  `6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb`.
+  The refresh initially retained all 54 supplement models. Artifact additions
+  are `openrouter/unbiased/pareto-26.10` and
+  `venice/deepseek-v4-1-flash-1017`; aggregator audit records do not create
+  runtime routes. The Venice addition has not been independently confirmed
+  against an authenticated endpoint; its upstream limits remain advisory.
+- Rechecked the [OpenRouter public list](https://openrouter.ai/api/v1/models)
+  at 2026-10-18 20:39 UTC. The new Pareto entry and five changed records
+  (`~unbiased/pareto-latest`, `~deepseek/deepseek-flash-latest`,
+  `deepseek/deepseek-v4.1-flash`, `z-ai/glm-5.3-flash`, and
+  `deepseek/deepseek-v4-pro-0813`) match the advertised context or output
+  changes. These are service metadata, not verified inference limits.
+- The [Codex lifecycle](https://learn.chatgpt.com/docs/models) still recommends
+  GPT-6.1 Sol / GPT-6 Luna where available and documents GPT-6 Astra; the six
+  previously removed ChatGPT-sign-in IDs remain retired. Availability still
+  depends on the account, plan, client, and workspace administrator.
+- Correct Codex-specific defaults using OpenAI's
+  [published Codex model metadata at revision 8c076942](https://github.com/openai/codex/blob/8c076942cb70fba8e5c4732c23f1faabc4aed484/codex-rs/models-manager/models.json).
+  GPT-6.1 Sol and GPT-6 Luna have a default context of 272,000 tokens, not the
+  general API's 1,050,000-token window. Promote these two existing Codex IDs
+  from the supplement to reviewed built-ins, retaining the API entries and
+  leaving unreported Codex output limits unset. The public metadata also
+  specifies 272,000 for the three GPT-5.6 Sol/Terra/Luna defaults, correcting
+  their stale 372,000 values. Retain the existing 95% effective-context policy;
+  do not treat `max_context_window` as the default context. Local account
+  metadata differs for GPT-6.1 Sol (500,000); it is account-scoped evidence,
+  not a global default or proof of other accounts' entitlements. No credential
+  or inference call was used for this check.
+  The same published metadata supports `low/medium/high/xhigh/max` for both
+  promoted Codex models and additionally `ultra` for GPT-6.1 Sol only.
+  Preserve that distinction without changing general API reasoning options.
+  Keep GPT-6 Astra first so promotion does not change the provider's preferred
+  default model.
+- Rechecked the [DeepSeek Responses guide](https://api-docs.deepseek.com/guides/responses_api/):
+  `deepseek-flash` image input and `deepseek-v4-pro`-only server-side search
+  remain consistent with the current model-specific routing. The refreshed
+  upstream Flash display/description changes do not establish new subscription
+  eligibility or justify copying general API limits into reviewed routes.
+- The [Kilo public model list](https://api.kilo.ai/api/gateway/models) now
+  advertises `kilo-auto/free` output up to 32,768 tokens, replacing 10,000.
+  Its 256,000-token context, text-only input, and reasoning/tools remain
+  unchanged. Update only the upper bound, leaving default output unset.
+  The other three Kilo Auto routes and OpenRouter `auto` metadata are unchanged.
+- The [TokenHub protocol matrix](https://cloud.tencent.com/document/product/1823/130079)
+  now independently confirms 28 Responses IDs. Register only those reviewed
+  IDs on `tencent-tokenhub@responses` at `https://tokenhub.tencentmaas.com/v1`;
+  do not copy the Chat/Messages allowlist or infer new model capabilities.
+  GLM-5.2 is marked compatibility mode. The
+  [Responses guide](https://cloud.tencent.com/document/product/1823/135873)
+  and [compatibility guide](https://cloud.tencent.com/document/product/1823/133813)
+  require full-history `input` for models without `previous_response_id`
+  support; use that conservative boundary for the endpoint, with function
+  tools only, no server-side compaction or built-in web search.
+  The compatibility guide confirms standard JSON responses as well as SSE.
+  Keep JSON transport and send chronological full history with matching
+  function `call_id` values, omitting `previous_response_id`.
+- Independently rechecked `byteplus@coding`, `volcengine@coding/@plan`,
+  `tencent-tokenhub@default/@messages`, and all three OpenCode Go endpoints:
+  no other confirmed registered-route differences. BytePlus still confirms
+  its own 13 Coding IDs, with GPT-OSS Chat-only; do not copy domestic Volcano
+  IDs. Agent Plan's seven dated IDs remain unconfirmed rather than retired.
+  OpenCode Go discovery still returns 37 IDs without protocol/capability
+  fields; do not infer new static routes from it. Existing subscription
+  sources and unresolved exact-ID evidence below remain applicable.
+- Refine the Tencent subscription coverage gap into distinct SKUs:
+  [personal general and Hy](https://cloud.tencent.com/document/product/1823/130060),
+  [enterprise professional](https://cloud.tencent.com/document/product/1823/130659)
+  in Guangzhou/Singapore, and
+  [enterprise light](https://cloud.tencent.com/document/product/1823/131173)
+  in both regions. Hy lists only `hy3`, `hy3-preview`, `hy3-202608`,
+  `hy4-preview` without multimodal support; enterprise light lists only
+  `auto`, not the professional allowlist. Published protocol URLs do not
+  establish model-by-protocol subscription eligibility or Holon authorization.
+  Personal automation restrictions must not be applied to enterprise API
+  products. Coding Plan still confirms only `tc-code-latest` on Chat/Messages,
+  not Responses. The professional Flash-0731 and M2.7 retirement dates are
+  October 31 and November 17, 2026 respectively, not removals for this cycle.
+  General API Singapore coverage is also still unregistered.
+- Independently rechecked all registered China subscription variants:
+  `dashscope@coding-plan/@coding-plan-intl/@token-plan`, `xiaomi@token-plan`,
+  `stepfun@plan`, and MiniMax international/China M Plan and legacy Token Plan.
+  No additional model change was confirmed. The
+  [China Coding Plan list](https://help.aliyun.com/zh/model-studio/coding-plan)
+  currently lists the same six exact versions as the international list;
+  retained `qwen3-max-2026-01-23`, `qwen3-coder-next`, `qwen3-coder-plus`, and
+  `glm-4.7` lack current-list eligibility evidence, not affirmative retirement
+  evidence. Token Plan eligibility must use the union of
+  [personal](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)
+  and [team](https://help.aliyun.com/zh/model-studio/token-plan-team-overview)
+  lists. Its `deepseek-v3.2` and undated `deepseek-v4-flash`, plus the six
+  historical supplement routes, still lack exact-ID eligibility evidence.
+  No historical route was removed on absence alone.
+- The [MiniMax lifecycle](https://platform.minimax.io/docs/guides/models-intro.md)
+  reaches its **2026-10-19** M2.5/M2.7 subscription migration date in this
+  Beijing cycle: requests redirect to M3.1 Flash Preview, not a reason to
+  delete old IDs. General API retirement remains **2026-11-18**. Xiaomi's
+  announced V2.5 final stop remains **2026-10-21 10:00 Beijing time**.
+  Z.AI/BigModel's separate Coding Plan key/alternative protocol gaps remain
+  disclosed below; no new `coding-plan` endpoint was inferred or registered.
+
 ## 2026-10-18 incremental review
 
 - Refreshed models.dev revision

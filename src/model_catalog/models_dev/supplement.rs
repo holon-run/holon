@@ -775,9 +775,9 @@ mod tests {
                 "openai": {
                     "id": "openai",
                     "models": {
-                        "gpt-6.1-sol": {
-                            "id": "gpt-6.1-sol",
-                            "name": "GPT-6.1 Sol",
+                        "gpt-future-test": {
+                            "id": "gpt-future-test",
+                            "name": "GPT Future Test",
                             "release_date": "2026-08-30",
                             "modalities": {
                                 "input": ["text", "image"],
@@ -800,8 +800,8 @@ mod tests {
         assert_eq!(
             drafted_refs,
             vec![
-                "openai-codex/gpt-6.1-sol".to_string(),
-                "openai/gpt-6.1-sol".to_string()
+                "openai-codex/gpt-future-test".to_string(),
+                "openai/gpt-future-test".to_string()
             ]
         );
     }
@@ -813,9 +813,9 @@ mod tests {
                 "openai": {
                     "id": "openai",
                     "models": {
-                        "gpt-6.1-sol": {
-                            "id": "gpt-6.1-sol",
-                            "name": "GPT-6.1 Sol",
+                        "gpt-future-test": {
+                            "id": "gpt-future-test",
+                            "name": "GPT Future Test",
                             "release_date": "2026-08-30",
                             "modalities": {
                                 "input": ["text", "image"],
@@ -832,8 +832,8 @@ mod tests {
             upstream_revision: "abc".into(),
             adapter_version: "test".into(),
             models: vec![supplement_metadata(
-                "openai-codex/gpt-6.1-sol",
-                "GPT-6.1 Sol",
+                "openai-codex/gpt-future-test",
+                "GPT Future Test",
             )],
             routes: Vec::new(),
         };
@@ -850,7 +850,7 @@ mod tests {
 
         assert_eq!(
             update.retained,
-            vec!["openai-codex/gpt-6.1-sol".to_string()]
+            vec!["openai-codex/gpt-future-test".to_string()]
         );
         assert_eq!(
             update
@@ -858,15 +858,15 @@ mod tests {
                 .iter()
                 .map(|model| model.model_ref.as_string())
                 .collect::<Vec<_>>(),
-            vec!["openai/gpt-6.1-sol".to_string()]
+            vec!["openai/gpt-future-test".to_string()]
         );
         let retained = update
             .supplement
             .models
             .iter()
-            .find(|model| model.model_ref.as_string() == "openai-codex/gpt-6.1-sol")
+            .find(|model| model.model_ref.as_string() == "openai-codex/gpt-future-test")
             .expect("retained codex model");
-        assert_eq!(retained.display_name, "GPT-6.1 Sol");
+        assert_eq!(retained.display_name, "GPT Future Test");
         assert_eq!(retained.context_window_tokens, None);
     }
 
