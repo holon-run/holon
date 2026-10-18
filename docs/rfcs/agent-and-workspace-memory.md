@@ -370,6 +370,31 @@ documents in bounded pages, and finalizes checkpoints separately. The job and
 its seen-document set are derived state in the shared index database, so daemon
 restart resumes the current phase instead of restarting an unbounded scan.
 
+Prune pages candidates by document key, not only the documents absent from the
+seen set. An all-seen page still consumes the slice budget and persists its
+cursor. Healthy FTS removal uses the document-to-rowid map. If that map is
+incomplete, `prune_repair` scans FTS rowid candidates in bounded pages before
+`prune_repaired` resumes document cleanup; it never repeats an unindexed FTS-key
+scan for each stale document.
+
+The legacy `finalize` phase first transitions to `cleanup_pending`, which pages
+pending candidates by document key, and then `cleanup_seen`, which removes only
+a bounded page of the current generation's seen set. `finalize_commit` publishes
+checkpoints, metadata, the monotonic applied cursor, and job completion in one
+short index transaction. Existing jobs persisted at `finalize` enter the same
+cleanup path after restart.
+
+Maintenance batches release the per-path writer coordinator after each commit,
+so queued foreground writers can run before the next batch. Candidate pages are
+capped at 64 rows; document/FTS mutation loops also yield at a cooperative
+25-millisecond budget. This is not preemption of an individual SQLite statement
+or commit, nor a hard wall-clock latency guarantee. The foreground five-second
+queue/retry deadline is unchanged.
+
+These bounds cover shared-index writer turns. Acknowledged runtime outbox GC
+still runs separately in the runtime database after the index commit; the
+index coordinator does not preempt or bound that existing best-effort operation.
+
 The rebuild captures the runtime outbox produced watermark at start. Finalize
 advances the applied cursor monotonically to at least that watermark and only
 acknowledges pending index rows that predate the rebuild. Writes after the

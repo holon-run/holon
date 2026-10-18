@@ -73,6 +73,24 @@ pub(crate) fn memory_index_write_coordinator(
 }
 
 impl MemoryIndexWriteCoordinator {
+    #[cfg(test)]
+    pub(crate) fn active_for_test(&self) -> bool {
+        self.state
+            .lock()
+            .expect("write coordinator mutex poisoned")
+            .active_ticket
+            .is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_for_test(&self, class: MemoryIndexWriteClass) -> usize {
+        let state = self.state.lock().expect("write coordinator mutex poisoned");
+        match class {
+            MemoryIndexWriteClass::Foreground => state.foreground_waiters.len(),
+            MemoryIndexWriteClass::Maintenance => state.maintenance_waiters.len(),
+        }
+    }
+
     pub(crate) fn wait_turn_until(
         self: &Arc<Self>,
         write_class: MemoryIndexWriteClass,

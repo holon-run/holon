@@ -217,6 +217,16 @@ The `Index` phase removes the agent's shared memory projection, pending source
 state, checkpoints, metadata, cursors, and pending runtime-index outbox rows.
 The produced outbox watermark is retained as monotonic propagation evidence.
 
+Shared-index cleanup commits bounded maintenance batches and releases the
+writer coordinator between them. It uses the FTS rowid map for healthy
+documents, followed by a bounded-candidate rowid sweep for residual, duplicate,
+or incompletely mapped FTS rows. Agent ids cannot contain `:`, so the
+`agent_id:` document-key prefix identifies only that agent during the sweep.
+Other large projection tables are also paged; small lifecycle metadata is
+removed last. A failed `Index` phase can repeat these idempotent batches without
+reopening the deleted AgentHome. Partial derived cleanup does not complete the
+deletion job, release the id for reincarnation, or relax memory-index admission.
+
 Single private parent-supervised children use either the authenticated operator
 delete surface or the lifecycle-owning task's persisted
 `delete_on_terminal` disposition. Explicit parent cascade uses the same

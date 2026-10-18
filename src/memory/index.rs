@@ -58,7 +58,14 @@ const MEMORY_INDEX_SEARCH_TEXT_MAX_CHARS: usize = 12_000;
 const MEMORY_INDEX_REBUILD_DEFAULT_SLICE: usize = 500;
 const MEMORY_INDEX_REBUILD_PHASE_SCAN: &str = "scan";
 const MEMORY_INDEX_REBUILD_PHASE_PRUNE: &str = "prune";
+const MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIR: &str = "prune_repair";
+const MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIRED: &str = "prune_repaired";
+const MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING: &str = "cleanup_pending";
+const MEMORY_INDEX_REBUILD_PHASE_CLEANUP_SEEN: &str = "cleanup_seen";
 const MEMORY_INDEX_REBUILD_PHASE_FINALIZE: &str = "finalize";
+const MEMORY_INDEX_REBUILD_PHASE_FINALIZE_COMMIT: &str = "finalize_commit";
+const MEMORY_INDEX_MAINTENANCE_BATCH: usize = 64;
+const MEMORY_INDEX_MAINTENANCE_SLICE_TIME: Duration = Duration::from_millis(25);
 const MEMORY_INDEX_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
 const MEMORY_INDEX_TRANSACTION_DEADLINE: Duration = Duration::from_secs(5);
 const MEMORY_INDEX_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(10);
@@ -189,68 +196,7 @@ pub(crate) fn delete_agent_memory_index_projection(
         return Ok(());
     }
     let index = MemoryIndex::open_shared(shared_indexes_dir)?;
-    index.run_maintenance_write_transaction("memory_index.delete_agent", |transaction| {
-        let table_exists = |name: &str| -> Result<bool> {
-            transaction
-                .query_row(
-                    "SELECT EXISTS(
-                         SELECT 1 FROM sqlite_master
-                         WHERE type = 'table' AND name = ?1
-                     )",
-                    [name],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(Into::into)
-        };
-        if table_exists("memory_documents_fts")? {
-            transaction.execute(
-                "DELETE FROM memory_documents_fts
-                 WHERE document_key IN (
-                    SELECT document_key FROM memory_documents WHERE agent_id = ?1
-                 )",
-                [agent_id],
-            )?;
-        }
-        if table_exists("memory_documents_fts_rows")? {
-            transaction.execute(
-                "DELETE FROM memory_documents_fts_rows
-                 WHERE document_key IN (
-                    SELECT document_key FROM memory_documents WHERE agent_id = ?1
-                 )",
-                [agent_id],
-            )?;
-        }
-        transaction.execute(
-            "DELETE FROM memory_documents WHERE agent_id = ?1",
-            [agent_id],
-        )?;
-        transaction.execute(
-            "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
-            [agent_id],
-        )?;
-        for table in ["memory_index_rebuild_jobs", "memory_index_rebuild_seen"] {
-            if table_exists(table)? {
-                transaction.execute(
-                    &format!("DELETE FROM {table} WHERE agent_id = ?1"),
-                    [agent_id],
-                )?;
-            }
-        }
-        for table in [
-            "memory_index_pending_sources",
-            "memory_index_checkpoints",
-            "memory_index_meta",
-            "memory_index_cursors",
-        ] {
-            if table_exists(table)? {
-                transaction.execute(
-                    &format!("DELETE FROM {table} WHERE agent_id = ?1"),
-                    [agent_id],
-                )?;
-            }
-        }
-        Ok(())
-    })
+    index.delete_agent_projection(agent_id)
 }
 
 fn legacy_memory_index_path(storage: &AppStorage) -> PathBuf {
@@ -1083,6 +1029,197 @@ impl MemoryIndex {
         self.run_immediate_transaction_until(operation, deadline, f)
     }
 
+    fn delete_agent_projection(&self, agent_id: &str) -> Result<()> {
+        let mut cursor = String::new();
+        while let Some(next) = self.delete_agent_documents_slice(agent_id, &cursor)? {
+            cursor = next;
+        }
+
+        // Sweep residual/duplicate FTS rows even if their document or rowid
+        // mapping was already removed by a previous, interrupted cleanup.
+        let mut rowid = 0;
+        while let Some(next) = self.delete_agent_fts_repair_slice(agent_id, rowid)? {
+            rowid = next;
+        }
+
+        for table in [
+            "memory_documents",
+            "memory_index_source_state",
+            "memory_index_pending_sources",
+        ] {
+            let mut cursor = String::new();
+            loop {
+                let next = self.run_maintenance_write_transaction(
+                    "memory_index.delete_agent",
+                    |transaction| {
+                        let keys = agent_document_keys_page(
+                            transaction,
+                            table,
+                            agent_id,
+                            &cursor,
+                            MEMORY_INDEX_MAINTENANCE_BATCH,
+                        )?;
+                        for key in &keys {
+                            transaction.execute(
+                                &format!(
+                                    "DELETE FROM {table} WHERE document_key = ?1 AND agent_id = ?2"
+                                ),
+                                params![key, agent_id],
+                            )?;
+                        }
+                        Ok(keys.last().cloned())
+                    },
+                )?;
+                match next {
+                    Some(next) => cursor = next,
+                    None => break,
+                }
+            }
+        }
+        // The prefix is unambiguous: agent ids cannot contain ':'.
+        loop {
+            let removed = self.run_maintenance_write_transaction(
+                "memory_index.delete_agent",
+                |transaction| {
+                    let keys = agent_document_keys_page(
+                        transaction,
+                        "memory_documents_fts_rows",
+                        agent_id,
+                        "",
+                        MEMORY_INDEX_MAINTENANCE_BATCH,
+                    )?;
+                    for key in &keys {
+                        transaction.execute(
+                            "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+                            [key],
+                        )?;
+                    }
+                    Ok(keys.len())
+                },
+            )?;
+            if removed == 0 {
+                break;
+            }
+        }
+        loop {
+            let removed = self.run_maintenance_write_transaction(
+                "memory_index.delete_agent",
+                |transaction| {
+                    Ok(transaction.execute(
+                        "DELETE FROM memory_index_rebuild_seen WHERE rowid IN (
+                             SELECT rowid FROM memory_index_rebuild_seen
+                             WHERE agent_id = ?1 LIMIT ?2
+                         )",
+                        params![agent_id, MEMORY_INDEX_MAINTENANCE_BATCH],
+                    )?)
+                },
+            )?;
+            if removed == 0 {
+                break;
+            }
+        }
+        // These metadata tables are small, but page candidates by rowid so
+        // cleanup never depends on an unindexed agent_id scan either.
+        for table in [
+            "memory_index_checkpoints",
+            "memory_index_cursors",
+            "memory_index_meta",
+            "memory_index_rebuild_jobs",
+        ] {
+            let mut cursor = 0_i64;
+            loop {
+                let next = self.run_maintenance_write_transaction(
+                    "memory_index.delete_agent",
+                    |transaction| {
+                        let mut statement = transaction.prepare(&format!(
+                            "SELECT rowid, agent_id FROM {table}
+                             WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"
+                        ))?;
+                        let rows = statement
+                            .query_map(params![cursor, MEMORY_INDEX_MAINTENANCE_BATCH], |row| {
+                                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                            })?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        for (rowid, owner) in &rows {
+                            if owner == agent_id {
+                                transaction.execute(
+                                    &format!("DELETE FROM {table} WHERE rowid = ?1"),
+                                    [rowid],
+                                )?;
+                            }
+                        }
+                        Ok(rows.last().map(|(rowid, _)| *rowid))
+                    },
+                )?;
+                match next {
+                    Some(next) => cursor = next,
+                    None => break,
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_agent_documents_slice(&self, agent_id: &str, cursor: &str) -> Result<Option<String>> {
+        self.run_maintenance_write_transaction("memory_index.delete_agent", |transaction| {
+            let started = Instant::now();
+            let keys = agent_document_keys_page(
+                transaction,
+                "memory_documents",
+                agent_id,
+                cursor,
+                MEMORY_INDEX_MAINTENANCE_BATCH,
+            )?;
+            let mut next = None;
+            for key in keys {
+                if delete_mapped_fts_document_tx(transaction, &key)? {
+                    delete_document_records_tx(transaction, &key)?;
+                }
+                // Missing or incorrect mappings retain their ownership records
+                // for a single bounded-rowid repair pass, not one scan per key.
+                next = Some(key);
+                if started.elapsed() >= MEMORY_INDEX_MAINTENANCE_SLICE_TIME {
+                    break;
+                }
+            }
+            Ok(next)
+        })
+    }
+
+    fn delete_agent_fts_repair_slice(&self, agent_id: &str, cursor: i64) -> Result<Option<i64>> {
+        self.run_maintenance_write_transaction("memory_index.delete_agent", |transaction| {
+            let started = Instant::now();
+            let mut statement = transaction.prepare(
+                "SELECT rowid, document_key FROM memory_documents_fts
+                 WHERE rowid > ?1 ORDER BY rowid LIMIT ?2",
+            )?;
+            let rows = statement
+                .query_map(params![cursor, MEMORY_INDEX_MAINTENANCE_BATCH], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            let mut next = None;
+            for (rowid, key) in rows {
+                // Agent ids cannot contain ':', so this does not match a
+                // similarly named peer or depend on still-present owner rows.
+                if key.starts_with(&format!("{agent_id}:")) {
+                    transaction
+                        .execute("DELETE FROM memory_documents_fts WHERE rowid = ?1", [rowid])?;
+                    transaction.execute(
+                        "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+                        [&key],
+                    )?;
+                }
+                next = Some(rowid);
+                if started.elapsed() >= MEMORY_INDEX_MAINTENANCE_SLICE_TIME {
+                    break;
+                }
+            }
+            Ok(next)
+        })
+    }
+
     fn run_immediate_transaction_until<T>(
         &self,
         operation: &'static str,
@@ -1411,8 +1548,25 @@ impl MemoryIndex {
                 MEMORY_INDEX_REBUILD_PHASE_SCAN => {
                     self.scan_rebuild_slice(storage, &job, remaining)?
                 }
-                MEMORY_INDEX_REBUILD_PHASE_PRUNE => self.prune_rebuild_slice(&job, remaining)?,
+                MEMORY_INDEX_REBUILD_PHASE_PRUNE | MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIRED => {
+                    self.prune_rebuild_slice(&job, remaining)?
+                }
+                MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIR => {
+                    self.prune_rebuild_fts_repair_slice(&job, remaining)?
+                }
                 MEMORY_INDEX_REBUILD_PHASE_FINALIZE => {
+                    // Also upgrades jobs persisted in the old unsliced final
+                    // phase. Do not publish completion before cleanup resumes.
+                    self.update_rebuild_phase(&job, MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING)?;
+                    0
+                }
+                MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING => {
+                    self.cleanup_rebuild_pending_slice(&job, remaining)?
+                }
+                MEMORY_INDEX_REBUILD_PHASE_CLEANUP_SEEN => {
+                    self.cleanup_rebuild_seen_slice(&job, remaining)?
+                }
+                MEMORY_INDEX_REBUILD_PHASE_FINALIZE_COMMIT => {
                     self.finalize_rebuild(storage, &job)?;
                     return Ok(false);
                 }
@@ -1604,41 +1758,18 @@ impl MemoryIndex {
     }
 
     fn prune_rebuild_slice(&mut self, job: &RebuildJob, slice_limit: usize) -> Result<usize> {
-        let document_key_start = format!("{}:", job.agent_id);
-        let document_key_end = format!("{};", job.agent_id);
-        let keys =
-            self.run_maintenance_write_transaction("memory_index.rebuild_prune", |transaction| {
-                let mut statement = transaction.prepare(
-                    "SELECT d.document_key
-                     FROM memory_documents d
-                     WHERE d.document_key >= ?1
-                       AND d.document_key < ?2
-                       AND d.agent_id = ?3
-                       AND NOT EXISTS (
-                           SELECT 1 FROM memory_index_rebuild_seen s
-                           WHERE s.agent_id = ?3
-                             AND s.generation = ?4
-                             AND s.document_key = d.document_key
-                       )
-                     ORDER BY d.document_key
-                     LIMIT ?5",
+        self.run_maintenance_write_transaction("memory_index.rebuild_prune", |transaction| {
+                if !rebuild_job_matches_tx(transaction, job)? {
+                    return Ok(0);
+                }
+                let started = Instant::now();
+                let keys = agent_document_keys_page(
+                    transaction, "memory_documents", &job.agent_id, &job.source_cursor, slice_limit,
                 )?;
-                let rows = statement.query_map(
-                    params![
-                        document_key_start,
-                        document_key_end,
-                        job.agent_id,
-                        job.generation,
-                        i64::try_from(slice_limit).unwrap_or(i64::MAX)
-                    ],
-                    |row| row.get::<_, String>(0),
-                )?;
-                let keys = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-                drop(statement);
                 if keys.is_empty() {
                     transaction.execute(
                         "UPDATE memory_index_rebuild_jobs
-                         SET phase = ?1, last_progress_at = ?2
+                         SET phase = ?1, source_cursor = '', last_progress_at = ?2
                          WHERE agent_id = ?3 AND generation = ?4",
                         params![
                             MEMORY_INDEX_REBUILD_PHASE_FINALIZE,
@@ -1647,29 +1778,187 @@ impl MemoryIndex {
                             job.generation,
                         ],
                     )?;
-                    return Ok(keys);
+                    return Ok(0);
                 }
+                let mut examined = 0;
+                let mut cursor = job.source_cursor.clone();
                 for document_key in &keys {
-                    delete_document_tx(transaction, document_key)?;
+                    let seen = transaction.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM memory_index_rebuild_seen
+                         WHERE agent_id = ?1 AND generation = ?2 AND document_key = ?3)",
+                        params![job.agent_id, job.generation, document_key],
+                        |row| row.get::<_, bool>(0),
+                    )?;
+                    if !seen {
+                        // Bulk prune must not use the ordinary UNINDEXED-key
+                        // repair fallback while holding a maintenance turn.
+                        if !delete_mapped_fts_document_tx(transaction, document_key)?
+                            && job.phase != MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIRED
+                        {
+                            transaction.execute(
+                                "UPDATE memory_index_rebuild_jobs
+                                 SET phase = ?1, source_cursor = '', source_offset = 0, last_progress_at = ?2
+                                 WHERE agent_id = ?3 AND generation = ?4",
+                                params![MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIR,
+                                        Utc::now().to_rfc3339(), job.agent_id, job.generation],
+                            )?;
+                            return Ok(examined + 1);
+                        }
+                        delete_document_records_tx(transaction, document_key)?;
+                    }
+                    cursor = document_key.clone();
+                    examined += 1;
+                    if started.elapsed() >= MEMORY_INDEX_MAINTENANCE_SLICE_TIME {
+                        break;
+                    }
                 }
                 transaction.execute(
                     "UPDATE memory_index_rebuild_jobs
-                     SET last_progress_at = ?1
-                     WHERE agent_id = ?2 AND generation = ?3",
-                    params![Utc::now().to_rfc3339(), job.agent_id, job.generation],
+                     SET source_cursor = ?1, last_progress_at = ?2
+                     WHERE agent_id = ?3 AND generation = ?4",
+                    params![cursor, Utc::now().to_rfc3339(), job.agent_id, job.generation],
                 )?;
-                Ok(keys)
-            })?;
-        if keys.is_empty() {
-            return Ok(0);
-        }
-        tracing::debug!(
-            agent_id = %job.agent_id,
-            generation = %job.generation,
-            documents = keys.len(),
-            "advanced bounded memory index rebuild prune"
-        );
-        Ok(keys.len())
+                Ok(examined)
+            })
+    }
+
+    fn prune_rebuild_fts_repair_slice(&self, job: &RebuildJob, limit: usize) -> Result<usize> {
+        self.run_maintenance_write_transaction("memory_index.rebuild_prune", |transaction| {
+            if !rebuild_job_matches_tx(transaction, job)? {
+                return Ok(0);
+            }
+            let started = Instant::now();
+            let mut statement = transaction.prepare(
+                "SELECT rowid, document_key FROM memory_documents_fts
+                 WHERE rowid > ?1 ORDER BY rowid LIMIT ?2",
+            )?;
+            let rows = statement
+                .query_map(
+                    params![
+                        i64::try_from(job.source_offset).unwrap_or(i64::MAX),
+                        limit.min(MEMORY_INDEX_MAINTENANCE_BATCH)
+                    ],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            let mut cursor = job.source_offset;
+            let mut examined = 0;
+            for (rowid, key) in &rows {
+                let stale = transaction.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM memory_documents d
+                         WHERE d.document_key = ?1 AND d.agent_id = ?2
+                           AND NOT EXISTS(SELECT 1 FROM memory_index_rebuild_seen s
+                               WHERE s.agent_id = ?2 AND s.generation = ?3 AND s.document_key = ?1)
+                     )",
+                    params![key, job.agent_id, job.generation],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if stale {
+                    transaction
+                        .execute("DELETE FROM memory_documents_fts WHERE rowid = ?1", [rowid])?;
+                    transaction.execute(
+                        "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+                        [key],
+                    )?;
+                }
+                cursor =
+                    usize::try_from(*rowid).context("FTS rowid exceeds rebuild repair cursor")?;
+                examined += 1;
+                if started.elapsed() >= MEMORY_INDEX_MAINTENANCE_SLICE_TIME {
+                    break;
+                }
+            }
+            transaction.execute(
+                "UPDATE memory_index_rebuild_jobs
+                 SET phase = ?1, source_offset = ?2, source_cursor = '', last_progress_at = ?3
+                 WHERE agent_id = ?4 AND generation = ?5",
+                params![
+                    if rows.is_empty() {
+                        MEMORY_INDEX_REBUILD_PHASE_PRUNE_REPAIRED
+                    } else {
+                        &job.phase
+                    },
+                    i64::try_from(cursor).unwrap_or(i64::MAX),
+                    Utc::now().to_rfc3339(),
+                    job.agent_id,
+                    job.generation,
+                ],
+            )?;
+            Ok(examined)
+        })
+    }
+
+    fn cleanup_rebuild_pending_slice(&self, job: &RebuildJob, limit: usize) -> Result<usize> {
+        self.run_maintenance_write_transaction("memory_index.rebuild_finalize", |transaction| {
+            if !rebuild_job_matches_tx(transaction, job)? {
+                return Ok(0);
+            }
+            let keys = agent_document_keys_page(
+                transaction,
+                "memory_index_pending_sources",
+                &job.agent_id,
+                &job.source_cursor,
+                limit,
+            )?;
+            for key in &keys {
+                transaction.execute(
+                    "DELETE FROM memory_index_pending_sources
+                     WHERE document_key = ?1 AND agent_id = ?2 AND enqueued_at <= ?3",
+                    params![key, job.agent_id, job.started_at.to_rfc3339()],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE memory_index_rebuild_jobs
+                 SET phase = ?1, source_cursor = ?2, last_progress_at = ?3
+                 WHERE agent_id = ?4 AND generation = ?5",
+                params![
+                    if keys.is_empty() {
+                        MEMORY_INDEX_REBUILD_PHASE_CLEANUP_SEEN
+                    } else {
+                        &job.phase
+                    },
+                    keys.last().map(String::as_str).unwrap_or(""),
+                    Utc::now().to_rfc3339(),
+                    job.agent_id,
+                    job.generation,
+                ],
+            )?;
+            Ok(keys.len())
+        })
+    }
+
+    fn cleanup_rebuild_seen_slice(&self, job: &RebuildJob, limit: usize) -> Result<usize> {
+        self.run_maintenance_write_transaction("memory_index.rebuild_finalize", |transaction| {
+            if !rebuild_job_matches_tx(transaction, job)? {
+                return Ok(0);
+            }
+            let removed = transaction.execute(
+                "DELETE FROM memory_index_rebuild_seen WHERE rowid IN (
+                     SELECT rowid FROM memory_index_rebuild_seen
+                     WHERE agent_id = ?1 AND generation = ?2 LIMIT ?3
+                 )",
+                params![
+                    job.agent_id,
+                    job.generation,
+                    limit.min(MEMORY_INDEX_MAINTENANCE_BATCH)
+                ],
+            )?;
+            if removed == 0 {
+                transaction.execute(
+                    "UPDATE memory_index_rebuild_jobs SET phase = ?1, last_progress_at = ?2
+                     WHERE agent_id = ?3 AND generation = ?4",
+                    params![
+                        MEMORY_INDEX_REBUILD_PHASE_FINALIZE_COMMIT,
+                        Utc::now().to_rfc3339(),
+                        job.agent_id,
+                        job.generation
+                    ],
+                )?;
+            }
+            Ok(removed)
+        })
     }
 
     fn finalize_rebuild(&mut self, storage: &AppStorage, job: &RebuildJob) -> Result<()> {
@@ -1679,6 +1968,7 @@ impl MemoryIndex {
         let runtime_id = runtime_index_runtime_id(&runtime_db);
         let now = Utc::now();
         self.run_maintenance_write_transaction("memory_index.rebuild_finalize", |transaction| {
+            anyhow::ensure!(rebuild_job_matches_tx(transaction, job)?, "memory index rebuild job changed before finalize");
             for source_kind in all_backfill_source_kinds() {
                 transaction.execute(
                     "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
@@ -1701,18 +1991,7 @@ impl MemoryIndex {
                 MEMORY_INDEX_OUTBOX_CURSOR,
                 job.runtime_high_watermark,
             )?;
-            transaction.execute(
-                "DELETE FROM memory_index_pending_sources
-                 WHERE agent_id = ?1
-                   AND enqueued_at <= ?2",
-                params![job.agent_id, job.started_at.to_rfc3339()],
-            )?;
             upsert_index_meta_tx(transaction, &job.agent_id, Some(now))?;
-            transaction.execute(
-                "DELETE FROM memory_index_rebuild_seen
-                 WHERE agent_id = ?1 AND generation = ?2",
-                params![job.agent_id, job.generation],
-            )?;
             transaction.execute(
                 "DELETE FROM memory_index_rebuild_jobs
                  WHERE agent_id = ?1 AND generation = ?2",
@@ -1749,7 +2028,7 @@ impl MemoryIndex {
             |transaction| {
                 transaction.execute(
                     "UPDATE memory_index_rebuild_jobs
-                 SET phase = ?1, last_progress_at = ?2
+                 SET phase = ?1, source_cursor = '', last_progress_at = ?2
                  WHERE agent_id = ?3 AND generation = ?4",
                     params![phase, Utc::now().to_rfc3339(), job.agent_id, job.generation],
                 )?;
@@ -2899,6 +3178,10 @@ fn upsert_index_meta_tx(
 
 fn delete_document_tx(connection: &Connection, document_key: &str) -> Result<()> {
     delete_fts_document_tx(connection, document_key)?;
+    delete_document_records_tx(connection, document_key)
+}
+
+fn delete_document_records_tx(connection: &Connection, document_key: &str) -> Result<()> {
     connection.execute(
         "DELETE FROM memory_documents WHERE document_key = ?1",
         [document_key],
@@ -2920,6 +3203,19 @@ fn delete_fts_document_tx(connection: &Connection, document_key: &str) -> Result
         [document_key],
         |row| row.get::<_, bool>(0),
     )?;
+    let removed_mapped_row = delete_mapped_fts_document_tx(connection, document_key)?;
+    if projection_was_known && !removed_mapped_row {
+        // Ordinary single-source repair retains its existing fallback. Bulk
+        // maintenance uses a separately sliced rowid scan instead.
+        connection.execute(
+            "DELETE FROM memory_documents_fts WHERE document_key = ?1",
+            [document_key],
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_mapped_fts_document_tx(connection: &Connection, document_key: &str) -> Result<bool> {
     let fts_rowid = connection
         .query_row(
             "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
@@ -2947,15 +3243,55 @@ fn delete_fts_document_tx(connection: &Connection, document_key: &str) -> Result
             [document_key],
         )?;
     }
-    if projection_was_known && !removed_mapped_row {
-        // This path repairs a pre-existing incomplete projection. Healthy
-        // writes always have a rowid map and never scan the UNINDEXED key.
-        connection.execute(
-            "DELETE FROM memory_documents_fts WHERE document_key = ?1",
-            [document_key],
-        )?;
-    }
-    Ok(())
+    Ok(removed_mapped_row)
+}
+
+fn rebuild_job_matches_tx(connection: &Connection, job: &RebuildJob) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memory_index_rebuild_jobs
+         WHERE agent_id = ?1 AND generation = ?2 AND phase = ?3)",
+        params![job.agent_id, job.generation, job.phase],
+        |row| row.get::<_, bool>(0),
+    )?)
+}
+
+fn agent_document_keys_page(
+    connection: &Connection,
+    table: &str,
+    agent_id: &str,
+    cursor: &str,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let (sql, lower_bound) = agent_document_keys_page_query(table, agent_id, cursor);
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(
+        params![
+            lower_bound,
+            format!("{agent_id};"),
+            limit.min(MEMORY_INDEX_MAINTENANCE_BATCH)
+        ],
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn agent_document_keys_page_query(table: &str, agent_id: &str, cursor: &str) -> (String, String) {
+    let prefix = format!("{agent_id}:");
+    let (comparison, lower_bound) = if cursor < prefix.as_str() {
+        (">=", prefix)
+    } else {
+        (">", cursor.to_owned())
+    };
+    // One effective lower bound is essential: SQLite may otherwise seek to
+    // the prefix and filter all rows preceding the stricter cursor.
+    (
+        format!(
+            "SELECT document_key FROM {table}
+             WHERE document_key {comparison} ?1 AND document_key < ?2
+             ORDER BY document_key LIMIT ?3"
+        ),
+        lower_bound,
+    )
 }
 
 fn document_key(document: &MemoryDocument) -> String {
@@ -4595,6 +4931,367 @@ mod tests {
         },
     };
     use serde_json::json;
+
+    fn maintenance_test_documents(
+        index: &MemoryIndex,
+        agent: &str,
+        count: usize,
+    ) -> Result<Vec<String>> {
+        let documents = (0..count)
+            .map(|number| MemoryDocument {
+                source_ref: format!("message:maintenance-{number:04}"),
+                source_kind: "message".into(),
+                scope_kind: "agent".into(),
+                workspace_id: None,
+                agent_id: agent.into(),
+                source_path: None,
+                title: "maintenance fixture".into(),
+                body: "maintenance searchable sentinel".into(),
+                sanitized_excerpt: "maintenance sentinel".into(),
+                metadata: Value::Null,
+                updated_at: Utc::now(),
+            })
+            .collect::<Vec<_>>();
+        index.run_write_transaction("test.seed_maintenance", |tx| {
+            for document in &documents {
+                upsert_document_tx(tx, document)?;
+                upsert_source_state_tx(tx, document, source_id_from_ref(&document.source_ref))?;
+            }
+            Ok(())
+        })?;
+        Ok(documents.iter().map(document_key).collect())
+    }
+
+    fn maintenance_test_job(index: &MemoryIndex, agent: &str, phase: &str) -> Result<RebuildJob> {
+        let now = Utc::now().to_rfc3339();
+        index.connection.execute(
+            "INSERT INTO memory_index_rebuild_jobs (
+                 agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
+                 runtime_high_watermark, documents_processed, started_at, last_progress_at
+             ) VALUES (?1, 'maintenance-generation', ?2, ?3, '', 0, 0, 0, ?4, ?4)",
+            params![agent, phase, all_backfill_source_kinds().len(), now],
+        )?;
+        Ok(index.rebuild_job(agent)?.unwrap())
+    }
+
+    #[test]
+    fn maintenance_delete_is_sliced_retryable_and_repairs_broken_maps() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "deleted")?;
+        let index = MemoryIndex::open(&storage)?;
+        let keys = maintenance_test_documents(&index, "deleted", 140)?;
+        let peers = maintenance_test_documents(&index, "deleted-extra", 3)?;
+        let peer_rowid: i64 = index.connection.query_row(
+            "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&peers[0]],
+            |row| row.get(0),
+        )?;
+        index.connection.execute(
+            "DELETE FROM memory_documents_fts_rows WHERE document_key IN (?1, ?2)",
+            params![keys[0], peers[0]],
+        )?;
+        index.connection.execute(
+            "UPDATE memory_documents_fts_rows SET fts_rowid = ?1 WHERE document_key = ?2",
+            params![peer_rowid, keys[1]],
+        )?;
+        index.connection.execute(
+            "INSERT INTO memory_documents_fts (document_key, title, body, sanitized_excerpt)
+             VALUES (?1, 'duplicate', 'duplicate', 'duplicate')",
+            [&keys[2]],
+        )?;
+        let next = index.delete_agent_documents_slice("deleted", "")?.unwrap();
+        assert!(next >= keys[0]);
+        let remaining: usize = index.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents WHERE agent_id = 'deleted'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(remaining >= 140 - MEMORY_INDEX_MAINTENANCE_BATCH);
+        index.connection.execute_batch(
+            "CREATE TRIGGER fail_agent_cleanup BEFORE DELETE ON memory_documents
+             WHEN OLD.document_key = 'deleted:message:maintenance-0099'
+             BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;",
+        )?;
+        assert!(index.delete_agent_projection("deleted").is_err());
+        index
+            .connection
+            .execute_batch("DROP TRIGGER fail_agent_cleanup")?;
+        drop(index);
+        delete_agent_memory_index_projection(&storage.shared_indexes_dir(), "deleted")?;
+        delete_agent_memory_index_projection(&storage.shared_indexes_dir(), "deleted")?;
+        let index = MemoryIndex::open(&storage)?;
+        for table in [
+            "memory_documents",
+            "memory_index_source_state",
+            "memory_documents_fts",
+            "memory_documents_fts_rows",
+        ] {
+            let count: usize = index.connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE document_key >= 'deleted:' AND document_key < 'deleted;'"),
+                [], |row| row.get(0),
+            )?;
+            assert_eq!(count, 0, "{table} retains deleted projection");
+        }
+        for table in [
+            "memory_documents",
+            "memory_index_source_state",
+            "memory_documents_fts",
+        ] {
+            let count: usize = index.connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE document_key >= 'deleted-extra:' AND document_key < 'deleted-extra;'"),
+                [], |row| row.get(0),
+            )?;
+            assert_eq!(count, 3, "{table} changed a peer");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn maintenance_delete_yields_to_queued_foreground() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "deleted")?;
+        let index = MemoryIndex::open(&storage)?;
+        maintenance_test_documents(&index, "deleted", 140)?;
+        index.connection.execute_batch(
+            "CREATE TABLE test_writer_order (kind TEXT NOT NULL);
+             CREATE TRIGGER foreground_order AFTER INSERT ON memory_index_pending_sources
+             BEGIN INSERT INTO test_writer_order VALUES ('foreground'); END;
+             CREATE TRIGGER maintenance_order AFTER DELETE ON memory_documents
+             BEGIN INSERT INTO test_writer_order VALUES ('maintenance'); END;",
+        )?;
+        let mut foreground = MemoryIndex::open(&storage)?;
+        let maintenance = MemoryIndex::open(&storage)?;
+        let coordinator = Arc::clone(&index.write_coordinator);
+        // Stall the first real maintenance transaction at SQLite admission,
+        // then queue foreground work while that maintenance turn is active.
+        let blocker = Connection::open(memory_index_path(&storage))?;
+        blocker.execute_batch("BEGIN IMMEDIATE")?;
+        let maintenance_thread =
+            thread::spawn(move || maintenance.delete_agent_projection("deleted"));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !coordinator.active_for_test() {
+            assert!(Instant::now() < deadline, "maintenance failed to start");
+            thread::sleep(Duration::from_millis(1));
+        }
+        let foreground_thread = thread::spawn(move || {
+            foreground.enqueue_upsert("peer", "message", "queued", "message:queued")
+        });
+        while coordinator.queued_for_test(MemoryIndexWriteClass::Foreground) == 0 {
+            assert!(Instant::now() < deadline, "foreground failed to queue");
+            thread::sleep(Duration::from_millis(1));
+        }
+        blocker.execute_batch("COMMIT")?;
+        foreground_thread
+            .join()
+            .expect("foreground thread panicked")?;
+        maintenance_thread
+            .join()
+            .expect("maintenance thread panicked")?;
+        let order = index
+            .connection
+            .prepare("SELECT kind FROM test_writer_order ORDER BY rowid")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let foreground_position = order.iter().position(|kind| kind == "foreground").unwrap();
+        assert!(foreground_position > 0);
+        assert!(foreground_position <= MEMORY_INDEX_MAINTENANCE_BATCH);
+        assert_eq!(order.last().map(String::as_str), Some("maintenance"));
+        assert_eq!(
+            order.iter().filter(|kind| *kind == "maintenance").count(),
+            140
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn maintenance_prune_bounds_seen_candidates_and_resumes_repair() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let mut index = MemoryIndex::open(&storage)?;
+        let keys = maintenance_test_documents(&index, "default", 140)?;
+        maintenance_test_documents(&index, "default-extra", 3)?;
+        let job = maintenance_test_job(&index, "default", MEMORY_INDEX_REBUILD_PHASE_PRUNE)?;
+        for key in &keys[..139] {
+            index.connection.execute(
+                "INSERT INTO memory_index_rebuild_seen VALUES (?1, ?2, ?3)",
+                params![job.agent_id, job.generation, key],
+            )?;
+        }
+        index.connection.execute(
+            "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&keys[139]],
+        )?;
+        index.connection.execute(
+            "INSERT INTO memory_documents_fts (document_key, title, body, sanitized_excerpt)
+             VALUES (?1, 'duplicate', 'duplicate', 'duplicate')",
+            [&keys[139]],
+        )?;
+        assert_eq!(index.prune_rebuild_slice(&job, 3)?, 3);
+        assert_eq!(
+            index.rebuild_job("default")?.unwrap().source_cursor,
+            keys[2]
+        );
+        drop(index);
+        let mut index = MemoryIndex::open(&storage)?;
+        let resumed = index.rebuild_job("default")?.unwrap();
+        assert_eq!(index.prune_rebuild_slice(&resumed, 3)?, 3);
+        assert_eq!(
+            index.rebuild_job("default")?.unwrap().source_cursor,
+            keys[5]
+        );
+        for _ in 0..256 {
+            if !index.advance_rebuild(&storage, 3)? {
+                break;
+            }
+        }
+        assert!(index.rebuild_job("default")?.is_none());
+        for table in [
+            "memory_documents",
+            "memory_documents_fts",
+            "memory_documents_fts_rows",
+        ] {
+            let count: usize = index.connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE document_key = ?1"),
+                [&keys[139]],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0, "{table} retains stale broken-map document");
+        }
+        let remaining: usize =
+            index
+                .connection
+                .query_row("SELECT COUNT(*) FROM memory_documents", [], |row| {
+                    row.get(0)
+                })?;
+        assert_eq!(remaining, 142);
+        Ok(())
+    }
+
+    #[test]
+    fn maintenance_legacy_finalize_cleans_in_slices_before_completion() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let mut index = MemoryIndex::open(&storage)?;
+        let keys = maintenance_test_documents(&index, "default", 140)?;
+        for number in 0..140 {
+            index.enqueue_upsert(
+                "default",
+                "message",
+                &number.to_string(),
+                &format!("message:pending-{number:04}"),
+            )?;
+        }
+        let job = maintenance_test_job(&index, "default", MEMORY_INDEX_REBUILD_PHASE_FINALIZE)?;
+        for key in keys {
+            index.connection.execute(
+                "INSERT INTO memory_index_rebuild_seen VALUES (?1, ?2, ?3)",
+                params![job.agent_id, job.generation, key],
+            )?;
+        }
+        assert!(index.advance_rebuild(&storage, 7)?);
+        let progress = index.rebuild_job("default")?.unwrap();
+        assert_eq!(progress.phase, MEMORY_INDEX_REBUILD_PHASE_CLEANUP_PENDING);
+        assert!(!progress.source_cursor.is_empty());
+        assert_eq!(index.pending_sources_for_agent("default")?.len(), 133);
+        index.enqueue_upsert("default", "message", "new", "message:aaa-new")?;
+        index.connection.execute(
+            "UPDATE memory_index_pending_sources SET enqueued_at = ?1
+             WHERE source_ref = 'message:aaa-new'",
+            [(job.started_at + chrono::Duration::seconds(1)).to_rfc3339()],
+        )?;
+        drop(index);
+        let mut index = MemoryIndex::open(&storage)?;
+        assert_eq!(
+            index.rebuild_job("default")?.unwrap().source_cursor,
+            progress.source_cursor
+        );
+        for _ in 0..128 {
+            if !index.advance_rebuild(&storage, 7)? {
+                break;
+            }
+        }
+        assert!(index.rebuild_job("default")?.is_none());
+        let pending = index.pending_sources_for_agent("default")?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].source_ref, "message:aaa-new");
+        let seen: usize = index.connection.query_row(
+            "SELECT COUNT(*) FROM memory_index_rebuild_seen",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(seen, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn maintenance_candidate_pages_use_key_and_fts_rowid_ranges() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let keys = maintenance_test_documents(&index, "default", 8192)?;
+        index.connection.execute(
+            "INSERT INTO memory_index_pending_sources
+                 (document_key, source_ref, agent_id, source_kind, source_id, operation, enqueued_at)
+             SELECT document_key, source_ref, agent_id, source_kind, source_ref, 'upsert', 'now'
+             FROM memory_documents",
+            [],
+        )?;
+        for table in [
+            "memory_documents",
+            "memory_index_source_state",
+            "memory_index_pending_sources",
+            "memory_documents_fts_rows",
+        ] {
+            let mut steps = Vec::new();
+            for cursor in ["", keys[8091].as_str()] {
+                let (sql, bound) = agent_document_keys_page_query(table, "default", cursor);
+                let mut statement = index.connection.prepare(&sql)?;
+                let page = statement
+                    .query_map(
+                        params![bound, "default;", MEMORY_INDEX_MAINTENANCE_BATCH],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                assert_eq!(page.len(), MEMORY_INDEX_MAINTENANCE_BATCH);
+                steps.push(statement.get_status(rusqlite::StatementStatus::VmStep));
+                assert_eq!(
+                    page,
+                    agent_document_keys_page(&index.connection, table, "default", cursor, 64)?,
+                );
+                let plan = index
+                    .connection
+                    .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?
+                    .query_map(
+                        params![bound, "default;", MEMORY_INDEX_MAINTENANCE_BATCH],
+                        |row| row.get::<_, String>(3),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                assert!(
+                    plan.iter()
+                        .any(|line| line.contains("SEARCH") && line.contains("document_key")),
+                    "{table}: {plan:?}"
+                );
+                assert!(
+                    plan.iter().all(|line| !line.contains("TEMP B-TREE")),
+                    "{table}: {plan:?}"
+                );
+            }
+            assert!(
+                steps[1] <= steps[0] * 2,
+                "{table} late-page work must not grow with the retained prefix: {steps:?}"
+            );
+        }
+        let plan = index
+            .connection
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT rowid, document_key FROM memory_documents_fts
+             WHERE rowid > 100 ORDER BY rowid LIMIT 64",
+            )?
+            .query_map([], |row| row.get::<_, String>(3))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(plan.iter().any(|line| line.contains('>')), "{plan:?}");
+        Ok(())
+    }
 
     #[test]
     fn existing_reader_open_does_not_reapply_schema_or_allow_writes() -> Result<()> {
