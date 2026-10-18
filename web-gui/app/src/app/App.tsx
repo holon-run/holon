@@ -817,7 +817,7 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
-            inputDisabledReason={agentAccess.status !== "available"
+            sendDisabledReason={agentAccess.status !== "available"
               ? t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating")
               : activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
             inputStatusTone={agentAccess.status !== "available" ? "neutral" : "error"}

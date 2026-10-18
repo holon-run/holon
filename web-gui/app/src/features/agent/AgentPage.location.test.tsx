@@ -8,7 +8,7 @@ import type { ConversationSessionModel } from "../../runtime/conversation-view-m
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
 import { acquireConversationScope, conversationViewport, disposeAllConversationScopes } from "../../runtime/conversation-scope-store";
 import "../../i18n";
-import { AgentPage, type ConversationTimelineBundle } from "./AgentPage";
+import { AgentPage, type ConversationTimelineBundle, readStoredComposerDraft, writeStoredComposerDraft } from "./AgentPage";
 
 // Exercise AgentPage's real effects and scroll handlers with deterministic
 // layout, isolating them from the timeline's independent disclosure rendering.
@@ -72,15 +72,17 @@ function bundle(): ConversationTimelineBundle {
 }
 
 const onRead = vi.fn(() => true);
+const onSendPrompt = vi.fn(async () => {});
 async function render(conversation: ConversationTimelineBundle, overrides: {
-  parentAgentId?: string; parentTaskId?: string; inputDisabledReason?: string; promptError?: string;
+  parentAgentId?: string; parentTaskId?: string; sendDisabledReason?: string; promptError?: string;
+  sendingPrompt?: boolean;
 } = {}) {
   await act(async () => root.render(<AgentPage
     agent={{ id: "alpha", model: "model" } as AgentSummary} conversation={conversation}
     detail={null} sendingPrompt={false} modelCatalog={{ source: "fixture", options: [] }}
     modelCatalogLoading={false} conversationReady
     onRefreshModels={vi.fn()} onSetModel={vi.fn()} onClearModel={vi.fn()}
-    onRetrySync={vi.fn()} onSendPrompt={vi.fn()} onAbortCurrentRun={vi.fn()}
+    onRetrySync={vi.fn()} onSendPrompt={onSendPrompt} onAbortCurrentRun={vi.fn()}
     onConversationRead={onRead} onOpenWorkItem={vi.fn()} onOpenTask={vi.fn()}
     {...overrides}
   />));
@@ -106,6 +108,8 @@ beforeEach(() => {
   shift = 0;
   observers = [];
   onRead.mockClear();
+  onSendPrompt.mockClear();
+  writeStoredComposerDraft("alpha", "");
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
   // Do not advance frames: fast commits must work inside the active gesture.
@@ -166,14 +170,14 @@ describe("AgentPage reading-position lifecycle", () => {
     const retry = vi.fn();
     const notice = "Verifying cached history";
     await render({ ...bundle(), [noticeKey]: notice, onRetryAccess: retry },
-      noticeKey === "readOnlyNotice" ? { inputDisabledReason: notice } : {});
+      noticeKey === "readOnlyNotice" ? { sendDisabledReason: notice } : {});
     const banner = host.querySelector(".conversation-sync-status .conversation-status-banner[role=status]");
     expect(banner?.querySelector("span")?.textContent).toBe(notice);
     expect(banner?.querySelector("span")?.title).toBe(notice);
     expect(banner?.querySelector(":scope > svg[aria-hidden=true]")).not.toBeNull();
     expect(banner?.querySelector("button")?.getAttribute("type")).toBe("button");
     expect(banner?.querySelector("button svg[aria-hidden=true]")).not.toBeNull();
-    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(noticeKey === "readOnlyNotice");
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(false);
     await act(async () => banner?.querySelector<HTMLButtonElement>("button")?.click());
     expect(retry).toHaveBeenCalledTimes(1);
   });
@@ -186,14 +190,56 @@ describe("AgentPage reading-position lifecycle", () => {
   });
 
   it.each([undefined, "supervisor"])("keeps real composer status without a permanent input warning (parent=%s)", async (parentAgentId) => {
-    await render(bundle(), { parentAgentId, inputDisabledReason: "Stopped by operator" });
+    await render(bundle(), { parentAgentId, sendDisabledReason: "Stopped by operator" });
     expect(host.querySelector(".composer-status[role=note]")).toBeNull();
     expect(host.querySelector(".composer-status[role=status]")?.textContent).toBe("Stopped by operator");
-    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(false);
     await render(bundle(), { parentAgentId, promptError: "Prompt admission failed" });
     expect(host.querySelector(".composer-status[role=alert]")?.textContent).toBe("Prompt admission failed");
     expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(false);
     expect(host.textContent).not.toContain("Messages go directly to this subagent");
+  });
+
+  it.each(["Verifying access", "Agent refresh is delayed", "Stopped by operator"])(
+    "keeps drafts editable but blocks every send path while %s", async (sendDisabledReason) => {
+      writeStoredComposerDraft("alpha", "My draft");
+      await render(bundle(), { sendDisabledReason });
+      const textarea = host.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+      const fileInput = host.querySelector<HTMLInputElement>(".composer-file-input")!;
+      const send = host.querySelector<HTMLButtonElement>(".send-button")!;
+      expect(textarea.disabled).toBe(false);
+      expect(fileInput.disabled).toBe(false);
+      expect(textarea.value).toBe("My draft");
+      expect(send.disabled).toBe(true);
+      await act(async () => {
+        textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        host.querySelector("form.composer")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        send.click();
+      });
+      expect(onSendPrompt).not.toHaveBeenCalled();
+      expect(readStoredComposerDraft("alpha")).toBe("My draft");
+
+      await render(bundle());
+      expect(textarea.value).toBe("My draft");
+      expect(send.disabled).toBe(false);
+      expect(onSendPrompt).not.toHaveBeenCalled();
+      await act(async () => send.click());
+      expect(onSendPrompt).toHaveBeenCalledExactlyOnceWith("My draft", []);
+      expect(textarea.value).toBe("");
+      expect(readStoredComposerDraft("alpha")).toBe("");
+    },
+  );
+
+  it("keeps the in-flight send snapshot locked until submission completes", async () => {
+    writeStoredComposerDraft("alpha", "Sending draft");
+    await render(bundle(), { sendingPrompt: true });
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>(".composer-file-input")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".send-button")?.disabled).toBe(true);
+    await render(bundle());
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Sending draft");
+    expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(false);
+    expect(onSendPrompt).not.toHaveBeenCalled();
   });
 
   it("keeps the initial located source fixed through same-turn hydration without a view commit", async () => {
