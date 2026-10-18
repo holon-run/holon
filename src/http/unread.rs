@@ -1,60 +1,61 @@
 use super::*;
 
+use anyhow::Context;
 use serde::Deserialize;
+use std::time::Instant;
+
+#[cfg(test)]
+#[path = "unread_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "unread_benchmark.rs"]
+mod benchmark;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct MarkBriefReadRequest {
     pub(crate) read_through_event_seq: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn oidc_read_scope_is_isolated_per_principal() {
-        let scope_a = observer_visibility_scope_for_principal(
-            "runtime_fixture",
-            "user-a",
-            observer_sync::CONTROL_SCOPE_ENTITLEMENT,
-            0,
+async fn run_unread_db<T: Send + 'static>(
+    state: &Arc<AppState>,
+    operation: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let started = Instant::now();
+    let permit = state.unread_db_jobs.clone().try_acquire_owned()?;
+    tokio::task::spawn_blocking(move || {
+        // Cancellation of the HTTP waiter must not admit another DB job while
+        // this synchronous operation is still queued or running.
+        let _permit = permit;
+        let queued = started.elapsed();
+        let result = operation();
+        tracing::debug!(
+            target: "holon::http::unread",
+            blocking_queue_us = queued.as_micros() as u64,
+            db_us = started.elapsed().saturating_sub(queued).as_micros() as u64,
+            total_us = started.elapsed().as_micros() as u64,
+            success = result.is_ok(),
+            "unread database operation completed"
         );
-        let scope_b = observer_visibility_scope_for_principal(
-            "runtime_fixture",
-            "user-b",
-            observer_sync::CONTROL_SCOPE_ENTITLEMENT,
-            0,
-        );
+        result
+    })
+    .await
+    .context("unread database task failed")?
+}
 
-        assert_ne!(scope_a, scope_b);
+fn unread_error_response(error: anyhow::Error) -> AxumResponse {
+    if error.is::<tokio::sync::TryAcquireError>() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "1")],
+            Json(
+                HttpErrorEnvelope::new("unread_busy", "unread database capacity is busy")
+                    .retryable(true),
+            ),
+        )
+            .into_response();
     }
-}
-
-fn principal_and_scope(headers: &HeaderMap, state: &AppState) -> Result<(String, String)> {
-    let roster = state.host.agent_roster_snapshot()?;
-    let (principal, entitlement) =
-        observer_sync::observer_principal_and_entitlement(headers, state)?;
-    let scope = observer_visibility_scope_for_principal(
-        &roster.runtime_id,
-        &principal,
-        entitlement,
-        roster.visibility_policy_generation,
-    );
-    Ok((principal, scope))
-}
-
-fn observer_visibility_scope_for_principal(
-    runtime_id: &str,
-    principal: &str,
-    entitlement: &str,
-    visibility_policy_generation: u64,
-) -> String {
-    observer_sync::observer_visibility_scope_for(
-        runtime_id,
-        principal,
-        entitlement,
-        visibility_policy_generation,
-    )
+    error_response(error).into_response()
 }
 
 pub(crate) async fn brief_read_states(
@@ -64,17 +65,19 @@ pub(crate) async fn brief_read_states(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
-    let (principal, scope) = match principal_and_scope(&headers, &state) {
-        Ok(value) => value,
-        Err(error) => return error_response(error).into_response(),
-    };
-    match state
-        .host
-        .runtime_db()
-        .brief_read_states(&principal, &scope)
+    let (principal, entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(value) => value,
+            Err(error) => return error_response(error).into_response(),
+        };
+    let db = state.host.runtime_db().clone();
+    match run_unread_db(&state, move || {
+        db.observer_brief_read_states(&principal, entitlement)
+    })
+    .await
     {
         Ok(states) => Json(states).into_response(),
-        Err(error) => error_response(error).into_response(),
+        Err(error) => unread_error_response(error),
     }
 }
 
@@ -86,25 +89,21 @@ pub(crate) async fn brief_read_state(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
-    let (principal, scope) = match principal_and_scope(&headers, &state) {
-        Ok(value) => value,
-        Err(error) => return error_response(error).into_response(),
-    };
-    match state
-        .host
-        .runtime_db()
-        .brief_read_state(&principal, &scope, &agent_id)
+    let (principal, entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(value) => value,
+            Err(error) => return error_response(error).into_response(),
+        };
+    let db = state.host.runtime_db().clone();
+    let requested_agent_id = agent_id.clone();
+    match run_unread_db(&state, move || {
+        db.observer_brief_read_state(&principal, entitlement, &requested_agent_id)
+    })
+    .await
     {
         Ok(Some(state)) => Json(state).into_response(),
-        Ok(None) => http_error(
-            StatusCode::NOT_FOUND,
-            HttpErrorEnvelope::new(
-                "agent_not_found",
-                format!("public active agent {agent_id} was not found"),
-            ),
-        )
-        .into_response(),
-        Err(error) => error_response(error).into_response(),
+        Ok(None) => agent_not_found(&agent_id),
+        Err(error) => unread_error_response(error),
     }
 }
 
@@ -117,25 +116,36 @@ pub(crate) async fn mark_brief_read(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
-    let (principal, scope) = match principal_and_scope(&headers, &state) {
-        Ok(value) => value,
-        Err(error) => return error_response(error).into_response(),
-    };
-    match state.host.runtime_db().mark_brief_read(
-        &principal,
-        &scope,
-        &agent_id,
-        request.read_through_event_seq,
-    ) {
-        Ok(Some(result)) => Json(result).into_response(),
-        Ok(None) => http_error(
-            StatusCode::NOT_FOUND,
-            HttpErrorEnvelope::new(
-                "agent_not_found",
-                format!("public active agent {agent_id} was not found"),
-            ),
+    let (principal, entitlement) =
+        match observer_sync::observer_principal_and_entitlement(&headers, &state) {
+            Ok(value) => value,
+            Err(error) => return error_response(error).into_response(),
+        };
+    let db = state.host.runtime_db().clone();
+    let requested_agent_id = agent_id.clone();
+    match run_unread_db(&state, move || {
+        db.observer_mark_brief_read(
+            &principal,
+            entitlement,
+            &requested_agent_id,
+            request.read_through_event_seq,
         )
-        .into_response(),
-        Err(error) => error_response(error).into_response(),
+    })
+    .await
+    {
+        Ok(Some(result)) => Json(result).into_response(),
+        Ok(None) => agent_not_found(&agent_id),
+        Err(error) => unread_error_response(error),
     }
+}
+
+fn agent_not_found(agent_id: &str) -> AxumResponse {
+    http_error(
+        StatusCode::NOT_FOUND,
+        HttpErrorEnvelope::new(
+            "agent_not_found",
+            format!("public active agent {agent_id} was not found"),
+        ),
+    )
+    .into_response()
 }

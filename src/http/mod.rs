@@ -233,6 +233,7 @@ pub struct AppState {
     pub(crate) roster_snapshot_limits: observer_sync::RosterSnapshotLimits,
     pub(crate) projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits,
     pub(crate) conversation_read_limits: conversation::ConversationReadLimits,
+    pub(crate) unread_db_jobs: Arc<tokio::sync::Semaphore>,
     pub(crate) projection_gate: Arc<ProjectionGate>,
 }
 
@@ -429,6 +430,7 @@ impl AppState {
             roster_snapshot_limits: observer_sync::RosterSnapshotLimits::default(),
             projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits::default(),
             conversation_read_limits: conversation::ConversationReadLimits::default(),
+            unread_db_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
             projection_gate,
         }
     }
@@ -469,6 +471,7 @@ impl AppState {
             roster_snapshot_limits: observer_sync::RosterSnapshotLimits::default(),
             projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits::default(),
             conversation_read_limits: conversation::ConversationReadLimits::default(),
+            unread_db_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
             projection_gate,
         }
     }

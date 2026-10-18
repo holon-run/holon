@@ -4,6 +4,12 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::time::Instant;
+
+#[cfg(test)]
+#[path = "unread_scope_tests.rs"]
+mod scope_tests;
 
 use crate::runtime_db::evidence::audit_event_sequence_scope;
 
@@ -33,6 +39,43 @@ fn timestamp() -> String {
 
 fn as_u64(value: i64, field: &str) -> Result<u64> {
     u64::try_from(value).with_context(|| format!("{field} must not be negative"))
+}
+
+enum ReadScope<'a> {
+    Explicit(&'a str),
+    Observer(&'a str),
+}
+
+impl<'a> ReadScope<'a> {
+    fn resolve(
+        &self,
+        connection: &rusqlite::Connection,
+        principal_id: &str,
+    ) -> Result<Cow<'a, str>> {
+        let entitlement = match self {
+            Self::Explicit(scope) => return Ok(Cow::Borrowed(scope)),
+            Self::Observer(entitlement) => entitlement,
+        };
+        // Bind scope to the cursor operation's committed view, without loading
+        // roster, agent state or Brief JSON.
+        let (runtime_id, generation): (String, String) = connection.query_row(
+            "SELECT
+                (SELECT value FROM runtime_metadata WHERE key = 'runtime_id'),
+                (SELECT value FROM runtime_metadata WHERE key = 'visibility_policy_generation')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        anyhow::ensure!(!runtime_id.is_empty(), "runtime installation id is missing");
+        let generation = generation
+            .parse()
+            .with_context(|| format!("invalid visibility policy generation {generation}"))?;
+        Ok(Cow::Owned(crate::ids::visibility_scope_id(
+            &runtime_id,
+            principal_id,
+            entitlement,
+            generation,
+        )))
+    }
 }
 
 fn event_head(connection: &rusqlite::Connection, agent_id: &str) -> Result<u64> {
@@ -147,7 +190,30 @@ impl crate::runtime_db::RuntimeDb {
         visibility_scope_id: &str,
         agent_id: &str,
     ) -> Result<Option<BriefReadState>> {
+        self.brief_read_state_with_scope(
+            principal_id,
+            ReadScope::Explicit(visibility_scope_id),
+            agent_id,
+        )
+    }
+
+    pub fn observer_brief_read_state(
+        &self,
+        principal_id: &str,
+        entitlement: &str,
+        agent_id: &str,
+    ) -> Result<Option<BriefReadState>> {
+        self.brief_read_state_with_scope(principal_id, ReadScope::Observer(entitlement), agent_id)
+    }
+
+    fn brief_read_state_with_scope(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+        agent_id: &str,
+    ) -> Result<Option<BriefReadState>> {
         self.transaction(|transaction| {
+            let visibility_scope_id = scope.resolve(transaction, principal_id)?;
             let public: Option<i64> = transaction
                 .query_row(
                     "SELECT 1 FROM agent_identities
@@ -162,7 +228,7 @@ impl crate::runtime_db::RuntimeDb {
             Ok(Some(state_for_connection(
                 transaction,
                 principal_id,
-                visibility_scope_id,
+                &visibility_scope_id,
                 agent_id,
                 true,
             )?))
@@ -174,8 +240,30 @@ impl crate::runtime_db::RuntimeDb {
         principal_id: &str,
         visibility_scope_id: &str,
     ) -> Result<Vec<BriefReadState>> {
+        self.brief_read_states_with_scope(principal_id, ReadScope::Explicit(visibility_scope_id))
+    }
+
+    pub fn observer_brief_read_states(
+        &self,
+        principal_id: &str,
+        entitlement: &str,
+    ) -> Result<Vec<BriefReadState>> {
+        self.brief_read_states_with_scope(principal_id, ReadScope::Observer(entitlement))
+    }
+
+    fn brief_read_states_with_scope(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+    ) -> Result<Vec<BriefReadState>> {
+        let started = Instant::now();
         let mut connection = self.connection()?;
+        let connected = started.elapsed();
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let scope_started = Instant::now();
+        let visibility_scope_id = scope.resolve(&transaction, principal_id)?;
+        let scope_elapsed = scope_started.elapsed();
+        let query_started = Instant::now();
         let mut statement = transaction.prepare(
             "SELECT agent_id FROM agent_identities
              WHERE status = 'active' AND visibility = 'public'
@@ -191,13 +279,23 @@ impl crate::runtime_db::RuntimeDb {
                 state_for_connection(
                     &transaction,
                     principal_id,
-                    visibility_scope_id,
+                    &visibility_scope_id,
                     agent_id,
                     false,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        let query_elapsed = query_started.elapsed();
         transaction.commit()?;
+        tracing::debug!(
+            target: "holon::http::unread",
+            connection_us = connected.as_micros() as u64,
+            scope_metadata_us = scope_elapsed.as_micros() as u64,
+            unread_query_us = query_elapsed.as_micros() as u64,
+            db_total_us = started.elapsed().as_micros() as u64,
+            agents = states.len(),
+            "unread batch database phases"
+        );
         Ok(states)
     }
 
@@ -208,7 +306,38 @@ impl crate::runtime_db::RuntimeDb {
         agent_id: &str,
         requested_cursor: u64,
     ) -> Result<Option<MarkBriefReadResult>> {
+        self.mark_brief_read_with_scope(
+            principal_id,
+            ReadScope::Explicit(visibility_scope_id),
+            agent_id,
+            requested_cursor,
+        )
+    }
+
+    pub fn observer_mark_brief_read(
+        &self,
+        principal_id: &str,
+        entitlement: &str,
+        agent_id: &str,
+        requested_cursor: u64,
+    ) -> Result<Option<MarkBriefReadResult>> {
+        self.mark_brief_read_with_scope(
+            principal_id,
+            ReadScope::Observer(entitlement),
+            agent_id,
+            requested_cursor,
+        )
+    }
+
+    fn mark_brief_read_with_scope(
+        &self,
+        principal_id: &str,
+        scope: ReadScope<'_>,
+        agent_id: &str,
+        requested_cursor: u64,
+    ) -> Result<Option<MarkBriefReadResult>> {
         self.transaction(|transaction| {
+            let visibility_scope_id = scope.resolve(transaction, principal_id)?;
             let public: Option<i64> = transaction
                 .query_row(
                     "SELECT 1 FROM agent_identities
@@ -223,7 +352,7 @@ impl crate::runtime_db::RuntimeDb {
             let state = state_for_connection(
                 transaction,
                 principal_id,
-                visibility_scope_id,
+                &visibility_scope_id,
                 agent_id,
                 true,
             )?;
@@ -241,7 +370,7 @@ impl crate::runtime_db::RuntimeDb {
                         .context("applied cursor exceeds SQLite integer range")?,
                     timestamp(),
                     principal_id,
-                    visibility_scope_id,
+                    visibility_scope_id.as_ref(),
                     agent_id,
                     state.event_log_epoch,
                 ],
@@ -249,7 +378,7 @@ impl crate::runtime_db::RuntimeDb {
             let state = state_for_connection(
                 transaction,
                 principal_id,
-                visibility_scope_id,
+                &visibility_scope_id,
                 agent_id,
                 true,
             )?;
