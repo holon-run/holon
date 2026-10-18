@@ -1428,6 +1428,20 @@ impl RuntimeTransitionRepository<'_> {
             &ExecutionProtocolTransition::default(),
             false,
             None,
+            false,
+        )
+    }
+
+    pub(crate) fn commit_agent_deletion_work_item(
+        &self,
+        command: &WorkItemFocusTransitionCommand,
+    ) -> Result<TransitionCommit> {
+        self.commit_work_item_focus_internal(
+            command,
+            &ExecutionProtocolTransition::default(),
+            false,
+            None,
+            true,
         )
     }
 
@@ -1436,7 +1450,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &WorkItemFocusTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_work_item_focus_internal(command, execution_protocol, true, None)
+        self.commit_work_item_focus_internal(command, execution_protocol, true, None, false)
     }
 
     pub fn commit_work_item_focus_with_execution_protocol_and_completion_tool(
@@ -1450,6 +1464,7 @@ impl RuntimeTransitionRepository<'_> {
             execution_protocol,
             true,
             Some(tool_execution),
+            false,
         )
     }
 
@@ -1459,8 +1474,32 @@ impl RuntimeTransitionRepository<'_> {
         execution_protocol: &ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
         completion_tool_execution: Option<&ToolExecutionRecord>,
+        agent_deletion: bool,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
+            if agent_deletion {
+                execution_protocol_repository::validate_agent_deletion_retirement_tx(
+                    tx,
+                    &command.agent_id,
+                )?;
+                anyhow::ensure!(
+                    command.agent_state.record.id == command.agent_id
+                        && command.agent_state.record.current_work_item_id.is_none()
+                        && command.agent_state.record.current_turn_work_item_id.is_none()
+                        && command.agent_state.record.current_execution_binding.is_none()
+                        && command.work_items.iter().all(|mutation| {
+                            matches!(mutation, WorkItemMutation::Update { .. })
+                                && mutation.record().agent_id == command.agent_id
+                                && mutation.record().state != WorkItemState::Open
+                        })
+                        && command.wait_conditions.is_empty()
+                        && command.continuations.iter().all(|frame| {
+                            frame.agent_id == command.agent_id
+                                && frame.state == WorkItemContinuationState::Cancelled
+                        }),
+                    "agent deletion must release focus and execution ownership without admitting work"
+                );
+            }
             for work_item in &command.work_items {
                 validate_work_item_mutation_tx(tx, work_item)?;
             }
@@ -1536,6 +1575,12 @@ impl RuntimeTransitionRepository<'_> {
             if let Some(tool_execution) = completion_tool_execution {
                 applied |= upsert_completion_tool_execution_tx(tx, tool_execution)?;
             }
+            if agent_deletion {
+                applied |= execution_protocol_repository::retire_agent_execution_tx(
+                    tx,
+                    &command.agent_id,
+                )?;
+            }
             applied |= execution_protocol
                 .as_ref()
                 .is_some_and(|prepared| prepared.has_writes());
@@ -1571,6 +1616,7 @@ impl RuntimeTransitionRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub fn commit_work_item(
         &self,
         command: &WorkItemTransitionCommand,
@@ -4876,6 +4922,160 @@ mod tests {
                 .len(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_deletion_focus_transition_is_atomic_fenced_and_idempotent() -> Result<()> {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
+        };
+        for fault in [
+            Some(TransitionFaultPoint::AfterValidation),
+            Some(TransitionFaultPoint::AfterCanonicalWrites),
+            Some(TransitionFaultPoint::AfterAuditWrites),
+            Some(TransitionFaultPoint::BeforeCommit),
+            None,
+        ] {
+            let (_dir, db) = runtime_db()?;
+            let identity = active_agent("agent-a");
+            db.agent_identities().upsert(&identity)?;
+            let work = work_item("delete-focused-work");
+            db.work_items().insert_new(&work)?;
+            let mut initial = AgentState::new("agent-a");
+            initial.current_work_item_id = Some(work.id.clone());
+            initial.current_turn_work_item_id = Some(work.id.clone());
+            db.agent_states().upsert(&initial)?;
+            let mut execution = ExecutionProtocolState::empty("agent-a");
+            execution.work_items.insert(
+                work.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: work.revision,
+                    state: WorkItemExecutionState::Runnable {
+                        generation: 1,
+                        recovery_ref: None,
+                    },
+                },
+            );
+            db.transaction(|tx| persist_state_tx(tx, &execution))?;
+            let mut released = initial.clone();
+            released.current_work_item_id = None;
+            released.current_turn_work_item_id = None;
+            let mut brief =
+                BriefRecord::new("agent-a", BriefKind::Result, "agent deleted", None, None);
+            brief.work_item_id = Some(work.id.clone());
+            let mut completed = work.clone();
+            completed.revision += 1;
+            completed.state = WorkItemState::Completed;
+            completed.result_brief_id = Some(brief.id.clone());
+            completed.result_summary = Some(brief.text.clone());
+            let now = Utc::now();
+            completed.completion_intent = Some(WorkItemCompletionIntent {
+                work_item_id: work.id.clone(),
+                source_activation_id: None,
+                source_message_id: None,
+                source_turn_id: None,
+                expected_work_revision: work.revision,
+                report_requirement: CompletionReportRequirement::Required,
+                report_state: CompletionReportState::Bound,
+                result_brief_id: Some(brief.id.clone()),
+                created_at: now,
+                updated_at: now,
+            });
+            let mutation = WorkItemMutation::Update {
+                record: completed.clone(),
+                expected_revision: work.revision,
+            };
+            // The normal path must still reject terminalizing a focused item.
+            assert!(db
+                .transitions()
+                .commit_work_item(&WorkItemTransitionCommand {
+                    agent_id: "agent-a".into(),
+                    mutation: mutation.clone(),
+                    agent_state: None,
+                    brief_evidence: vec![brief.clone()],
+                    audit_events: Vec::new(),
+                    index_changes: Vec::new(),
+                    notify_scheduler: false,
+                    fault: None,
+                })
+                .is_err());
+            let mut command = WorkItemFocusTransitionCommand {
+                agent_id: "agent-a".into(),
+                work_items: vec![mutation],
+                wait_conditions: Vec::new(),
+                active_continuation_expectations: None,
+                continuation_expectations: Vec::new(),
+                continuations: Vec::new(),
+                agent_state: AgentStateMutation {
+                    expected: Some(Box::new(initial.clone())),
+                    record: Box::new(released.clone()),
+                },
+                brief_evidence: vec![brief.clone()],
+                audit_events: vec![AuditEvent::legacy("deleted_work", serde_json::json!({}))],
+                index_changes: vec![index_change("work_item", &work.id)],
+                notify_scheduler: true,
+                fault,
+            };
+            assert!(
+                db.transitions()
+                    .commit_agent_deletion_work_item(&command)
+                    .is_err(),
+                "deletion retirement cannot be used by a running agent"
+            );
+            db.agent_deletions()
+                .begin("agent-a", identity.revision, "operator", false)?;
+            let audits = db.audit_events().recent(Some("agent-a"), 100)?;
+            let mut stale = command.clone();
+            stale.agent_state.expected.as_mut().unwrap().pending += 1;
+            assert!(db
+                .transitions()
+                .commit_agent_deletion_work_item(&stale)
+                .is_err());
+            let result = db.transitions().commit_agent_deletion_work_item(&command);
+            if fault.is_some() {
+                assert!(result.is_err());
+                assert_eq!(db.agent_states().latest("agent-a")?, Some(initial));
+                assert_eq!(db.work_items().latest(&work.id)?, Some(work));
+                assert_eq!(
+                    db.transitions()
+                        .load_execution_protocol_state_if_initialized("agent-a")?,
+                    Some(execution)
+                );
+                assert!(db.evidence().brief_by_id("agent-a", &brief.id)?.is_none());
+                assert_eq!(db.audit_events().recent(Some("agent-a"), 100)?, audits);
+                assert!(db
+                    .runtime_index_outbox()
+                    .read_after("agent-a", 0, 100)?
+                    .is_empty());
+            } else {
+                assert!(result?.applied);
+                command.fault = None;
+                assert!(
+                    !db.transitions()
+                        .commit_agent_deletion_work_item(&command)?
+                        .applied
+                );
+                assert_eq!(db.agent_states().latest("agent-a")?, Some(released));
+                assert_eq!(db.work_items().latest(&work.id)?, Some(completed));
+                let state = db
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized("agent-a")?
+                    .unwrap();
+                assert!(matches!(&state.work_items[&work.id].state,
+                    WorkItemExecutionState::Terminal { completion, .. } if completion == &brief.id));
+                assert_eq!(
+                    db.runtime_index_outbox()
+                        .read_after("agent-a", 0, 100)?
+                        .len(),
+                    1
+                );
+                assert_eq!(
+                    db.audit_events().recent(Some("agent-a"), 100)?.len(),
+                    audits.len() + 1
+                );
+            }
+        }
         Ok(())
     }
 

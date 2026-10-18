@@ -213,6 +213,24 @@ and uses the same idempotent terminal-safe phases. Missing AgentHome state is a
 successful no-op; shared index cleanup does not depend on reopening or
 recreating the deleted agent's home.
 
+The `Scheduler` phase uses a deletion-only WorkItem focus transaction. It
+releases durable focus and turn/execution attribution before changing a
+WorkItem out of `Open`, and atomically cancels continuation returns, writes
+completion intent/result evidence, audits, and index outbox changes. The
+owned/open focus triggers remain enforced. Reentry can resume an existing
+`Completing` item without duplicating its completion result.
+
+That same transaction interrupts any remaining canonical execution attempts
+with outcome evidence and retires all execution WorkItem demand. Incomplete
+sources become `Paused(agent_deleted)` until their result is bound; completed
+sources become `Terminal` with that brief. Legacy completed sources without a
+brief retain existing terminal evidence, or remain non-runnable without
+inventing a brief. An agent with no incomplete WorkItems still releases its
+focus/attribution and retires stale execution demand. Historical attempts and
+outcomes are retained; a missing execution partition is not bootstrapped.
+These terminal-safe writes require an admitted deleting/deleted identity and
+do not reopen parent-cleanup admission or relax ordinary protocol write fences.
+
 The `Index` phase removes the agent's shared memory projection, pending source
 state, checkpoints, metadata, cursors, and pending runtime-index outbox rows.
 The produced outbox watermark is retained as monotonic propagation evidence.

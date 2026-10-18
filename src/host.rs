@@ -16523,6 +16523,11 @@ mod tests {
             .insert_new(&work_item)
             .unwrap();
 
+        let mut state = AgentState::new("delete-work");
+        state.current_work_item_id = Some(work_item.id.clone());
+        state.current_turn_work_item_id = Some(work_item.id.clone());
+        host.runtime_db().agent_states().upsert(&state).unwrap();
+
         let (_, job, _) = host
             .begin_public_agent_deletion("delete-work", false, "operator")
             .await
@@ -16541,6 +16546,288 @@ mod tests {
             completed.result_summary.as_deref(),
             Some("Agent deleted before work completed")
         );
+        let state = host
+            .runtime_db()
+            .agent_states()
+            .latest("delete-work")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.current_work_item_id, None);
+        assert_eq!(state.current_turn_work_item_id, None);
+    }
+
+    #[tokio::test]
+    async fn deletion_coordinator_reentry_retires_canonical_work_and_attempts() {
+        use crate::domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
+        use crate::types::{
+            CompletionReportRequirement, CompletionReportState, WorkItemCompletionIntent,
+            WorkItemContinuationFrame,
+        };
+        let (_home, host) = test_host();
+        let agent_id = "delete-canonical-work";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let (focused_id, attempt_id) = seed_startup_consumed_result_attempt(&host, agent_id);
+        let mut completing = WorkItemRecord::new(
+            agent_id,
+            "interrupted completion",
+            WorkItemState::Completing,
+        );
+        let now = Utc::now();
+        completing.completion_intent = Some(WorkItemCompletionIntent {
+            work_item_id: completing.id.clone(),
+            source_activation_id: None,
+            source_message_id: None,
+            source_turn_id: None,
+            expected_work_revision: 1,
+            report_requirement: CompletionReportRequirement::Required,
+            report_state: CompletionReportState::Pending,
+            result_brief_id: None,
+            created_at: now,
+            updated_at: now,
+        });
+        let open = WorkItemRecord::new(agent_id, "queued work", WorkItemState::Open);
+        for work in [&completing, &open] {
+            host.runtime_db().work_items().insert_new(work).unwrap();
+        }
+        let frame = WorkItemContinuationFrame::new_on_completed(
+            agent_id,
+            focused_id.clone(),
+            open.id.clone(),
+            None,
+        );
+        host.runtime_db()
+            .work_item_continuations()
+            .upsert(&frame)
+            .unwrap();
+        let mut execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)
+            .unwrap()
+            .unwrap();
+        for work in [&completing, &open] {
+            execution.work_items.insert(
+                work.id.clone(),
+                WorkItemExecutionRecord {
+                    source_revision: work.revision,
+                    state: WorkItemExecutionState::Runnable {
+                        generation: 1,
+                        recovery_ref: None,
+                    },
+                },
+            );
+        }
+        host.runtime_db()
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+            .unwrap();
+        let (_, mut job, _) = host
+            .begin_public_agent_deletion(agent_id, false, "operator")
+            .await
+            .unwrap();
+        // Reenter at Scheduler after a crash; Fence/unload alone did not settle
+        // the persisted execution attempt.
+        job.status = AgentDeletionStatus::Running;
+        job.phase = AgentDeletionPhase::Scheduler;
+        host.runtime_db().agent_deletions().update(&job).unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .recover_running_jobs(Utc::now())
+                .unwrap(),
+            1
+        );
+        host.execute_deletion_job(job.clone()).await.unwrap();
+        assert_eq!(
+            host.agent_identity_record(agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        let records = host
+            .runtime_db()
+            .work_items()
+            .latest_for_agent(agent_id, 10)
+            .unwrap();
+        assert_eq!(records.len(), 3);
+        for work in &records {
+            assert_eq!(work.state, WorkItemState::Completed);
+            assert!(work.result_brief_id.is_some());
+            assert_eq!(
+                work.completion_intent.as_ref().unwrap().report_state,
+                CompletionReportState::Bound
+            );
+        }
+        let retired = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retired.attempts[&attempt_id].state,
+            ExecutionAttemptState::Interrupted
+        );
+        assert_eq!(retired.outcomes.len(), 1);
+        for work in &records {
+            assert_eq!(retired.work_items[&work.id].source_revision, work.revision);
+            assert!(matches!(&retired.work_items[&work.id].state,
+                WorkItemExecutionState::Terminal { completion, .. }
+                    if Some(completion) == work.result_brief_id.as_ref()));
+        }
+        assert!(host
+            .runtime_db()
+            .work_item_continuations()
+            .active_for_agent(agent_id)
+            .unwrap()
+            .is_empty());
+        let state = host
+            .runtime_db()
+            .agent_states()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        assert!(state.current_work_item_id.is_none());
+        assert!(state.current_turn_work_item_id.is_none());
+        assert!(state.current_execution_binding.is_none());
+        let audits = host
+            .runtime_db()
+            .audit_events()
+            .recent(Some(agent_id), 100)
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .work_items()
+                .latest_for_agent(agent_id, 10)
+                .unwrap(),
+            records
+        );
+        assert_eq!(
+            host.runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(agent_id)
+                .unwrap(),
+            Some(retired)
+        );
+        assert_eq!(
+            host.runtime_db()
+                .audit_events()
+                .recent(Some(agent_id), 100)
+                .unwrap(),
+            audits
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_cleanup_retires_work_without_reopening_admission_or_inventing_legacy_briefs() {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolState, WorkItemExecutionRecord, WorkItemExecutionState,
+        };
+        for with_open in [true, false] {
+            let (_home, host) = test_host();
+            let parent = host.default_runtime().await.unwrap();
+            let child = retained_cleanup_fixture(&host, "cleanup-focused-work");
+            let agent_id = &child.agent_id;
+            let mut execution = ExecutionProtocolState::empty(agent_id);
+            let open = WorkItemRecord::new(agent_id, "retained work", WorkItemState::Open);
+            if with_open {
+                host.runtime_db().work_items().insert_new(&open).unwrap();
+                let mut state = AgentState::new(agent_id);
+                state.status = AgentStatus::AwakeIdle;
+                state.current_work_item_id = Some(open.id.clone());
+                host.runtime_db().agent_states().upsert(&state).unwrap();
+                execution.work_items.insert(
+                    open.id.clone(),
+                    WorkItemExecutionRecord {
+                        source_revision: open.revision,
+                        state: WorkItemExecutionState::Runnable {
+                            generation: 1,
+                            recovery_ref: None,
+                        },
+                    },
+                );
+            }
+            let mut legacy = Vec::new();
+            for terminal in [true, false] {
+                let work =
+                    WorkItemRecord::new(agent_id, "legacy completed", WorkItemState::Completed);
+                execution.work_items.insert(
+                    work.id.clone(),
+                    WorkItemExecutionRecord {
+                        source_revision: work.revision,
+                        state: if terminal {
+                            WorkItemExecutionState::Terminal {
+                                generation: 1,
+                                completion: "legacy_completion".into(),
+                            }
+                        } else {
+                            WorkItemExecutionState::Runnable {
+                                generation: 1,
+                                recovery_ref: None,
+                            }
+                        },
+                    },
+                );
+                legacy.push(work);
+            }
+            for work in &legacy {
+                host.runtime_db().work_items().insert_new(work).unwrap();
+            }
+            host.runtime_db()
+                .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+                .unwrap();
+            let job = host
+                .begin_parent_agent_deletion(&parent, agent_id, child.incarnation)
+                .await
+                .unwrap();
+            assert!(host
+                .runtime_db()
+                .transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &execution)
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup_fenced"));
+            host.execute_deletion_job(job).await.unwrap();
+            assert_eq!(
+                host.agent_identity_record(agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                AgentRegistryStatus::Deleted
+            );
+            let retired = host
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(agent_id)
+                .unwrap()
+                .unwrap();
+            assert!(retired.work_items.values().all(|record| !matches!(
+                record.state,
+                WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::InFlight { .. }
+            )));
+            assert_eq!(
+                retired.work_items[&legacy[0].id],
+                execution.work_items[&legacy[0].id]
+            );
+            for work in legacy {
+                assert_eq!(
+                    host.runtime_db().work_items().latest(&work.id).unwrap(),
+                    Some(work)
+                );
+            }
+            assert!(host
+                .runtime_db()
+                .transaction(|tx| {
+                    crate::runtime_db::transitions::persist_state_tx(tx, &retired)
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup_fenced"));
+            host.shutdown().await.unwrap();
+        }
     }
 
     #[tokio::test]
