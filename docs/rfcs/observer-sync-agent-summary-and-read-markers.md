@@ -42,6 +42,19 @@ Agent, intentionally sharing Brief read progress across clients of the same
 OIDC account. It does not identify physical devices or replace browser-local
 hydration and event-consumption markers.
 
+The Brief read-state handlers resolve principal and entitlement before database
+admission. Each request runs its synchronous database work in one blocking task,
+with runtime identity and policy generation read inside the cursor operation's
+transaction, not through roster assembly. Batch reads retain their deferred,
+read-only default cursor behavior; single reads and read-marker updates retain
+the existing writer transaction semantics. Up to four unread jobs per HTTP
+application may be queued or running; excess requests return retryable
+`503 unread_busy` with `Retry-After: 1`. Cancellation does not release capacity
+until the blocking job finishes. This gate does not cache authority or change
+the projection gate, browser retries, or timeout budgets.
+This boundary covers unread database work, not the existing synchronous session
+authentication and session-touch operations that precede unread admission.
+
 This design reuses the event ordering that is already implemented, supports
 both compact and verbose views, and makes roster discovery, retention gaps,
 epoch resets, authorization changes, and hydration failure explicit.

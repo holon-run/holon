@@ -93,6 +93,7 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 [dev-dependencies]
 futures-util = "0.3"
 proptest = "1.6"
+rusqlite = { version = "0.31", features = ["hooks", "trace"] }
 tokio = { version = "1.43", features = ["test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
