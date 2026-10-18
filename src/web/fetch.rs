@@ -48,7 +48,7 @@ pub struct WebFetchRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct WebFetchResponse {
     pub url: String,
-    pub final_url: String,
+    pub final_url: Option<String>,
     pub status: u16,
     pub content_type: Option<String>,
     pub bytes_read: usize,
@@ -114,7 +114,7 @@ pub async fn fetch(request: WebFetchRequest, config: &WebFetchConfig) -> Result<
         let truncated = response_truncated || output_truncated;
         return Ok(WebFetchResponse {
             url: original_url,
-            final_url: current_url.to_string(),
+            final_url: Some(current_url.to_string()),
             status: status.as_u16(),
             content_type,
             bytes_read: bytes.len(),
@@ -133,6 +133,34 @@ pub async fn fetch(request: WebFetchRequest, config: &WebFetchConfig) -> Result<
         json!({ "url": original_url }),
         "fetch the final URL directly or raise web.fetch.max_redirects",
     ))
+}
+
+/// Remote fetching is opt-in; omitted providers preserve the local HTTP contract.
+pub async fn fetch_with_provider(
+    request: WebFetchRequest,
+    provider_id: Option<&str>,
+    config: &super::WebConfig,
+) -> Result<WebFetchResponse> {
+    let Some(provider_id) = provider_id else {
+        return fetch(request, &config.fetch).await;
+    };
+    let provider = config.providers.get(provider_id).ok_or_else(|| {
+        policy_error(
+            "provider_unavailable",
+            "WebFetch provider is not configured",
+            json!({ "provider": provider_id }),
+            "configure web.providers or omit provider for local HTTP",
+        )
+    })?;
+    if provider.kind != super::WebProviderKind::DeepSeek {
+        return Err(policy_error(
+            "provider_unavailable",
+            "WebFetch remote provider must have kind=deepseek",
+            json!({ "provider": provider_id }),
+            "select a DeepSeek provider or omit provider for local HTTP",
+        ));
+    }
+    super::remote_fetch::fetch(request, provider, &config.fetch).await
 }
 
 fn pinned_client(

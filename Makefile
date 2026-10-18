@@ -191,6 +191,14 @@ test-live: ## Run the baseline and configured-provider live smoke tests
 	cargo test --test live_llm_baseline live_llm_baseline_tool_roundtrip -- --ignored --nocapture
 	cargo test --test live_provider_smoke -- --ignored --nocapture
 
+.PHONY: test-live-deepseek-web
+test-live-deepseek-web: ## Run live LLM tool roundtrip with two paid DeepSeek web requests
+	@printf '%s\n' \
+		'Requires configured live LLM credentials and DEEPSEEK_API_KEY or the DeepSeek LLM credential.' \
+		'Runs three paid LLM turns and two paid web requests; does not change runtime configuration or print credentials.' \
+		'Test binary: live_deepseek_web'
+	cargo test --test live_deepseek_web -- --ignored --nocapture
+
 test-live-openai: ## Run OpenAI Responses and Chat Completions live tests
 	@printf '%s\n' \
 		'Requires configured OpenAI credentials and network access.' \

@@ -5279,7 +5279,7 @@
       "stability": "experimental"
     },
     {
-      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.\n",
+      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash. Omit provider for local HTTP fetching. Set provider to a configured kind=deepseek web provider to explicitly use its paid remote Fetch API (auto mode only, Markdown output). Remote fetching discloses the URL to DeepSeek, returns final_url=null and source=deepseek_remote; status is the provider API status, not the page's HTTP status. It cannot enforce custom host rules or redirect limits; use local fetching when those are configured.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
@@ -5299,6 +5299,12 @@
             "minimum": 0.0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
               "null"
             ]
           },
