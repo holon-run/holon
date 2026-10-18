@@ -141,6 +141,11 @@ fields. Shared model metadata and capability objects intentionally keep their
 existing forward-compatible deserialization contract; adding strictness there
 would also change discovery-cache and runtime-configuration behavior.
 
+Nullable route-policy fields distinguish three states: an omitted field inherits
+the model value, explicit `null` clears it to unknown, and a concrete value
+overrides it. Snapshot generation omits inherited nullable fields and preserves
+explicit clears; round-trip validation must retain all three states.
+
 The runtime parses and validates the artifact before constructing the existing
 `BuiltInModelCatalog` indexes. Public catalog and resolution APIs remain
 unchanged.

@@ -293,22 +293,37 @@ fn reasoning_effort_to_thinking(
 
 fn anthropic_reasoning_controls<'a>(
     route_provider: &str,
+    model: &str,
     supports_reasoning: bool,
     reasoning_effort: Option<&'a str>,
     max_output_tokens: u32,
-) -> (Option<ThinkingRequest>, Option<OutputConfigRequest<'a>>) {
-    if route_provider == "deepseek" {
-        return (
+) -> Result<(Option<ThinkingRequest>, Option<OutputConfigRequest<'a>>)> {
+    if matches!(route_provider, "minimax" | "minimax-cn") && model == "MiniMax-M3.1-Flash-Preview" {
+        if let Some(effort) = reasoning_effort {
+            if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+                return Err(anyhow!(
+                    "MiniMax-M3.1-Flash-Preview requires thinking; reasoning effort must be low, medium, high, xhigh, or max"
+                ));
+            }
+        }
+        // MiniMax always thinks for this model; depth is not a token budget.
+        return Ok((
             None,
             reasoning_effort.map(|effort| OutputConfigRequest { effort }),
-        );
+        ));
     }
-    (
+    if route_provider == "deepseek" {
+        return Ok((
+            None,
+            reasoning_effort.map(|effort| OutputConfigRequest { effort }),
+        ));
+    }
+    Ok((
         supports_reasoning
             .then(|| reasoning_effort_to_thinking(reasoning_effort, max_output_tokens))
             .flatten(),
         None,
-    )
+    ))
 }
 
 fn context_budget_overflow_error(
@@ -378,10 +393,11 @@ impl AgentProvider for AnthropicProvider {
         let response_format_tool_choice = anthropic_response_format_tool_choice(&request);
         let (thinking, output_config) = anthropic_reasoning_controls(
             &self.route_provider,
+            &self.model,
             self.supports_reasoning,
             self.reasoning_effort.as_deref(),
             self.max_output_tokens,
-        );
+        )?;
         let request_body = MessagesRequest {
             model: &self.model,
             max_tokens: self.max_output_tokens,
@@ -5103,19 +5119,73 @@ mod tests {
     #[test]
     fn deepseek_anthropic_reasoning_uses_output_config_effort_only() {
         let (thinking, output_config) =
-            anthropic_reasoning_controls("deepseek", true, Some("high"), 16384);
+            anthropic_reasoning_controls("deepseek", "deepseek-v4-pro", true, Some("high"), 16384)
+                .unwrap();
         assert!(thinking.is_none());
         assert_eq!(
             serde_json::to_value(output_config).unwrap(),
             json!({ "effort": "high" })
         );
 
-        let (thinking, output_config) = anthropic_reasoning_controls("deepseek", true, None, 16384);
+        let (thinking, output_config) =
+            anthropic_reasoning_controls("deepseek", "deepseek-v4-pro", true, None, 16384).unwrap();
         assert!(thinking.is_none());
         assert!(output_config.is_none());
 
+        let (thinking, output_config) = anthropic_reasoning_controls(
+            "anthropic",
+            "claude-sonnet-4-6",
+            true,
+            Some("high"),
+            16384,
+        )
+        .unwrap();
+        assert_eq!(thinking.unwrap().budget_tokens, 8192);
+        assert!(output_config.is_none());
+    }
+
+    #[test]
+    fn minimax_m31_reasoning_sends_exact_effort_without_budget_tokens() {
+        for provider in ["minimax", "minimax-cn"] {
+            for effort in ["low", "medium", "high", "xhigh", "max"] {
+                let (thinking, output_config) = anthropic_reasoning_controls(
+                    provider,
+                    "MiniMax-M3.1-Flash-Preview",
+                    true,
+                    Some(effort),
+                    1024,
+                )
+                .unwrap();
+                assert!(thinking.is_none());
+                assert_eq!(
+                    serde_json::to_value(output_config).unwrap(),
+                    json!({ "effort": effort })
+                );
+            }
+            let (thinking, output_config) = anthropic_reasoning_controls(
+                provider,
+                "MiniMax-M3.1-Flash-Preview",
+                true,
+                None,
+                16384,
+            )
+            .unwrap();
+            assert!(thinking.is_none());
+            assert!(output_config.is_none());
+            for effort in ["none", "off", "disabled", "minimal", "unknown"] {
+                assert!(anthropic_reasoning_controls(
+                    provider,
+                    "MiniMax-M3.1-Flash-Preview",
+                    true,
+                    Some(effort),
+                    16384,
+                )
+                .is_err());
+            }
+        }
         let (thinking, output_config) =
-            anthropic_reasoning_controls("anthropic", true, Some("high"), 16384);
+            anthropic_reasoning_controls("minimax", "MiniMax-M2.7", true, Some("high"), 16384)
+                .unwrap();
         assert_eq!(thinking.unwrap().budget_tokens, 8192);
         assert!(output_config.is_none());
     }
