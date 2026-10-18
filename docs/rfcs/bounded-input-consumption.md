@@ -226,6 +226,37 @@ live identities also require membership in its persisted batch.
 Recovery follows the persisted successor replay edge; claim-local envelope
 annotations are not immutable source evidence.
 
+### Rejected idle recovery
+
+Idle snapshot recovery preserves every canonical predecessor, source, owner,
+replay, budget, and durable attachment check. A failed check returns a typed
+`Validation` error with a stable `idle_input_recovery_<predicate>` code and
+`retryable=false`. A bounded, constant `field` distinguishes subconditions;
+storage and I/O failures retain their own classification. A claim interrupted
+before a snapshot existed still returns no attachment, not a rejection.
+
+Safe diagnostics identify the attach stage and rejected disposition, and may
+include format-checked opaque message, turn, and activation IDs. Invalid IDs are
+redacted. They never include input bodies, previews, source-ref maps, arbitrary
+replay reasons, credentials, or error contexts copied from rejected evidence.
+
+For an already-started canonical recovery attempt, the existing failure
+transaction commits the queue and turn as `Aborted` and the attempt as
+`Interrupted`, together with the rejection audit, failure brief, transcript,
+and `last_runtime_failure` artifact. Artifact processing-state metadata describes
+that committed transition; a pre-commit trace is not proof of settlement. A
+fenced or rolled-back transaction cannot publish partial success metadata.
+Previously interjected followers and predecessor snapshots are not rewritten,
+and the rejected source is not automatically requeued. A source-selection
+rejection before the new attempt exists retains its earlier no-side-effect
+boundary and must not report these attach-stage processing states.
+
+Inspect the failure artifact's code, field, and safe metadata using supported
+runtime inspection. Missing evidence means rejected, not recovered; this
+contract adds no bypass, SQL repair, automatic rearm, or blind retry. The
+historical failures reported in #3576 remain unconfirmed examples until a
+supported diagnostic identifies their specific failed predicate.
+
 ### Provider fallback handoff
 
 A pre-output provider failure does not settle its admitted task results. Before

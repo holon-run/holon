@@ -267,7 +267,12 @@ impl RuntimeHandle {
             }
         }
 
-        Self::failure_artifact_for_runtime_error(message, failure_text, &descriptor, context)
+        let mut artifact =
+            Self::failure_artifact_for_runtime_error(message, failure_text, &descriptor, context);
+        if error.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
+            artifact.metadata.extend(descriptor.safe_context);
+        }
+        artifact
     }
 
     pub(super) fn summarize_runtime_failure_error(error: &anyhow::Error) -> String {
@@ -385,7 +390,15 @@ impl RuntimeHandle {
             ..RuntimeErrorContext::default()
         };
         let descriptor = describe_runtime_error(error);
-        let failure_artifact = Self::failure_artifact(message, &failure_text, error, context);
+        let mut failure_artifact = Self::failure_artifact(message, &failure_text, error, context);
+        if error.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
+            // Published only with the existing atomic queue/turn/attempt settlement.
+            failure_artifact.metadata.extend([
+                ("queue_status".into(), "aborted".into()),
+                ("turn_status".into(), "aborted".into()),
+                ("attempt_status".into(), "interrupted".into()),
+            ]);
+        }
         let token_usage = attempt_timeline
             .as_ref()
             .and_then(|timeline| timeline.aggregated_token_usage.clone());
