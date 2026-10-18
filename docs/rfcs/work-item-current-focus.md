@@ -81,6 +81,7 @@ Focus transitions use one restricted runtime transition transaction.
 | complete with return | completed WorkItem, owned wait cancellation, continuation resolution, restored caller focus and turn binding, audits, index outbox |
 | explicit yielded return | continuation resolution, restored focus and turn binding, audits |
 | invalid return target | continuation cancellation and deterministic focus fallback in the same transaction |
+| agent deletion | focus/turn/execution release before WorkItem terminalization, continuation cancellation, canonical execution retirement, completion evidence, audits, index outbox |
 
 No committed state may expose a continuation-frame change without its matching
 focus change, or a completed focused WorkItem.

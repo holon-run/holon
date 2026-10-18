@@ -1029,7 +1029,7 @@ impl RuntimeHost {
                     updated_at: now,
                 });
                 completing.updated_at = now;
-                self.runtime_db().transitions().commit_work_item(
+                self.commit_deletion_work_item_transition(
                     &crate::runtime_db::transitions::WorkItemTransitionCommand {
                         agent_id: agent_id.to_string(),
                         mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -1085,7 +1085,7 @@ impl RuntimeHost {
             completed.result_summary = Some("Agent deleted before work completed".into());
             completed.completion_intent = Some(completion_intent);
             completed.updated_at = now;
-            self.runtime_db().transitions().commit_work_item(
+            self.commit_deletion_work_item_transition(
                 &crate::runtime_db::transitions::WorkItemTransitionCommand {
                     agent_id: agent_id.to_string(),
                     mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -1109,11 +1109,87 @@ impl RuntimeHost {
                 },
             )?;
         }
+        if terminalizing_work_items.is_empty() {
+            let command = self.deletion_focus_transition(agent_id)?;
+            self.runtime_db()
+                .transitions()
+                .commit_agent_deletion_work_item(&command)?;
+        }
         debug!(
             agent_id,
             work_items_completed = terminalizing_work_items.len(),
             "scheduler phase terminalized incomplete work items"
         );
+        Ok(())
+    }
+
+    fn deletion_focus_transition(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::runtime_db::transitions::WorkItemFocusTransitionCommand> {
+        use crate::runtime_db::transitions::{AgentStateMutation, WorkItemFocusTransitionCommand};
+        let expected = self.runtime_db().agent_states().latest(agent_id)?;
+        let mut state = expected
+            .clone()
+            .unwrap_or_else(|| AgentState::new(agent_id));
+        state.status = AgentStatus::Stopped;
+        state.pending = 0;
+        state.sleeping_until = None;
+        state.pending_wake_hint = None;
+        state.current_work_item_id = None;
+        state.current_turn_work_item_id = None;
+        state.current_execution_binding = None;
+        state.current_run_id = None;
+        state.current_turn_id = None;
+        state.current_turn_operator_binding_id = None;
+        state.current_turn_operator_reply_route_id = None;
+        let active = self
+            .runtime_db()
+            .work_item_continuations()
+            .active_for_agent(agent_id)?;
+        let now = Utc::now();
+        let continuations = active
+            .iter()
+            .cloned()
+            .map(|mut frame| {
+                frame.state = WorkItemContinuationState::Cancelled;
+                frame.updated_at = now;
+                frame.cancelled_at = Some(now);
+                frame.resolution_reason = Some("agent_deleted".into());
+                frame
+            })
+            .collect();
+        Ok(WorkItemFocusTransitionCommand {
+            agent_id: agent_id.into(),
+            work_items: Vec::new(),
+            wait_conditions: Vec::new(),
+            active_continuation_expectations: Some(active.clone()),
+            continuation_expectations: active,
+            continuations,
+            agent_state: AgentStateMutation {
+                expected: expected.map(Box::new),
+                record: Box::new(state),
+            },
+            brief_evidence: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+            notify_scheduler: true,
+            fault: None,
+        })
+    }
+
+    fn commit_deletion_work_item_transition(
+        &self,
+        work_item: &crate::runtime_db::transitions::WorkItemTransitionCommand,
+    ) -> Result<()> {
+        let mut command = self.deletion_focus_transition(&work_item.agent_id)?;
+        command.work_items.push(work_item.mutation.clone());
+        command.brief_evidence = work_item.brief_evidence.clone();
+        command.audit_events = work_item.audit_events.clone();
+        command.index_changes = work_item.index_changes.clone();
+        self.runtime_db()
+            .transitions()
+            .commit_agent_deletion_work_item(&command)?;
         Ok(())
     }
 

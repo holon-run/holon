@@ -1130,6 +1130,109 @@ fn stored_command_hash_tx(
 
 pub(crate) fn persist_state_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
     crate::runtime_db::reclamation::ensure_work_admission_tx(tx, &state.agent_id)?;
+    persist_state_rows_tx(tx, state)
+}
+
+pub(super) fn validate_agent_deletion_retirement_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<()> {
+    let deleting: bool = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM agent_identities i
+            JOIN agent_deletion_jobs j ON j.agent_id = i.agent_id
+            WHERE i.agent_id = ?1 AND i.status IN ('deleting', 'deleted')
+         )",
+        [agent_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        deleting,
+        "execution retirement requires an admitted agent deletion"
+    );
+    Ok(())
+}
+
+/// Terminal-safe cleanup, not execution admission. Keep historical attempts and
+/// outcomes, but remove every live scheduling reference in the same lifecycle tx.
+pub(super) fn retire_agent_execution_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
+    validate_agent_deletion_retirement_tx(tx, agent_id)?;
+    if !partition_exists_tx(tx, agent_id)? {
+        return Ok(false);
+    }
+    let existing = load_state_tx(tx, agent_id)?;
+    let mut state = existing.clone();
+    let now = Utc::now().to_rfc3339();
+    for attempt in existing.attempts.values() {
+        if attempt.state == execution_protocol::ExecutionAttemptState::Open {
+            state = execution_protocol::interrupt_execution(
+                &state,
+                &execution_protocol::InterruptExecution {
+                    attempt_id: attempt.attempt_id.clone(),
+                    outcome_id: format!("agent-deletion:{}", attempt.attempt_id),
+                    reason: "agent_deleted".into(),
+                    interrupted_at: now.clone(),
+                },
+            )
+            .map_err(|error| anyhow!("agent deletion execution interruption: {error}"))?
+            .state;
+        }
+    }
+    for (work_item_id, record) in &mut state.work_items {
+        let payload: String = tx.query_row(
+            "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2",
+            params![agent_id, work_item_id],
+            |row| row.get(0),
+        )?;
+        let source: crate::types::WorkItemRecord = serde_json::from_str(&payload)?;
+        let generation = record.generation();
+        let target = if let Some(completion) = source
+            .result_brief_id
+            .filter(|_| source.state == crate::types::WorkItemState::Completed)
+        {
+            WorkItemExecutionState::Terminal {
+                generation,
+                completion,
+            }
+        } else if matches!(record.state, WorkItemExecutionState::Terminal { .. }) {
+            // Legacy completed sources may not have a brief. Keep existing
+            // terminal evidence rather than inventing a completion binding.
+            record.state.clone()
+        } else {
+            WorkItemExecutionState::Paused {
+                generation,
+                reason: "agent_deleted".into(),
+            }
+        };
+        if record.state != target {
+            let generation = generation
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("agent deletion scheduling generation overflow"))?;
+            record.state = match target {
+                WorkItemExecutionState::Terminal { completion, .. } => {
+                    WorkItemExecutionState::Terminal {
+                        generation,
+                        completion,
+                    }
+                }
+                _ => WorkItemExecutionState::Paused {
+                    generation,
+                    reason: "agent_deleted".into(),
+                },
+            };
+        }
+        record.source_revision = source.revision;
+    }
+    if state == existing {
+        return Ok(false);
+    }
+    // This path can only retire already persisted records after deletion
+    // admission. Ordinary protocol writes still enforce the admission fence.
+    persist_state_rows_tx(tx, &state)?;
+    Ok(true)
+}
+
+fn persist_state_rows_tx(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
     execution_protocol::assert_invariants(state)
         .map_err(|error| anyhow!("invalid execution protocol state: {error}"))?;
     tx.execute(
