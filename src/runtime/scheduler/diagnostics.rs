@@ -1,5 +1,10 @@
 use super::*;
 
+/// A queue head older than this without dequeue progress is starving every
+/// wake behind it (#3607).
+pub(crate) const QUEUE_HEAD_STARVATION_AFTER_MS: i64 = 10 * 60 * 1000;
+const QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS: i64 = 10 * 60 * 1000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SchedulingAdvisory {
     pub kind: String,
@@ -273,6 +278,50 @@ pub(crate) fn append_interrupted_replay_source_advisory(
         storage.append_event(&event)?;
     }
     Ok(())
+}
+
+/// Rate-limited advisory for a queue head that has waited too long without
+/// dequeue progress. While it stays first, every later wake starves, and the
+/// incident class can otherwise stay silent for days (#3607).
+pub(crate) fn append_queue_head_starved_advisory(
+    storage: &AppStorage,
+    agent_id: &str,
+    message_id: &str,
+    queue_status: &'static str,
+    waiting_ms: i64,
+    queue_len: usize,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let diagnostic = SchedulingAdvisory::warning(
+        "queue_head_starved",
+        "queue head has waited without dequeue progress and blocks every later wake",
+    )
+    .evidence(format!("agent_id={agent_id}"))
+    .evidence(format!("message_id={message_id}"))
+    .evidence(format!("queue_status={queue_status}"))
+    .evidence(format!("waiting_ms={waiting_ms}"))
+    .evidence(format!("queue_len={queue_len}"));
+    let event = scheduling_advisory_event(&diagnostic);
+    let message_evidence = format!("message_id={message_id}");
+    let duplicate = storage.read_recent_events(64)?.iter().any(|latest| {
+        latest.kind == event.kind
+            && latest
+                .data
+                .get("evidence")
+                .and_then(|evidence| evidence.as_array())
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item.as_str() == Some(&message_evidence))
+                })
+            && now.signed_duration_since(latest.created_at)
+                < chrono::Duration::milliseconds(QUEUE_HEAD_STARVED_ADVISORY_INTERVAL_MS)
+    });
+    if duplicate {
+        return Ok(false);
+    }
+    storage.append_event(&event)?;
+    Ok(true)
 }
 
 trait SchedulingAdvisoryExt {

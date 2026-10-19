@@ -269,6 +269,47 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Self { runtime }
     }
 
+    /// Observability hook for the run-loop idle poll: a queue head stuck in
+    /// queued/interrupted without dequeue progress starves every later wake
+    /// (#3607). Rate limiting happens in the advisory itself.
+    pub(super) fn append_queue_head_starved_advisory_if_due(
+        &self,
+        agent_id: &str,
+        head_message_id: &str,
+        queue_len: usize,
+    ) -> Result<()> {
+        let Some(entry) = self
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(head_message_id)?
+        else {
+            return Ok(());
+        };
+        let status = match entry.status {
+            QueueEntryStatus::Queued => "queued",
+            QueueEntryStatus::Interrupted => "interrupted",
+            _ => return Ok(()),
+        };
+        let waiting_ms = (self.runtime.now() - entry.updated_at)
+            .num_milliseconds()
+            .max(0);
+        if waiting_ms < scheduler::QUEUE_HEAD_STARVATION_AFTER_MS {
+            return Ok(());
+        }
+        scheduler::append_queue_head_starved_advisory(
+            &self.runtime.inner.storage,
+            agent_id,
+            head_message_id,
+            status,
+            waiting_ms,
+            queue_len,
+            self.runtime.now(),
+        )?;
+        Ok(())
+    }
+
     pub(super) async fn reconcile_stale_run_projection(
         &self,
         boundary: StaleRunProjectionBoundary,

@@ -1582,6 +1582,66 @@ fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
 }
 
 #[test]
+fn queue_head_starved_advisory_rate_limits_per_message() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let now = Utc::now();
+
+    assert!(scheduler::append_queue_head_starved_advisory(
+        &storage,
+        "default",
+        "message-head",
+        "interrupted",
+        900_000,
+        3,
+        now,
+    )
+    .unwrap());
+    // Immediate re-check for the same head stays silent inside the window.
+    assert!(!scheduler::append_queue_head_starved_advisory(
+        &storage,
+        "default",
+        "message-head",
+        "interrupted",
+        960_000,
+        3,
+        now,
+    )
+    .unwrap());
+    // A different head is a distinct starvation and is reported.
+    assert!(scheduler::append_queue_head_starved_advisory(
+        &storage,
+        "default",
+        "message-other",
+        "queued",
+        700_000,
+        4,
+        now,
+    )
+    .unwrap());
+    // After the window the same head is reported again.
+    assert!(scheduler::append_queue_head_starved_advisory(
+        &storage,
+        "default",
+        "message-head",
+        "interrupted",
+        1_500_000,
+        3,
+        now + chrono::Duration::milliseconds(10 * 60 * 1000 + 1),
+    )
+    .unwrap());
+
+    let events = storage.read_recent_events(10).unwrap();
+    let starved = events
+        .iter()
+        .filter(|event| {
+            event.kind == "scheduling_advisory" && event.data["kind"] == "queue_head_starved"
+        })
+        .count();
+    assert_eq!(starved, 3);
+}
+
+#[test]
 fn decide_next_action_records_duplicate_tick_evidence() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();

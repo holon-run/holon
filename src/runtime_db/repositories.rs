@@ -3217,6 +3217,41 @@ impl TimerRepository<'_> {
                 |row| row.get::<_, bool>(0),
             )?;
             if pending {
+                // The one-pending-wake guard silently suppressed this fire;
+                // surface it so a stalled pending wake (for example while an
+                // agent loop is dead) stays observable (#3607).
+                let suppressed = tx
+                    .query_row(
+                        "SELECT message_id, created_at FROM timer_wakes
+                         WHERE timer_id = ?1 AND status = 'pending'",
+                        [&command.record.id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()?;
+                if let Some((pending_message_id, pending_created_at)) = suppressed {
+                    let pending_age_ms = chrono::DateTime::parse_from_rfc3339(&pending_created_at)
+                        .ok()
+                        .map(|created| {
+                            (Utc::now() - created.with_timezone(&Utc))
+                                .num_milliseconds()
+                                .max(0)
+                        })
+                        .unwrap_or(0);
+                    append_audit_event_tx(
+                        tx,
+                        Some(&command.record.agent_id),
+                        &AuditEvent::legacy(
+                            "timer_wake_suppressed",
+                            serde_json::json!({
+                                "timer_id": command.record.id,
+                                "agent_id": command.record.agent_id,
+                                "fire_count": command.record.fire_count,
+                                "pending_message_id": pending_message_id,
+                                "pending_age_ms": pending_age_ms,
+                            }),
+                        ),
+                    )?;
+                }
                 return Ok(TimerFireResult {
                     advanced: true,
                     wake_created: false,
