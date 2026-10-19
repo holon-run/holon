@@ -182,8 +182,18 @@ describe("useRuntimeDashboard bootstrap connect retry", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry when the error state carries no baseUrl", async () => {
-    const noBaseUrl = { ...disconnectedConnection(0), baseUrl: undefined };
+  it("retries local errors without a presentation baseUrl", async () => {
+    setBootstrap(bootstrapFor({ ...disconnectedConnection(0), baseUrl: undefined }));
+    installRefreshMock(() => setBootstrap(bootstrapFor(connectedConnection())));
+    renderDashboardHook();
+
+    await advance(1_000);
+
+    expect(retryTimestamps).toEqual([1_000]);
+  });
+
+  it("does not retry remote errors without a configured baseUrl", async () => {
+    const noBaseUrl = { ...disconnectedConnection(0), mode: "remote" as const, baseUrl: undefined };
     setBootstrap(bootstrapFor(noBaseUrl));
     const refresh = installRefreshMock(() => {});
     renderDashboardHook();
