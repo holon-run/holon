@@ -134,7 +134,7 @@ private struct RuntimeBrowserScreen: View {
             }
             if page?.loading == true { ProgressView().frame(maxWidth: .infinity) }
             if let page {
-                RuntimeWebView(page: page)
+                RuntimeWebView(page: page, revision: revision)
                     // Mirror Android's key(page): a new RuntimeWebPage must mount a new
                     // WKWebView, otherwise updateUIView (empty) leaves the slot blank.
                     .id(ObjectIdentifier(page))
@@ -177,6 +177,9 @@ private struct RuntimeBrowserScreen: View {
 
 private struct RuntimeWebView: UIViewRepresentable {
     let page: RuntimeWebPage
+    // Unused on purpose: reading `revision` in body lets page-event bumps via
+    // `onChanged` re-render title/error/loading without remounting the web view.
+    let revision: Int
 
     func makeUIView(context: Context) -> WKWebView { page.webView }
 
