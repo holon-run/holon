@@ -175,12 +175,17 @@ private func isIPv6Literal(_ literal: String) -> Bool {
     return literal.withCString { inet_pton(AF_INET6, $0, &address) == 1 }
 }
 
-/// For `[v6.host]`-style authorities validates the literal and returns the `]`-onward suffix.
+/// For `[v6.host]`-style authorities validates the literal plus optional numeric
+/// port, and returns the `]`-onward suffix.
 private func bracketedHostSuffix(_ authority: String) -> String? {
     guard authority.hasPrefix("[") else { return nil }
     guard let close = authority.firstIndex(of: "]"),
           authority.distance(from: authority.startIndex, to: close) > 1,
           isIPv6Literal(String(authority[authority.index(after: authority.startIndex)..<close])) else { return nil }
+    let trailing = authority[authority.index(after: close)...]
+    // java.net.URI accepts nothing after `]` except an optional non-empty numeric port.
+    guard trailing.isEmpty ||
+          (trailing.first == ":" && (1...5).contains(trailing.count - 1) && trailing.dropFirst().allSatisfy(\.isNumber)) else { return nil }
     return String(authority[close...])
 }
 

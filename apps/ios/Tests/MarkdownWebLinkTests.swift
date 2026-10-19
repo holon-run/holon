@@ -17,6 +17,7 @@ final class MarkdownWebLinkTests: XCTestCase {
             "https://example.org/apps/a/b?query#part", "http://elsewhere.test",
             "https://[::1]/apps/a/b", "//[::1]:8443/apps/a/b",
             "https://[2001:db8::1]/apps/a/b",
+            "https://[::ffff:1.2.3.4]/apps/a/b", "//[::1]:080/apps/a/b",
             "//example.org/apps/a/b?query#part", "HTTPS://EXAMPLE.org/报告%20one.html",
         ]
         for href in vectors {
@@ -45,6 +46,8 @@ final class MarkdownWebLinkTests: XCTestCase {
                      "https://example.org:65536/apps/a/b", "https://example.org:/apps/a/b",
                      "https://[::1/x", "http://[:1]/apps/a/b", "//[::1",
                      "http://[notv6]/apps/a/b",
+                     "https://[::1]evil.com/x", "https://[::1]]:80/x",
+                     "https://[::1]:/apps/a/b", "https://[::1]:65536/apps/a/b",
                      "https://example.org/apps/a/b/%252f", "/apps/a/b?query=%FF", "/apps/a/b#%0a"] {
             XCTAssertEqual(MarkdownWebLink.classify(href), .rejected, href)
         }
