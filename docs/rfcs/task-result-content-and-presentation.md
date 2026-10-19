@@ -9,6 +9,12 @@ A command or supervised child task produces result content. An existing-agent
 invocation instead observes the first accepted later message from that sender;
 its completed handle is a message-received signal, never business completion.
 
+For an interrupted supervised invocation, follow its unique canonical recovery
+successor first. Without a successor, an aborted or quarantined queue entry for
+that exact attempt's source proves failure; report only its bound turn/failure
+brief. A recoverable interruption remains pending, and another source's failure
+is not evidence about this invocation.
+
 Successful agent-message waits publish a stable TaskResult containing message
 and delivery references, marked by `task_detail.reply_content_source=original_message`.
 Older copied-content results retain their existing delivery semantics. Only the original agent message carries peer content
@@ -68,6 +74,15 @@ the exact terminal turn transcript or completion brief. Later unrelated turns,
 tasks and waits cannot replace an already proven result. Active blockers without
 source ownership cannot be ignored. Missing canonical evidence, conflicting
 identity and ambiguous/cyclic continuations are recovery-blocked, not completion.
+
+Terminal task detail retains child observability and worktree metadata on both
+live and recovered paths. Observability describes the proven invocation terminal
+turn/result, not later child activity. A loaded runtime may supply worktree and
+usage state without becoming terminal evidence; unloaded recovery remains
+storage-backed and does not load a child merely to enrich metadata.
+Worktree preparation persists parent task metadata before source binding; source
+admission uses the post-preparation task snapshot and retains exact CAS checks.
+Running state is persisted directly rather than queued as a stale task snapshot.
 
 `task.detail.recovery_diagnostic` distinguishes normal `pending` from
 `recovery_blocked`, with typed reason/stage, target incarnation and bounded retry

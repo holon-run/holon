@@ -789,15 +789,35 @@ pub async fn subagent_task_returns_result_to_parent_session() -> Result<()> {
 }
 
 pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
+    struct GatedWorktreeProvider {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl AgentProvider for GatedWorktreeProvider {
+        async fn complete_turn(
+            &self,
+            request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            self.started.notify_one();
+            self.release.notified().await;
+            StubProvider::new("worktree subagent result")
+                .complete_turn(request)
+                .await
+        }
+    }
+
     let config = test_config();
     let workspace = config.workspace_dir.clone();
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
-    let host = RuntimeHost::new_with_provider(
-        config,
-        Arc::new(StubProvider::new("worktree subagent result")),
-    )?;
+    let provider = Arc::new(GatedWorktreeProvider {
+        started: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let host = RuntimeHost::new_with_provider(config, provider.clone())?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
 
@@ -809,19 +829,14 @@ pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
-    wait_until_async_for(Duration::from_secs(10), || async {
-        let briefs = runtime.storage().read_recent_briefs(20)?;
-        Ok(briefs
-            .iter()
-            .any(|brief| brief.text.contains("worktree subagent result")))
-    })
-    .await?;
+    tokio::time::timeout(Duration::from_secs(10), provider.started.notified()).await?;
 
     let tasks = runtime.recent_tasks(10).await?;
     let record = tasks
         .iter()
         .find(|record| record.id == task.id)
         .expect("worktree child task record");
+    assert_eq!(record.status, TaskStatus::Running);
     assert_eq!(record.kind.as_str(), "child_agent_task");
     assert_eq!(
         record
@@ -831,24 +846,10 @@ pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
             .and_then(|value| value.as_str()),
         Some("worktree")
     );
-    let messages = runtime.storage().read_recent_messages(20)?;
-    let running_status = messages
-        .iter()
-        .find(|message| {
-            matches!(message.kind, MessageKind::TaskStatus)
-                && message
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.get("task_id"))
-                    .and_then(|value| value.as_str())
-                    == Some(task.id.as_str())
-        })
-        .expect("worktree child task should emit a running task status message");
-    let running_detail = running_status
-        .metadata
+    let running_detail = record
+        .detail
         .as_ref()
-        .and_then(|metadata| metadata.get("task_detail"))
-        .expect("running task status should carry task detail");
+        .expect("running task record should carry task detail");
     assert_eq!(
         running_detail
             .get("workspace_mode")
@@ -859,6 +860,14 @@ pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
         running_detail.get("worktree").is_some(),
         "running task status should preserve task-owned worktree metadata"
     );
+    provider.release.notify_one();
+    wait_until_async_for(Duration::from_secs(10), || async {
+        let briefs = runtime.storage().read_recent_briefs(20)?;
+        Ok(briefs
+            .iter()
+            .any(|brief| brief.text.contains("worktree subagent result")))
+    })
+    .await?;
     let briefs = runtime.recent_briefs(10).await?;
     assert!(briefs
         .iter()

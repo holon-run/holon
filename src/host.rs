@@ -5649,8 +5649,13 @@ impl RuntimeHost {
                 "delegated_authority_class": authority_class,
                 "child_incarnation": child_incarnation,
             }));
+            // Worktree preparation persists task metadata before source admission.
+            let admission_task = parent_runtime
+                .storage()
+                .latest_task_record(&task.id)?
+                .context("supervised invocation parent task missing before admission")?;
             let message = child_runtime
-                .enqueue_supervised_invocation(message, task, child_incarnation)
+                .enqueue_supervised_invocation(message, &admission_task, child_incarnation)
                 .await?;
             task_detail["source_message_id"] = json!(message.id);
             task_detail["source_turn_id"] = json!(message.turn_id);
@@ -6401,6 +6406,45 @@ impl RuntimeHost {
                                 );
                                 continue;
                             }
+                            // A failed source is terminal; a shutdown interruption may recover.
+                            if let Some(source_id) = attempt.source_message_id.as_deref() {
+                                if self
+                                    .runtime_db()
+                                    .queue_entries()
+                                    .latest(source_id)?
+                                    .is_some_and(|entry| {
+                                        entry.agent_id == child_agent_id
+                                            && matches!(
+                                                entry.status,
+                                                QueueEntryStatus::Aborted
+                                                    | QueueEntryStatus::Quarantined
+                                            )
+                                    })
+                                {
+                                    let mut evidence = self
+                                        .invocation_terminal_evidence_for_turn(
+                                            child_agent_id,
+                                            delivery_id,
+                                            &attempt,
+                                        )?
+                                        .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+                                    evidence.status = TaskStatus::Failed;
+                                    evidence.text = storage
+                                        .read_briefs_for_turn(attempt.turn_id.as_deref().ok_or(
+                                            ChildInvocationReason::MissingCanonicalTerminal,
+                                        )?)?
+                                        .into_iter()
+                                        .rev()
+                                        .find(|brief| {
+                                            brief.kind == crate::types::BriefKind::Failure
+                                        })
+                                        .map(|brief| brief.text)
+                                        .unwrap_or_else(|| {
+                                            format!("child agent failed: {}", evidence.text)
+                                        });
+                                    return Ok(Some(evidence));
+                                }
+                            }
                             if awaiting_recovery {
                                 return Ok(None);
                             }
@@ -6834,9 +6878,43 @@ impl RuntimeHost {
         evidence: InvocationTerminalEvidence,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let state = storage
-            .read_agent()?
-            .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id));
+        let state = if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
+            runtime.agent_state().await?
+        } else {
+            storage
+                .read_agent()?
+                .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id))
+        };
+        let turn = evidence
+            .turn_id
+            .as_deref()
+            .map(|turn_id| {
+                self.runtime_db()
+                    .turn_records()
+                    .by_id(Some(&identity.agent_id), turn_id)
+            })
+            .transpose()?
+            .flatten();
+        let briefs = evidence
+            .turn_id
+            .as_deref()
+            .map(|turn_id| storage.read_briefs_for_turn(turn_id))
+            .transpose()?
+            .unwrap_or_default();
+        // Terminal observability belongs to this invocation, never later child activity.
+        let observability = crate::types::ChildAgentObservabilitySnapshot {
+            phase: crate::types::ChildAgentPhase::Terminal,
+            blocked_reason: None,
+            waiting_reason: None,
+            current_work_item_id: turn.and_then(|turn| turn.current_work_item_id),
+            work_summary: None,
+            last_progress_brief: briefs
+                .iter()
+                .rev()
+                .find(|brief| brief.kind == crate::types::BriefKind::Ack)
+                .map(|brief| brief.text.clone()),
+            last_result_brief: Some(evidence.text.clone()),
+        };
         let mut metadata = json!({
             "target_agent_id": identity.agent_id,
             "target_agent_kind": identity.kind,
@@ -6847,6 +6925,7 @@ impl RuntimeHost {
             "activation_id": evidence.activation_id,
             "turn_id": evidence.turn_id,
             "completion_ref": evidence.completion_ref,
+            "child_observability": observability,
             "token_usage": json!({
                 "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
                 "last_turn": state.last_turn_token_usage.clone(),
@@ -12360,6 +12439,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supervised_invocation_terminal_observability_excludes_later_activity() {
+        let (_home, host, task) = source_bound_invocation_fixture();
+        let child_id = "source-bound-child";
+        let storage = host.agent_storage(child_id).unwrap();
+        for (turn_id, kind, text) in [
+            (
+                "original-source-turn",
+                crate::types::BriefKind::Ack,
+                "original progress",
+            ),
+            ("later-turn", crate::types::BriefKind::Ack, "later progress"),
+            (
+                "later-turn",
+                crate::types::BriefKind::Result,
+                "later result",
+            ),
+        ] {
+            let mut brief = crate::types::BriefRecord::new(child_id, kind, text, None, None);
+            brief.turn_id = Some(turn_id.into());
+            storage.append_brief(&brief).unwrap();
+        }
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.turn_index = 2;
+        state.last_turn_terminal.as_mut().unwrap().turn_id = "later-turn".into();
+        state
+            .last_turn_terminal
+            .as_mut()
+            .unwrap()
+            .last_assistant_message = Some("later result".into());
+        state
+            .working_memory
+            .current_working_memory
+            .current_work_item_id = Some("later-work-item".into());
+        state.working_memory.current_working_memory.work_summary = Some("later work".into());
+        storage.write_agent(&state).unwrap();
+
+        assert!(host.try_get_loaded_runtime(child_id).await.is_none());
+        let ChildInvocationResolution::Ready(result) = host
+            .resolve_supervised_invocation(&task, child_id, false)
+            .await
+            .unwrap()
+        else {
+            panic!("original invocation should be terminal");
+        };
+        let snapshot: crate::types::ChildAgentObservabilitySnapshot =
+            serde_json::from_value(result.task_detail.unwrap()["child_observability"].clone())
+                .unwrap();
+        assert_eq!(snapshot.phase, crate::types::ChildAgentPhase::Terminal);
+        assert_eq!(snapshot.current_work_item_id, None);
+        assert_eq!(snapshot.work_summary, None);
+        assert_eq!(
+            snapshot.last_progress_brief.as_deref(),
+            Some("original progress")
+        );
+        assert_eq!(
+            snapshot.last_result_brief.as_deref(),
+            Some("original-source-result")
+        );
+        assert!(host.try_get_loaded_runtime(child_id).await.is_none());
+    }
+
+    #[tokio::test]
     async fn supervised_invocation_resolution_is_source_bound_and_fail_closed() {
         use crate::domain::execution_protocol::*;
         let (_home, host, task) = source_bound_invocation_fixture();
@@ -12543,6 +12684,56 @@ mod tests {
         changed = execution.clone();
         changed.attempts.get_mut(&root.attempt_id).unwrap().state =
             ExecutionAttemptState::Interrupted;
+        store(&changed);
+        let storage = host.agent_storage(child_id).unwrap();
+        let source_id = root.source_message_id.as_deref().unwrap();
+        let mut queue = crate::types::QueueEntryRecord {
+            message_id: source_id.into(),
+            agent_id: child_id.into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        storage.append_queue_entry(&queue).unwrap();
+        let mut unrelated = queue.clone();
+        unrelated.message_id = "other-failed-source".into();
+        unrelated.status = QueueEntryStatus::Aborted;
+        storage.append_queue_entry(&unrelated).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+        ));
+        let mut failure = crate::types::BriefRecord::new(
+            child_id,
+            crate::types::BriefKind::Failure,
+            "original source failed",
+            Some(source_id.into()),
+            None,
+        );
+        failure.turn_id = root.turn_id.clone();
+        storage.append_brief(&failure).unwrap();
+        for status in [QueueEntryStatus::Aborted, QueueEntryStatus::Quarantined] {
+            // Independent terminal fixtures, not an aborted -> quarantined transition.
+            host.runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM queue_entries WHERE message_id = ?1",
+                        [source_id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            queue.status = status;
+            storage.append_queue_entry(&queue).unwrap();
+            assert!(matches!(
+                host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+                ChildInvocationResolution::Ready(result)
+                    if result.status == TaskStatus::Failed && result.text == "original source failed"
+            ));
+        }
         for suffix in ["a", "b"] {
             let mut recovery = root.clone();
             recovery.attempt_id = format!("recovery-{suffix}");
