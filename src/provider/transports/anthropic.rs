@@ -298,11 +298,13 @@ fn anthropic_reasoning_controls<'a>(
     reasoning_effort: Option<&'a str>,
     max_output_tokens: u32,
 ) -> Result<(Option<ThinkingRequest>, Option<OutputConfigRequest<'a>>)> {
-    if matches!(route_provider, "minimax" | "minimax-cn") && model == "MiniMax-M3.1-Flash-Preview" {
+    if matches!(route_provider, "minimax" | "minimax-cn")
+        && matches!(model, "MiniMax-M3.1-Flash-Preview" | "MiniMax-M3.1-Flash")
+    {
         if let Some(effort) = reasoning_effort {
             if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
                 return Err(anyhow!(
-                    "MiniMax-M3.1-Flash-Preview requires thinking; reasoning effort must be low, medium, high, xhigh, or max"
+                    "{model} requires thinking; reasoning effort must be low, medium, high, xhigh, or max"
                 ));
             }
         }
@@ -5147,47 +5149,55 @@ mod tests {
     #[test]
     fn minimax_m31_reasoning_sends_exact_effort_without_budget_tokens() {
         for provider in ["minimax", "minimax-cn"] {
-            for effort in ["low", "medium", "high", "xhigh", "max"] {
-                let (thinking, output_config) = anthropic_reasoning_controls(
-                    provider,
-                    "MiniMax-M3.1-Flash-Preview",
-                    true,
-                    Some(effort),
-                    1024,
-                )
-                .unwrap();
+            for model in ["MiniMax-M3.1-Flash-Preview", "MiniMax-M3.1-Flash"] {
+                for effort in ["low", "medium", "high", "xhigh", "max"] {
+                    let (thinking, output_config) =
+                        anthropic_reasoning_controls(provider, model, true, Some(effort), 1024)
+                            .unwrap();
+                    assert!(thinking.is_none());
+                    assert_eq!(
+                        serde_json::to_value(output_config).unwrap(),
+                        json!({ "effort": effort })
+                    );
+                }
+                let (thinking, output_config) =
+                    anthropic_reasoning_controls(provider, model, true, None, 16384).unwrap();
                 assert!(thinking.is_none());
-                assert_eq!(
-                    serde_json::to_value(output_config).unwrap(),
-                    json!({ "effort": effort })
-                );
-            }
-            let (thinking, output_config) = anthropic_reasoning_controls(
-                provider,
-                "MiniMax-M3.1-Flash-Preview",
-                true,
-                None,
-                16384,
-            )
-            .unwrap();
-            assert!(thinking.is_none());
-            assert!(output_config.is_none());
-            for effort in ["none", "off", "disabled", "minimal", "unknown"] {
-                assert!(anthropic_reasoning_controls(
-                    provider,
-                    "MiniMax-M3.1-Flash-Preview",
-                    true,
-                    Some(effort),
-                    16384,
-                )
-                .is_err());
+                assert!(output_config.is_none());
+                for effort in ["none", "off", "disabled", "minimal", "unknown"] {
+                    assert!(anthropic_reasoning_controls(
+                        provider,
+                        model,
+                        true,
+                        Some(effort),
+                        16384,
+                    )
+                    .is_err());
+                }
             }
         }
-        let (thinking, output_config) =
-            anthropic_reasoning_controls("minimax", "MiniMax-M2.7", true, Some("high"), 16384)
-                .unwrap();
-        assert_eq!(thinking.unwrap().budget_tokens, 8192);
-        assert!(output_config.is_none());
+    }
+
+    #[test]
+    fn minimax_m31_reasoning_controls_are_provider_and_exact_model_scoped() {
+        for provider in ["minimax", "minimax-cn"] {
+            for model in ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M3.1-Flash-other"] {
+                let (thinking, output_config) =
+                    anthropic_reasoning_controls(provider, model, true, Some("high"), 16384)
+                        .unwrap();
+                assert_eq!(thinking.unwrap().budget_tokens, 8192);
+                assert!(output_config.is_none());
+            }
+        }
+        for provider in ["anthropic", "zai", "minimax-proxy"] {
+            for model in ["MiniMax-M3.1-Flash-Preview", "MiniMax-M3.1-Flash"] {
+                let (thinking, output_config) =
+                    anthropic_reasoning_controls(provider, model, true, Some("high"), 16384)
+                        .unwrap();
+                assert_eq!(thinking.unwrap().budget_tokens, 8192);
+                assert!(output_config.is_none());
+            }
+        }
     }
 
     #[test]

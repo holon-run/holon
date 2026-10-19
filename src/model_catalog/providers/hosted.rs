@@ -542,11 +542,33 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
     ]
 }
 
+fn minimax_m31_model(provider: &str) -> BuiltInModelMetadata {
+    let mut entry = catalog_model(
+        provider,
+        "MiniMax-M3.1-Flash",
+        "MiniMax M3.1 Flash",
+        1_000_000,
+        131_072,
+        true,
+        true,
+    );
+    entry.description = "MiniMax M3.1 Flash supports general API access; M Plan and existing Token Plan access use separate subscription credentials.".into();
+    entry.max_output_tokens_upper_limit = Some(524_288);
+    entry.reasoning_effort_options = vec![
+        "low".into(),
+        "medium".into(),
+        "high".into(),
+        "xhigh".into(),
+        "max".into(),
+    ];
+    entry
+}
+
 fn minimax_m_plan_model(provider: &str) -> BuiltInModelMetadata {
     BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id(provider), "MiniMax-M3.1-Flash-Preview"),
         display_name: "MiniMax M3.1 Flash Preview".into(),
-        description: "MiniMax M3.1 Flash Preview requires M Plan, an existing Token Plan, or MiniMax Code; not general API access.".into(),
+        description: "Legacy MiniMax M3.1 Flash Preview subscription ID is now served by MiniMax-M3.1-Flash; requires M Plan, an existing Token Plan, or MiniMax Code, not general API access.".into(),
         context_window_tokens: Some(1_000_000),
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
         auto_compact_token_limit: None,
@@ -573,8 +595,25 @@ fn minimax_m_plan_model(provider: &str) -> BuiltInModelMetadata {
     }
 }
 
+pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
+    [
+        ("minimax", "minimax-m-plan"),
+        ("minimax-cn", "minimax-cn-m-plan"),
+    ]
+    .into_iter()
+    .map(|(provider, legacy_provider)| BuiltInModelRouteDefinition {
+        legacy_provider: provider_id(legacy_provider),
+        model_ref: ModelRef::new(provider_id(provider), "MiniMax-M3.1-Flash"),
+        endpoint: ProviderEndpointId::parse("m-plan").expect("valid endpoint"),
+        policy: BuiltInModelRoutePolicy::default(),
+    })
+    .collect()
+}
+
 pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
     vec![
+        minimax_m31_model("minimax"),
+        minimax_m31_model("minimax-cn"),
         catalog_model(
             "minimax",
             "MiniMax-M3",

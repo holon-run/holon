@@ -1817,6 +1817,9 @@ fn reasoning_effort_options(
             &["none", "minimal", "low", "medium", "high", "xhigh", "max"][..]
         }
         ("deepseek", _) => &["low", "high", "max"][..],
+        ("minimax" | "minimax-cn", "MiniMax-M3.1-Flash") => {
+            &["low", "medium", "high", "xhigh", "max"][..]
+        }
         ("minimax" | "minimax-cn", "MiniMax-M3.1-Flash-Preview")
             if endpoint.is_some_and(|endpoint| endpoint.as_str() == "m-plan") =>
         {
@@ -3141,6 +3144,7 @@ mod tests {
             ("kilo-auto/balanced", 1_000_000, 65_536, true),
             ("kilo-auto/efficient", 1_000_000, 65_536, true),
             ("kilo-auto/free", 256_000, 32_768, false),
+            ("kilo-auto/small", 262_144, 32_768, true),
         ];
 
         for (model, context, output, image_input) in expected {
@@ -3415,6 +3419,7 @@ mod tests {
                 "MiniMax-M2.7",
                 "MiniMax-M2.7-highspeed",
                 "MiniMax-M3",
+                "MiniMax-M3.1-Flash",
             ]
         );
 
@@ -3426,14 +3431,69 @@ mod tests {
         assert!(m3.capabilities.supports_reasoning);
         assert!(m3.capabilities.image_input);
 
-        for model in models
-            .into_iter()
-            .filter(|entry| entry.model_ref.model != "MiniMax-M3")
-        {
+        for model in models.into_iter().filter(|entry| {
+            !matches!(
+                entry.model_ref.model.as_str(),
+                "MiniMax-M3" | "MiniMax-M3.1-Flash"
+            )
+        }) {
             assert_eq!(model.context_window_tokens, Some(204_800));
             assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
             assert!(model.capabilities.supports_reasoning);
             assert!(!model.capabilities.image_input);
+        }
+    }
+
+    #[test]
+    fn minimax_m31_official_id_has_region_scoped_api_and_subscription_routes() {
+        let catalog = curated_catalog();
+        let model = "MiniMax-M3.1-Flash";
+        for provider in ["minimax", "minimax-cn"] {
+            let model_ref = ModelRef::parse(&format!("{provider}/{model}")).unwrap();
+            let metadata = catalog.get(&model_ref).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_000_000));
+            assert_eq!(metadata.default_max_output_tokens, Some(131_072));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(524_288));
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            for endpoint in ["default", "m-plan"] {
+                let route_ref =
+                    ModelRouteRef::parse(&format!("{provider}@{endpoint}/{model}")).unwrap();
+                assert!(
+                    catalog.get_route(&route_ref).is_some(),
+                    "{}",
+                    route_ref.as_string()
+                );
+                let policy = catalog.resolve_route_policy(
+                    &route_ref,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base_context(),
+                    8192,
+                );
+                assert_eq!(policy.context_window_tokens, Some(1_000_000));
+                assert_eq!(policy.max_output_tokens_upper_limit, Some(524_288));
+                for effort in ["low", "medium", "high", "xhigh", "max"] {
+                    assert!(policy.validate_reasoning_effort(effort).is_ok());
+                }
+                for effort in ["none", "off", "minimal"] {
+                    assert!(policy.validate_reasoning_effort(effort).is_err());
+                }
+            }
+            for endpoint in ["responses", "m-plan-responses", "token-plan"] {
+                assert!(catalog
+                    .get_route(
+                        &ModelRouteRef::parse(&format!("{provider}@{endpoint}/{model}")).unwrap()
+                    )
+                    .is_none());
+            }
+            assert_eq!(
+                catalog.canonicalize_model_ref(
+                    &ModelRef::parse(&format!("{provider}-m-plan/{model}")).unwrap()
+                ),
+                model_ref
+            );
         }
     }
 
@@ -3603,6 +3663,7 @@ mod tests {
             "dashscope@token-plan/qwen3.8-flash",
             "dashscope@token-plan/deepseek-v4-flash-0731",
             "dashscope@token-plan/deepseek-v4.1-flash",
+            "dashscope@token-plan/deepseek-v4.1-flash-1017",
             "dashscope@token-plan/deepseek-v4-pro-0813",
             "dashscope@token-plan/kimi-k2.7-code",
             "dashscope@token-plan/glm-5.2",
@@ -3626,8 +3687,11 @@ mod tests {
             "dashscope@token-plan/MiniMax/MiniMax-M3",
             "dashscope@default/glm-5.3",
             "dashscope@default/deepseek-v4.1-flash",
+            "dashscope@default/deepseek-v4.1-flash-1017",
             "dashscope@default/deepseek-v4-pro-0813",
             "dashscope@coding-plan/deepseek-v4.1-flash",
+            "dashscope@coding-plan/deepseek-v4.1-flash-1017",
+            "dashscope@coding-plan-intl/deepseek-v4.1-flash-1017",
             "dashscope@coding-plan/deepseek-v4-pro-0813",
             "dashscope@coding-plan/glm-5.2",
             "dashscope@coding-plan/glm-5.3",
@@ -3656,6 +3720,15 @@ mod tests {
             assert!(metadata.capabilities.supports_reasoning);
             assert!(metadata.description.contains("alibaba-token-plan-cn"));
         }
+        let dated = catalog
+            .get(&ModelRef::parse("dashscope/deepseek-v4.1-flash-1017").unwrap())
+            .unwrap();
+        assert!(dated.capabilities.supports_reasoning);
+        assert!(dated.capabilities.image_input);
+        assert_eq!(dated.context_window_tokens, None);
+        assert_eq!(dated.default_max_output_tokens, None);
+        assert_eq!(dated.max_output_tokens_upper_limit, None);
+        assert!(dated.reasoning_effort_options.is_empty());
     }
 
     #[test]
@@ -4460,7 +4533,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 37);
+        assert_eq!(models.len(), 38);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert!(model.reasoning_effort_options.is_empty());
@@ -4491,6 +4564,7 @@ mod tests {
             "cat-jam-free",
             "step-5-preview",
             "beam-free",
+            "minimax-m3.1-flash-free",
         ] {
             assert_eq!(
                 catalog
@@ -4544,6 +4618,16 @@ mod tests {
                 .get(&ModelRef::new(provider.clone(), model))
                 .is_none());
         }
+        for endpoint in ["messages", "responses"] {
+            assert!(catalog
+                .get_route(
+                    &ModelRouteRef::parse(&format!(
+                        "opencode-go@{endpoint}/minimax-m3.1-flash-free"
+                    ))
+                    .unwrap()
+                )
+                .is_none());
+        }
     }
 
     #[test]
@@ -4594,6 +4678,7 @@ mod tests {
             ("cat-jam-free", 262_144, 131_072, false),
             ("step-5-preview", 1_000_000, 65_536, true),
             ("beam-free", 1_048_576, 131_072, false),
+            ("minimax-m3.1-flash-free", 1_000_000, 512_000, true),
         ] {
             let metadata = catalog
                 .get(&ModelRef::new(provider_id("opencode-go"), id))

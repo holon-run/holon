@@ -37,6 +37,7 @@ pub(super) fn entries_for_registration(
 #[cfg(test)]
 pub(super) fn route_definitions() -> Vec<super::BuiltInModelRouteDefinition> {
     let mut definitions = china::route_definitions();
+    definitions.extend(hosted::route_definitions());
     definitions.extend(typesafe::route_definitions());
     definitions.extend(tencent_tokenhub::route_definitions());
     definitions.extend(

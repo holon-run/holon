@@ -9,6 +9,112 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-20 incremental review
+
+- Refreshed models.dev revision
+  `3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0`.
+  The artifact contains 1,145 models (eight additions, four removals).
+  The sole new supplement draft, `minimax/MiniMax-M3.1-Flash`, is promoted
+  to reviewed built-in metadata after the endpoint-specific checks below.
+  Remove its duplicate supplement record before regeneration.
+  Aggregator audit additions/removals do not create or remove runtime routes.
+- Rechecked the [OpenRouter public list](https://openrouter.ai/api/v1/models).
+  Both additions (`inception/mercury-3` and
+  `minimax/minimax-m3.1-flash:free`) and all eight changed entries match
+  advertised context/output metadata. The three removed OpenRouter IDs are
+  absent from the public list. These are service metadata checks, not
+  verified inference limits.
+- Rechecked OpenAI's
+  [published Codex metadata at revision d63a9b83](https://github.com/openai/codex/blob/d63a9b8344cfe58bc78bbe319b560378fc8756ef/codex-rs/models-manager/models.json):
+  model objects are unchanged from the previously reviewed `8c076942`
+  revision. Retain Codex-specific default contexts, reasoning options, and
+  the existing preferred model. The
+  [Codex lifecycle](https://learn.chatgpt.com/docs/models) still confirms
+  the same six retired ChatGPT-sign-in IDs; no new entitlement is inferred.
+- Rechecked the [DeepSeek Responses guide](https://api-docs.deepseek.com/guides/responses_api/):
+  Flash image input and V4 Pro-only search remain consistent with the
+  reviewed routes. No general API specification is copied to a subscription.
+- MiniMax's international and China
+  [Anthropic API](https://platform.minimax.io/docs/api-reference/text-anthropic-api.md)
+  [references](https://platform.minimaxi.com/docs/api-reference/text-anthropic-api.md)
+  independently identify the official `MiniMax-M3.1-Flash`, a **1,000,000**
+  context and image/video input. The
+  [Create Message schema](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md)
+  confirms **524,288** maximum output and **131,072** recommended output,
+  not models.dev's 512,000. Thinking is always on: efforts are exactly
+  `low/medium/high/xhigh/max`, defaulting to `max`; `none` is rejected.
+  If sent, `thinking.type` must be `adaptive`, not generic `enabled` with
+  `budget_tokens`. Use the exact provider/model-scoped `output_config.effort`
+  branch for both the official and Preview IDs, without sending `thinking`.
+- Both [international](https://platform.minimax.io/docs/m-plan/quickstart.md)
+  and [China](https://platform.minimaxi.com/docs/m-plan/quickstart.md)
+  M Plan quickstarts use the exact official ID with a Subscription Key.
+  The [international](https://platform.minimax.io/docs/m-plan/token-plan-notice.md)
+  and [China](https://platform.minimaxi.com/docs/m-plan/token-plan-notice.md)
+  legacy notices explicitly include M3.1 Flash in both M Plan and Token Plan.
+  Register the official ID on each region's default and `m-plan` routes;
+  legacy Token Plan uses that subscription route, not a new `token-plan`
+  endpoint. Add the missing China default registration with the documented
+  `https://api.minimax.cn/anthropic` base and independent `MINIMAX_CN_API_KEY`;
+  do not reuse subscription keys or change actual credentials/enabled state. The
+  [M Plan lifecycle](https://platform.minimax.io/docs/m-plan/intro.md)
+  says Preview is offline and old-name requests are served by the official
+  version: preserve its compatibility route, not an independent current offer.
+  This supersedes the earlier Preview-only review, not the old model IDs.
+- DashScope Token Plan's
+  [personal](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)
+  and [team](https://help.aliyun.com/zh/model-studio/token-plan-team-overview)
+  lists add exact `deepseek-v4.1-flash-1017` with reasoning and image input.
+  Add only the Token Plan route, leaving exact token limits and efforts unknown;
+  do not inherit the unversioned model's advisory limits or Coding eligibility.
+  [China](https://help.aliyun.com/zh/model-studio/coding-plan) and
+  [international](https://www.alibabacloud.com/help/en/model-studio/coding-plan)
+  Coding lists still show the same six current IDs; their absence of historical
+  IDs is not affirmative removal evidence. Xiaomi's
+  [deprecation notice](https://mimo.mi.com/docs/en-US/updates/deprecate) says V2.5
+  remains valid until **October 21, 2026 at 10:00 Beijing time**; conflicting
+  switching-hour documentation remains unresolved.
+  [StepFun's Plan guide](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md)
+  retains five IDs and router restrictions.
+  [Z.AI](https://docs.z.ai/devpack/notice/api-key-management.md) and
+  [BigModel](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md) key-type
+  billing does not establish universal subscription eligibility.
+- The [OpenCode Go protocol table](https://opencode.ai/v2/docs/console/go/)
+  and [public IDs](https://opencode.ai/inference/go/v1/models) confirm the
+  missing `minimax-m3.1-flash-free` on **Chat**, not MiniMax's Messages route.
+  Add that exact ID without copying native MiniMax efforts or limits.
+  Its **1,000,000 / 512,000** and vision/reasoning metadata are advisory
+  values from models.dev's Go entry, not verified Go service hard limits.
+  The current discovery still contains 37 identifiers, not a protocol matrix;
+  keep historical routes absent from today's list and defer unsupported
+  Gemini/other discovery-only protocols.
+- The [Kilo public model interface](https://api.kilo.ai/api/gateway/models)
+  confirms missing `kilo-auto/small`: **262,144** context, **32,768** output,
+  image/reasoning/tools support. Keep default output unset and effort options
+  empty for this dynamic virtual model. Small
+  [uses credits](https://kilo.ai/docs/getting-started/using-kilo-for-free);
+  it is not Free. Other Auto limits, including Free's 32,768, are unchanged.
+  OpenRouter Auto remains 2,000,000 context with unknown output ceiling.
+- Rechecked BytePlus Coding, both Volcengine plans and all three registered
+  Tencent TokenHub transports against their official protocol tables:
+  no additional confirmed registered-route differences. Tencent Responses
+  still has 28 IDs and requires JSON handling, complete chronological history
+  and no remote compaction. BytePlus `gpt-oss-120b` remains Chat-only.
+  Preserve Volcengine's seven historically reviewed dated IDs with their
+  unresolved subscription evidence and do not delete models merely marked
+  "upcoming offline".
+- Tencent [Coding](https://cloud.tencent.com/document/product/1772/128947),
+  [personal general/Hy](https://cloud.tencent.com/document/product/1823/130060),
+  [enterprise professional](https://cloud.tencent.com/document/product/1823/130659)
+  and [light](https://cloud.tencent.com/document/product/1823/131173) remain
+  distinct unregistered SKUs, each with per-model protocol/qualification gaps.
+  Personal uses `tc-code-latest`; enterprise uses `auto`, and light is
+  auto-only. Guangzhou and Singapore have separate hosts, keys and allowlists;
+  do not copy Guangzhou's Kimi K2.6/M2.7 eligibility to Singapore.
+  The personal/Coding interactive-use restrictions are not enterprise API
+  restrictions. Guangzhou retirements on **October 31** and **November 17,
+  2026** are still future events, not cross-region removal evidence.
+
 ## 2026-10-19 incremental review
 
 - Refreshed models.dev revision

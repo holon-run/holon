@@ -456,6 +456,11 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         Generic, AnthropicCompatible, None, None, None, StaticOnly, HostedMiddle
     ),
     provider!(
+        "minimax-cn" => "minimax-cn" @ "default",
+        AnthropicMessages, "https://api.minimax.cn/anthropic", ["MINIMAX_CN_API_KEY"],
+        Generic, AnthropicCompatible, None, None, None, StaticOnly
+    ),
+    provider!(
         "minimax-m-plan" => "minimax" @ "m-plan",
         AnthropicMessages, "https://api.minimax.io/anthropic", ["MINIMAX_M_PLAN_API_KEY"],
         Generic, AnthropicCompatible, None, None, None, StaticOnly
@@ -529,5 +534,21 @@ mod tests {
         let default = provider_definition("minimax").unwrap();
         assert_eq!(default.route_endpoint, "default");
         assert_eq!(default.credential_envs, &["MINIMAX_API_KEY"]);
+        let china_default = provider_definition("minimax-cn").unwrap();
+        assert_eq!(china_default.route_provider, "minimax-cn");
+        assert_eq!(china_default.route_endpoint, "default");
+        assert_eq!(
+            china_default.default_base_url,
+            "https://api.minimax.cn/anthropic"
+        );
+        assert_eq!(china_default.credential_envs, &["MINIMAX_CN_API_KEY"]);
+        assert_eq!(
+            china_default.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            china_default.catalog_policy,
+            ProviderCatalogPolicy::StaticOnly
+        );
     }
 }
