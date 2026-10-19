@@ -394,7 +394,7 @@ fn opencode_go_registers_chat_messages_and_responses_endpoints() {
 }
 
 #[test]
-fn tencent_tokenhub_registers_chat_and_messages_endpoints() {
+fn tencent_tokenhub_registers_chat_messages_and_responses_endpoints() {
     let entries = built_in_provider_doc_entries().unwrap();
     let mut endpoints = entries
         .into_iter()
@@ -424,6 +424,12 @@ fn tencent_tokenhub_registers_chat_and_messages_endpoints() {
                 "tencent-tokenhub-messages".to_string(),
                 ProviderTransportKind::AnthropicMessages,
                 "https://tokenhub.tencentmaas.com".to_string(),
+            ),
+            (
+                "responses".to_string(),
+                "tencent-tokenhub-responses".to_string(),
+                ProviderTransportKind::OpenAiResponses,
+                "https://tokenhub.tencentmaas.com/v1".to_string(),
             ),
         ]
     );

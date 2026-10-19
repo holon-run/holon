@@ -2,6 +2,9 @@
 
 use super::message_dispatch::message_text;
 use super::*;
+use crate::runtime_error::{
+    IdleInputRecoveryPredicate as RecoveryPredicate, IdleInputRecoveryRejection,
+};
 use crate::types::{IdleInputBatchItem, IdleInputBatchRecord};
 use rusqlite::OptionalExtension;
 
@@ -11,6 +14,55 @@ pub(crate) const INPUT_BATCH_SCAN: usize = 64;
 const OVERSIZE_PREVIEW_BYTES: usize = 4096;
 pub(crate) const BATCH_HEADER: &str =
     "Current input batch (receive order; each item retains its own authority and reply route):\n";
+
+pub(super) fn validate_idle_recovery_predecessor(
+    anchor: &MessageEnvelope,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    prior: Option<&crate::domain::execution_protocol::ExecutionAttempt>,
+    batch: &IdleInputBatchRecord,
+) -> std::result::Result<(), IdleInputRecoveryRejection> {
+    let missing = || {
+        IdleInputRecoveryRejection::new(
+            RecoveryPredicate::PredecessorMissing,
+            if attempt.recovery_of_attempt_id.is_some() {
+                "predecessor"
+            } else {
+                "attempt.recovery_of_attempt_id"
+            },
+        )
+    };
+    let prior = prior.ok_or_else(missing)?;
+    let failure =
+        if prior.state != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted {
+            Some((
+                RecoveryPredicate::PredecessorNotInterrupted,
+                "predecessor.state",
+            ))
+        } else if prior.agent_id != anchor.agent_id {
+            Some((
+                RecoveryPredicate::PredecessorAgentMismatch,
+                "predecessor.agent",
+            ))
+        } else if prior.source_message_id != attempt.source_message_id {
+            Some((
+                RecoveryPredicate::PredecessorSourceMismatch,
+                "predecessor.source_message",
+            ))
+        } else if prior.binding != attempt.binding {
+            Some((
+                RecoveryPredicate::PredecessorBindingMismatch,
+                "predecessor.binding",
+            ))
+        } else if batch.activation_id.as_deref() != Some(prior.attempt_id.as_str()) {
+            Some((RecoveryPredicate::ActivationMismatch, "batch.activation_id"))
+        } else {
+            None
+        };
+    match failure {
+        Some((predicate, field)) => Err(IdleInputRecoveryRejection::new(predicate, field)),
+        None => Ok(()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SenderScope {
@@ -1222,56 +1274,150 @@ impl RuntimeHandle {
                 .recovery_of_attempt_id
                 .as_ref()
                 .and_then(|id| execution.attempts.get(id));
-            if !prior.is_some_and(|prior| {
-                prior.state == crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
-                    && prior.agent_id == anchor.agent_id
-                    && prior.source_message_id == attempt.source_message_id
-                    && prior.binding == attempt.binding
-                    && batch.activation_id.as_deref() == Some(prior.attempt_id.as_str())
-            }) || anchor.source_refs.get("replay_source_turn_id") != Some(&replay.source_turn_id)
-                || anchor.source_refs.get("replay_reason").map(String::as_str)
-                    != Some("interrupted_queue_claim_reentry")
-                || source.agent_id != anchor.agent_id
-                || source.turn_id != replay.source_turn_id
-                || replay.source_message_id != anchor.id
-                || source.effective_owner() != turn.effective_owner()
-                || source
+            let rejection = |predicate, field| {
+                IdleInputRecoveryRejection::new(predicate, field)
+                    .with_id("message_id", Some(&anchor.id))
+                    .with_id("turn_id", Some(&turn.turn_id))
+                    .with_id("activation_id", Some(activation_id))
+                    .with_id(
+                        "predecessor_activation_id",
+                        attempt.recovery_of_attempt_id.as_deref(),
+                    )
+                    .with_id("source_turn_id", Some(&replay.source_turn_id))
+                    .with_id("batch_activation_id", batch.activation_id.as_deref())
+            };
+            macro_rules! reject_if {
+                ($condition:expr, $predicate:ident, $field:literal) => {
+                    if $condition {
+                        return Err(rejection(RecoveryPredicate::$predicate, $field).into());
+                    }
+                };
+            }
+            validate_idle_recovery_predecessor(anchor, attempt, prior, &batch)
+                .map_err(|reason| rejection(reason.predicate, reason.field))?;
+            reject_if!(
+                anchor.source_refs.get("replay_source_turn_id") != Some(&replay.source_turn_id),
+                ReplaySourceMismatch,
+                "replay.source_selector"
+            );
+            reject_if!(
+                anchor.source_refs.get("replay_reason").map(String::as_str)
+                    != Some("interrupted_queue_claim_reentry"),
+                ReplayReasonMismatch,
+                "replay.reason"
+            );
+            reject_if!(
+                source.agent_id != anchor.agent_id,
+                SourceAgentMismatch,
+                "source.agent"
+            );
+            reject_if!(
+                source.turn_id != replay.source_turn_id,
+                ReplaySourceMismatch,
+                "source.turn_id"
+            );
+            reject_if!(
+                replay.source_message_id != anchor.id,
+                ReplayMessageMismatch,
+                "replay.source_message"
+            );
+            reject_if!(
+                source.effective_owner() != turn.effective_owner(),
+                OwnerMismatch,
+                "source.owner"
+            );
+            reject_if!(
+                source
                     .trigger
                     .as_ref()
                     .and_then(|trigger| trigger.message_id.as_deref())
-                    != Some(anchor.id.as_str())
-                || batch.anchor_message_id != anchor.id
-                || batch.items.first().map(|item| item.message_id.as_str())
-                    != Some(anchor.id.as_str())
-                || batch.items.len() > INPUT_BATCH_ITEMS
-                || render_batch(&batch).len() != batch.rendered_bytes
-                || batch.rendered_bytes > batch.max_bytes
-                || batch.max_bytes > INPUT_BATCH_BYTES
-            {
-                bail!("idle input recovery does not match canonical predecessor admission");
-            }
+                    != Some(anchor.id.as_str()),
+                SourceTriggerMismatch,
+                "source.trigger.message"
+            );
+            reject_if!(
+                batch.anchor_message_id != anchor.id,
+                BatchAnchorMismatch,
+                "batch.anchor_message"
+            );
+            reject_if!(
+                batch.items.first().map(|item| item.message_id.as_str())
+                    != Some(anchor.id.as_str()),
+                BatchAnchorMismatch,
+                "batch.first_item"
+            );
+            reject_if!(
+                batch.items.len() > INPUT_BATCH_ITEMS,
+                BatchIntegrityMismatch,
+                "batch.item_count"
+            );
+            reject_if!(
+                render_batch(&batch).len() != batch.rendered_bytes,
+                BatchIntegrityMismatch,
+                "batch.rendered_bytes"
+            );
+            reject_if!(
+                batch.rendered_bytes > batch.max_bytes,
+                BatchIntegrityMismatch,
+                "batch.max_bytes"
+            );
+            reject_if!(
+                batch.max_bytes > INPUT_BATCH_BYTES,
+                BatchIntegrityMismatch,
+                "batch.global_byte_budget"
+            );
             let mut seen = std::collections::BTreeSet::new();
             for item in &batch.items {
-                if !seen.insert(&item.message_id)
-                    || !source.input_message_ids.contains(&item.message_id)
-                    || item.source_ref != format!("message:{}", item.message_id)
-                    || self
+                reject_if!(
+                    !seen.insert(&item.message_id),
+                    AttachmentEvidenceMismatch,
+                    "attachment.duplicate_item"
+                );
+                reject_if!(
+                    !source.input_message_ids.contains(&item.message_id),
+                    AttachmentEvidenceMismatch,
+                    "attachment.source_membership"
+                );
+                reject_if!(
+                    item.source_ref != format!("message:{}", item.message_id),
+                    AttachmentEvidenceMismatch,
+                    "attachment.source_ref"
+                );
+                let Some(message) = self.inner.storage.read_message_by_id(&item.message_id)? else {
+                    return Err(rejection(
+                        RecoveryPredicate::AttachmentEvidenceMismatch,
+                        "attachment.message_missing",
+                    )
+                    .into());
+                };
+                reject_if!(
+                    message.agent_id != anchor.agent_id,
+                    AttachmentEvidenceMismatch,
+                    "attachment.message_agent"
+                );
+                if item.message_id != anchor.id {
+                    let Some(queue) = self
                         .inner
-                        .storage
-                        .read_message_by_id(&item.message_id)?
-                        .is_none_or(|message| message.agent_id != anchor.agent_id)
-                    || (item.message_id != anchor.id
-                        && self
-                            .inner
-                            .runtime_db
-                            .queue_entries()
-                            .latest(&item.message_id)?
-                            .is_none_or(|queue| {
-                                queue.agent_id != anchor.agent_id
-                                    || queue.status != QueueEntryStatus::Interjected
-                            }))
-                {
-                    bail!("idle input recovery is missing durable attachment evidence");
+                        .runtime_db
+                        .queue_entries()
+                        .latest(&item.message_id)?
+                    else {
+                        return Err(rejection(
+                            RecoveryPredicate::AttachmentEvidenceMismatch,
+                            "attachment.queue_missing",
+                        )
+                        .into());
+                    };
+                    reject_if!(
+                        queue.agent_id != anchor.agent_id,
+                        AttachmentEvidenceMismatch,
+                        "attachment.queue_agent"
+                    );
+                    reject_if!(
+                        queue.status != QueueEntryStatus::Interjected,
+                        AttachmentEvidenceMismatch,
+                        "attachment.queue_status"
+                    );
                 }
             }
             for item in &batch.items {

@@ -237,6 +237,29 @@ different object `turn_id` makes the reference ineligible for that turn even
 when the object id appears in `TurnRecord`. This protects prompt assembly from
 already-persisted cross-turn references.
 
+Historical message references have a separate diagnostic classification:
+`OwnedByTurn`, `VerifiedReplayReference`, or `ForeignOrUnverifiableReference`.
+Only the first class is eligible for hydration. Verified replay does not grant
+ownership, admit input, or make a historical body a current continuation.
+
+For an interrupted queue replay, lowering a cross-turn input/trigger diagnostic
+to debug requires the same agent and effective owner, matching anchor/trigger
+and canonical source identity, the explicit `interrupted_queue_claim_reentry`
+reason, and the concrete message's membership in both admitted idle snapshots.
+The predecessor snapshot's activation must identify the canonical interrupted
+attempt to which the younger activation's recovery pointer refers. The snapshot
+contents must be unchanged apart from their activation binding.
+Repeated restarts follow exact-id replay ancestry with cycle detection and at
+most 64 predecessor edges; the anchor and any follower retain their own ingress
+stamps, which need not name the immediate predecessor turn. This check uses
+point lookups, not a history scan or a global cache.
+
+Input/trigger diagnostics are deduplicated by `(turn_id, message_id)` within one
+context build. Missing legacy evidence and foreign, cyclic, or over-depth
+references remain warnings described as foreign or unverifiable, not proven
+corruption. Diagnostics contain reference identifiers and fixed classification
+labels, never message bodies, rendered snapshots, or free-form replay reasons.
+
 ### 5.4 Classify Current Input Relation Before Rendering History
 
 Every prompt should make the current turn relation explicit:

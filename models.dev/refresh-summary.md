@@ -1,6 +1,6 @@
 # models.dev refresh summary
 
-- Supplement models: 54 (drafted this run: 0, retained: 54, removed: 0)
+- Supplement models: 52 (drafted this run: 0, retained: 52, removed: 0)
 - Deferred candidates: 212 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
