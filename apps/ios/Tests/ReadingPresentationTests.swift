@@ -18,6 +18,34 @@ final class ReadingPresentationTests: XCTestCase {
         XCTAssertTrue(ReadingPresentation.showsConnectionRetry(status: .offline, isRefreshing: false))
     }
 
+    func testPendingConnectionVerificationUpdatesCachedCopyInsteadOfClaimingOffline() {
+        XCTAssertEqual(ReadingPresentation.connectionStatusKey(
+            status: .offline, hasContent: true, isCached: true, isRefreshing: false, connecting: true
+        ), "reading.cache.refreshing")
+        XCTAssertEqual(ReadingPresentation.connectionStatusKey(
+            status: .offline, hasContent: false, isCached: false, isRefreshing: false, connecting: true
+        ), "reading.status.syncing")
+        XCTAssertEqual(ReadingPresentation.connectionStatusKey(
+            status: .offline, hasContent: true, isCached: true, isRefreshing: false, connecting: false
+        ), "reading.cache.offline")
+        XCTAssertFalse(ReadingPresentation.showsConnectionRetry(status: .offline, isRefreshing: false, connecting: true))
+        XCTAssertTrue(ReadingPresentation.showsConnectionRetry(status: .offline, isRefreshing: false, connecting: false))
+        XCTAssertFalse(ReadingPresentation.showsConnectionRetry(status: .incompatible, isRefreshing: false, connecting: true))
+    }
+
+    func testConnectingDoesNotDisguiseAuthorizationFailuresOrSettledStates() {
+        for status in [ReadingStatus.permissionDenied, .sessionExpired, .incompatible] {
+            XCTAssertEqual(ReadingPresentation.connectionStatusKey(
+                status: status, hasContent: true, isCached: true, isRefreshing: false, connecting: true
+            ), "reading.status." + status.rawValue)
+        }
+        XCTAssertNil(ReadingPresentation.connectionStatusKey(
+            status: .live, hasContent: true, isCached: false, isRefreshing: false, connecting: true))
+        XCTAssertEqual(ReadingPresentation.connectionStatusKey(
+            status: .syncing, hasContent: false, isCached: false, isRefreshing: false, connecting: true
+        ), "reading.status.syncing")
+    }
+
     func testAuthorizationAndProtocolErrorsAreNotDisguisedAsCacheRefresh() {
         for status in [ReadingStatus.permissionDenied, .sessionExpired, .incompatible] {
             XCTAssertEqual(ReadingPresentation.connectionStatusKey(
