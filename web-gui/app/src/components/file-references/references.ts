@@ -1,15 +1,17 @@
 import type { FileReference, ResolvedFileLocation, WorkspaceFileLocation, FileOpenTarget } from "../../runtime/types";
+import { classifyWebReference, type WebReference } from "../../app/web-urls";
 
 export type FileTarget = FileOpenTarget;
 export type Reference =
-  | { kind: "external" }
+  | WebReference
   | { kind: "anchor"; fragment: string }
   | { kind: "error"; message: string }
   | { kind: "file"; reference: FileReference; fragment?: string };
 
 /** URL syntax is decoded here once. Inline code is already a literal host path. */
 export function classifyReference(raw: string, base?: ResolvedFileLocation, literal = false): Reference {
-  if (/^(https?:|mailto:)/i.test(raw)) return { kind: "external" };
+  const web = classifyWebReference(raw);
+  if (web) return web;
   try {
     if (/^file:\/\//i.test(raw)) {
       const url = new URL(raw);
@@ -56,6 +58,8 @@ export function fragmentOf(raw: string): string | undefined {
 }
 
 export function isInlineReference(value: string, hasBase: boolean): boolean {
+  // Invalid Web targets are still code, not literal host-file references.
+  if (value.startsWith("/") && classifyWebReference(value) !== undefined) return false;
   return /^(workspace|file):\/\//i.test(value) || /^(https?:\/\/|mailto:)\S+$/i.test(value)
     || value.startsWith("/")
     || (hasBase && /^(\.\.?\/)/.test(value));

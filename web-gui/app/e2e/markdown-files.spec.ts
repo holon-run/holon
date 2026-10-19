@@ -33,6 +33,95 @@ async function mockFiles(context: BrowserContext) {
 }
 const preview = (path: string) => `/files?${new URLSearchParams({ workspace: "ws", root, path })}`;
 
+test("App and GUI links bypass file resolution while host paths keep resolver semantics", async ({ page, context }, info) => {
+  test.setTimeout(60_000);
+  await context.addCookies([{ name: "holon_e2e_session", value: `web-links-${info.testId}-${info.retry}-${info.repeatEachIndex}`, domain: "127.0.0.1", path: "/" }]);
+  await mockFiles(context);
+  const app = "/apps/bootstrap-agent/dashboard/?mode=wide#chart";
+  const crossAgentApp = "/apps/other-agent/reports/view?range=week#summary";
+  const unknownApp = "/apps/unknown-agent/not-installed/?mode=preview#start";
+  const bareApp = "/apps/bootstrap-agent/dashboard/assets/index.html?mode=compact#details";
+  const agentWeb = "/agents/other-agent/conversation?view=recent#latest";
+  const filesWeb = "/files?workspace=ws&path=base.md#target";
+  const inlineApp = "/apps/bootstrap-agent/inline-code";
+  const invalidInlineApp = "/apps/a/b/%2e%2e/x";
+  const fencedApp = "/apps/other-agent/fenced-code";
+  const markdown = [
+    `[App dashboard](${app})`,
+    `[Cross-agent App][reports]`,
+    `[Unknown App](${unknownApp})`,
+    `Open ${bareApp} here.`,
+    `[Agent conversation](${agentWeb})`,
+    `[Files GUI](${filesWeb})`,
+    `[Host file](/tmp/feature/host.md#target)`,
+    "[Unknown root](/unknown-root/report.md)",
+    "[Incomplete App path](/apps/a)",
+    "[Explicit file URL](file:///apps/a/b)",
+    `\`${inlineApp}\``,
+    `\`${invalidInlineApp}\``,
+    `\`\`\`text\n${fencedApp}\n\`\`\``,
+    "[Unsafe JavaScript](javascript:alert%281%29)",
+    "[Unsafe data](data:text/html,unsafe)",
+    "[Unsafe VBScript](vbscript:msgbox%281%29)",
+    `[reports]: ${crossAgentApp}`,
+  ].join("\n\n");
+  await context.route("**/api/workspaces/ws/files/base.md**", (route) => route.fulfill({ json: {
+    ...locator("base.md"), type: "file", mime_type: "text/markdown", content: markdown, size: markdown.length,
+  } }));
+  const batches: any[][] = [];
+  await context.route("**/api/file-references/resolve", async (route) => {
+    const refs = route.request().postDataJSON().references;
+    batches.push(refs);
+    await route.fulfill({ json: { results: refs.map((ref: any) => ref.absolute_path === "/tmp/feature/host.md"
+      ? { status: "resolved", location: locator("host.md") }
+      : { status: "unresolved", reason: "not_found", message: "File not found" }) } });
+  });
+  // Fulfill popup navigations locally, including unknown Apps: no discovery or live App server is required.
+  await context.route("**/apps/**", (route) => route.fulfill({ contentType: "text/html", body: "<h1>App navigation</h1>" }));
+  await page.goto(preview("base.md"));
+  const content = page.locator(".file-browser-markdown");
+  for (const [name, href] of [
+    ["App dashboard", app],
+    ["Cross-agent App", crossAgentApp],
+    ["Unknown App", unknownApp],
+    [bareApp, bareApp],
+    ["Agent conversation", agentWeb],
+    ["Files GUI", filesWeb],
+  ]) {
+    const link = content.getByRole("link", { name, exact: true });
+    await expect(link).toHaveAttribute("href", href);
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", /(?:^|\s)noopener(?:\s|$)/);
+    await expect(link).toHaveAttribute("rel", /(?:^|\s)noreferrer(?:\s|$)/);
+  }
+  await expect(content.getByRole("link", { name: "Host file", exact: true })).toHaveAttribute("href", preview("host.md") + "#target");
+  for (const path of ["/unknown-root/report.md", "/apps/a", "file:///apps/a/b"]) {
+    await expect(content.getByText(path, { exact: true })).toHaveAttribute("title", "not_found: File not found");
+  }
+  for (const path of [inlineApp, invalidInlineApp, fencedApp]) {
+    const code = content.locator("code").filter({ hasText: path });
+    await expect(code).toBeVisible();
+    await expect(code.locator("a")).toHaveCount(0);
+    await expect(content.getByRole("link", { name: path, exact: true })).toHaveCount(0);
+  }
+  await expect(content.locator('a[href^="javascript:" i], a[href^="data:" i], a[href^="vbscript:" i]')).toHaveCount(0);
+  for (const name of ["App dashboard", "Cross-agent App", "Unknown App", bareApp]) {
+    const popupEvent = context.waitForEvent("page");
+    await content.getByRole("link", { name, exact: true }).click();
+    const popup = await popupEvent;
+    const href = name === "App dashboard" ? app : name === "Cross-agent App" ? crossAgentApp : name === "Unknown App" ? unknownApp : bareApp;
+    await expect(popup).toHaveURL(new URL(href, page.url()).href);
+    await expect(popup.getByRole("heading", { name: "App navigation" })).toBeVisible();
+    await popup.close();
+  }
+  expect(batches.flat().map((ref) => ref.absolute_path).sort()).toEqual([
+    "/apps/a", "/apps/a/b", "/tmp/feature/host.md", "/unknown-root/report.md",
+  ]);
+  await content.getByRole("link", { name: "Host file", exact: true }).click();
+  await expect(content).toContainText("Worktree contents");
+  await expect(page).toHaveURL(new URL(preview("host.md") + "#target", page.url()).href);
+});
+
 test("Explorer shares resolver rules; native new-tab links, fragments, images and refresh preserve the root", async ({ page, context }, info) => {
   // Popup navigation plus multiple markdown renders make this the heaviest spec
   // in the suite; the default 30s test timeout is too tight under parallel load.
