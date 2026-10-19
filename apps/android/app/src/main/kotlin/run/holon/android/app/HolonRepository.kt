@@ -278,7 +278,7 @@ internal class HolonRepository(
         }
     }
 
-    suspend fun resume(): ResumeResult {
+    suspend fun resume(onCached: (suspend (ResumeResult.Offline) -> Unit)? = null): ResumeResult {
         val profile = preferences.selectedProfile()
             ?: run {
                 sessionStore.clear()
@@ -302,6 +302,8 @@ internal class HolonRepository(
         val scopedStore = credentialStore(profile.networkId)
         if (scopedStore.read().isNullOrBlank()) return ResumeResult.NoSession
         val candidate = clientFor(saved.baseUrl, profile.networkId)
+        // Await cache delivery before HTTP so it cannot overwrite the online snapshot.
+        if (onCached != null) onCached(offlineResult(saved, candidate))
         return try {
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
@@ -401,8 +403,11 @@ internal class HolonRepository(
 
     suspend fun networkProfiles(): List<NetworkProfile> = preferences.profiles()
 
-    suspend fun switchNetwork(networkId: String): ResumeResult {
-        if (active?.networkId == networkId) return resume()
+    suspend fun switchNetwork(
+        networkId: String,
+        onCached: suspend (ResumeResult.Offline) -> Unit,
+    ): ResumeResult {
+        if (active?.networkId == networkId) return resume(onCached)
         traceRecorder.record(
             TraceScope.Network(networkId),
             TraceLevel.INFO,
@@ -411,7 +416,7 @@ internal class HolonRepository(
         )
         sessions.clear()
         preferences.selectProfile(networkId)
-        return resume().also {
+        return resume(onCached).also {
             traceRecorder.record(
                 TraceScope.Network(networkId),
                 TraceLevel.INFO,

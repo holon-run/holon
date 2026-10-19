@@ -70,8 +70,11 @@ internal data class ConnectionUiState(
     val browserLoginUrl: String? = null,
 )
 
+internal enum class AgentRosterState { NotLoaded, Cached, Synced }
+
 internal data class AgentsUiState(
     val agents: List<AgentSummary> = emptyList(),
+    val rosterState: AgentRosterState = AgentRosterState.NotLoaded,
     val operatorPreviews: Map<String, OperatorPreview?> = emptyMap(),
     val briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
     val briefReadStatesLoaded: Boolean = false,
@@ -201,6 +204,8 @@ internal data class HolonUiState(
         networkProfiles: List<NetworkProfile> = emptyList(),
         switchingNetworkId: String? = null,
         agents: List<AgentSummary> = emptyList(),
+        rosterState: AgentRosterState =
+            if (online) AgentRosterState.Synced else if (agents.isNotEmpty()) AgentRosterState.Cached else AgentRosterState.NotLoaded,
         operatorPreviews: Map<String, OperatorPreview?> = emptyMap(),
         briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
         briefReadStatesLoaded: Boolean = false,
@@ -262,7 +267,7 @@ internal data class HolonUiState(
         search: String = "",
     ) : this(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
-        agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
+        agentsState = AgentsUiState(agents = agents, rosterState = rosterState, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
         conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
@@ -291,6 +296,7 @@ internal data class HolonUiState(
     val networkProfiles: List<NetworkProfile> get() = shellState.networkProfiles
     val switchingNetworkId: String? get() = shellState.switchingNetworkId
     val agents: List<AgentSummary> get() = agentsState.agents
+    val rosterState: AgentRosterState get() = agentsState.rosterState
     val operatorPreviews: Map<String, OperatorPreview?> get() = agentsState.operatorPreviews
     val briefReadStates: Map<String, HolonBriefReadState> get() = agentsState.briefReadStates
     val briefReadStatesLoaded: Boolean get() = agentsState.briefReadStatesLoaded
@@ -383,6 +389,7 @@ internal data class HolonUiState(
         networkProfiles: List<NetworkProfile> = this.networkProfiles,
         switchingNetworkId: String? = this.switchingNetworkId,
         agents: List<AgentSummary> = this.agents,
+        rosterState: AgentRosterState = this.rosterState,
         operatorPreviews: Map<String, OperatorPreview?> = this.operatorPreviews,
         briefReadStates: Map<String, HolonBriefReadState> = this.briefReadStates,
         briefReadStatesLoaded: Boolean = this.briefReadStatesLoaded,
@@ -449,7 +456,7 @@ internal data class HolonUiState(
         search: String = this.search,
     ): HolonUiState = HolonUiState(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
-        agentsState = AgentsUiState(agents = agents, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
+        agentsState = AgentsUiState(agents = agents, rosterState = rosterState, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
         conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
@@ -480,6 +487,22 @@ internal data class HolonUiState(
                     it.id.contains(search, ignoreCase = true)
             }
 }
+
+internal fun HolonUiState.forSwitchingNetwork(profile: NetworkProfile): HolonUiState =
+    // Only shell-owned state crosses identities; projections and selections do not.
+    HolonUiState(
+        phase = AppPhase.Ready,
+        baseUrl = profile.baseUrl,
+        allowInsecureHttp = profile.allowInsecureHttp,
+        networkProfiles = networkProfiles,
+        mainDestination = mainDestination,
+        pendingShare = pendingShare,
+        queuedShares = queuedShares,
+        updateState = updateState,
+        busy = true,
+        switchingNetworkId = profile.networkId,
+        statusMessage = "正在切换到 ${profile.displayName}…",
+    )
 
 internal fun HolonUiState.forAddingNetwork(): HolonUiState =
     copy(

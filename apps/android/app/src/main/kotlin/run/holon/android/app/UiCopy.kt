@@ -283,6 +283,15 @@ internal object UiCopy {
         已提交输入|Input submitted
         已连接|Connected
         已同步|Synced
+        加载中|Loading
+        未加载|Not loaded
+        更新中|Updating
+        上次同步内容 · 更新中|Last synced content · Updating
+        正在加载 Agent…|Loading Agents…
+        正在连接并获取此网络的 Agent 列表。|Connecting and loading this network's Agents.
+        暂时无法加载 Agent|Agents unavailable
+        没有可用缓存，请连接网络后重试。|No cached Agents; connect to the network and retry.
+        当前离线，暂无本地缓存|Offline; no cached Agents available
         开始会话|Start a conversation
         当前工作|Current work
         当前步骤|Current step
@@ -551,6 +560,7 @@ internal object UiCopy {
         fun count(value: String, singular: String, plural: String = "${singular}s") =
             "$value ${if (value == "1") singular else plural}"
 
+        match("(\\d+|—) 个 Agent")?.let { return count(it[1], "Agent") }
         match("(\\d+) 个 Agent · (已同步|已连接|离线缓存)(.*)")?.let { (_, value, status, clock) ->
             return "${count(value, "Agent")} · ${translate(status, "en")}$clock"
         }

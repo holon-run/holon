@@ -229,6 +229,7 @@ internal class HolonViewModel(
                             baseUrl = result.session.baseUrl,
                             networkProfiles = profiles,
                             agents = result.roster.agents,
+                            rosterState = AgentRosterState.Synced,
                         )
                     }
                     loadBriefReadStates()
@@ -244,7 +245,8 @@ internal class HolonViewModel(
                             baseUrl = result.session.baseUrl,
                             networkProfiles = profiles,
                             agents = result.cached.map(AgentProjectionEntity::toAgentSummary),
-                            statusMessage = "当前离线，显示上次同步内容",
+                            rosterState = if (result.cached.isEmpty()) AgentRosterState.NotLoaded else AgentRosterState.Cached,
+                            statusMessage = if (result.cached.isEmpty()) "当前离线，暂无本地缓存" else "当前离线，显示上次同步内容",
                         )
                     }
                     loadBriefReadStates()
@@ -349,26 +351,26 @@ internal class HolonViewModel(
         if (before.busy || before.session?.networkId == networkId) return
         val generation = invalidateLiveSync()
         sessionTransitionGeneration += 1
-        mutableState.update {
-            it.copy(
-                busy = true,
-                switchingNetworkId = networkId,
-                error = null,
-                statusMessage = "正在切换到 ${profile.displayName}…",
-                selectedAgent = null,
-                conversation = null,
-                olderTurns = emptyList(),
-                historyBeforeCursor = null,
-                agents = emptyList(),
-            )
-        }
+        mutableState.update { it.forSwitchingNetwork(profile) }
         sessionResetBarrier.beginTransition()
         viewModelScope.launch {
             try {
                 sessionResetBarrier.await()
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repository.switchNetwork(networkId) to repository.networkProfiles()
+                    repository.switchNetwork(networkId) { cached ->
+                        withContext(Dispatchers.Main.immediate) {
+                            if (generation != liveSyncGeneration) throw CancellationException("Network switch superseded")
+                            mutableState.update {
+                                it.copy(
+                                    session = cached.session,
+                                    agents = cached.cached.map(AgentProjectionEntity::toAgentSummary),
+                                    rosterState = if (cached.cached.isEmpty()) AgentRosterState.NotLoaded else AgentRosterState.Cached,
+                                    statusMessage = if (cached.cached.isEmpty()) "正在加载 Agent…" else "上次同步内容 · 更新中",
+                                )
+                            }
+                        }
+                    } to repository.networkProfiles()
                 }
             }.onSuccess { (result, profiles) ->
                 if (generation != liveSyncGeneration) {
@@ -386,6 +388,8 @@ internal class HolonViewModel(
                                 token = "",
                                 allowInsecureHttp = false,
                                 session = null,
+                                agents = emptyList(),
+                                rosterState = AgentRosterState.NotLoaded,
                                 statusMessage = null,
                             )
                         }
@@ -401,6 +405,7 @@ internal class HolonViewModel(
                                 session = result.session,
                                 baseUrl = result.session.baseUrl,
                                 agents = result.roster.agents,
+                                rosterState = AgentRosterState.Synced,
                                 statusMessage = null,
                                 briefReadStates = emptyMap(),
                                 briefReadStatesLoaded = false,
@@ -424,7 +429,8 @@ internal class HolonViewModel(
                                 session = result.session,
                                 baseUrl = result.session.baseUrl,
                                 agents = result.cached.map(AgentProjectionEntity::toAgentSummary),
-                                statusMessage = "当前离线，显示上次同步内容",
+                                rosterState = if (result.cached.isEmpty()) AgentRosterState.NotLoaded else AgentRosterState.Cached,
+                                statusMessage = if (result.cached.isEmpty()) "当前离线，暂无本地缓存" else "当前离线，显示上次同步内容",
                                 briefReadStates = emptyMap(),
                                 briefReadStatesLoaded = false,
                                 readBriefIds = emptyMap(),
@@ -441,12 +447,15 @@ internal class HolonViewModel(
                                 baseUrl = result.baseUrl,
                                 allowInsecureHttp = false,
                                 session = null,
+                                agents = emptyList(),
+                                rosterState = AgentRosterState.NotLoaded,
                                 error = result.message,
                                 statusMessage = null,
                             )
                         }
                 }
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 if (generation == liveSyncGeneration) {
                     mutableState.update {
                         it.copy(busy = false, switchingNetworkId = null, error = humanError(error), statusMessage = null)
@@ -806,7 +815,7 @@ internal class HolonViewModel(
     }
 
     fun refresh(showProgress: Boolean = true) {
-        if (!foreground || state.value.phase != AppPhase.Ready) return
+        if (!foreground || state.value.phase != AppPhase.Ready || state.value.switchingNetworkId != null) return
         refreshConversationOnRoster = true
         if (showProgress) mutableState.update { it.copy(error = null) }
         rosterRefresh.request(showProgress)
@@ -821,6 +830,7 @@ internal class HolonViewModel(
             it.copy(
                 session = session,
                 agents = roster.agents,
+                rosterState = AgentRosterState.Synced,
                 briefReadStates = if (scopeChanged) emptyMap() else it.briefReadStates,
                 briefReadStatesLoaded = if (scopeChanged) false else it.briefReadStatesLoaded,
                 readBriefIds = if (scopeChanged) emptyMap() else it.readBriefIds,
@@ -969,7 +979,7 @@ internal class HolonViewModel(
     }
 
     fun openAgent(agent: AgentSummary) {
-        if (state.value.enqueueing) return
+        if (state.value.enqueueing || state.value.switchingNetworkId != null) return
         val sameAgentBeforeLoad = state.value.selectedAgent?.id == agent.id
         if (!sameAgentBeforeLoad) rememberConversation()
         val savedReading = if (!sameAgentBeforeLoad) readingCache["${state.value.session?.scopeKey}:${agent.id}"] else null
@@ -2519,6 +2529,7 @@ internal class HolonViewModel(
                     selectedAgent = null,
                     conversation = null,
                     agents = emptyList(),
+                    rosterState = AgentRosterState.NotLoaded,
                     error = "登录已失效，请重新登录",
                     statusMessage = null,
                 )
