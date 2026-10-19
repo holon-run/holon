@@ -755,6 +755,75 @@ final class HolonUITests: XCTestCase {
         app.terminate()
     }
 
+    func testRuntimeBrowserWorkflow() throws {
+        let endpoint = try required("ENDPOINT")
+        let code = try required("PAIRING_CODE")
+        let agent = try required("AGENT_ID")
+        guard endpoint.hasSuffix("/api"),
+              var components = URLComponents(string: endpoint),
+              code.count == 64, code.allSatisfy(\.isHexDigit) else {
+            XCTFail("Fixture endpoint must end /api and pairing code must be 64 hex characters.")
+            throw FixtureError.invalidEndpoint
+        }
+        components.path = String(components.path.dropLast(4)) + "/login"
+        components.fragment = "pair=" + code
+        let app = launch(language: "en", dark: false, large: false)
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        let pasteEntry = app.buttons["onboarding.pasteEntry"]
+        reveal(pasteEntry, in: app)
+        pasteEntry.tap()
+        let payload = app.secureTextFields["onboarding.payload"]
+        reveal(payload, in: app)
+        payload.tap()
+        payload.typeText(try XCTUnwrap(components.string))
+        payload.typeText("\n")
+        let keyboardDismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [keyboardDismissed], timeout: 5), .completed)
+        app.buttons["onboarding.preview"].tap()
+        XCTAssertTrue(app.staticTexts["onboarding.pairingTarget"].waitForExistence(timeout: 10))
+        let permission = app.switches["onboarding.pairingHTTP"]
+        reveal(permission, in: app)
+        permission.switches.firstMatch.tap()
+        agreeToSharingAtLogin(app)
+        let confirm = app.buttons["onboarding.confirmPairing"]
+        reveal(confirm, in: app)
+        XCTAssertTrue(confirm.isEnabled)
+        confirm.tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+        approveSharingThroughSettings(app)
+        let agentButton = app.buttons["agent." + agent]
+        XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
+        agentButton.tap()
+        let appLink = app.links["Open runtime app page"].firstMatch
+        XCTAssertTrue(appLink.waitForExistence(timeout: 30), "Fixture reply must link the runtime app page")
+        reveal(appLink, in: app)
+        appLink.tap()
+        let close = app.buttons["browser.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 15), "A classified app link opens the runtime browser")
+        // The WKHTTPCookieStore-bound holon_session cookie must authorize the
+        // app page's same-origin API fetch.
+        XCTAssertTrue(app.staticTexts["SESSION_200"].firstMatch.waitForExistence(timeout: 30),
+                      "The runtime browser session cookie must reach the runtime API")
+        // Stage 2 audit follow-up: the external confirm alert must stack over
+        // the presented full-screen browser cover.
+        let external = app.links["External probe"].firstMatch
+        XCTAssertTrue(external.waitForExistence(timeout: 15))
+        reveal(external, in: app)
+        external.tap()
+        // SwiftUI alert buttons surface as nested parent/child nodes sharing
+        // one identifier; firstMatch resolves the duplicated hierarchy.
+        let confirmExternal = app.buttons["browser.openExternal.confirm"].firstMatch
+        XCTAssertTrue(confirmExternal.waitForExistence(timeout: 10),
+                      "External navigations need an explicit confirm above the runtime browser")
+        app.buttons["browser.openExternal.cancel"].firstMatch.tap()
+        XCTAssertFalse(confirmExternal.waitForExistence(timeout: 5))
+        XCTAssertTrue(close.exists, "Cancelling the external confirm keeps the runtime browser open")
+        close.firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["sending.text"].firstMatch.waitForExistence(timeout: 15),
+                      "Closing the runtime browser returns to the conversation")
+    }
+
     private func openContentReport() throws -> XCUIApplication {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)

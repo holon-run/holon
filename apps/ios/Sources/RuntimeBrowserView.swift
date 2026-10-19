@@ -23,7 +23,9 @@ struct RuntimeBrowserHost<Content: View>: View {
         content()
             .environment(\.holonOpenWebLink) { href in open(href) }
             .fullScreenCover(item: $target) { open in
-                RuntimeBrowserScreen(target: open, connection: connection, onExternal: { externalHref = $0 },
+                // The external confirm must be owned by the cover itself: an
+                // alert dismissed from the presenting view tears the cover down.
+                RuntimeBrowserScreen(target: open, connection: connection,
                                      onClose: { target = nil })
             }
             .onChange(of: connection.identity) { _, _ in retireStaleTarget() }
@@ -33,7 +35,9 @@ struct RuntimeBrowserHost<Content: View>: View {
                     externalHref = nil
                     if let url = RuntimeBrowserPolicy.safeBrowserHTTPURL(href) { openURL(url) }
                 }
+                .accessibilityIdentifier("browser.openExternal.confirm")
                 Button("action.cancel", role: .cancel) { externalHref = nil }
+                .accessibilityIdentifier("browser.openExternal.cancel")
             } message: { href in
                 Text("browser.openExternalBody")
                     + Text(verbatim: "\n\(href)")
@@ -77,13 +81,14 @@ struct RuntimeBrowserHost<Content: View>: View {
 private struct RuntimeBrowserScreen: View {
     let target: RuntimeBrowserTarget
     let connection: ConnectionCoordinator
-    let onExternal: (String) -> Void
     let onClose: () -> Void
 
     @State private var page: RuntimeWebPage?
+    @State private var externalHref: String?
     @State private var retry = 0
     @State private var revision = 0
     @State private var revalidating = false
+    @Environment(\.openURL) private var openURL
 
     private var screenID: String { "\(target.url)#\(retry)" }
 
@@ -91,16 +96,20 @@ private struct RuntimeBrowserScreen: View {
         VStack(spacing: 0) {
             HStack {
                 Button("browser.back") { if page?.back() != true { onClose() } }
+                    .accessibilityIdentifier("browser.back")
                 Spacer()
                 Button("browser.close") { onClose() }
+                    .accessibilityIdentifier("browser.close")
                 Spacer()
                 Button("browser.reload") { page?.reload() }
+                    .accessibilityIdentifier("browser.reload")
             }
             .padding(.horizontal, 12)
             .frame(minHeight: 44)
             Text((page?.title ?? "").prefix(120))
                 .lineLimit(1)
                 .padding(.horizontal, 12)
+                .accessibilityIdentifier("browser.title")
             Text(identityLine)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -110,8 +119,10 @@ private struct RuntimeBrowserScreen: View {
                 Button("browser.copyLink") {
                     UIPasteboard.general.string = page?.url ?? target.url
                 }
+                .accessibilityIdentifier("browser.copyLink")
                 Spacer()
-                Button("browser.systemOpen") { onExternal(page?.url ?? target.url) }
+                Button("browser.systemOpen") { externalHref = page?.url ?? target.url }
+                .accessibilityIdentifier("browser.systemOpen")
                 Spacer()
                 Button("browser.revalidate") {
                     revalidating = true
@@ -131,8 +142,12 @@ private struct RuntimeBrowserScreen: View {
                     .foregroundStyle(.red)
                     .font(.footnote)
                     .padding(.horizontal, 12)
+                    .accessibilityIdentifier("browser.error")
             }
-            if page?.loading == true { ProgressView().frame(maxWidth: .infinity) }
+            if page?.loading == true {
+                ProgressView().frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("browser.loading")
+            }
             if let page {
                 RuntimeWebView(page: page, revision: revision)
                     // Mirror Android's key(page): a new RuntimeWebPage must mount a new
@@ -145,8 +160,24 @@ private struct RuntimeBrowserScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .alert("browser.openExternalTitle", isPresented: externalPresented, presenting: externalHref) { href in
+            Button("browser.openExternalConfirm") {
+                externalHref = nil
+                if let url = RuntimeBrowserPolicy.safeBrowserHTTPURL(href) { openURL(url) }
+            }
+            .accessibilityIdentifier("browser.openExternal.confirm")
+            Button("action.cancel", role: .cancel) { externalHref = nil }
+            .accessibilityIdentifier("browser.openExternal.cancel")
+        } message: { href in
+            Text("browser.openExternalBody")
+                + Text(verbatim: "\n\(href)")
+        }
         .task(id: screenID) { open() }
         .onDisappear { page?.close(); page = nil }
+    }
+
+    private var externalPresented: Binding<Bool> {
+        Binding(get: { externalHref != nil }, set: { if !$0 { externalHref = nil } })
     }
 
     private var identityLine: String {
@@ -169,7 +200,7 @@ private struct RuntimeBrowserScreen: View {
                 case .failure: write(nil)
                 }
             },
-            onExternal: onExternal,
+            onExternal: { externalHref = $0 },
             onAuthenticationFailure: { connection.runtimeBrowserAuthenticationFailed(target.lease) },
             onChanged: { revision += 1 })
     }

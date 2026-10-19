@@ -207,8 +207,25 @@ final class ConnectionCoordinator {
             defer { Task { await client.close() } }
             let user = try await client.currentUser().value
             guard isRuntimeBrowserLeaseCurrent(lease) else { return false }
-            return user.userId == lease.identity.userID
+            return runtimeBrowserSessionMatches(user, lease: lease)
+        } catch let failure as HolonHTTPFailure where failure.statusCode == 401 {
+            runtimeBrowserRevalidationUnauthorized(lease)
+            return false
         } catch { return false }
+    }
+
+    /// A revalidated user that no longer matches the lease fails the
+    /// revalidation without revoking anything.
+    func runtimeBrowserSessionMatches(_ user: HolonCurrentUser, lease: RuntimeBrowserLease) -> Bool {
+        user.userId == lease.identity.userID
+    }
+
+    /// A 401 during revalidation shares the web/native session revocation path
+    /// — the same contract as a web-page 401 — instead of waiting for the next
+    /// native request to notice the expiry. Other failures only fail the
+    /// revalidation itself.
+    func runtimeBrowserRevalidationUnauthorized(_ lease: RuntimeBrowserLease) {
+        runtimeBrowserAuthenticationFailed(lease)
     }
 
     /// The bound page saw a 401: the credential is dead for native and web

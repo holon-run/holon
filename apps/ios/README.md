@@ -67,6 +67,17 @@ the runtime administrator about handling and retention, and do not add secrets
 to the explanation. Reporting is a separate explicit confirmation, not an AI
 message send or an implicit restoration of withdrawn message-sharing consent.
 
+## Runtime web links and the built-in browser
+
+Markdown links into the connected runtime (Holon App pages and GUI routes)
+open in an in-app browser instead of an external one. Each open uses a fresh,
+non-persistent web store bound to the current session cookie, so pages load
+with the connected identity and forget everything when the browser closes.
+Links that leave the runtime origin require an explicit confirmation and open
+outside the app; they never carry the session. A session that expires in the
+web page expires the native session as well, and switching or closing a
+connection retires the open page.
+
 ## Using the client
 
 1. On first launch, use **Scan connection QR code**, paste a connection invitation,
