@@ -103,6 +103,29 @@ internal object UiCopy {
     private val english: Map<String, String> =
         """
         会话|Conversation
+        在系统浏览器打开|Open in system browser
+        不会传递 Holon 登录身份，可能需要另行登录。|Your Holon session will not be shared. You may need to sign in separately.
+        复制链接|Copy link
+        系统打开|Open externally
+        重新验证|Revalidate session
+        关闭|Close
+        连接身份已改变，请在原连接中重新打开链接。|The connection identity changed. Reopen the link in the original connection.
+        无法安全打开此链接。|This link cannot be opened safely.
+        没有可打开此链接的系统浏览器。|No system browser is available to open this link.
+        当前 Android System WebView 不支持安全的身份隔离与清理，请升级 WebView，或在系统浏览器另行登录。|Android System WebView does not support isolated sessions and data cleanup. Update WebView, or sign in separately in your system browser.
+        请先恢复当前连接的登录身份，再重新打开网页。|Restore this connection's session before reopening the page.
+        无法建立安全的网页会话，请重新验证登录；若仍失败，请重启应用后重试。|Could not create a secure web session. Revalidate your sign-in, or restart the app and try again.
+        页面未加载；登录身份不会交给不支持隔离的浏览器。|Page not loaded. Your session will not be shared with a browser that lacks isolation support.
+        此版本暂不支持网页下载，请在系统浏览器另行登录后下载。|Web downloads are not supported yet. Sign in separately in your system browser to download.
+        无法绑定网页登录身份，请重新验证。|Could not bind the web session. Revalidate your sign-in.
+        页面加载失败，请检查连接后重试。|Page failed to load. Check the connection and try again.
+        登录已失效，请重新登录。|Your session expired. Sign in again.
+        没有权限访问此页面（403）。|Access to this page is forbidden (403).
+        页面不存在（404）。|Page not found (404).
+        TLS 证书验证失败，已停止加载。|TLS certificate validation failed. Loading stopped.
+        为避免重复提交，已阻止表单自动重发。|Automatic form resubmission was blocked to avoid duplicate actions.
+        已阻止不安全的网页导航。|Unsafe web navigation was blocked.
+        无法安全打开新窗口。|The new window could not be opened safely.
         后台消息|Background messages
         点击消息查看详情|Tap a message for details
         暂无消息预览|No message preview
@@ -560,6 +583,7 @@ internal object UiCopy {
         fun count(value: String, singular: String, plural: String = "${singular}s") =
             "$value ${if (value == "1") singular else plural}"
 
+        match("页面返回错误（(\\d+)），可手动重试。")?.let { return "Page returned an error (${it[1]}). Retry manually." }
         match("(\\d+|—) 个 Agent")?.let { return count(it[1], "Agent") }
         match("(\\d+) 个 Agent · (已同步|已连接|离线缓存)(.*)")?.let { (_, value, status, clock) ->
             return "${count(value, "Agent")} · ${translate(status, "en")}$clock"

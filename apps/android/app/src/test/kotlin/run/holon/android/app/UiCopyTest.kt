@@ -5,6 +5,18 @@ import org.junit.Test
 
 class UiCopyTest {
     @Test
+    fun `browser copy explains identity boundary and translates status errors`() {
+        assertEquals("Copy link", UiCopy.translate("复制链接", "en"))
+        assertEquals("Close", UiCopy.translate("关闭", "en"))
+        assertEquals("Revalidate session", UiCopy.translate("重新验证", "en"))
+        assertEquals(
+            "Your Holon session will not be shared. You may need to sign in separately.",
+            UiCopy.translate("不会传递 Holon 登录身份，可能需要另行登录。", "en"),
+        )
+        assertEquals("Page returned an error (503). Retry manually.", UiCopy.translate("页面返回错误（503），可手动重试。", "en"))
+    }
+
+    @Test
     fun `network deletion copy identifies the local only boundary in both languages`() {
         assertEquals("Delete network", UiCopy.translate("删除网络", "en"))
         assertEquals("Delete this network?", UiCopy.translate("删除此网络？", "en"))

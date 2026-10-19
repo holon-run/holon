@@ -196,6 +196,7 @@ def main():
     parser.add_argument("--holon", default="holon")
     parser.add_argument("--port", type=int, default=17980)
     parser.add_argument("--provider-port", type=int, default=17981)
+    parser.add_argument("--client-token-file", type=Path, help="Optional new private file for a disposable test client")
     args = parser.parse_args()
     if args.home.exists():
         parser.error("--home must not exist; use a fresh dedicated directory")
@@ -204,6 +205,9 @@ def main():
     token_file = args.home / "capture-token"
     token_file.write_text(token)
     token_file.chmod(0o600)
+    if args.client_token_file is not None:
+        with os.fdopen(os.open(args.client_token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as client_token:
+            client_token.write(token)
     provider = ThreadingHTTPServer(("127.0.0.1", args.provider_port), DemoProvider)
     threading.Thread(target=provider.serve_forever, daemon=True).start()
     # Preserve inherited runtime caller context; override only this demo's routing.

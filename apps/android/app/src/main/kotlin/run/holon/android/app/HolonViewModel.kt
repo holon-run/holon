@@ -77,6 +77,28 @@ internal class HolonViewModel(
     internal val screenActions = AndroidScreenActions(this)
     private val mutableState = MutableStateFlow(HolonUiState(baseUrl = defaultBaseUrl()))
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
+    internal val runtimeBrowserSession = repository.sessions.state
+
+    internal fun isRuntimeBrowserLeaseCurrent(lease: SessionLease): Boolean =
+        repository.sessions.current === lease && state.value.phase == AppPhase.Ready &&
+            state.value.switchingNetworkId == null && state.value.session?.scopeKey == lease.session.scopeKey
+
+    internal fun bindRuntimeBrowserCookie(lease: SessionLease, url: String, writeCookie: (String) -> Unit) {
+        check(isRuntimeBrowserLeaseCurrent(lease))
+        repository.bindRuntimeBrowserCookie(lease, url, state.value.allowInsecureHttp, writeCookie)
+    }
+
+    internal fun runtimeBrowserAuthenticationFailed(lease: SessionLease) {
+        if (repository.sessions.current === lease) handleRuntimeFailure(SessionScopeChangedException(lease.client.instanceId))
+    }
+
+    internal fun revalidateRuntimeBrowserSession(lease: SessionLease, result: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repository.validateRuntimeBrowserSession(lease) } }
+                .onSuccess { result(repository.sessions.current === lease) }
+                .onFailure { handleRuntimeFailure(it); result(false) }
+        }
+    }
     private val restoredNavigation = NavigationBookmark.read(savedState)
     private val oidcPreferences =
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)

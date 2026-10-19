@@ -8,6 +8,47 @@ import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonServerInfo
 
 class SessionCoordinatorTest {
+    @Test fun `foreground metadata refresh preserves browser lease but stale refresh cannot replace a new login`() {
+        val owner = SessionCoordinator()
+        val identity = session("A")
+        val client = HolonHttpClient("https://example.test/api/")
+        owner.activate(identity, client)
+        val lease = owner.capture()
+        val refreshed = identity.copy(user = identity.user.copy(displayName = "Updated"))
+        owner.refreshMetadata(lease, refreshed)
+        assertSame(lease, owner.capture())
+        assertSame(refreshed, lease.session)
+        assertSame(lease, owner.state.value)
+        owner.activate(identity, client)
+        assertFailsWith<CancellationException> { owner.refreshMetadata(lease, refreshed) }
+        assertNotSame(lease, owner.capture())
+    }
+
+    @Test fun `same identity reactivation and rollback always replace the observable lease`() {
+        val owner = SessionCoordinator()
+        val identity = session("A")
+        val client = HolonHttpClient("https://example.test/api/")
+        owner.activate(identity, client)
+        val first = owner.capture()
+        owner.activate(identity, client)
+        val second = owner.capture()
+        assertNotSame(first, second)
+        assertSame(second, owner.state.value)
+        owner.restore(second)
+        assertNotSame(second, owner.capture())
+        assertSame(owner.capture(), owner.state.value)
+    }
+
+    @Test fun `rollback cannot resurrect a retired browser lease`() {
+        val owner = SessionCoordinator()
+        owner.activate(session("A"), HolonHttpClient("https://example.test/api/"))
+        val old = owner.capture()
+        owner.clear()
+        owner.restore(old)
+        assertNotSame(old, owner.capture())
+        owner.requireCurrent(old) // Native in-flight requests keep the existing scope/client contract.
+    }
+
     private fun session(network: String) = ActiveSession(network, "https://example.test/api/",
         HolonCurrentUser("user", "Alice", "session"), "runtime", "visibility",
         HolonServerInfo("", "local", true, emptySet()))

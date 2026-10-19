@@ -37,7 +37,7 @@ internal fun HolonApp(viewModel: HolonViewModel) {
             AppPhase.Starting -> StartingScreen()
             AppPhase.SignedOut -> LoginScreen(state, viewModel.screenActions.connection)
             AppPhase.AddingNetwork -> LoginScreen(state, viewModel.screenActions.connection, addingNetwork = true)
-            AppPhase.Ready -> MainShell(state, viewModel)
+            AppPhase.Ready -> RuntimeBrowserHost(state, viewModel) { MainShell(state, viewModel) }
         }
     }
     if (state.phase == AppPhase.Ready && state.pendingShare != null) {
