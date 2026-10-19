@@ -170,6 +170,29 @@ internal class HolonRepository(
     private val files = FilesRepository(context, sessions)
     private val work = WorkRepository(sessions)
 
+    /** Only a profile-scoped CookieManager receives the opaque session, never UI state. */
+    internal fun bindRuntimeBrowserCookie(
+        lease: SessionLease,
+        url: String,
+        allowInsecureHttp: Boolean,
+        writeCookie: (String) -> Unit,
+    ) {
+        check(sessions.current === lease && !lease.session.isOffline) { "请先恢复当前连接的登录身份" }
+        normalizeAddress(lease.session.baseUrl, allowInsecureHttp)
+        require(sameRuntimeOrigin(url, lease.session.baseUrl)) { "页面不属于当前 Holon 连接" }
+        val credential = checkNotNull(credentialStore(lease.session.networkId).read()) { "登录已失效，请重新登录" }
+        require(credential.isNotEmpty() && credential.all { it.code in 0x21..0x7e && it !in "\";,\\\\" }) {
+            "无效的会话凭据"
+        }
+        check(sessions.current === lease) { "连接身份已改变，请重新打开链接" }
+        writeCookie(runtimeSessionCookie(credential, url))
+    }
+
+    internal fun validateRuntimeBrowserSession(lease: SessionLease) {
+        val user = sessions.read(lease) { it.currentUser() }
+        if (user.userId != lease.session.user.userId) throw SessionScopeChangedException(lease.client.instanceId)
+    }
+
     fun authenticationMethod(address: String, allowInsecureHttp: Boolean): run.holon.android.sdk.HolonAuthenticationMethod {
         val baseUrl = normalizeAddress(address, allowInsecureHttp)
         return HolonHttpClient(
@@ -369,7 +392,7 @@ internal class HolonRepository(
         ) {
             throw SessionScopeChangedException(lease.client.instanceId)
         }
-        sessions.activate(current.copy(user = user, server = server, isOffline = false), client)
+        sessions.refreshMetadata(lease, current.copy(user = user, server = server, isOffline = false))
         cacheRoster(requireSession().scopeKey, roster)
         return requireSession() to roster
     }

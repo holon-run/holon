@@ -2,6 +2,44 @@
 
 This directory contains the native Android client implementation.
 
+Markdown links to this runtime's hosted Apps and exact GUI routes open in an
+authenticated in-app WebView; external sites require confirmation and open in
+the system browser without the native session. File/artifact links still use
+the existing resolver, and rendering a web link does not resolve a file or
+request access.
+
+The in-app browser binds the existing opaque session as a host-only, HttpOnly,
+SameSite cookie (Secure on HTTPS), never a URL parameter or JavaScript bridge.
+**Cookies are not isolated by port:** services on the same authentication
+hostname must belong to one trusted boundary. Top-level navigation is still
+restricted to the selected runtime's full origin; redirect interception is not
+a port-level credential firewall. HTTP retains the existing explicit insecure
+connection confirmation.
+
+Each opening uses a fresh AndroidX WebKit Profile. Changing connections,
+credentials or accounts retires the page; closing clears its cookies, web
+storage and Service Workers without revoking the shared native session.
+WebView providers must support both `MULTI_PROFILE` and
+`DELETE_BROWSING_DATA`; unsupported providers fail closed, without a global
+cookie fallback. Profile data may reach disk; names are never reused and
+leftover profiles are deleted on cold start. This is client identity separation,
+not a new permission sandbox for same-origin hosted Apps. See the
+[browser-session decision](../../docs/implementation-decisions/android-runtime-browser-session.md).
+
+After building the debug app and instrumentation APK, verify the native login,
+authenticated App SDK context/request/events round trip and shared-session
+logout against a disposable scripted daemon:
+
+```sh
+python3 scripts/android-browser-integration.py \
+  --serial <dedicated-emulator-serial> --artifacts <new-private-directory>
+```
+
+Run this command from the repository root, **not on a production device**. It
+installs the test app, uses loopback-only disposable credentials and removes its
+adb reverse and private on-device fixture on exit. Real IdP/OIDC sign-in and
+physical-device acceptance remain separate checks.
+
 `:sdk` is a Kotlin/JVM library that keeps generated wire models separate from
 stable client-facing domain models. `:app` is a Compose application with native
 session login, recent conversations, Agent browsing, offline caches, a durable

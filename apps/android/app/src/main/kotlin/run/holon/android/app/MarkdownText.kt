@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -62,8 +63,13 @@ internal sealed interface MarkdownBlock {
 }
 
 internal val LocalOpenMessageFile = staticCompositionLocalOf<((MessageFileReference) -> Unit)?> { null }
+internal val LocalOpenWebLink = staticCompositionLocalOf<((String) -> Unit)?> { null }
+private val LocalMarkdownLinkReferences = staticCompositionLocalOf<Map<String, String>> { emptyMap() }
 
-internal fun parseMarkdown(source: String): List<MarkdownBlock> {
+internal fun parseMarkdown(source: String): List<MarkdownBlock> =
+    parseMarkdownBlocks(extractMarkdownLinkReferences(source).text)
+
+private fun parseMarkdownBlocks(source: String): List<MarkdownBlock> {
     val blocks = mutableListOf<MarkdownBlock>()
     val paragraph = mutableListOf<String>()
     val lines = source.replace("\r\n", "\n").split('\n')
@@ -93,17 +99,13 @@ internal fun parseMarkdown(source: String): List<MarkdownBlock> {
                 continue
             }
         }
-        val fence = when {
-            trimmed.startsWith("```") -> "```"
-            trimmed.startsWith("~~~") -> "~~~"
-            else -> null
-        }
+        val fence = markdownFenceAt(line)
         if (fence != null) {
             flushParagraph()
             val language = trimmed.removePrefix(fence).trim().ifBlank { null }
             val code = mutableListOf<String>()
             index += 1
-            while (index < lines.size && !lines[index].trim().startsWith(fence)) {
+            while (index < lines.size && !isClosingMarkdownFence(lines[index], fence)) {
                 code += lines[index]
                 index += 1
             }
@@ -161,8 +163,10 @@ private fun isTableDelimiter(line: String): Boolean {
 
 @Composable
 internal fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
-    val blocks = remember(markdown) { parseMarkdown(markdown) }
+    val document = remember(markdown) { extractMarkdownLinkReferences(markdown) }
+    val blocks = remember(document.text) { parseMarkdownBlocks(document.text) }
     val context = LocalContext.current
+    CompositionLocalProvider(LocalMarkdownLinkReferences provides document.destinations) {
     SelectionContainer { Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         blocks.forEach { block ->
             when (block) {
@@ -258,6 +262,7 @@ internal fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
             }
         }
     } }
+    }
 }
 
 @Composable
@@ -265,55 +270,58 @@ private fun InlineMarkdownText(text: String, style: TextStyle, modifier: Modifie
     val primary = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val onOpenFile = LocalOpenMessageFile.current
-    val annotated = remember(text, primary, codeBackground, onOpenFile) {
-        inlineMarkdown(text, primary, codeBackground, onOpenFile)
+    val onOpenWebLink = LocalOpenWebLink.current
+    val references = LocalMarkdownLinkReferences.current
+    val annotated = remember(text, primary, codeBackground, onOpenFile, onOpenWebLink, references) {
+        inlineMarkdown(text, primary, codeBackground, onOpenFile, onOpenWebLink, references)
     }
     Text(annotated, modifier = modifier, style = style)
 }
 
-internal data class MarkdownLinkTarget(val label: String, val destination: String, val next: Int)
-
-internal fun markdownLinkAt(text: String, start: Int): MarkdownLinkTarget? {
-    val image = text.startsWith("![", start)
-    if (!image && text.getOrNull(start) != '[') return null
-    val labelStart = start + if (image) 2 else 1
-    var cursor = labelStart
-    var labelDepth = 1
-    while (cursor < text.length && labelDepth > 0) {
-        when {
-            text[cursor] == '\\' && cursor + 1 < text.length -> cursor += 2
-            text[cursor] == '[' -> { labelDepth += 1; cursor += 1 }
-            text[cursor] == ']' -> { labelDepth -= 1; cursor += 1 }
-            else -> cursor += 1
-        }
-    }
-    if (labelDepth != 0 || text.getOrNull(cursor) != '(') return null
-    val label = text.substring(labelStart, cursor - 1).replace(Regex("\\\\([\\[\\]()*_`!\\\\])"), "$1")
-    cursor += 1
-    val destinationStart = cursor
-    var destinationDepth = 1
-    while (cursor < text.length && destinationDepth > 0) {
-        when {
-            text[cursor] == '\\' && cursor + 1 < text.length -> cursor += 2
-            text[cursor] == '(' -> { destinationDepth += 1; cursor += 1 }
-            text[cursor] == ')' -> { destinationDepth -= 1; cursor += 1 }
-            else -> cursor += 1
-        }
-    }
-    if (destinationDepth != 0) return null
-    val destination = text.substring(destinationStart, cursor - 1)
-        .trim()
-        .replace(Regex("\\\\([()\\\\])"), "$1")
-    return MarkdownLinkTarget(label, destination, cursor)
-}
-
-private fun inlineMarkdown(
+internal fun inlineMarkdown(
     text: String,
     primary: Color,
     codeBackground: Color,
     onOpenFile: ((MessageFileReference) -> Unit)?,
+    onOpenWebLink: ((String) -> Unit)? = null,
+    references: Map<String, String> = emptyMap(),
 ): AnnotatedString =
     buildAnnotatedString {
+        fun appendTarget(label: String, destination: String, image: Boolean = false) {
+            val web = classifyMarkdownWebLink(destination)
+            val styles = TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline))
+            val display = if (image) ui(if (web is MarkdownWebLink.Web || web is MarkdownWebLink.Mail) "网页图片 · $label" else "图片 · $label") else label
+            when {
+                web is MarkdownWebLink.Web && onOpenWebLink != null -> {
+                    withLink(
+                        LinkAnnotation.Clickable(
+                            tag = web.href,
+                            styles = styles,
+                            linkInteractionListener = LinkInteractionListener { onOpenWebLink(web.href) },
+                        ),
+                    ) { append(display) }
+                }
+                web is MarkdownWebLink.Mail ||
+                    (web is MarkdownWebLink.Web && destination.startsWith("http", ignoreCase = true)) -> {
+                    withLink(LinkAnnotation.Url(destination, styles)) { append(display) }
+                }
+                web != null -> append(display)
+                else -> {
+                    val reference = classifyMessageFileReference(destination)
+                    if (reference != null && onOpenFile != null) {
+                        withLink(
+                            LinkAnnotation.Clickable(
+                                tag = destination,
+                                styles = styles,
+                                linkInteractionListener = LinkInteractionListener { onOpenFile(reference) },
+                            ),
+                        ) { append(display) }
+                    } else {
+                        append(display)
+                    }
+                }
+            }
+        }
         var cursor = 0
         while (cursor < text.length) {
             when {
@@ -323,33 +331,10 @@ private fun inlineMarkdown(
                 }
                 text.startsWith("![", cursor) || text.startsWith("[", cursor) -> {
                     val image = text.startsWith("![", cursor)
-                    val target = markdownLinkAt(text, cursor)
+                    val target = markdownLinkAt(text, cursor, references)
                     if (target != null) {
                         val label = target.label.ifBlank { if (image) ui("图片") else ui("链接") }
-                        val webLink = target.destination.startsWith("https://") ||
-                            target.destination.startsWith("http://") || target.destination.startsWith("mailto:")
-                        if (webLink) {
-                            withLink(
-                                LinkAnnotation.Url(
-                                    target.destination,
-                                    TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline)),
-                                ),
-                            ) { append(if (image) ui("网页图片 · $label") else label) }
-                        } else {
-                            val reference = classifyMessageFileReference(target.destination)
-                            val display = if (image) ui("图片 · $label") else label
-                            if (reference != null && onOpenFile != null) {
-                                withLink(
-                                    LinkAnnotation.Clickable(
-                                        tag = target.destination,
-                                        styles = TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline)),
-                                        linkInteractionListener = LinkInteractionListener { onOpenFile(reference) },
-                                    ),
-                                ) { append(display) }
-                            } else {
-                                append(display)
-                            }
-                        }
+                        appendTarget(label, target.destination, image)
                         cursor = target.next
                     } else {
                         append(text[cursor])
@@ -359,7 +344,9 @@ private fun inlineMarkdown(
                 text.startsWith("**", cursor) -> {
                     val end = text.indexOf("**", cursor + 2)
                     if (end >= 0) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(text.substring(cursor + 2, end)) }
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(inlineMarkdown(text.substring(cursor + 2, end), primary, codeBackground, onOpenFile, onOpenWebLink, references))
+                        }
                         cursor = end + 2
                     } else {
                         append("**")
@@ -369,7 +356,9 @@ private fun inlineMarkdown(
                 text.startsWith("~~", cursor) -> {
                     val end = text.indexOf("~~", cursor + 2)
                     if (end >= 0) {
-                        withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(text.substring(cursor + 2, end)) }
+                        withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
+                            append(inlineMarkdown(text.substring(cursor + 2, end), primary, codeBackground, onOpenFile, onOpenWebLink, references))
+                        }
                         cursor = end + 2
                     } else {
                         append("~~")
@@ -377,10 +366,14 @@ private fun inlineMarkdown(
                     }
                 }
                 text[cursor] == '`' -> {
-                    val end = text.indexOf('`', cursor + 1)
+                    val delimiter = text.substring(cursor).takeWhile { it == '`' }
+                    var end = text.indexOf(delimiter, cursor + delimiter.length)
+                    while (end >= 0 && (text.getOrNull(end - 1) == '`' || text.getOrNull(end + delimiter.length) == '`')) {
+                        end = text.indexOf(delimiter, end + delimiter.length)
+                    }
                     if (end >= 0) {
-                        val value = text.substring(cursor + 1, end)
-                        val reference = value.takeIf(::isInlineMessageFileReference)
+                        val value = text.substring(cursor + delimiter.length, end)
+                        val reference = value.takeIf { classifyMarkdownWebLink(it) == null && isInlineMessageFileReference(it) }
                             ?.let { classifyMessageFileReference(it, literal = true) }
                         withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) {
                             if (reference != null && onOpenFile != null) {
@@ -395,22 +388,29 @@ private fun inlineMarkdown(
                                 append(value)
                             }
                         }
-                        cursor = end + 1
+                        cursor = end + delimiter.length
                     } else {
-                        append('`')
-                        cursor += 1
+                        append(delimiter)
+                        cursor += delimiter.length
                     }
                 }
                 text[cursor] == '*' || text[cursor] == '_' -> {
                     val marker = text[cursor]
                     val end = text.indexOf(marker, cursor + 1)
                     if (end > cursor + 1) {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(text.substring(cursor + 1, end)) }
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                            append(inlineMarkdown(text.substring(cursor + 1, end), primary, codeBackground, onOpenFile, onOpenWebLink, references))
+                        }
                         cursor = end + 1
                     } else {
                         append(marker)
                         cursor += 1
                     }
+                }
+                bareMarkdownAppLinkAt(text, cursor) != null -> {
+                    val bare = requireNotNull(bareMarkdownAppLinkAt(text, cursor))
+                    appendTarget(bare.href, bare.href)
+                    cursor = bare.next
                 }
                 bareMessageFileReferenceAt(text, cursor) != null -> {
                     val bare = requireNotNull(bareMessageFileReferenceAt(text, cursor))

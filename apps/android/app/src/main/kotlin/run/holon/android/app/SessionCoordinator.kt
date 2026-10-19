@@ -1,19 +1,36 @@
 package run.holon.android.app
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import run.holon.android.sdk.HolonHttpClient
 import run.holon.android.sdk.HolonHttpException
 
-internal data class SessionLease(val session: ActiveSession, val client: HolonHttpClient)
+// A lease is an incarnation, even when the identity and client are unchanged.
+internal class SessionLease(session: ActiveSession, val client: HolonHttpClient) {
+    @Volatile var session: ActiveSession = session
+        private set
+
+    fun refreshMetadata(updated: ActiveSession) {
+        require(updated.scopeKey == session.scopeKey && updated.baseUrl == session.baseUrl)
+        session = updated
+    }
+}
 
 /** The only active session binding. Late responses cannot invalidate its replacement. */
 internal class SessionCoordinator {
-    @Volatile var current: SessionLease? = null
-        private set
+    private val binding = MutableStateFlow<SessionLease?>(null)
+    val state = binding.asStateFlow()
+    val current: SessionLease? get() = binding.value
 
-    fun activate(session: ActiveSession, client: HolonHttpClient) { current = SessionLease(session, client) }
-    fun restore(lease: SessionLease?) { current = lease }
-    fun clear() { current = null }
+    fun activate(session: ActiveSession, client: HolonHttpClient) { binding.value = SessionLease(session, client) }
+    fun refreshMetadata(lease: SessionLease, session: ActiveSession) {
+        if (current !== lease) throw CancellationException("Stale session refresh")
+        lease.refreshMetadata(session)
+    }
+    // A rollback restores the identity, not a retired browser lease.
+    fun restore(lease: SessionLease?) { binding.value = lease?.let { SessionLease(it.session, it.client) } }
+    fun clear() { binding.value = null }
     fun capture(): SessionLease = checkNotNull(current) { "No active Holon session" }
 
     fun requireCurrent(lease: SessionLease) {

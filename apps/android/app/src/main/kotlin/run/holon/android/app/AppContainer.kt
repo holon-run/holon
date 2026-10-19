@@ -48,6 +48,10 @@ internal class SessionResetBarrier(private val scope: kotlinx.coroutines.Corouti
 }
 
 internal class AppContainer(context: Context) {
+    init {
+        // Only this feature's unloaded, retired profiles; failure leaves identity opening fail-closed.
+        runCatching { RuntimeBrowserProfiles.cleanupOnColdStart(context) }
+    }
     private val database = HolonDatabase.create(context)
     val traceRecorder = TraceRecorder(context)
     val repository =
