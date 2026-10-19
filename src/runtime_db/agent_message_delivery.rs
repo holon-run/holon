@@ -407,13 +407,17 @@ fn load_reply_routes_tx(
                         && source.input_message_ids.contains(message_id)
                 }))
             || message.kind != MessageKind::InternalFollowup
-            || message.authority_class == crate::types::AuthorityClass::OperatorInstruction
             || message.admission_context != Some(AdmissionContext::RuntimeOwned)
             || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
             || !matches!(
                 message.origin,
                 MessageOrigin::System { .. } | MessageOrigin::Task { .. }
             )
+        {
+            continue;
+        }
+        if !delivery_by_message_id_tx(tx, &message.id)?
+            .is_some_and(|delivery| delivery.authenticates_agent_message(&message))
         {
             continue;
         }
@@ -1329,6 +1333,27 @@ mod tests {
         AgentMessageDeliveryService::prepare(request(key, text), peer_caller())
     }
 
+    fn accepted_reply_delivery(
+        message: &MessageEnvelope,
+        sender: &str,
+        key: &str,
+    ) -> Result<AgentMessageDeliveryRecord> {
+        let mut source = peer_caller();
+        source.caller_principal = format!("agent:{sender}");
+        source.caller_agent_id = Some(sender.into());
+        source.origin = message.origin.clone();
+        source.authority_class = message.authority_class;
+        let mut input = request(key, "reply source");
+        input.target_agent_id = message.agent_id.clone();
+        let mut delivery = AgentMessageDeliveryService::prepare(input, source)?.record;
+        delivery.message_id = Some(message.id.clone());
+        delivery.routing_context = message.routing_context.clone();
+        delivery.outcome = AgentMessageDeliveryOutcome::Accepted;
+        delivery.state = AgentMessageDeliveryState::Queued;
+        delivery.accepted_at = Some(Utc::now());
+        Ok(delivery)
+    }
+
     fn seed_reply_binding(
         db: &RuntimeDb,
         turn_id: &str,
@@ -1420,6 +1445,8 @@ mod tests {
                 original_sender_agent_id: None,
                 original_reply_to_agent_id: None,
             });
+            let delivery = accepted_reply_delivery(&message, sender, &format!("source-{index}"))?;
+            db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
             inputs.push(db.messages().append_with_index_changes(&message, &[])?);
         }
         let mut turn = TurnRecord::new("caller-agent", "routing-turn", 1);
@@ -1629,6 +1656,126 @@ mod tests {
     }
 
     #[test]
+    fn reply_selector_requires_matching_accepted_agent_delivery() -> Result<()> {
+        for defect in [
+            "missing_delivery",
+            "rejected",
+            "not_accepted",
+            "message_id",
+            "target",
+            "route",
+            "sender",
+            "principal",
+            "missing_agent",
+            "empty_agent",
+            "operator_principal",
+            "capability_principal",
+            "external_principal",
+            "authority",
+            "origin",
+            "surface",
+            "admission",
+            "operator_prompt",
+            "task_result",
+            "operator_origin",
+        ] {
+            let (_dir, db) = runtime_db()?;
+            seed_target(&db, AgentStatus::AwakeIdle)?;
+            let (_, mut inputs) = seed_reply_turn(&db, &["target-agent"])?;
+            let input = &mut inputs[0];
+            input.authority_class = AuthorityClass::OperatorInstruction;
+            let mut delivery = db
+                .agent_message_deliveries()
+                .latest_for_message(&input.id)?
+                .unwrap();
+            delivery.caller.authority_class = input.authority_class;
+            db.messages().upsert_many(&inputs)?;
+            db.transaction(|tx| replace_delivery_tx(tx, &delivery))?;
+            let id = inputs[0].id.clone();
+            let prepared = prepare_reply(&db, "target-agent", Some(&id), false, "reply")?;
+            assert!(delivery.authenticates_agent_message(&inputs[0]), "{defect}");
+
+            match defect {
+                "missing_delivery" => {}
+                "rejected" => delivery.outcome = AgentMessageDeliveryOutcome::Rejected,
+                "not_accepted" => delivery.accepted_at = None,
+                "message_id" => delivery.message_id = Some("other-message".into()),
+                "target" => delivery.target_agent_id = "other-agent".into(),
+                "route" => {
+                    delivery.routing_context.as_mut().unwrap().correlation_id =
+                        Some("other-correlation".into());
+                }
+                "sender" => delivery.caller.caller_agent_id = Some("other-sender".into()),
+                "principal" => delivery.caller.caller_principal = "agent:other-sender".into(),
+                "missing_agent" => delivery.caller.caller_agent_id = None,
+                "empty_agent" => delivery.caller.caller_agent_id = Some(String::new()),
+                "operator_principal" => {
+                    delivery.caller.principal_kind = AgentMessagePrincipalKind::Operator;
+                }
+                "capability_principal" => {
+                    delivery.caller.principal_kind = AgentMessagePrincipalKind::RuntimeCapability;
+                }
+                "external_principal" => {
+                    delivery.caller.principal_kind = AgentMessagePrincipalKind::ExternalIngress;
+                }
+                "authority" => delivery.caller.authority_class = AuthorityClass::ExternalEvidence,
+                "origin" => {
+                    delivery.caller.origin = MessageOrigin::System {
+                        subsystem: "other-origin".into(),
+                    };
+                }
+                "surface" => {
+                    delivery.caller.delivery_surface = MessageDeliverySurface::HttpControlPrompt;
+                }
+                "admission" => {
+                    delivery.caller.admission_context = AdmissionContext::ControlAuthenticated;
+                }
+                "operator_prompt" => inputs[0].kind = MessageKind::OperatorPrompt,
+                "task_result" => inputs[0].kind = MessageKind::TaskResult,
+                "operator_origin" => {
+                    let origin = MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    };
+                    inputs[0].origin = origin.clone();
+                    delivery.caller.origin = origin;
+                }
+                _ => unreachable!(),
+            }
+            db.messages().upsert_many(&inputs)?;
+            db.transaction(|tx| {
+                if defect == "missing_delivery" {
+                    tx.execute(
+                        "DELETE FROM agent_message_deliveries WHERE delivery_id = ?1",
+                        [&delivery.delivery_id],
+                    )?;
+                    Ok(())
+                } else {
+                    replace_delivery_tx(tx, &delivery)
+                }
+            })?;
+            assert!(
+                prepare_reply(&db, "target-agent", Some(&id), false, "invalid").is_err(),
+                "{defect}"
+            );
+            let error = db
+                .transitions()
+                .commit_delivery_admission(&admission_command(&prepared), &prepared.record)
+                .err()
+                .with_context(|| format!("{defect} must fail transaction revalidation"))?;
+            assert!(
+                error.to_string().contains("selected route"),
+                "{defect}: {error}"
+            );
+            assert!(db
+                .agent_message_deliveries()
+                .latest(&prepared.record.delivery_id)?
+                .is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn reply_selector_rejects_unknown_foreign_and_unadmitted_sources() -> Result<()> {
         for defect in [
             "unknown",
@@ -1650,6 +1797,9 @@ mod tests {
             route.message_id = candidate.id.clone();
             route.sender_agent_id = Some("sender-b".into());
             route.reply_to_agent_id = Some("sender-b".into());
+            let delivery = accepted_reply_delivery(&candidate, "sender-b", defect)?;
+            db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
+            let route = candidate.routing_context.as_mut().unwrap();
             match defect {
                 "foreign_agent" => {
                     candidate.agent_id = "foreign-agent".into();
@@ -2652,20 +2802,8 @@ mod tests {
             route.message_id = follower.id.clone();
             route.correlation_id = Some("batched-correlation".into());
             let follower = db.messages().append_with_index_changes(&follower, &[])?;
-            if matches!(
-                defect,
-                "accepted_unbound_ingress" | "foreign_bound_turn" | "foreign_bound_attempt"
-            ) {
-                let mut input = request(defect, "batched input");
-                input.target_agent_id = "caller-agent".into();
-                let mut source = caller();
-                source.caller_agent_id = Some("sender-a".into());
-                let mut delivery = AgentMessageDeliveryService::prepare(input, source)?.record;
-                delivery.message_id = Some(follower.id.clone());
-                delivery.routing_context = follower.routing_context.clone();
-                delivery.outcome = AgentMessageDeliveryOutcome::Accepted;
-                delivery.state = AgentMessageDeliveryState::Queued;
-                delivery.accepted_at = Some(Utc::now());
+            if defect != "foreign_turn" {
+                let delivery = accepted_reply_delivery(&follower, "sender-a", defect)?;
                 db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
             }
             if defect == "foreign_bound_turn" {
@@ -2773,6 +2911,8 @@ mod tests {
         for defect in [
             "none",
             "bound_current",
+            "admitted_operator",
+            "admitted_operator_parent",
             "missing_delivery",
             "rejected_delivery",
             "bound_foreign",
@@ -2783,7 +2923,7 @@ mod tests {
             "foreign_turn",
             "copied_replay",
             "pure_task_result",
-            "operator_authority",
+            "authority_mismatch",
             "external_admission",
         ] {
             let (_dir, db) = runtime_db()?;
@@ -2804,23 +2944,23 @@ mod tests {
             follower.routing_context.as_mut().unwrap().message_id = follower.id.clone();
             if defect == "pure_task_result" {
                 follower.kind = MessageKind::TaskResult;
-            } else if defect == "operator_authority" {
+            } else if matches!(
+                defect,
+                "authority_mismatch" | "admitted_operator" | "admitted_operator_parent"
+            ) {
                 follower.authority_class = AuthorityClass::OperatorInstruction;
             } else if defect == "external_admission" {
                 follower.admission_context = Some(AdmissionContext::ExternalTriggerCapability);
             }
             let follower = db.messages().append_with_index_changes(&follower, &[])?;
             if defect != "missing_delivery" {
-                let mut input = request(defect, "live follower");
-                input.target_agent_id = "caller-agent".into();
-                let mut source = caller();
-                source.caller_agent_id = Some("sender-a".into());
-                let mut delivery = AgentMessageDeliveryService::prepare(input, source)?.record;
-                delivery.message_id = Some(follower.id.clone());
-                delivery.routing_context = follower.routing_context.clone();
-                delivery.outcome = AgentMessageDeliveryOutcome::Accepted;
-                delivery.state = AgentMessageDeliveryState::Queued;
-                delivery.accepted_at = Some(Utc::now());
+                let mut delivery = accepted_reply_delivery(&follower, "sender-a", defect)?;
+                if defect == "authority_mismatch" {
+                    // Changing only the envelope cannot inherit operator authority.
+                    delivery.caller.authority_class = AuthorityClass::ExternalEvidence;
+                } else if defect == "admitted_operator_parent" {
+                    delivery.caller.principal_kind = AgentMessagePrincipalKind::SupervisingParent;
+                }
                 if defect == "rejected_delivery" {
                     delivery.outcome = AgentMessageDeliveryOutcome::Rejected;
                     delivery.accepted_at = None;
@@ -2881,7 +3021,10 @@ mod tests {
             });
             db.turn_records().upsert(&turn)?;
             let result = prepare_reply(&db, "sender-a", Some(&follower.id), false, "live-reply");
-            if matches!(defect, "none" | "bound_current") {
+            if matches!(
+                defect,
+                "none" | "bound_current" | "admitted_operator" | "admitted_operator_parent"
+            ) {
                 assert_eq!(
                     result?
                         .message
