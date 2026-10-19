@@ -59,7 +59,17 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
     var searchOpen by rememberSaveable { mutableStateOf(state.search.isNotBlank()) }
     var networkChooser by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    val refresh: () -> Unit = { if (!state.rosterRefreshing) viewModel.refresh() }
+    val switchingNetwork = state.switchingNetworkId != null
+    val rosterLoading = switchingNetwork || state.rosterRefreshing
+    val rosterKnown = state.rosterState != AgentRosterState.NotLoaded
+    val canRefresh = !rosterLoading
+    val refresh: () -> Unit = { if (canRefresh) viewModel.refresh() }
+    val rosterStatus = when {
+        !rosterKnown -> if (rosterLoading) "加载中" else "未加载"
+        rosterLoading -> if (state.rosterState == AgentRosterState.Cached || !state.online) "上次同步内容 · 更新中" else "更新中"
+        state.online && state.error == null && state.rosterState == AgentRosterState.Synced -> "已同步"
+        else -> "离线缓存"
+    }
     val attentionCount = state.agents.count { it.needsReply() }
     val unreadCount =
         if (state.briefReadStatesLoaded) state.agents.count { it.unreadCount(state.briefReadStates) > 0 }
@@ -84,11 +94,11 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                 title = {
                     Column(Modifier.clickable { networkChooser = true }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(state.networkProfiles.firstOrNull { it.networkId == state.session?.networkId }?.displayName ?: "Holon", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            Text(state.networkProfiles.firstOrNull { it.networkId == (state.switchingNetworkId ?: state.session?.networkId) }?.displayName ?: "Holon", style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                             Icon(Icons.Default.ExpandMore, contentDescription = ui("切换网络"), modifier = Modifier.size(20.dp))
                         }
                         Text(
-                            ui("${state.agents.size} 个 Agent · ${if (state.online && state.error == null) "已同步" else "离线缓存"}") +
+                            ui("${if (rosterKnown) state.agents.size else "—"} 个 Agent") + " · " + ui(rosterStatus) +
                                 (state.lastSyncedAt?.let { " ${syncClock(it)}" } ?: ""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -96,7 +106,7 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = refresh, enabled = !state.rosterRefreshing) {
+                    IconButton(onClick = refresh, enabled = canRefresh) {
                         Icon(Icons.Default.Refresh, contentDescription = ui("刷新"))
                     }
                     IconButton(onClick = {
@@ -114,7 +124,7 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.statusMessage?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
-            if (state.error != null || !state.online) {
+            if (!switchingNetwork && (state.error != null || !state.online)) {
                 Surface(
                     color = if (state.error != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
                     contentColor = if (state.error != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
@@ -123,7 +133,7 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                 ) {
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(ui(state.error ?: "离线缓存"), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        TextButton(onClick = refresh, enabled = !state.rosterRefreshing) { Text(ui("重试")) }
+                        TextButton(onClick = refresh, enabled = canRefresh) { Text(ui("重试")) }
                     }
                 }
             }
@@ -156,12 +166,12 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                     FilterChip(
                         selected = filter == option,
                         onClick = { filter = option },
-                        label = { Text("${option.label} $count") },
+                        label = { Text("${option.label} ${if (rosterKnown) count else "—"}") },
                     )
                 }
             }
             PullToRefreshBox(
-                isRefreshing = state.rosterRefreshing,
+                isRefreshing = rosterLoading,
                 onRefresh = refresh,
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
@@ -180,6 +190,10 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                     }
                     if (filtered.isEmpty()) item {
                         when {
+                            !rosterKnown && rosterLoading ->
+                                EmptyPage(ui("正在加载 Agent…"), ui("正在连接并获取此网络的 Agent 列表。"))
+                            !rosterKnown ->
+                                EmptyPage(ui("暂时无法加载 Agent"), ui("没有可用缓存，请连接网络后重试。"))
                             state.agents.isEmpty() -> EmptyPage(ui("还没有 Agent"), ui("连接成功后，Agent 会显示在这里。"))
                             filter == AgentFilter.Attention && attentionCount == 0 ->
                                 EmptyPage(ui("目前没有需要回应的 Agent"), ui("选择“全部”查看其他 Agent。"))

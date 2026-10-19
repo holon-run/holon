@@ -20,6 +20,48 @@ import run.holon.android.sdk.HolonServerInfo
 import run.holon.android.sdk.HolonWorkspace
 
 class HolonViewModelTest {
+    @Test
+    fun `network transition clears the previous identity before loading target cache`() {
+        val target = NetworkProfile("network-b", "Lab", "https://lab.example/api/", false)
+        val session = ActiveSession(
+            "network-a", "https://office.example/api/", HolonCurrentUser("user-a", null, "session"),
+            "runtime-a", "scope-a", HolonServerInfo("", "local", true, emptySet()),
+        )
+        val before = HolonUiState(
+            phase = AppPhase.Ready,
+            session = session,
+            online = true,
+            lastSyncedAt = 123L,
+            networkProfiles = listOf(target),
+            briefReadStatesLoaded = true,
+            readBriefIds = mapOf("old-agent" to "old-brief"),
+            search = "old network",
+        )
+        val switching = before.forSwitchingNetwork(target)
+        assertEquals("network-b", switching.switchingNetworkId)
+        assertEquals(target.baseUrl, switching.baseUrl)
+        assertEquals(before.networkProfiles, switching.networkProfiles)
+        assertTrue(switching.busy)
+        assertFalse(switching.online)
+        assertEquals(null, switching.session)
+        assertEquals(null, switching.lastSyncedAt)
+        assertEquals(AgentRosterState.NotLoaded, switching.rosterState)
+        assertTrue(switching.agents.isEmpty())
+        assertTrue(switching.readBriefIds.isEmpty())
+        assertFalse(switching.briefReadStatesLoaded)
+        assertEquals("", switching.search)
+    }
+
+    @Test
+    fun `roster state distinguishes unknown count from confirmed empty snapshot and survives copying`() {
+        val unknown = HolonUiState()
+        val emptySnapshot = HolonUiState(online = true)
+        assertEquals(AgentRosterState.NotLoaded, unknown.rosterState)
+        assertEquals(AgentRosterState.Synced, emptySnapshot.rosterState)
+        assertEquals(AgentRosterState.NotLoaded, unknown.copy(error = "timeout").rosterState)
+        assertEquals(AgentRosterState.Synced, emptySnapshot.copy(online = false).rosterState)
+    }
+
     private val workspace =
         HolonWorkspace(
             workspaceId = "workspace-1",

@@ -63,6 +63,52 @@ class AgentRosterRefreshUiTest {
     }
 
     @Test
+    fun networkWithoutCacheShowsUnknownCountsAndLoadingInsteadOfEmptyRoster() {
+        withScreen(HolonUiState(switchingNetworkId = "target", busy = true)) { actions ->
+            compose.onNodeWithText(ui("— 个 Agent") + " · " + ui("加载中")).assertExists()
+            compose.onNodeWithText(ui("正在加载 Agent…")).assertExists()
+            compose.onNodeWithText(ui("还没有 Agent")).assertDoesNotExist()
+            compose.onNodeWithContentDescription(ui("刷新")).assertIsNotEnabled().performClick()
+            pullToRefresh()
+            assertTrue(actions.refreshRequests.isEmpty())
+        }
+    }
+
+    @Test
+    fun failedLoadWithoutCacheDoesNotClaimSuccessfulEmptyRoster() {
+        withScreen(HolonUiState(error = "Roster unavailable")) {
+            compose.onNodeWithText(ui("— 个 Agent") + " · " + ui("未加载")).assertExists()
+            compose.onNodeWithText(ui("暂时无法加载 Agent")).assertExists()
+            compose.onNodeWithText(ui("还没有 Agent")).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun cachedRosterStaysVisibleWhileTargetNetworkUpdates() {
+        val agent = AgentSummary(
+            id = "cached", displayName = "Cached target", isDefault = false,
+            registryStatus = "cached", runtimeStatus = "offline", effectiveModel = "",
+            pending = 0, currentRunId = null,
+        )
+        withScreen(HolonUiState(
+            agents = listOf(agent), switchingNetworkId = "target", busy = true,
+        )) {
+            compose.onNodeWithText("Cached target").assertExists()
+            compose.onNodeWithText(ui("1 个 Agent") + " · " + ui("上次同步内容 · 更新中")).assertExists()
+            compose.onNodeWithContentDescription(ui("刷新")).assertIsNotEnabled()
+            compose.onNodeWithText(ui("还没有 Agent")).assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun confirmedEmptySnapshotShowsZeroAndSuccessfulEmptyState() {
+        withScreen(HolonUiState(online = true)) {
+            compose.onNodeWithText(ui("0 个 Agent") + " · " + ui("已同步")).assertExists()
+            compose.onNodeWithText(ui("还没有 Agent")).assertExists()
+        }
+    }
+
+    @Test
     fun refreshingIgnoresRetryToolbarAndRepeatedPull() {
         withScreen(
             HolonUiState(online = false, error = "Roster unavailable", rosterRefreshing = true),
@@ -119,9 +165,6 @@ class AgentRosterRefreshUiTest {
                     activity.setContent { MaterialTheme { AgentsScreen(state, actions) } }
                 }
                 compose.onNodeWithContentDescription(ui("刷新")).assertExists()
-                if (state.agents.isEmpty()) {
-                    compose.onNodeWithText(ui("还没有 Agent")).assertExists()
-                }
                 test(actions)
             }
         } finally {
