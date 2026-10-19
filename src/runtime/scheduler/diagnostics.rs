@@ -243,6 +243,38 @@ pub(crate) fn append_ambiguous_wait_advisory(
     Ok(())
 }
 
+pub(crate) fn append_interrupted_replay_source_advisory(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    invalid: &crate::runtime_db::task_result_settlement::live_turn::InterruptedReplaySourceInvalid,
+) -> Result<()> {
+    let diagnostic = SchedulingAdvisory::warning(
+        "interrupted_replay_source_invalid",
+        "interrupted replay source no longer satisfies the replay invariant and stays queued",
+    )
+    .maybe_work_item_id(message.work_item_id.clone())
+    .evidence(format!("message_id={}", message.id))
+    .evidence(format!("activation_id={}", invalid.activation_id))
+    .evidence(format!("violation={}", invalid.violation))
+    .evidence(format!(
+        "turn_id={}",
+        invalid.turn_id.as_deref().unwrap_or("none")
+    ))
+    .evidence(format!(
+        "terminal_kind={}",
+        invalid.terminal_kind.as_deref().unwrap_or("none")
+    ));
+    let event = scheduling_advisory_event(&diagnostic);
+    let duplicate = storage
+        .read_recent_events(64)?
+        .iter()
+        .any(|latest| latest.kind == event.kind && latest.data == event.data);
+    if !duplicate {
+        storage.append_event(&event)?;
+    }
+    Ok(())
+}
+
 trait SchedulingAdvisoryExt {
     fn maybe_work_item_id(self, work_item_id: Option<String>) -> Self;
 }

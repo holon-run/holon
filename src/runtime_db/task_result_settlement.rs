@@ -11,8 +11,11 @@ use crate::{
 
 pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 
+// live_turn is shared beyond this repository: the scheduler downcasts its
+// InterruptedReplaySourceInvalid for queue-head containment, and startup
+// repair reuses its strict attached-turn matcher.
 mod exact_waiter;
-mod live_turn;
+pub(crate) mod live_turn;
 mod obligation;
 pub(crate) use obligation::{classify_obligation_tx, TaskResultObligation};
 mod provider_handoff;
@@ -53,6 +56,7 @@ pub(crate) enum TaskResultSettlementDisposition {
     OwnerClosed,
     OwnerMissing,
     InvalidOrStale,
+    InterruptedReplaySourceFinal,
 }
 
 #[derive(Debug, Clone)]
@@ -63,13 +67,14 @@ pub(crate) struct TaskResultActivationSettlement {
 }
 
 impl TaskResultSettlementDisposition {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ModelDelivered => "model_delivered",
             Self::ReplyConsumedElsewhere => "reply_consumed_elsewhere",
             Self::OwnerClosed => "owner_closed",
             Self::OwnerMissing => "owner_missing",
             Self::InvalidOrStale => "invalid_or_stale",
+            Self::InterruptedReplaySourceFinal => "interrupted_replay_source_final",
         }
     }
 }

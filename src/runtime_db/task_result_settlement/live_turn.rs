@@ -22,6 +22,44 @@ struct RecoverySources {
     activation_turns: BTreeMap<String, String>,
 }
 
+/// Deterministic rejection of a replay-anchored claim whose persisted
+/// (attempt, turn) pair violates the interrupted-replay invariant. Unlike a
+/// generic failure this describes poisoned local state: replay admission can
+/// never succeed for this activation, and the queue head must be quarantined
+/// instead of killing the runtime loop.
+#[derive(Debug, thiserror::Error)]
+#[error("interrupted replay source invariant failed: {violation}")]
+pub(crate) struct InterruptedReplaySourceInvalid {
+    pub violation: &'static str,
+    pub agent_id: String,
+    pub activation_id: String,
+    pub turn_id: Option<String>,
+    pub terminal_kind: Option<String>,
+}
+
+impl InterruptedReplaySourceInvalid {
+    fn new(violation: &'static str, agent_id: &str, activation_id: &str) -> Self {
+        Self {
+            violation,
+            agent_id: agent_id.to_string(),
+            activation_id: activation_id.to_string(),
+            turn_id: None,
+            terminal_kind: None,
+        }
+    }
+}
+
+fn terminal_kind_str(kind: TurnTerminalKind) -> &'static str {
+    match kind {
+        TurnTerminalKind::Completed => "completed",
+        TurnTerminalKind::Aborted => "aborted",
+        TurnTerminalKind::Interrupted => "interrupted",
+        TurnTerminalKind::BaselineOverBudget => "baseline_over_budget",
+        TurnTerminalKind::DeferredToFallback => "deferred_to_fallback",
+        TurnTerminalKind::ProviderFailedNeedsRecovery => "provider_failed_needs_recovery",
+    }
+}
+
 impl TaskResultSettlementRepository<'_> {
     /// Select the exact interrupted predecessor, including live-only turns.
     pub(crate) fn interrupted_attached_turn_id(
@@ -33,20 +71,40 @@ impl TaskResultSettlementRepository<'_> {
         self.db.transaction(|tx| {
             let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)?
             else {
-                anyhow::bail!("interrupted replay source attempt is missing");
+                return Err(InterruptedReplaySourceInvalid::new(
+                    "attempt_missing",
+                    agent_id,
+                    activation_id,
+                )
+                .into());
             };
             if attempt.agent_id != agent_id
                 || attempt.source_message_id.as_deref() != Some(source_message_id)
                 || attempt.state
                     != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
             {
-                anyhow::bail!("interrupted replay source attempt does not match");
+                return Err(InterruptedReplaySourceInvalid::new(
+                    "attempt_mismatch",
+                    agent_id,
+                    activation_id,
+                )
+                .into());
             }
             if let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? {
                 if turn.terminal.as_ref().map(|terminal| terminal.kind)
                     != Some(crate::types::TurnTerminalKind::Interrupted)
                 {
-                    anyhow::bail!("interrupted replay source turn is not interrupted");
+                    return Err(InterruptedReplaySourceInvalid {
+                        violation: "turn_not_interrupted",
+                        agent_id: agent_id.to_string(),
+                        activation_id: activation_id.to_string(),
+                        turn_id: Some(turn.turn_id.clone()),
+                        terminal_kind: turn
+                            .terminal
+                            .as_ref()
+                            .map(|terminal| terminal_kind_str(terminal.kind).to_string()),
+                    }
+                    .into());
                 }
                 return Ok(Some(turn.turn_id));
             }
@@ -60,7 +118,12 @@ impl TaskResultSettlementRepository<'_> {
                 |row| row.get(0),
             )?;
             if has_attachment {
-                anyhow::bail!("interrupted replay source attachment is invalid or ambiguous");
+                return Err(InterruptedReplaySourceInvalid::new(
+                    "attachment_invalid_or_ambiguous",
+                    agent_id,
+                    activation_id,
+                )
+                .into());
             }
             Ok(None)
         })
@@ -461,7 +524,9 @@ pub(crate) fn recovery_turn_for_activation_tx(
     .then_some(turn))
 }
 
-fn attached_turn_for_activation_tx(
+/// The strictly matched turn attached to an execution attempt, if exactly one
+/// qualifying turn exists. Shared by replay validation and startup repair.
+pub(crate) fn attached_turn_for_activation_tx(
     tx: &Transaction<'_>,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
     include_idle: bool,

@@ -2777,6 +2777,9 @@ fn persist_execution_transition_only(
             ExecutionProtocolCommand::Interrupt(command) => {
                 crate::domain::execution_protocol::interrupt_execution(&state, &command)
             }
+            ExecutionProtocolCommand::FinalizeInterrupted(command) => {
+                crate::domain::execution_protocol::finalize_interrupted_execution(&state, &command)
+            }
             ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
                 crate::domain::execution_protocol::recover_interrupted_task_result_claim(
                     &state, &command,

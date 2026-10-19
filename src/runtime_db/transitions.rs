@@ -421,6 +421,7 @@ pub(crate) struct StartupRuntimeRecoveryReport {
     pub orphaned_claim_turns: usize,
     pub daemon_restart_turns: usize,
     pub interrupted_execution_attempts: usize,
+    pub interrupted_attempts_finalized: usize,
 }
 
 #[derive(Debug, Default)]
@@ -740,12 +741,191 @@ impl RuntimeDb {
                     }
                 }
             }
+            // Repair pairs left inconsistent by a crash between the runtime
+            // abort write and its attempt settlement (#3607).
+            finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report)?;
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
             inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
             Ok(report)
         })
     }
+}
+
+/// Normalize interrupted execution attempts whose attached turn already
+/// reached a different terminal state. A persisted (interrupted attempt,
+/// terminal turn) pair permanently fails the interrupted-replay invariant on
+/// every later claim, which before this pass killed the runtime loop as a
+/// non-retryable failure (#3607). Finalization keeps outcome history intact
+/// and settles queue, settlement, and delivery records in the same
+/// transaction so the recovery scanner cannot re-enqueue the poisoned claim.
+fn finalize_interrupted_replay_sources_at_startup_tx(
+    tx: &Transaction<'_>,
+    recovered_at: chrono::DateTime<Utc>,
+    report: &mut StartupRuntimeRecoveryReport,
+) -> Result<()> {
+    use crate::domain::execution_protocol::{
+        ExecutionAttemptState, ExecutionProtocolCommand, FinalizeInterruptedExecution,
+    };
+    use crate::runtime_db::task_result_settlement::live_turn::attached_turn_for_activation_tx;
+    use crate::runtime_db::task_result_settlement::{
+        settle_activation_tx, TaskResultSettlementDisposition,
+    };
+
+    let interrupted_agents: Vec<String> = {
+        let mut statement = tx.prepare(
+            "SELECT DISTINCT agent_id FROM execution_protocol_attempts
+             WHERE lifecycle_state = 'interrupted' ORDER BY agent_id",
+        )?;
+        let agents = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        agents
+    };
+    for agent_id in interrupted_agents {
+        let state = execution_protocol_repository::load_state_tx(tx, &agent_id)?;
+        for attempt in state.attempts.values() {
+            if attempt.state != ExecutionAttemptState::Interrupted {
+                continue;
+            }
+            let Some(turn) = attached_turn_for_activation_tx(tx, attempt, true)? else {
+                continue;
+            };
+            let Some(terminal) = turn.terminal.as_ref() else {
+                continue;
+            };
+            if terminal.kind == TurnTerminalKind::Interrupted {
+                continue;
+            }
+            let completed = terminal.kind == TurnTerminalKind::Completed;
+            let terminal_kind = serde_json::to_value(terminal.kind)?
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string();
+            let reason = format!("startup_recovery/interrupted_replay_source_{terminal_kind}");
+            let command =
+                ExecutionProtocolCommand::FinalizeInterrupted(FinalizeInterruptedExecution {
+                    command_id: format!("startup_finalize_interrupted:{}", attempt.attempt_id),
+                    attempt_id: attempt.attempt_id.clone(),
+                    reason: reason.clone(),
+                    finalized_at: recovered_at.to_rfc3339(),
+                });
+            let prepared = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &agent_id,
+                None,
+                std::slice::from_ref(&command),
+                &[],
+                &[],
+                &[],
+            )
+            .with_context(|| {
+                format!(
+                    "startup finalization rejected for interrupted attempt {} of agent {agent_id}",
+                    attempt.attempt_id
+                )
+            })?;
+            execution_protocol_repository::persist_execution_commands_tx(tx, prepared)?;
+
+            let disposition = if completed {
+                TaskResultSettlementDisposition::ModelDelivered
+            } else {
+                TaskResultSettlementDisposition::InterruptedReplaySourceFinal
+            };
+            let settled = settle_activation_tx(
+                tx,
+                &agent_id,
+                &attempt.attempt_id,
+                disposition,
+                recovered_at,
+            )?;
+
+            let mut queue_status: Option<String> = None;
+            if let Some(message_id) = attempt.source_message_id.as_deref() {
+                let queue = tx
+                    .query_row(
+                        "SELECT payload_json FROM queue_entries
+                         WHERE agent_id = ?1 AND message_id = ?2",
+                        [&agent_id, message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+                    .transpose()?;
+                if let Some(expected) = queue.filter(|entry| {
+                    matches!(
+                        entry.status,
+                        QueueEntryStatus::Queued
+                            | QueueEntryStatus::Dequeued
+                            | QueueEntryStatus::Interrupted
+                    )
+                }) {
+                    let mut recovered = expected.clone();
+                    recovered.status = if completed {
+                        QueueEntryStatus::Processed
+                    } else {
+                        QueueEntryStatus::Aborted
+                    };
+                    recovered.updated_at = recovered_at;
+                    if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
+                        bail!("startup finalization queue claim changed inside transaction");
+                    }
+                    let delivery_state = if completed {
+                        AgentMessageDeliveryState::Consumed
+                    } else {
+                        AgentMessageDeliveryState::Failed
+                    };
+                    advance_delivery_state_for_message_tx(
+                        tx,
+                        message_id,
+                        delivery_state,
+                        (delivery_state == AgentMessageDeliveryState::Failed)
+                            .then_some("startup recovery finalized interrupted replay source"),
+                    )?;
+                    queue_status = Some(
+                        serde_json::to_value(recovered.status)?
+                            .as_str()
+                            .unwrap_or("unknown")
+                            .to_string(),
+                    );
+                    report.queue_entries_changed += 1;
+                    if !report.recovered_queue_agent_ids.contains(&agent_id) {
+                        report.recovered_queue_agent_ids.push(agent_id.clone());
+                    }
+                }
+            }
+
+            append_audit_event_tx(
+                tx,
+                Some(&agent_id),
+                &AuditEvent {
+                    id: format!(
+                        "audit:startup-finalized-interrupted-attempt:{agent_id}:{}",
+                        attempt.attempt_id
+                    ),
+                    event_seq: 0,
+                    event_log_epoch: String::new(),
+                    created_at: recovered_at,
+                    kind: "startup_interrupted_attempt_finalized".into(),
+                    contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                    payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+                    payload_schema_version: 1,
+                    data: serde_json::json!({
+                        "agent_id": &agent_id,
+                        "attempt_id": &attempt.attempt_id,
+                        "turn_id": &turn.turn_id,
+                        "turn_terminal_kind": &terminal_kind,
+                        "queue_status": queue_status.as_deref(),
+                        "settlement_disposition": disposition.as_str(),
+                        "settled_settlements": settled,
+                        "reason": &reason,
+                    }),
+                },
+            )?;
+            report.interrupted_attempts_finalized += 1;
+        }
+    }
+    Ok(())
 }
 
 fn startup_claim_recovery_tx(
@@ -6328,6 +6508,300 @@ mod tests {
             .filter(|event| event.kind == "startup_interrupted_execution_attempt_recovered")
             .count();
         assert_eq!(recovery_audits, 1);
+        Ok(())
+    }
+
+    fn poisoned_replay_turn(turn_id: &str, terminal_kind: TurnTerminalKind) -> TurnRecord {
+        let now = Utc::now();
+        let mut turn = TurnRecord::new("agent-a", turn_id, 2);
+        turn.created_at = now;
+        turn.current_work_item_id = Some("work-execution".into());
+        turn.trigger = Some(crate::types::TurnTriggerSummary {
+            message_id: Some("message-execution".into()),
+            kind: crate::types::MessageKind::OperatorPrompt,
+            origin: crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            authority_class: AuthorityClass::OperatorInstruction,
+            priority: Priority::Normal,
+            trigger_kind: None,
+            task_id: None,
+        });
+        turn.input_message_ids = vec!["message-execution".into()];
+        let mut batch = crate::types::LiveInputBatchRecord {
+            activation_id: "attempt-execution".into(),
+            safe_point: crate::types::LiveInputSafePoint::new("attempt-execution", 1),
+            cutoff: now,
+            max_items: 8,
+            max_bytes: 24 * 1024,
+            rendered_bytes: 0,
+            result_identities: vec!["result:task-execution:1".into()],
+            ordinary_message_ids: Vec::new(),
+            items: vec![crate::types::IdleInputBatchItem {
+                message_id: "message-execution".into(),
+                source_ref: "message:message-execution".into(),
+                rendered: String::new(),
+            }],
+        };
+        batch.rendered_bytes = batch.rendered_text().len();
+        turn.live_input_batches.push(batch);
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: terminal_kind,
+            reason: Some("fixture_terminal".into()),
+            no_brief_reason: None,
+            completed_at: now,
+            duration_ms: 5,
+        });
+        turn
+    }
+
+    fn insert_admitted_replay_settlement(db: &RuntimeDb, now: chrono::DateTime<Utc>) -> Result<()> {
+        let record = crate::runtime_db::task_result_settlement::TaskResultSettlementRecord {
+            result_identity: "result:task-execution:1".into(),
+            agent_id: "agent-a".into(),
+            task_id: "task-execution".into(),
+            message_id: "message-execution".into(),
+            work_item_id: Some("work-execution".into()),
+            rejoin_generation: 1,
+            parent_turn_id: "turn-parent".into(),
+            task_status: "completed".into(),
+            state:
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted,
+            activation_id: Some("attempt-execution".into()),
+            disposition: None,
+            created_at: now,
+            updated_at: now,
+            admitted_at: Some(now),
+            settled_at: None,
+            deferred_reason: None,
+            deferred_at: None,
+            next_recheck_at: Some(now - chrono::Duration::hours(1)),
+            recovery_epoch: 0,
+            recovery_attempts: 0,
+            last_recovery_root_attempt_id: None,
+            last_recovery_admitted_at: None,
+            recovery_paused_at: None,
+            recovery_diagnostic_at: None,
+        };
+        db.transaction(|tx| {
+            let payload = serde_json::to_string(&record)?;
+            tx.execute(
+                "INSERT INTO task_result_settlements (
+                   result_identity, agent_id, task_id, message_id, work_item_id,
+                   rejoin_generation, parent_turn_id, state, activation_id, disposition,
+                   created_at, updated_at, admitted_at, settled_at,
+                   deferred_reason, deferred_at, next_recheck_at, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                rusqlite::params![
+                    record.result_identity,
+                    record.agent_id,
+                    record.task_id,
+                    record.message_id,
+                    record.work_item_id,
+                    record.rejoin_generation,
+                    record.parent_turn_id,
+                    "caller_admitted",
+                    record.activation_id,
+                    record.disposition.map(crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::as_str),
+                    now.to_rfc3339(),
+                    now.to_rfc3339(),
+                    now.to_rfc3339(),
+                    record.settled_at.map(|at| at.to_rfc3339()),
+                    record.deferred_reason,
+                    record.deferred_at.map(|at| at.to_rfc3339()),
+                    record.next_recheck_at.map(|at| at.to_rfc3339()),
+                    payload,
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_finalizes_poisoned_interrupted_replay_pair() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        let now = Utc::now();
+
+        // Production drift shape: an open attempt claims a task-result message
+        // whose attached turn already aborted without settling the attempt.
+        let admission =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &admission,
+        )?;
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: "message-execution".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        })?;
+        db.turn_records().upsert(&poisoned_replay_turn(
+            "turn-execution",
+            TurnTerminalKind::Aborted,
+        ))?;
+        insert_admitted_replay_settlement(&db, now)?;
+
+        // One startup both interrupts the open attempt for the aborted source
+        // and finalizes the poisoned pair instead of leaving a replay anchor
+        // that would hard-fail every later claim (#3607).
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        assert_eq!(report.interrupted_attempts_finalized, 1);
+
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Settled
+        );
+        assert_eq!(
+            db.queue_entries()
+                .latest("message-execution")?
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+        let settled = db
+            .task_result_settlements()
+            .latest_for_message("message-execution")?
+            .expect("settlement record");
+        assert_eq!(
+            settled.state,
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+        );
+        assert_eq!(
+            settled.disposition,
+            Some(
+                crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::InterruptedReplaySourceFinal
+            )
+        );
+        let finalized_audits = db
+            .audit_events()
+            .recent(Some("agent-a"), 20)?
+            .iter()
+            .filter(|event| event.kind == "startup_interrupted_attempt_finalized")
+            .count();
+        assert_eq!(finalized_audits, 1);
+
+        // Idempotent: nothing left to finalize on the next restart.
+        let repeated = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(repeated.interrupted_attempts_finalized, 0);
+        assert_eq!(
+            db.task_result_settlements()
+                .latest_for_message("message-execution")?
+                .unwrap()
+                .disposition,
+            Some(
+                crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::InterruptedReplaySourceFinal
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_finalizes_completed_replay_pair_as_processed() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        let now = Utc::now();
+        let admission =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &admission,
+        )?;
+        // Legacy poison shape: queue entry stuck Interrupted while the
+        // attached turn already completed.
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: "message-execution".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: now,
+            updated_at: now,
+        })?;
+        db.turn_records().upsert(&poisoned_replay_turn(
+            "turn-execution",
+            TurnTerminalKind::Completed,
+        ))?;
+        insert_admitted_replay_settlement(&db, now)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_attempts_finalized, 1);
+        assert_eq!(
+            db.queue_entries()
+                .latest("message-execution")?
+                .unwrap()
+                .status,
+            QueueEntryStatus::Processed
+        );
+        let settled = db
+            .task_result_settlements()
+            .latest_for_message("message-execution")?
+            .expect("settlement record");
+        assert_eq!(
+            settled.disposition,
+            Some(
+                crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition::ModelDelivered
+            )
+        );
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Settled
+        );
         Ok(())
     }
 
