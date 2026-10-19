@@ -13,7 +13,10 @@ final class MarkdownWebLinkTests: XCTestCase {
             "/files?workspace=ws&root=opaque%3Aone&path=a%23b",
             "/", "/skills", "/search", "/agents/a", "/skills/a", "/agents/a/skills/b",
             "/templates", "/templates/b", "/settings/",
+            "/settings//", "/skills///",
             "https://example.org/apps/a/b?query#part", "http://elsewhere.test",
+            "https://[::1]/apps/a/b", "//[::1]:8443/apps/a/b",
+            "https://[2001:db8::1]/apps/a/b",
             "//example.org/apps/a/b?query#part", "HTTPS://EXAMPLE.org/报告%20one.html",
         ]
         for href in vectors {
@@ -40,6 +43,8 @@ final class MarkdownWebLinkTests: XCTestCase {
                      "https:evil.test", "http:\\\\evil.test", "https://example.org/\npath",
                      "https://user:password@example.org/apps/a/b", "//user@example.org/apps/a/b",
                      "https://example.org:65536/apps/a/b", "https://example.org:/apps/a/b",
+                     "https://[::1/x", "http://[:1]/apps/a/b", "//[::1",
+                     "http://[notv6]/apps/a/b",
                      "https://example.org/apps/a/b/%252f", "/apps/a/b?query=%FF", "/apps/a/b#%0a"] {
             XCTAssertEqual(MarkdownWebLink.classify(href), .rejected, href)
         }

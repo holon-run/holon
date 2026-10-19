@@ -108,8 +108,9 @@ private enum WebLinkError: Error { case confused }
 
 /// Keep in step with web-gui/app/src/app/routes.ts: unknown absolute paths are host files.
 func isMarkdownGUIPath(_ path: String) -> Bool {
-    let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
-    let route = trimmed.isEmpty ? "/" : trimmed
+    var trimmed = Substring(path)
+    while trimmed.hasSuffix("/") { trimmed = trimmed.dropLast() }
+    let route = trimmed.isEmpty ? "/" : String(trimmed)
     let simpleRoutes: Set<String> = ["/", "/files", "/search", "/skills", "/templates", "/settings"]
     if simpleRoutes.contains(route) { return true }
     return route.range(of: #"^/(?:skills|templates)/[^/]+$"#, options: .regularExpression) != nil ||
@@ -152,19 +153,34 @@ private func webAuthority(_ href: String, network: Bool) -> String? {
 
 private func isValidWebAuthority(_ authority: String) -> Bool {
     guard !authority.contains("@"), !authority.hasSuffix(":") else { return false }
-    let suffix = bracketedHostSuffix(authority) ?? (authority.contains("]") ? nil : authority)
-    guard let suffix else { return false }
+    // A bracketed authority must be a well-formed IPv6 literal, as java.net.URI enforces on
+    // Android; it never falls back to plain-host parsing.
+    let suffix: String
+    if authority.hasPrefix("[") {
+        guard let closed = bracketedHostSuffix(authority) else { return false }
+        suffix = closed
+    } else {
+        guard !authority.contains("]") else { return false }
+        suffix = authority
+    }
     guard let separator = suffix.lastIndex(of: ":") else { return true }
     let host = String(suffix[..<separator])
     let port = String(suffix[suffix.index(after: separator)...])
     return !host.isEmpty && !port.isEmpty && port.allSatisfy(\.isNumber) && (Int(port) ?? 65_536) <= 65_535
 }
 
-/// For `[v6.host]`-style authorities returns the `]`-onward suffix; plain hosts return themselves.
+/// `inet_pton` shares java.net.URI's strict IPv6 literal grammar (no zone IDs, full group rules).
+private func isIPv6Literal(_ literal: String) -> Bool {
+    var address = in6_addr()
+    return literal.withCString { inet_pton(AF_INET6, $0, &address) == 1 }
+}
+
+/// For `[v6.host]`-style authorities validates the literal and returns the `]`-onward suffix.
 private func bracketedHostSuffix(_ authority: String) -> String? {
     guard authority.hasPrefix("[") else { return nil }
     guard let close = authority.firstIndex(of: "]"),
-          authority.distance(from: authority.startIndex, to: close) > 1 else { return nil }
+          authority.distance(from: authority.startIndex, to: close) > 1,
+          isIPv6Literal(String(authority[authority.index(after: authority.startIndex)..<close])) else { return nil }
     return String(authority[close...])
 }
 
