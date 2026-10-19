@@ -212,6 +212,14 @@ final class ReadingCoordinator {
         } else { status = .offline }
     }
 
+    /// The app is verifying an authenticated client for the confirmed partition;
+    /// cached content stays readable while the online verification runs.
+    func markOnlineActivationPending() {
+        guard acceptsReconnectMutation else { return }
+        guard foreground, partition != nil, transport == nil else { return }
+        status = .syncing
+    }
+
     func selectAgent(_ agentID: String?) {
         guard agentID == nil || (agentID?.isEmpty == false && (agentID?.utf8.count ?? 0) <= 512) else { return }
         guard selectedAgentID != agentID else { return }

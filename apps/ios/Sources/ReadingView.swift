@@ -12,6 +12,12 @@ struct ReadingView: View {
     private var matching: [ReadingAgent] {
         AgentSummaryPresentation.sorted(reader.agents, query: query, filter: filter)
     }
+    /// A connection attempt for the selected network is still verifying identity online.
+    private var isConnecting: Bool { connection.status == .connecting }
+    /// The roster is loading from either the reading bootstrap or the connection attempt itself.
+    private var rosterLoading: Bool {
+        reader.status == .syncing || (reader.status == .offline && isConnecting)
+    }
 
     var body: some View {
             List {
@@ -25,7 +31,8 @@ struct ReadingView: View {
                                 Spacer()
                                 if let key = ReadingPresentation.connectionStatusKey(
                                     status: reader.status, hasContent: true,
-                                    isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing
+                                    isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
+                                    connecting: isConnecting
                                 ) {
                                     Text(LocalizedStringKey(key))
                                         .font(.caption).foregroundStyle(.secondary)
@@ -34,19 +41,21 @@ struct ReadingView: View {
                             }
                         }
                         .accessibilityIdentifier("connection.manage")
-                        if reader.status == .syncing && reader.agents.isEmpty { ProgressView() }
+                        if rosterLoading && reader.agents.isEmpty { ProgressView() }
                         if reader.agents.isEmpty {
                             if reader.status == .live {
                                 Text("reading.noAgentsConnected")
                                 Button("connection.refresh") { Task { await reader.refresh() } }
                                     .buttonStyle(.borderless)
-                            } else if reader.status == .offline {
+                            } else if reader.status == .offline && !isConnecting {
                                 Text("reading.cache.noAgents")
-                            } else if reader.status != .syncing {
+                            } else if !rosterLoading {
                                 Text("reading.emptyAgents")
                             }
                         }
-                        if ReadingPresentation.showsConnectionRetry(status: reader.status, isRefreshing: reader.isRefreshing) {
+                        if ReadingPresentation.showsConnectionRetry(status: reader.status,
+                                                                    isRefreshing: reader.isRefreshing,
+                                                                    connecting: isConnecting) {
                             Button("reading.retry") { Task { await reader.refresh() } }
                                 .buttonStyle(.borderless)
                                 .accessibilityIdentifier("agents.retry")
@@ -599,11 +608,13 @@ private struct ReadingBriefView: View {
 
 enum ReadingPresentation {
     static func connectionStatusKey(status: ReadingStatus, hasContent: Bool,
-                                    isCached: Bool, isRefreshing: Bool) -> String? {
+                                    isCached: Bool, isRefreshing: Bool,
+                                    connecting: Bool = false) -> String? {
         if status == .permissionDenied || status == .sessionExpired || status == .incompatible {
             return "reading.status." + status.rawValue
         }
-        if isRefreshing || status == .syncing {
+        // A pending connection attempt keeps verifying the target network in the background.
+        if isRefreshing || status == .syncing || (connecting && status == .offline) {
             return isCached ? "reading.cache.refreshing" : "reading.status.syncing"
         }
         if status == .offline {
@@ -616,8 +627,9 @@ enum ReadingPresentation {
         return "reading.status." + status.rawValue
     }
 
-    static func showsConnectionRetry(status: ReadingStatus, isRefreshing: Bool) -> Bool {
-        !isRefreshing && (status == .offline || status == .incompatible)
+    static func showsConnectionRetry(status: ReadingStatus, isRefreshing: Bool,
+                                     connecting: Bool = false) -> Bool {
+        !(connecting || isRefreshing) && (status == .offline || status == .incompatible)
     }
 
     static func date(_ value: String) -> Date? {

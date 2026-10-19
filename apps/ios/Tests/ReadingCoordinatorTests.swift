@@ -695,6 +695,38 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
+    func testPendingOnlineActivationMarksSyncingWhileCachedRosterStaysReadable() async throws {
+        let cache = ReadingCache(file: nil)
+        let (coordinator, _, authority) = try await start(cache: cache)
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: authority))
+        coordinator.disconnect()
+        coordinator.activateOffline(partition: partition)
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertFalse(coordinator.agents.isEmpty)
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        // The authenticated client is still binding; verification is in progress.
+        coordinator.markOnlineActivationPending()
+        XCTAssertEqual(coordinator.status, .syncing)
+        XCTAssertFalse(coordinator.agents.isEmpty)
+        XCTAssertTrue(coordinator.isShowingCachedContent)
+        // Bootstrap owns the status again once the transport activates.
+        coordinator.activate(transport: ReadingFakeTransport(authority: authority),
+                             identity: authority, apiBaseURL: url)
+        try await wait { coordinator.status == .live }
+        XCTAssertFalse(coordinator.agents.isEmpty)
+    }
+
+    func testPendingOnlineActivationNeverOverridesTransportOrBackgroundState() async throws {
+        let (coordinator, _, _) = try await start()
+        XCTAssertEqual(coordinator.status, .live)
+        coordinator.markOnlineActivationPending()
+        XCTAssertEqual(coordinator.status, .live)
+        coordinator.setForeground(false)
+        XCTAssertEqual(coordinator.status, .offline)
+        coordinator.markOnlineActivationPending()
+        XCTAssertEqual(coordinator.status, .offline)
+    }
+
     func testHistoryCursorNeverBecomesLiveCursor() async throws {
         let (coordinator, fake, _) = try await start()
         await coordinator.loadHistory()

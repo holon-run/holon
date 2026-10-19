@@ -166,6 +166,7 @@ struct HolonApp: App {
                                   ReadingPartition(apiBaseURL: profile.apiBaseURL, identity: identity) == context.partition else {
                                 return
                             }
+                            reader.markOnlineActivationPending()
                             do {
                                 let client = try await coordinator.makeAuthenticatedClient()
                                 guard !Task.isCancelled, ReadingActivation(coordinator) == readingActivation else {
