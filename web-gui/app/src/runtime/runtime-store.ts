@@ -11,6 +11,7 @@ import {
   isProjectionBusyError,
   isTimeoutAbortError,
   projectRosterAgents,
+  resolveRuntimeApiBase,
   RuntimeHttpError,
   type BriefReadStateDto,
   type AgentEventStreamSubscription,
@@ -777,7 +778,7 @@ function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
     connection: {
       mode: config.mode,
       source: "fixture",
-      baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
+      baseUrl: resolveRuntimeApiBase(config),
       hasToken: Boolean(config.token?.trim()),
       summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to this Holon server…",
     },
