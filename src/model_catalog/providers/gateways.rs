@@ -96,6 +96,7 @@ pub(super) fn kilocode_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
         kilocode_auto_model("kilo-auto/free", "Kilo Auto Free", 256_000, 32_768, false),
+        kilocode_auto_model("kilo-auto/small", "Kilo Auto Small", 262_144, 32_768, true),
     ]
 }
 
@@ -127,6 +128,7 @@ fn opencode_go_models_dev_entries() -> Vec<BuiltInModelMetadata> {
         ("cat-jam-free", "Cat Jam Free", 262_144, 131_072, false, None),
         ("step-5-preview", "Step 5 Preview", 1_000_000, 65_536, true, None),
         ("beam-free", "Beam Free", 1_048_576, 131_072, false, None),
+        ("minimax-m3.1-flash-free", "MiniMax M3.1 Flash Free", 1_000_000, 512_000, true, None),
     ]
     .into_iter()
     .map(|(id, name, context, output, image_input, endpoint)| {

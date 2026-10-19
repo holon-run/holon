@@ -148,6 +148,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("deepseek-v4-pro", None, Some(65_536)),
             ("deepseek-v4-pro-0813", None, None),
             ("deepseek-v4.1-flash", None, None),
+            ("deepseek-v4.1-flash-1017", None, None),
             ("deepseek-v4-flash", None, Some(65_536)),
             ("deepseek-v4-flash-0731", None, Some(65_536)),
             ("deepseek-v3.2", None, None),
@@ -1248,6 +1249,14 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             "Token Plan Auto",
             false,
             false,
+        ),
+        reviewed_subscription_model(
+            "dashscope",
+            "token-plan",
+            "deepseek-v4.1-flash-1017",
+            "DeepSeek V4.1 Flash 1017",
+            true,
+            true,
         ),
         reviewed_subscription_model(
             "stepfun",

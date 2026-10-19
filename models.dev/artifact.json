@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
+  "revision": "models-dev-3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
   "upstream": {
     "source": "models.dev",
-    "revision": "6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
-    "fetched_at": "2026-10-18T20:51:37.444984533+00:00",
-    "content_sha256": "6a843075ca9ce62e9a5138e1673b51447c96dd8d4ad352172d293958ee1a99fb",
-    "adapter_version": "0.53.0 (31c59baf-dirty)"
+    "revision": "3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
+    "fetched_at": "2026-10-19T21:01:15.623567974+00:00",
+    "content_sha256": "3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
+    "adapter_version": "0.53.0 (74014f8d-dirty)"
   },
   "models": [
     {
@@ -2693,6 +2693,32 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "fireworks/accounts/fireworks/models/deepseek-v4p1-flash-1017",
+      "display_name": "DeepSeek V4.1 Flash 1017",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "fireworks/accounts/fireworks/models/ember-1",
       "display_name": "Ember-1",
       "description": "Specialized model from Fireworks built on Kimi K3, producing shorter reasoning traces with approximately 40% fewer tokens while maintaining comparable quality",
@@ -5205,6 +5231,32 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "huggingface/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "display_name": "DeepSeek V4.1 Flash 1017",
+      "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "huggingface/google/gemma-3-12b-it",
       "display_name": "Gemma 3 12B IT",
       "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
@@ -6128,6 +6180,34 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "minimax/MiniMax-M3.1-Flash",
+      "display_name": "MiniMax-M3.1-Flash",
+      "description": "Frontier multimodal coding model with 1M context window and tunable thinking depth",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 512000,
+      "max_output_tokens_upper_limit": 512000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "remote_discovered"
     },
     {
@@ -7586,9 +7666,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nearai/deepseek/deepseek-v4.1-flash",
-      "display_name": "DeepSeek V4.1 Flash",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "model_ref": "nearai/deepseek/deepseek-v4.1-flash-1017",
+      "display_name": "DeepSeek V4.1 Flash 1017",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -10693,6 +10773,36 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "nvidia/stepfun-ai/step-5-preview",
+      "display_name": "Step 5 Preview",
+      "description": "StepFun's next-generation flagship base model for coding and professional knowledge work, with native text, image, and video input and a 1M-token context window",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 1048576,
+      "max_output_tokens_upper_limit": 1048576,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "nvidia/thinkingmachines/inkling",
       "display_name": "Inkling",
       "description": "Multimodal MoE reasoning model (975B total, 41B active) for text, image, and audio",
@@ -13187,27 +13297,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/deepseek/deepseek-r1",
-      "display_name": "DeepSeek-R1",
-      "description": "Classic open reasoning model for transparent math, coding, and deliberate problem solving",
-      "context_window_tokens": 64000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 60800,
-      "default_max_output_tokens": 16000,
-      "max_output_tokens_upper_limit": 16000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/deepseek/deepseek-r1-0528",
       "display_name": "DeepSeek R1 0528",
       "description": "DeepSeek reasoning model for multi-step analysis, math, coding, and tools",
@@ -13324,8 +13413,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14048,8 +14137,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14426,6 +14515,33 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/inception/mercury-3",
+      "display_name": "Mercury 3",
+      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/inclusionai/ling-3.0-flash",
       "display_name": "Ling 3.0 Flash",
       "description": "Efficient model for low-latency assistance, extraction, and routine automation",
@@ -14684,8 +14800,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 72000,
+      "max_output_tokens_upper_limit": 72000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14723,9 +14839,9 @@
       "model_ref": "openrouter/meta-llama/llama-4-maverick",
       "display_name": "Llama 4 Maverick",
       "description": "Open multimodal Llama model for strong reasoning and fast responses",
-      "context_window_tokens": 1048576,
+      "context_window_tokens": 524288,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
+      "auto_compact_token_limit": 498073,
       "default_max_output_tokens": 16384,
       "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
@@ -15029,27 +15145,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/microsoft/wizardlm-2-8x22b",
-      "display_name": "WizardLM-2 8x22B",
-      "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
-      "context_window_tokens": 65535,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 62258,
-      "default_max_output_tokens": 8000,
-      "max_output_tokens_upper_limit": 8000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/minimax/minimax-01",
       "display_name": "MiniMax-01",
       "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
@@ -15215,6 +15310,34 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/minimax/minimax-m3.1-flash:free",
+      "display_name": "MiniMax M3.1 Flash (free)",
+      "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 524288,
+      "max_output_tokens_upper_limit": 524288,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "remote_discovered"
     },
     {
@@ -15848,11 +15971,11 @@
       "model_ref": "openrouter/morph/morph-v3-fast",
       "display_name": "Morph V3 Fast",
       "description": "Efficient model for low-latency assistance, extraction, and routine automation",
-      "context_window_tokens": 81920,
+      "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 77824,
-      "default_max_output_tokens": 38000,
-      "max_output_tokens_upper_limit": 38000,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18718,8 +18841,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 81920,
-      "max_output_tokens_upper_limit": 81920,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19395,27 +19518,6 @@
     {
       "model_ref": "openrouter/sao10k/l3.1-euryale-70b",
       "display_name": "Llama 3.1 Euryale 70B v2.2",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/sao10k/l3.3-euryale-70b",
-      "display_name": "Llama 3.3 Euryale 70B",
       "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
@@ -20952,8 +21054,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21221,8 +21323,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -22772,7 +22874,7 @@
     },
     {
       "model_ref": "venice/deepseek-v4-1-flash-1017",
-      "display_name": "DeepSeek V4.1 Flash",
+      "display_name": "DeepSeek v4.1 Flash (1017)",
       "description": "Fast DeepSeek model for efficient chat, coding help, and agent loops",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
@@ -23736,6 +23838,34 @@
         "low",
         "medium",
         "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/minimax-m3-1-flash",
+      "display_name": "MiniMax M3.1 Flash",
+      "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
       ],
       "source": "remote_discovered"
     },

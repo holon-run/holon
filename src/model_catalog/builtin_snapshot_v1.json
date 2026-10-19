@@ -1368,6 +1368,27 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "dashscope/deepseek-v4.1-flash-1017",
+      "display_name": "DeepSeek V4.1 Flash 1017",
+      "description": "dashscope token-plan subscription DeepSeek V4.1 Flash 1017; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "dashscope/glm-4.7",
       "display_name": "glm-4.7",
       "description": "Holon built-in runtime metadata for the dashscope/glm-4.7 compatible provider model.",
@@ -2444,9 +2465,58 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "kilocode/kilo-auto/small",
+      "display_name": "Kilo Auto Small",
+      "description": "Holon conservative built-in metadata for the Kilo Gateway Kilo Auto Small virtual model.",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "minimax-cn/MiniMax-M3.1-Flash",
+      "display_name": "MiniMax M3.1 Flash",
+      "description": "MiniMax M3.1 Flash supports general API access; M Plan and existing Token Plan access use separate subscription credentials.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 524288,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "minimax-cn/MiniMax-M3.1-Flash-Preview",
       "display_name": "MiniMax M3.1 Flash Preview",
-      "description": "MiniMax M3.1 Flash Preview requires M Plan, an existing Token Plan, or MiniMax Code; not general API access.",
+      "description": "Legacy MiniMax M3.1 Flash Preview subscription ID is now served by MiniMax-M3.1-Flash; requires M Plan, an existing Token Plan, or MiniMax Code, not general API access.",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -2640,9 +2710,37 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "minimax/MiniMax-M3.1-Flash",
+      "display_name": "MiniMax M3.1 Flash",
+      "description": "MiniMax M3.1 Flash supports general API access; M Plan and existing Token Plan access use separate subscription credentials.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 524288,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "minimax/MiniMax-M3.1-Flash-Preview",
       "display_name": "MiniMax M3.1 Flash Preview",
-      "description": "MiniMax M3.1 Flash Preview requires M Plan, an existing Token Plan, or MiniMax Code; not general API access.",
+      "description": "Legacy MiniMax M3.1 Flash Preview subscription ID is now served by MiniMax-M3.1-Flash; requires M Plan, an existing Token Plan, or MiniMax Code, not general API access.",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -4062,6 +4160,27 @@
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/minimax-m3.1-flash-free",
+      "display_name": "MiniMax M3.1 Flash Free",
+      "description": "OpenCode Go minimax-m3.1-flash-free route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 512000,
+      "max_output_tokens_upper_limit": 512000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -8442,6 +8561,16 @@
       }
     },
     {
+      "route_ref": "dashscope@token-plan/deepseek-v4.1-flash-1017",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "dashscope@token-plan/glm-5",
       "policy": {
         "display_name": null,
@@ -8871,6 +9000,36 @@
       }
     },
     {
+      "route_ref": "kilocode@default/kilo-auto/small",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "minimax-cn@default/MiniMax-M3.1-Flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash-Preview",
       "policy": {
         "display_name": null,
@@ -8952,6 +9111,26 @@
     },
     {
       "route_ref": "minimax@default/MiniMax-M3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "minimax@default/MiniMax-M3.1-Flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "minimax@m-plan/MiniMax-M3.1-Flash",
       "policy": {
         "display_name": null,
         "description": null,
@@ -9562,6 +9741,16 @@
     },
     {
       "route_ref": "opencode-go@default/mimo-v2.6-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/minimax-m3.1-flash-free",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12290,6 +12479,10 @@
       "target": "dashscope/deepseek-v4.1-flash"
     },
     {
+      "alias": "dashscope-token-plan/deepseek-v4.1-flash-1017",
+      "target": "dashscope/deepseek-v4.1-flash-1017"
+    },
+    {
       "alias": "dashscope-token-plan/glm-5",
       "target": "dashscope/glm-5"
     },
@@ -12354,8 +12547,16 @@
       "target": "dashscope/qwen3.7-max"
     },
     {
+      "alias": "minimax-cn-m-plan/MiniMax-M3.1-Flash",
+      "target": "minimax-cn/MiniMax-M3.1-Flash"
+    },
+    {
       "alias": "minimax-cn-m-plan/MiniMax-M3.1-Flash-Preview",
       "target": "minimax-cn/MiniMax-M3.1-Flash-Preview"
+    },
+    {
+      "alias": "minimax-m-plan/MiniMax-M3.1-Flash",
+      "target": "minimax/MiniMax-M3.1-Flash"
     },
     {
       "alias": "minimax-m-plan/MiniMax-M3.1-Flash-Preview",
@@ -12885,7 +13086,11 @@
     },
     {
       "provider": "minimax",
-      "model_ref": "minimax/MiniMax-M3"
+      "model_ref": "minimax/MiniMax-M3.1-Flash"
+    },
+    {
+      "provider": "minimax-cn",
+      "model_ref": "minimax-cn/MiniMax-M3.1-Flash"
     },
     {
       "provider": "minimax-cn-m-plan",
@@ -13055,7 +13260,11 @@
     },
     {
       "provider": "minimax",
-      "route_ref": "minimax@default/MiniMax-M3"
+      "route_ref": "minimax@default/MiniMax-M3.1-Flash"
+    },
+    {
+      "provider": "minimax-cn",
+      "route_ref": "minimax-cn@default/MiniMax-M3.1-Flash"
     },
     {
       "provider": "minimax-cn-m-plan",
@@ -13428,6 +13637,10 @@
       "route_ref": "dashscope@token-plan/deepseek-v4.1-flash"
     },
     {
+      "model_ref": "dashscope/deepseek-v4.1-flash-1017",
+      "route_ref": "dashscope@token-plan/deepseek-v4.1-flash-1017"
+    },
+    {
       "model_ref": "dashscope/glm-4.7",
       "route_ref": "dashscope@default/glm-4.7"
     },
@@ -13632,6 +13845,14 @@
       "route_ref": "kilocode@default/kilo-auto/frontier"
     },
     {
+      "model_ref": "kilocode/kilo-auto/small",
+      "route_ref": "kilocode@default/kilo-auto/small"
+    },
+    {
+      "model_ref": "minimax-cn/MiniMax-M3.1-Flash",
+      "route_ref": "minimax-cn@default/MiniMax-M3.1-Flash"
+    },
+    {
       "model_ref": "minimax-cn/MiniMax-M3.1-Flash-Preview",
       "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash-Preview"
     },
@@ -13666,6 +13887,10 @@
     {
       "model_ref": "minimax/MiniMax-M3",
       "route_ref": "minimax@default/MiniMax-M3"
+    },
+    {
+      "model_ref": "minimax/MiniMax-M3.1-Flash",
+      "route_ref": "minimax@default/MiniMax-M3.1-Flash"
     },
     {
       "model_ref": "minimax/MiniMax-M3.1-Flash-Preview",
@@ -13938,6 +14163,10 @@
     {
       "model_ref": "opencode-go/minimax-m3",
       "route_ref": "opencode-go@messages/minimax-m3"
+    },
+    {
+      "model_ref": "opencode-go/minimax-m3.1-flash-free",
+      "route_ref": "opencode-go@default/minimax-m3.1-flash-free"
     },
     {
       "model_ref": "opencode-go/muse-spark-1.2-contributor",

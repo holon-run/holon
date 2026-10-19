@@ -1,5 +1,25 @@
 # 070 MiniMax Model Catalog
 
+## October 20, 2026 update
+
+Add the exact official `MiniMax-M3.1-Flash` to international/China general API
+and `m-plan` routes. The existing Token Plan uses the subscription route rather
+than a separate endpoint. China general API uses its documented
+`api.minimax.cn/anthropic` base and independent `MINIMAX_CN_API_KEY`; general
+and subscription credentials must not be substituted for each other.
+
+The official model has image input, 1,000,000 context, 131,072 recommended
+output and 524,288 maximum output. Only this model and its preserved Preview
+compatibility ID use exact `output_config.effort` values
+`low/medium/high/xhigh/max`; omit generic `thinking`/`budget_tokens`.
+Preview is no longer an independent offer but its old name remains served.
+Do not extend those efforts to M3/M2 or remove historical models based only
+on their absence from the current model table.
+
+See [the endpoint review](../../models.dev/endpoint-review.md) for current
+official sources and remaining lifecycle/qualification gaps. The original
+decision below records the earlier M3/M2 baseline, not the M3.1 contract.
+
 ## Choice
 
 Keep the built-in direct MiniMax catalog limited to the eight models currently
