@@ -3,6 +3,53 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "./daemon-fixture";
 
+test("Markdown App URLs open real authenticated static apps without file resolution", async ({ daemonFactory, page, context }) => {
+  test.setTimeout(60_000);
+  const daemon = await daemonFactory({ webDist: "dist" });
+  const workspace = `agent_home:${daemon.agentId}`;
+  const info = await daemon.api(`/workspaces/${workspace}/files`).then((response) => response.json());
+  const appId = "markdown-links";
+  const appDir = path.join(info.absolute_path, "apps", appId);
+  await mkdir(appDir, { recursive: true });
+  await writeFile(path.join(appDir, "manifest.json"), JSON.stringify({ id: appId, name: "Markdown links", version: "1", entry: "index.html" }));
+  await writeFile(path.join(appDir, "index.html"), "<!doctype html><title>App navigation fixture</title><h1>Real App destination</h1>");
+  const app = `/apps/${daemon.agentId}/${appId}/?mode=audition#sample`;
+  await writeFile(path.join(info.absolute_path, "app-links.md"), `[Open App](${app} "Audition")\n\n[Reference][app]\n\n[app]: ${app}\n\n${app}，结束。\n\n\`${app}\`\n\n\`\`\`\n${app}\n\`\`\``);
+  const resolution = await daemon.api("/file-references/resolve", { method: "POST", body: JSON.stringify({ references: [{ type: "workspace_uri", workspace_uri: `workspace://${workspace}/app-links.md` }] }) }).then((response) => response.json());
+  expect(resolution.results[0].status).toBe("resolved");
+  const root = resolution.results[0].location.execution_root_id;
+  let resolverRequests = 0;
+  let appRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/file-references/resolve") resolverRequests++;
+    if (new URL(request.url()).pathname.startsWith("/apps/")) appRequests++;
+  });
+  const gui = `${daemon.baseUrl}/files?${new URLSearchParams({ workspace, root, path: "app-links.md" })}`;
+  await page.goto(gui);
+  await page.locator("#login-token").fill(daemon.token);
+  await page.getByRole("button", { name: /Sign in|Connect/i }).click();
+  const content = page.locator(".file-browser-markdown");
+  await expect(content.getByRole("link", { name: "Open App", exact: true })).toHaveAttribute("href", app);
+  await expect(content.getByRole("link")).toHaveCount(3);
+  await expect(content.locator("code")).toHaveCount(2);
+  expect(resolverRequests).toBe(0);
+  expect(appRequests).toBe(0);
+  await expect(content.locator("iframe")).toHaveCount(0);
+
+  // Cookie authentication in a new context tab; no token in the URL.
+  const popupPromise = context.waitForEvent("page");
+  await content.getByRole("link", { name: "Open App", exact: true }).click();
+  const popup = await popupPromise;
+  try {
+    await expect(popup.getByRole("heading", { name: "Real App destination" })).toBeVisible();
+    expect(popup.url()).toBe(`${daemon.baseUrl}${app}`);
+    expect(await popup.evaluate(() => window.opener === null)).toBe(true);
+    expect(page.url()).toBe(gui);
+  } finally { await popup.close(); }
+  const anonymous = await fetch(`${daemon.baseUrl}${app}`, { redirect: "manual" });
+  expect(anonymous.status).toBe(401);
+});
+
 // Seed only this fixture's registry: there is intentionally no public root-registration API.
 function registerRoot(home: string, entry: Record<string, unknown>) {
   execFileSync("python3", ["-c", `import sqlite3,json,sys
@@ -53,6 +100,7 @@ test("real roots, literal filenames, authenticated images/download, login restor
   await page.reload();
   await expect(content).toContainText("Only worktree");
   const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "File actions", exact: true }).click();
   await page.getByRole("button", { name: "Download", exact: true }).click();
   const download = await downloadPromise;
   expect(await readFile((await download.path())!, "utf8")).toContain("Only worktree");
@@ -80,6 +128,7 @@ test("real roots, literal filenames, authenticated images/download, login restor
     await login.reload();
     await expect(login.locator(".file-browser-markdown")).toContainText("Only worktree");
     const cookieDownload = login.waitForEvent("download");
+    await login.getByRole("button", { name: "File actions", exact: true }).click();
     await login.getByRole("button", { name: "Download", exact: true }).click();
     expect(await readFile((await (await cookieDownload).path())!, "utf8")).toContain("Only worktree");
   } finally { await fresh.close(); }

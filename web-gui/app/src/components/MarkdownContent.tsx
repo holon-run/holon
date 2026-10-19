@@ -199,7 +199,7 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
     const entry = reference?.value;
     if (!entry) return children;
     if (entry.kind === "anchor") return <a {...linkProps} href={`#${prefix}${entry.fragment}`} onClick={(event) => { event.preventDefault(); scrollToFragment(entry.fragment); onFragmentChange?.(entry.fragment); }}>{children}</a>;
-    if (entry.kind === "external") return children;
+    if (entry.kind === "web") return children;
     const result = results.get(key);
     if (entry.kind === "error") return <span title={entry.message}>{reference?.raw}</span>;
     if (result?.status === "unresolved") {
@@ -234,7 +234,7 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
           a: ({ children, href, node, ...props }) => {
             const key = node?.properties["data-file-reference"];
             if (typeof key === "string") return renderReference(key, children, false, undefined, props);
-            return <a {...props} href={href} rel="noreferrer" target="_blank">{children}</a>;
+            return <a {...props} href={href} rel="noopener noreferrer" target="_blank">{children}</a>;
           },
           img: ({ src, alt, node, ...props }) => {
             const key = node?.properties["data-file-reference"];

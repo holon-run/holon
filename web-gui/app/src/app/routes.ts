@@ -25,7 +25,8 @@ function eventSeqFromSearch(search: string): number | undefined {
   return Number.isInteger(eventSeq) && eventSeq > 0 ? eventSeq : undefined;
 }
 
-export function routeFromLocation(location: Pick<Location, "pathname" | "search">): BrowserRoute {
+/** Exact route matching; the dashboard fallback is not a registered URL. */
+export function matchBrowserRoute(location: Pick<Location, "pathname" | "search">): BrowserRoute | undefined {
   const path = location.pathname.replace(/\/+$/, "") || "/";
 
   if (path === "/") return { route: "dashboard" };
@@ -68,7 +69,11 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
     };
   }
 
-  return { route: "dashboard" };
+  return undefined;
+}
+
+export function routeFromLocation(location: Pick<Location, "pathname" | "search">): BrowserRoute {
+  return matchBrowserRoute(location) ?? { route: "dashboard" };
 }
 
 export function pathForRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>, skillAgentId?: string): string {

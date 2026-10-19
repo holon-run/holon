@@ -5,6 +5,28 @@ briefs, assistant activity and Explorer documents. Absolute Unix paths resolve
 on the execution host; relative references require the actual document locator.
 Historical workspace URIs remain compatible and never lose explicit roots.
 
+## Web URL boundary (#3598, 2026-10-19)
+
+Web, iOS and Android track the same link contract in #3598; the Web slice is
+implemented first. Before classifying host paths, recognize HTTP(S), mailto,
+network-path URLs and exact root-relative App/GUI routes. Reuse exact browser
+route matching, not the dashboard fallback. App paths require both agent and
+app segments; do not depend on discovery, current agent or availability.
+Preserve URL queries, fragments and encoding. Reject App traversal, controls,
+backslashes and encoded segment confusion before URL normalization.
+
+Bare App paths in prose become links, excluding existing link labels and code.
+App/GUI paths in inline code stay code; other literal host paths retain file
+previews. Unknown root paths still mean host files; `file:///apps/...` explicitly
+selects a host path. Relative references still require a real document locator.
+
+Web links bypass the file resolver and open natively in a new tab with
+`noopener noreferrer`, without iframe embedding, credential injection or
+permission/App preflight requests. Root-relative URLs use the current Web
+origin; cross-runtime destinations require explicit HTTP(S) URLs. Existing
+sanitization, file identity isolation and server authorization remain in force.
+Explicit images retain image semantics rather than embedding App HTML.
+
 - Classify links/images and whole inline-code paths before React Markdown URL
   sanitization; preserve HTTP/HTTPS/mailto and local fragments. Decode URL path
   components once, keep inline paths literal, and leave workspace URI decoding

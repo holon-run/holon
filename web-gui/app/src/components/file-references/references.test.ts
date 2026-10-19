@@ -9,6 +9,18 @@ const resolved = { status: "resolved" as const, location: base };
 const item = (key: string) => ({ key, reference: { type: "absolute_path", absolutePath: `/${key}` } as FileReference });
 
 describe("shared Markdown references", () => {
+  it("never collects Web targets as resolver inputs, including images, code and reference links", () => {
+    const references = collectMarkdownReferences([
+      "[app](/apps/a/b/?x=1#part) [gui](/agents/a/conversation) [files](/files?workspace=ws&root=x&path=y)",
+      "[ref][app]\n\n[app]: /apps/a/b/",
+      "/apps/a/b/， ` /apps/a/b/ `\n\n```\n/apps/a/b/\n```",
+      "`/apps/a/b/%2e%2e/x` `/apps/a/b/%ZZ` `/apps/a/b/../x`",
+      "![asset](/apps/a/b/a.png) [network](//example.org/x) https://example.org/x",
+      "[host](/tmp/file.md) [explicit](file:///apps/a/b) [anchor](#section)",
+    ].join("\n\n"));
+    expect([...references.values()].map(({ raw }) => raw)).toEqual(["/tmp/file.md", "file:///apps/a/b", "#section"]);
+  });
+
   it("collects bare workspace URIs with single tildes intact", () => {
     const references = collectMarkdownReferences("see workspace://ws/a~b and 1~2s");
 
@@ -53,7 +65,7 @@ describe("shared Markdown references", () => {
     const uri = "workspace://ws/a%2520.md?root=worktree%3Aone#part";
     expect(classifyReference(uri)).toMatchObject({ reference: { type: "workspace_uri", workspaceUri: uri }, fragment: "part" });
     for (const value of ["a.md?download=1", "workspace://ws/a?root=x&other=y", "workspace://ws/a?root=x&root=y", "javascript:alert(1)", "C:\\foo"]) expect(classifyReference(value, base).kind).toBe("error");
-    for (const value of ["https://example.com/a?b#c", "http://example.com", "mailto:user@example.com"]) expect(classifyReference(value).kind).toBe("external");
+    for (const value of ["https://example.com/a?b#c", "http://example.com", "mailto:user@example.com"]) expect(classifyReference(value)).toEqual({ kind: "web", href: value });
   });
   it("collects links, images, reference-style links and literal inline code, not prose or fenced code", () => {
     const text = '[one](/tmp/a.md) ![image](/tmp/a.md) [again][ref] ` /tmp/空 格%20#?.md ` `./child.md`\n\nworkspace://ws/old.md?root=worktree%3Aone\n\n/tmp/plain.md\n\n```\n/tmp/code.md\nworkspace://ws/code.md\n```\n\n[ref]: /tmp/a.md';
