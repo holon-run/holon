@@ -23,7 +23,8 @@ use holon::{
         AdmissionContext, AgentBootstrapStatus, AgentState, AgentStatus, AuthorityClass, BriefKind,
         BriefRecord, CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        TodoItem, TodoItemState, WorkItemState,
+        TodoItem, TodoItemState, TurnNoBriefReason, TurnRecord, TurnTerminalKind,
+        TurnTerminalSummary, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -335,6 +336,282 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
         .await?;
     assert_eq!(third["identity"]["status"], "active");
     assert_eq!(third["identity"]["incarnation"], 3);
+
+    host.shutdown_daemon_deletion_coordinator().await;
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversation_window(
+) -> Result<()> {
+    let agent_id = "reborn-turn-sequence";
+    let host = RuntimeHost::new_with_provider(
+        test_config(),
+        Arc::new(StubProvider::new("fresh incarnation result")),
+    )?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent(agent_id, None).await?;
+    let storage = host.agent_storage(agent_id)?;
+
+    // History exceeds the first-page limit, so restarting at one hides new turns.
+    for index in 1..=22 {
+        let mut turn = TurnRecord::new(agent_id, format!("historical-turn-{index}"), index);
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            no_brief_reason: Some(TurnNoBriefReason::ToolOnlyWait),
+            completed_at: turn.created_at,
+            duration_ms: 0,
+        });
+        storage.append_turn(&turn)?;
+    }
+    let mut old_state = AgentState::new(agent_id);
+    old_state.turn_index = 22;
+    old_state.total_message_count = 22;
+    old_state.total_input_tokens = 1234;
+    old_state.total_output_tokens = 5678;
+    old_state.total_model_rounds = 22;
+    old_state.last_brief_at = Some(chrono::Utc::now());
+    storage.write_agent(&old_state)?;
+    host.get_or_create_agent(agent_id).await?;
+    host.spawn_daemon_deletion_coordinator();
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+    let conversation_url = format!("{base}/api/agents/{agent_id}/conversation");
+    let original: serde_json::Value = client
+        .get(&conversation_url)
+        .query(&[("limit", "5")])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        original["turns"].as_array().expect("history turns").len(),
+        5
+    );
+    assert_eq!(original["turns"][4]["key"]["turn_index"], 22);
+    let mut previous_cursor = original["next_before_cursor"]
+        .as_str()
+        .expect("history has older turns")
+        .to_string();
+
+    for (incarnation, expected_index) in [(2_u64, 23_u64), (3, 24)] {
+        let deleted: serde_json::Value = client
+            .delete(format!("{base}/api/control/agents/{agent_id}"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(deleted["identity"]["status"], "deleting");
+        wait_until_async_for(Duration::from_secs(15), || {
+            let client = client.clone();
+            let url = format!("{base}/api/control/agents/{agent_id}/delete-status");
+            async move {
+                let status: serde_json::Value = client
+                    .get(url)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                Ok(status["job"]["status"] == "completed"
+                    && status["identity"]["status"] == "deleted")
+            }
+        })
+        .await?;
+
+        let recreated: serde_json::Value = client
+            .post(format!("{base}/api/control/agents/{agent_id}/create"))
+            .json(&serde_json::json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(recreated["identity"]["status"], "active");
+        assert_eq!(recreated["identity"]["incarnation"], incarnation);
+        assert_eq!(recreated["receipt"]["created"], true);
+
+        let runtime = host.get_or_create_agent(agent_id).await?;
+        let fresh = runtime.storage().read_agent()?.expect("fresh agent state");
+        assert_eq!(fresh.pending, 0);
+        // Bootstrap recounts retained messages without restoring runtime state.
+        assert_eq!(
+            fresh.total_message_count,
+            runtime.storage().count_messages()?
+        );
+        assert_eq!(fresh.total_input_tokens, 0);
+        assert_eq!(fresh.total_output_tokens, 0);
+        assert_eq!(fresh.total_model_rounds, 0);
+        assert!(fresh.last_brief_at.is_none());
+        assert!(fresh.last_turn_terminal.is_none());
+        assert!(fresh.current_run_id.is_none());
+        assert!(fresh.current_turn_id.is_none());
+        assert!(fresh.current_work_item_id.is_none());
+        assert!(fresh.current_execution_binding.is_none());
+        assert_eq!(
+            runtime.storage().read_recent_turns(30)?.len() as u64,
+            expected_index - 1,
+            "reincarnation retains completed history, not live execution state"
+        );
+
+        let stale = client
+            .get(&conversation_url)
+            .query(&[("limit", "5"), ("before", previous_cursor.as_str())])
+            .header("x-holon-expected-incarnation", incarnation.to_string())
+            .send()
+            .await?;
+        assert_eq!(stale.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            stale.json::<serde_json::Value>().await?["code"],
+            "conversation_cursor_scope_mismatch"
+        );
+
+        // Both new turns must be allocated by the real HTTP/runtime path.
+        let prompt_text = format!("new input for incarnation {incarnation}");
+        client
+            .post(format!("{base}/api/control/agents/{agent_id}/prompt"))
+            .json(&serde_json::json!({
+                "text": prompt_text,
+                "expected_incarnation": incarnation,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        wait_until(|| {
+            let Some(message) = runtime
+                .storage()
+                .read_recent_messages(30)?
+                .into_iter()
+                .find(|message| {
+                    matches!(&message.body, MessageBody::Text { text } if text == &prompt_text)
+                })
+            else {
+                return Ok(false);
+            };
+            let turns = runtime.storage().read_recent_turns(30)?;
+            let Some(turn) = turns
+                .iter()
+                .find(|turn| turn.input_message_ids.contains(&message.id))
+            else {
+                return Ok(false);
+            };
+            let state = runtime.storage().read_agent()?.expect("live agent state");
+            Ok(turn.terminal.is_some()
+                && !runtime
+                    .storage()
+                    .read_briefs_for_turn(&turn.turn_id)?
+                    .is_empty()
+                && state.pending == 0
+                && state
+                    .last_turn_terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.turn_id == turn.turn_id))
+        })
+        .await?;
+        let message = runtime
+            .storage()
+            .read_recent_messages(30)?
+            .into_iter()
+            .find(|message| {
+                matches!(&message.body, MessageBody::Text { text } if text == &prompt_text)
+            })
+            .expect("new HTTP prompt persisted");
+        let turn = runtime
+            .storage()
+            .read_recent_turns(30)?
+            .into_iter()
+            .find(|turn| turn.input_message_ids.contains(&message.id))
+            .expect("new prompt assigned to a real turn");
+        assert_eq!(
+            turn.turn_index, expected_index,
+            "new incarnation must continue the retained turn sequence"
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .read_agent()?
+                .expect("agent state")
+                .turn_index,
+            expected_index
+        );
+        let started = runtime
+            .storage()
+            .read_recent_events(100)?
+            .into_iter()
+            .find(|event| event.kind == "turn_started" && event.data["message_id"] == message.id)
+            .expect("real turn-start event");
+        assert_eq!(started.data["turn_index"], expected_index);
+        assert_eq!(started.data["turn_id"], turn.turn_id);
+        let brief = runtime
+            .storage()
+            .read_briefs_for_turn(&turn.turn_id)?
+            .into_iter()
+            .find(|brief| brief.text.contains("fresh incarnation result"))
+            .expect("new provider result linked to the turn");
+        assert_eq!(brief.turn_index, Some(expected_index));
+        assert_eq!(brief.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+
+        let response = client
+            .get(&conversation_url)
+            .query(&[("limit", "5")])
+            .header("x-holon-expected-incarnation", incarnation.to_string())
+            .send()
+            .await?
+            .error_for_status()?;
+        assert_eq!(
+            response.headers()["x-holon-agent-incarnation"].to_str()?,
+            incarnation.to_string()
+        );
+        let page: serde_json::Value = response.json().await?;
+        let turns = page["turns"].as_array().expect("first-page turns");
+        assert_eq!(
+            turns
+                .iter()
+                .map(|turn| turn["key"]["turn_index"].as_u64().expect("turn index"))
+                .collect::<Vec<_>>(),
+            (expected_index - 4..=expected_index).collect::<Vec<_>>()
+        );
+        let visible = turns
+            .iter()
+            .find(|summary| summary["turn_id"] == turn.turn_id)
+            .expect("new turn must be visible on the first page");
+        assert!(
+            visible["inputs"]
+                .as_array()
+                .expect("turn inputs")
+                .iter()
+                .any(|input| input["message_id"] == message.id
+                    && input["preview"]
+                        .as_str()
+                        .is_some_and(|preview| preview.contains(&prompt_text))),
+            "new input missing from first-page summary: {visible}"
+        );
+        assert!(visible["brief_ids"]
+            .as_array()
+            .expect("turn briefs")
+            .iter()
+            .any(|id| id == &brief.id));
+        assert_eq!(visible["result"]["kind"], "available");
+        assert_eq!(visible["execution"]["kind"], "terminal");
+        assert_eq!(visible["execution"]["outcome"], "completed");
+        let returned: BriefRecord = client
+            .get(format!("{base}/api/agents/{agent_id}/briefs/{}", brief.id))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(returned.turn_id, brief.turn_id);
+        assert_eq!(returned.text, brief.text);
+        previous_cursor = page["next_before_cursor"]
+            .as_str()
+            .expect("retained history still has older turns")
+            .to_string();
+    }
 
     host.shutdown_daemon_deletion_coordinator().await;
     server.abort();

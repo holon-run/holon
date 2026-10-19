@@ -188,11 +188,12 @@ fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
 }
 
 impl RuntimeHandle {
-    pub(super) fn persist_started_turn(
+    pub(super) fn commit_started_turn(
         &self,
+        expected: &crate::types::AgentState,
         state: &crate::types::AgentState,
         message: Option<&MessageEnvelope>,
-    ) -> Result<()> {
+    ) -> Result<crate::types::AgentState> {
         let turn_id = state
             .current_turn_id
             .as_deref()
@@ -247,7 +248,12 @@ impl RuntimeHandle {
         }
         // Publish the canonical identity before provider work starts. The read
         // model must not wait for the terminal record to assign this input.
-        self.inner.storage.append_turn(&record)
+        self.inner.storage.store().start_turn(
+            expected,
+            state,
+            &record,
+            self.inner.identity_incarnation,
+        )
     }
 
     pub(super) async fn begin_reducer_only_turn(&self, message: &MessageEnvelope) -> Result<()> {

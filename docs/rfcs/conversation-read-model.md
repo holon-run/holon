@@ -8,6 +8,16 @@ status: accepted
 
 ## Incarnation-bound delivery (2026-10-16)
 
+Retained conversation history is shared by agent id across incarnations, while
+read requests and cursors remain incarnation-bound. A new canonical turn allocates
+`max(persisted agent counter, retained turn indices, 0) + 1` in the same writer
+transaction that saves AgentState, TurnRecord and input assignments. Only a
+successful commit may publish the new in-memory turn or start provider work.
+Allocation preserves incarnation, execution-binding and expected-state fences;
+it is not execution admission. A same-turn retry preserves its identity without
+replacing accumulated evidence or rolling back a later turn. Integer exhaustion
+fails explicitly. Existing historical ties remain readable and are not renumbered.
+
 `agents.conversation-incarnation.v1` explicitly negotiates incarnation-bound
 reads. Clients send `x-holon-expected-incarnation` on summary, activities, Brief,
 locate and stream requests. Successful responses (including conditional 304)

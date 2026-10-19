@@ -4328,7 +4328,7 @@ impl RuntimeHandle {
         }
         let state = {
             let mut guard = self.inner.agent.lock().await;
-            guard.state.turn_index += 1;
+            let mut state = guard.state.clone();
             let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
                 crate::ids::turn_id()
             } else {
@@ -4336,19 +4336,18 @@ impl RuntimeHandle {
                     .and_then(|message| normalized_turn_id(message.turn_id.as_deref()))
                     .unwrap_or_else(crate::ids::turn_id)
             };
-            guard.state.current_turn_id = Some(turn_id.clone());
-            guard.state.last_turn_terminal = None;
+            state.current_turn_id = Some(turn_id.clone());
+            state.last_turn_terminal = None;
             if let Some((_, owner, _)) = canonical_execution_binding.as_ref() {
-                guard.state.current_turn_work_item_id =
-                    owner.work_item_id().map(ToString::to_string);
+                state.current_turn_work_item_id = owner.work_item_id().map(ToString::to_string);
             } else if let Some((_, source_turn)) = replay_source.as_ref() {
-                guard.state.current_turn_work_item_id = source_turn
+                state.current_turn_work_item_id = source_turn
                     .as_ref()
                     .and_then(|turn| turn.current_work_item_id.clone());
-            } else if guard.state.current_turn_work_item_id.is_none() {
-                guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
+            } else if state.current_turn_work_item_id.is_none() {
+                state.current_turn_work_item_id = state.current_work_item_id.clone();
             }
-            guard.state.current_execution_binding = message.map(|message| {
+            state.current_execution_binding = message.map(|message| {
                 let work_item_id = if canonical_execution_binding.is_some() {
                     canonical_execution_binding
                         .as_ref()
@@ -4357,7 +4356,7 @@ impl RuntimeHandle {
                     message
                         .work_item_id
                         .clone()
-                        .or_else(|| guard.state.current_turn_work_item_id.clone())
+                        .or_else(|| state.current_turn_work_item_id.clone())
                 };
                 let claimed_work_revision = canonical_execution_binding
                     .as_ref()
@@ -4390,16 +4389,15 @@ impl RuntimeHandle {
                     claimed_work_revision,
                 }
             });
-            guard.state.current_turn_operator_binding_id =
-                operator_binding_id.and_then(|binding_id| {
-                    let binding_id = binding_id.trim();
-                    if binding_id.is_empty() {
-                        None
-                    } else {
-                        Some(binding_id.to_string())
-                    }
-                });
-            guard.state.current_turn_operator_reply_route_id =
+            state.current_turn_operator_binding_id = operator_binding_id.and_then(|binding_id| {
+                let binding_id = binding_id.trim();
+                if binding_id.is_empty() {
+                    None
+                } else {
+                    Some(binding_id.to_string())
+                }
+            });
+            state.current_turn_operator_reply_route_id =
                 operator_reply_route_id.and_then(|route| {
                     let route = route.trim();
                     if route.is_empty() {
@@ -4408,13 +4406,14 @@ impl RuntimeHandle {
                         Some(route.to_string())
                     }
                 });
-            guard.state.active_skills.retain(|skill| {
+            state.active_skills.retain(|skill| {
                 matches!(skill.activation_state, SkillActivationState::SessionActive)
             });
-            guard.persist_state(&self.inner.storage)?;
-            guard.state.clone()
+            let state = self.commit_started_turn(&guard.last_persisted_state, &state, message)?;
+            guard.state = state.clone();
+            guard.last_persisted_state = state.clone();
+            state
         };
-        self.persist_started_turn(&state, message)?;
         self.append_state_changed_events(&state)?;
         if let Some(message) = message {
             self.inner.storage.append_event(&AuditEvent::legacy(

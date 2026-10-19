@@ -4,6 +4,254 @@ use super::support::*;
 use crate::tool::ApplyPatchSurface;
 use crate::types::{ToolExecutionStatus, WaitConditionKind};
 
+#[tokio::test]
+async fn canonical_turn_start_uses_retained_history_high_water() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .turn_records()
+        .upsert(&TurnRecord::new(
+            "default",
+            "retained-before-recreation",
+            22,
+        ))
+        .unwrap();
+    assert_eq!(runtime.agent_state().await.unwrap().turn_index, 0);
+    runtime
+        .begin_interactive_turn_for_test(None, None)
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.turn_index, 23);
+    let turn = runtime
+        .inner
+        .storage
+        .read_turn_by_id(state.current_turn_id.as_deref().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(turn.turn_index, state.turn_index);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        Some(state)
+    );
+}
+
+#[tokio::test]
+async fn canonical_turn_start_failure_keeps_memory_and_state_unchanged() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let before = runtime.agent_state().await.unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER reject_turn_start BEFORE INSERT ON turn_records
+                 BEGIN SELECT RAISE(ABORT, 'injected turn-start failure'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(runtime
+        .begin_interactive_turn_for_test(Some("uncommitted-binding"), None)
+        .await
+        .is_err());
+    assert_eq!(runtime.agent_state().await.unwrap(), before);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        Some(before.clone())
+    );
+    assert_eq!(
+        runtime.inner.agent.lock().await.last_persisted_state,
+        before
+    );
+    let count: i64 = runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            Ok(tx.query_row("SELECT COUNT(*) FROM turn_records", [], |row| row.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn canonical_turn_start_rejects_non_open_attempts_including_retry() {
+    use crate::domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState};
+
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: Some("control".into()),
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "admit canonical turn".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::HttpControlPrompt,
+                AdmissionContext::ControlAuthenticated,
+            ),
+        )
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("expected a canonical admission");
+    };
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+    let before = runtime.agent_state().await.unwrap();
+    let turn = runtime
+        .storage()
+        .read_turn_by_id(before.current_turn_id.as_deref().unwrap())
+        .unwrap()
+        .unwrap();
+    let activation_id = before
+        .current_execution_binding
+        .as_ref()
+        .unwrap()
+        .activation_id
+        .as_deref()
+        .unwrap();
+    let mut next = before.clone();
+    next.current_turn_id = Some("rejected-non-open".into());
+    next.current_execution_binding.as_mut().unwrap().turn_id = "rejected-non-open".into();
+    let mut next_turn = turn.clone();
+    next_turn.turn_id = "rejected-non-open".into();
+
+    for lifecycle in [
+        ExecutionAttemptState::Interrupted,
+        ExecutionAttemptState::Settled,
+        ExecutionAttemptState::ProtocolViolation,
+    ] {
+        // Inject the post-admission lifecycle race directly at the writer fence.
+        runtime
+            .inner
+            .runtime_db
+            .transaction(|tx| {
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM execution_protocol_attempts
+                     WHERE agent_id = 'default' AND attempt_id = ?1",
+                    [activation_id],
+                    |row| row.get(0),
+                )?;
+                let mut attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
+                attempt.state = lifecycle;
+                let lifecycle = serde_json::to_value(lifecycle)?;
+                assert_eq!(
+                    tx.execute(
+                        "UPDATE execution_protocol_attempts
+                         SET lifecycle_state = ?1, payload_json = ?2
+                         WHERE agent_id = 'default' AND attempt_id = ?3",
+                        rusqlite::params![
+                            lifecycle.as_str().unwrap(),
+                            serde_json::to_string(&attempt)?,
+                            activation_id,
+                        ],
+                    )?,
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+        for (state, record) in [(&next, &next_turn), (&before, &turn)] {
+            let error = runtime
+                .inner
+                .runtime_db
+                .turn_records()
+                .start(
+                    Some(&before),
+                    state,
+                    record,
+                    runtime.inner.identity_incarnation,
+                )
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("turn start canonical execution admission is stale or conflicting"),
+                "{lifecycle:?}: {error:#}"
+            );
+        }
+        assert_eq!(runtime.agent_state().await.unwrap(), before);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap(),
+            Some(before.clone())
+        );
+        assert_eq!(
+            runtime.storage().read_turn_by_id(&turn.turn_id).unwrap(),
+            Some(turn.clone())
+        );
+        assert!(runtime
+            .storage()
+            .read_turn_by_id(&next_turn.turn_id)
+            .unwrap()
+            .is_none());
+    }
+}
+
 struct PickThenExecProvider {
     calls: Mutex<usize>,
     target_work_item_id: String,
