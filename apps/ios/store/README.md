@@ -26,7 +26,7 @@ Each set shows the same four screens in order: the agents home
 a rendered plan document (`04-plan`).
 
 The captures come from a dedicated iPhone 17 Pro simulator (1206 x 2622)
-and a dedicated iPad Pro 13-inch (M4) simulator (2064 x 2752) running the
+and a dedicated iPad Pro 13-inch (M5) simulator (2064 x 2752) running the
 release 0.1.0 (build 9) client. The client was connected to an isolated,
 local-only demo Holon service with a disposable home, serving a fictional
 "Fieldnotes" project with four example agents. The visible content states
