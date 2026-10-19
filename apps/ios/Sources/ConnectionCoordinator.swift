@@ -166,6 +166,61 @@ final class ConnectionCoordinator {
         handle(failure, stamp: epoch, authenticating: false)
     }
 
+    // MARK: - Runtime browser lease (#3603)
+
+    /// A browser page may only bind to the current online authority; the
+    /// credential never enters this snapshot or UI state.
+    func runtimeBrowserLease() -> RuntimeBrowserLease? {
+        guard status == .connected, let identity, let profile = selectedProfile else { return nil }
+        return RuntimeBrowserLease(profile: profile, identity: identity)
+    }
+
+    func isRuntimeBrowserLeaseCurrent(_ lease: RuntimeBrowserLease) -> Bool {
+        status == .connected && identity == lease.identity && selectedProfile == lease.profile
+    }
+
+    /// Mirrors the Android repository gate: lease currency, same-origin page,
+    /// credential character validation, then a second currency check.
+    func bindRuntimeBrowserCookie(_ lease: RuntimeBrowserLease, url: String)
+        -> Result<String, RuntimeBrowserCookieFailure> {
+        guard isRuntimeBrowserLeaseCurrent(lease) else { return .failure(.leaseChanged) }
+        guard RuntimeBrowserPolicy.sameRuntimeOrigin(url, base: lease.baseURL) else {
+            return .failure(.foreignOrigin)
+        }
+        let credential: String
+        do { credential = try store.session(for: lease.profile)?.credential ?? "" }
+        catch { return .failure(.storageError) }
+        guard !credential.isEmpty else { return .failure(.credentialMissing) }
+        guard RuntimeBrowserPolicy.isValidSessionCredential(credential) else {
+            return .failure(.invalidCredential)
+        }
+        guard isRuntimeBrowserLeaseCurrent(lease) else { return .failure(.leaseChanged) }
+        return .success(RuntimeBrowserPolicy.runtimeSessionCookieHeader(credential: credential, url: url))
+    }
+
+    /// Confirms the stored session still resolves to the lease's user without
+    /// changing any connection state.
+    func revalidateRuntimeBrowserSession(_ lease: RuntimeBrowserLease) async -> Bool {
+        guard isRuntimeBrowserLeaseCurrent(lease) else { return false }
+        do {
+            let client = try await makeAuthenticatedClient()
+            defer { Task { await client.close() } }
+            let user = try await client.currentUser().value
+            guard isRuntimeBrowserLeaseCurrent(lease) else { return false }
+            return user.userId == lease.identity.userID
+        } catch { return false }
+    }
+
+    /// The bound page saw a 401: the credential is dead for native and web
+    /// alike, so both share one revocation lifecycle (#3603).
+    func runtimeBrowserAuthenticationFailed(_ lease: RuntimeBrowserLease) {
+        guard identity == lease.identity, let profile = selectedProfile, profile == lease.profile else { return }
+        do {
+            try revokeReadingContext(for: profile)
+            finish(.sessionExpired)
+        } catch { finish(.storageError) }
+    }
+
     func addProfile(name: String, apiBaseURL: URL, allowInsecureHTTP: Bool) throws -> ConnectionProfile {
         let profile = try ConnectionProfile(name: name, apiBaseURL: apiBaseURL,
                                             allowInsecureHTTP: allowInsecureHTTP)
