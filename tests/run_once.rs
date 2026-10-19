@@ -1754,18 +1754,36 @@ async fn assert_run_once_includes_worktree_task_metadata() -> Result<()> {
         Arc::new(WorktreeTaskProvider::new()),
     )?;
 
-    let response = run_once_with_host(host, run_request("create a worktree task")).await?;
+    let response = run_once_with_host(host.clone(), run_request("create a worktree task")).await?;
 
     assert_eq!(response.final_status, RunFinalStatus::Completed);
     assert_eq!(response.tasks.len(), 1);
-    let worktree = response.tasks[0]
-        .worktree
-        .as_ref()
-        .expect("worktree metadata should be present");
+    assert_eq!(
+        response.tasks[0].task.status,
+        holon::types::TaskStatus::Completed,
+        "{}",
+        serde_json::to_string(&response.tasks[0]).expect("serialize task summary")
+    );
+    let worktree = response.tasks[0].worktree.as_ref().unwrap_or_else(|| {
+        panic!(
+            "worktree metadata should be present: {}",
+            serde_json::to_string(&response.tasks[0]).expect("serialize task summary")
+        )
+    });
     assert!(!worktree.worktree_path.is_empty());
     assert_eq!(
         worktree.worktree_branch,
         format!("task-{}", response.tasks[0].task.task_id)
+    );
+    assert_eq!(
+        host.default_runtime()
+            .await?
+            .task_status_snapshot(&response.tasks[0].task.task_id)
+            .await?
+            .child_observability
+            .as_ref()
+            .map(|child| &child.phase),
+        Some(&holon::types::ChildAgentPhase::Terminal)
     );
     Ok(())
 }

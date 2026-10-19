@@ -7,6 +7,7 @@ mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod live_input_attachment;
 mod provider_result_handoff;
+mod supervised_invocation;
 mod wait_task_result;
 pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_state_tx};
 pub(crate) use live_input_attachment::LiveInputAttachmentCommand;
@@ -1919,6 +1920,30 @@ impl RuntimeTransitionRepository<'_> {
             DeliverySynchronization::Required,
             wait_registration.timer_wake.as_ref(),
             task_result_settlement,
+            None,
+        )
+    }
+
+    pub fn commit_supervised_invocation_admission(
+        &self,
+        command: &QueueTransitionCommand,
+        parent_task: &TaskRecord,
+        child_incarnation: u64,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_full(
+            command,
+            &ExecutionProtocolTransition::default(),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            DeliverySynchronization::Required,
+            None,
+            None,
+            Some((parent_task, child_incarnation)),
         )
     }
 
@@ -2058,6 +2083,7 @@ impl RuntimeTransitionRepository<'_> {
             delivery_synchronization,
             timer_wake_claim,
             task_result_settlement,
+            None,
         )
     }
 
@@ -2077,8 +2103,22 @@ impl RuntimeTransitionRepository<'_> {
         task_result_settlement: Option<
             &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
         >,
+        supervised_invocation: Option<(&TaskRecord, u64)>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
+            let supervised_task = if let Some((parent_task, incarnation)) = supervised_invocation {
+                let Some(task) = supervised_invocation::prepare_admission_tx(
+                    tx,
+                    command,
+                    parent_task,
+                    incarnation,
+                )? else {
+                    return Ok(TransitionCommit::default());
+                };
+                Some(task)
+            } else {
+                None
+            };
             let synchronize_delivery = match delivery_synchronization {
                 DeliverySynchronization::Required => true,
                 DeliverySynchronization::IfAvailable => tx.query_row(
@@ -2264,6 +2304,11 @@ impl RuntimeTransitionRepository<'_> {
                 execution_continuations,
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+            let supervised_task_applied = supervised_task
+                .as_ref()
+                .map(|task| upsert_task_tx(tx, task))
+                .transpose()?
+                .unwrap_or(false);
             let trigger_wait_and_enqueue = if command.operation == QueueOperation::Admit
                 && !command.message_evidence.is_empty()
             {
@@ -2441,6 +2486,7 @@ impl RuntimeTransitionRepository<'_> {
                     )? > 0;
             }
             let mut applied = mutation_applied
+                || supervised_task_applied
                 || agent_state_applied
                 || execution_protocol_applied
                 || wait_transition_applied

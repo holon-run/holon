@@ -4746,6 +4746,9 @@ mod tests {
 
     #[test]
     fn replay_reference_requires_interrupted_terminal_for_every_attached_ancestor() {
+        if isolate_replay_diagnostic_test() {
+            return;
+        }
         use crate::types::TurnTerminalKind;
 
         for source_index in 0..3 {
@@ -4814,6 +4817,29 @@ mod tests {
         );
     }
 
+    fn isolate_replay_diagnostic_test() -> bool {
+        const CHILD_TEST: &str = "HOLON_REPLAY_DIAGNOSTIC_CHILD_TEST";
+        let thread = std::thread::current();
+        let test_name = thread.name().expect("named libtest thread");
+        if std::env::var(CHILD_TEST).as_deref() == Ok(test_name) {
+            return false;
+        }
+        // Callsite interest is process-global even with a thread-local subscriber.
+        // Keep unrelated tests from registering these sites against no subscriber.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD_TEST, test_name)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated {test_name} failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        true
+    }
+
     struct ReplayDiagnosticWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
     impl std::io::Write for ReplayDiagnosticWriter {
@@ -4854,6 +4880,9 @@ mod tests {
 
     #[test]
     fn replay_reference_diagnostics_are_private_deduplicated_and_build_local() {
+        if isolate_replay_diagnostic_test() {
+            return;
+        }
         let fixture = replay_reference_fixture(2);
         let replay = fixture.turns.last().unwrap();
         for _ in 0..2 {
@@ -4886,6 +4915,9 @@ mod tests {
 
     #[test]
     fn replay_reference_diagnostics_redact_malformed_input_reference_ids() {
+        if isolate_replay_diagnostic_test() {
+            return;
+        }
         let fixture = replay_reference_fixture(0);
         let mut turn = TurnRecord::new("default", "turn_SENTINEL_INPUT_TURN", 1);
         turn.input_message_ids = vec![
@@ -4910,6 +4942,9 @@ mod tests {
 
     #[test]
     fn replay_reference_diagnostics_redact_malformed_stored_object_turn_id() {
+        if isolate_replay_diagnostic_test() {
+            return;
+        }
         let fixture = replay_reference_fixture(0);
         let mut message = fixture.anchor.clone();
         message.id = "msg_SENTINEL_STORED_REFERENCE".into();

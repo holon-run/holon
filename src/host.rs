@@ -71,11 +71,11 @@ use crate::{
         AgentMessageSendRequest, AgentModelResolution, AgentModelResolutionStatus, AgentOwnership,
         AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
         AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
-        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, CreateAgentRequest,
         ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskKind,
-        TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskRecord,
+        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
         WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
@@ -668,10 +668,56 @@ struct InvocationTerminalEvidence {
     completion_ref: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ChildInvocationReason {
+    #[error("awaiting invocation admission")]
+    AwaitingAdmission,
+    #[error("awaiting invocation continuation")]
+    AwaitingContinuation,
+    #[error("missing invocation binding")]
+    MissingInvocationBinding,
+    #[error("ambiguous invocation binding")]
+    AmbiguousInvocationBinding,
+    #[error("child identity does not match invocation")]
+    IdentityMismatch,
+    #[error("source does not match invocation")]
+    SourceMismatch,
+    #[error("canonical terminal evidence is missing")]
+    MissingCanonicalTerminal,
+    #[error("execution continuation is ambiguous")]
+    AmbiguousContinuation,
+    #[error("execution continuation is cyclic or exceeds its bound")]
+    CyclicContinuation,
+    #[error("terminal result commit failed")]
+    MonitorCommitFailed,
+    #[error("invocation storage is unavailable")]
+    StorageUnavailable,
+}
+
+#[derive(Debug)]
+pub(crate) enum ChildInvocationResolution {
+    Ready(ChildTaskTerminalResult),
+    Pending(ChildInvocationReason),
+    RecoveryBlocked(ChildInvocationReason),
+}
+
 #[derive(Debug, Clone)]
 enum InvocationSettlementCursor {
     Attempt(String),
     WorkItem(String),
+}
+
+fn unique_invocation_continuation<'a>(
+    candidates: impl Iterator<Item = &'a crate::domain::execution_protocol::ExecutionAttempt>,
+) -> Result<Option<&'a crate::domain::execution_protocol::ExecutionAttempt>> {
+    let mut candidates = candidates.filter(|candidate| candidate.recovery_of_attempt_id.is_none());
+    let next = candidates.next();
+    anyhow::ensure!(
+        candidates.next().is_none(),
+        ChildInvocationReason::AmbiguousContinuation
+    );
+    Ok(next)
 }
 
 async fn apply_spawn_model_resolution(
@@ -5601,8 +5647,18 @@ impl RuntimeHost {
                 "child_agent_id": child_identity.agent_id,
                 "parent_supervised": true,
                 "delegated_authority_class": authority_class,
+                "child_incarnation": child_incarnation,
             }));
-            child_runtime.enqueue(message).await?;
+            // Worktree preparation persists task metadata before source admission.
+            let admission_task = parent_runtime
+                .storage()
+                .latest_task_record(&task.id)?
+                .context("supervised invocation parent task missing before admission")?;
+            let message = child_runtime
+                .enqueue_supervised_invocation(message, &admission_task, child_incarnation)
+                .await?;
+            task_detail["source_message_id"] = json!(message.id);
+            task_detail["source_turn_id"] = json!(message.turn_id);
 
             Ok::<ChildTaskSpawn, anyhow::Error>(ChildTaskSpawn {
                 child_agent_id: child_identity.agent_id,
@@ -5911,141 +5967,197 @@ impl RuntimeHost {
         .await
     }
 
-    async fn await_child_terminal_result(
+    fn supervised_invocation_source(
         &self,
+        task: &TaskRecord,
         child_agent_id: &str,
-        child_turn_baseline: u64,
-        worktree: bool,
-    ) -> Result<ChildTaskTerminalResult> {
-        let storage = self.agent_storage(child_agent_id)?;
-        let identity = self
-            .active_agent_identity(child_agent_id)
-            .map_err(anyhow::Error::from)?;
-        if let Some(result) = self
-            .completed_child_terminal_from_storage(&storage, &identity, child_turn_baseline)
-            .await?
-        {
-            return Ok(result);
-        }
-        let runtime = self.get_or_create_agent(child_agent_id).await?;
-        loop {
-            let state = runtime.agent_state().await?;
-            let events = storage.read_recent_events(32)?;
-            let runtime_error = events
-                .iter()
-                .rev()
-                .find(|event| event.kind == "runtime_error")
-                .cloned();
-            let terminal = state
-                .last_turn_terminal
+    ) -> Result<(AgentIdentityRecord, crate::types::MessageEnvelope)> {
+        let blocked = ChildInvocationReason::IdentityMismatch;
+        let identity = self.agent_identity_record(child_agent_id)?.ok_or(blocked)?;
+        let target = task.target().ok_or(blocked)?;
+        anyhow::ensure!(
+            identity.status == AgentRegistryStatus::Active
+                && identity.kind == AgentKind::Child
+                && identity.visibility == AgentVisibility::Private
+                && identity.ownership() == AgentOwnership::ParentSupervised
+                && identity.parent_agent_id.as_deref() == Some(task.agent_id.as_str())
+                && identity.delegated_from_task_id.as_deref() == Some(task.id.as_str())
+                && target.agent_id == child_agent_id
+                && target.kind == crate::types::TaskTargetKind::ChildAgent
+                && target
+                    .incarnation
+                    .map_or(identity.incarnation == 1, |incarnation| incarnation
+                        == identity.incarnation),
+            blocked
+        );
+        let relations = self
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(child_agent_id)?
+            .ok_or(blocked)?;
+        anyhow::ensure!(
+            relations.supervision.as_ref().is_some_and(|supervision| {
+                supervision.supervisor_agent_id == task.agent_id
+                    && supervision.child_agent_id == child_agent_id
+                    && supervision.delegated_from_task_id.as_deref() == Some(task.id.as_str())
+                    && supervision.state == AgentSupervisionState::Active
+            }) && relations
+                .lifecycle_attachment
                 .as_ref()
-                .filter(|record| record.turn_index == state.turn_index)
-                .cloned();
-            let closure = runtime.current_closure_decision().await?;
-            let observed_new_turn = state.turn_index > child_turn_baseline;
-            let quiescent = state.current_run_id.is_none() && state.pending == 0;
-            let terminal_signal = terminal.is_some()
-                || runtime_error.is_some()
-                || state.status == AgentStatus::Stopped;
-            let is_terminal = observed_new_turn
-                && quiescent
-                && !child_has_active_lifecycle_blockers(&storage, child_agent_id)?
-                && !matches!(
-                    closure.outcome,
-                    ClosureOutcome::Waiting | ClosureOutcome::Continuable
-                )
-                && terminal_signal;
-            if !is_terminal {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-
-            let mut status = if state.status == AgentStatus::Stopped {
-                TaskStatus::Cancelled
-            } else if closure.outcome == ClosureOutcome::Failed {
-                TaskStatus::Failed
-            } else {
-                TaskStatus::Completed
-            };
-
-            let text = if let Some(terminal) = terminal {
-                if terminal.kind.is_failure() {
-                    status = TaskStatus::Failed;
-                }
-                terminal
-                    .last_assistant_message
-                    .or_else(|| {
-                        if status == TaskStatus::Failed {
-                            state
-                                .last_runtime_failure
-                                .as_ref()
-                                .map(|failure| failure.summary.clone())
-                                .or_else(|| {
-                                    runtime_error.as_ref().and_then(|error| {
-                                        error
-                                            .data
-                                            .get("error")
-                                            .and_then(|value| value.as_str())
-                                            .map(ToString::to_string)
-                                    })
-                                })
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default()
-            } else if let Some(error) = runtime_error {
-                status = TaskStatus::Failed;
-                error
-                    .data
-                    .get("error")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("child agent failed")
-                    .to_string()
-            } else {
-                "child agent completed without additional output".to_string()
-            };
-
-            let mut metadata = json!({
-                "target_agent_id": child_agent_id,
-                "target_agent_kind": identity.kind,
-                "target_agent_visibility": identity.visibility,
-                "target_agent_ownership": identity.ownership(),
-                "target_agent_profile_preset": identity.profile_preset(),
-                "token_usage": json!({
-                    "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
-                    "last_turn": state.last_turn_token_usage.clone(),
-                    "total_model_rounds": state.total_model_rounds,
+                .is_some_and(|attachment| {
+                    attachment.attachment
+                        == crate::domain::agent::AgentLifecycleAttachment::SupervisionAttached
                 }),
+            blocked
+        );
+        let is_source = |message: &crate::types::MessageEnvelope| {
+            matches!(&message.origin, crate::types::MessageOrigin::Task { task_id } if task_id == &task.id)
+                && message.agent_id == child_agent_id
+                && message.kind == crate::types::MessageKind::InternalFollowup
+                && message.metadata.as_ref().is_some_and(|metadata| {
+                    metadata["parent_agent_id"].as_str() == Some(task.agent_id.as_str())
+                        && metadata["supervision_task_id"].as_str() == Some(task.id.as_str())
+                        && metadata["child_agent_id"].as_str() == Some(child_agent_id)
+                        && metadata["parent_supervised"].as_bool() == Some(true)
+                        && metadata
+                            .get("child_incarnation")
+                            .map_or(identity.incarnation == 1, |incarnation| {
+                                incarnation.as_u64() == Some(identity.incarnation)
+                            })
+                })
+        };
+        let source_id = task
+            .detail
+            .as_ref()
+            .and_then(|detail| detail["source_message_id"].as_str());
+        let message = if let Some(source_id) = source_id {
+            let message = self
+                .runtime_db()
+                .messages()
+                .by_id(Some(child_agent_id), source_id)?
+                .ok_or(ChildInvocationReason::MissingInvocationBinding)?;
+            anyhow::ensure!(is_source(&message), ChildInvocationReason::SourceMismatch);
+            message
+        } else {
+            // Legacy linkage may be recovered only from a unique task-origin input.
+            let mut sources = self
+                .runtime_db()
+                .messages()
+                .supervised_invocation_sources(child_agent_id, &task.id)?
+                .into_iter();
+            let source = sources
+                .next()
+                .ok_or(ChildInvocationReason::MissingInvocationBinding)?;
+            anyhow::ensure!(
+                sources.next().is_none(),
+                ChildInvocationReason::AmbiguousInvocationBinding
+            );
+            anyhow::ensure!(is_source(&source), ChildInvocationReason::SourceMismatch);
+            source
+        };
+        if let Some(turn_id) = task
+            .detail
+            .as_ref()
+            .and_then(|detail| detail["source_turn_id"].as_str())
+        {
+            anyhow::ensure!(
+                message.turn_id.as_deref() == Some(turn_id),
+                ChildInvocationReason::SourceMismatch
+            );
+        }
+        Ok((identity, message))
+    }
+
+    async fn resolve_supervised_invocation(
+        &self,
+        task: &TaskRecord,
+        child_agent_id: &str,
+        worktree: bool,
+    ) -> Result<ChildInvocationResolution> {
+        let evidence = async {
+            use crate::domain::execution_protocol::ExecutionSourceIdentity;
+            let (identity, source) = self.supervised_invocation_source(task, child_agent_id)?;
+            let execution = self
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(child_agent_id)?
+                .ok_or(ChildInvocationReason::AwaitingAdmission)?;
+            let mut roots = execution.attempts.values().filter(|attempt| {
+                attempt.recovery_of_attempt_id.is_none()
+                    && attempt.source_message_id.as_deref() == Some(source.id.as_str())
+                    && matches!(&attempt.source.identity,
+                        ExecutionSourceIdentity::QueueMessage { message_id }
+                        | ExecutionSourceIdentity::InternalFollowup { message_id }
+                        if message_id == &source.id)
             });
-            if identity.kind == AgentKind::Child {
-                metadata["child_agent_id"] = json!(child_agent_id);
-                metadata["child_kind"] = json!(identity.kind);
-                metadata["child_visibility"] = json!(identity.visibility);
-                metadata["child_ownership"] = json!(identity.ownership());
-                metadata["child_profile_preset"] = json!(identity.profile_preset());
-                metadata["child_observability"] = json!(runtime.child_agent_observability().await?);
-            }
-            if worktree {
-                if let Some(worktree) = state.worktree_session.as_ref() {
-                    let changed_files =
-                        Self::detect_changed_files_for_worktree(&worktree.worktree_path)
-                            .await
-                            .unwrap_or_default();
-                    metadata["worktree"] = json!({
-                        "worktree_path": worktree.worktree_path,
-                        "worktree_branch": worktree.worktree_branch,
-                        "changed_files": changed_files,
-                    });
+            let root = roots
+                .next()
+                .ok_or(ChildInvocationReason::AwaitingAdmission)?;
+            anyhow::ensure!(
+                roots.next().is_none(),
+                ChildInvocationReason::AmbiguousInvocationBinding
+            );
+            anyhow::ensure!(
+                root.agent_id == child_agent_id && root.turn_id == source.turn_id,
+                ChildInvocationReason::SourceMismatch
+            );
+            let storage = self.agent_storage(child_agent_id)?;
+            if let Some(baseline) = task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail["child_turn_baseline"].as_u64())
+            {
+                if let Some(turn_id) = root.turn_id.as_deref() {
+                    if let Some(turn) = self
+                        .runtime_db()
+                        .turn_records()
+                        .by_id(Some(child_agent_id), turn_id)?
+                    {
+                        anyhow::ensure!(
+                            turn.turn_index > baseline,
+                            ChildInvocationReason::SourceMismatch
+                        );
+                    }
                 }
             }
-            let task_detail = Some(metadata);
-
-            return Ok(ChildTaskTerminalResult {
-                status,
-                text,
-                task_detail,
-            });
+            let Some(evidence) = self.canonical_invocation_terminal_evidence(
+                &storage,
+                child_agent_id,
+                &source.id,
+                root.attempt_id.clone(),
+                root.turn_id.clone(),
+                true,
+            )?
+            else {
+                return Ok(ChildInvocationResolution::Pending(
+                    ChildInvocationReason::AwaitingContinuation,
+                ));
+            };
+            let mut result = self
+                .invocation_terminal_result(&storage, &identity, &source.id, evidence, worktree)
+                .await?;
+            if let Some(detail) = result.task_detail.as_mut() {
+                detail
+                    .as_object_mut()
+                    .expect("invocation detail object")
+                    .remove("delivery_id");
+                detail["source_message_id"] = json!(source.id);
+                detail["source_turn_id"] = json!(source.turn_id);
+                detail["target_incarnation"] = json!(identity.incarnation);
+            }
+            Ok::<_, anyhow::Error>(ChildInvocationResolution::Ready(result))
+        }
+        .await;
+        match evidence {
+            Err(error) => match error.downcast_ref::<ChildInvocationReason>().copied() {
+                Some(
+                    reason @ (ChildInvocationReason::AwaitingAdmission
+                    | ChildInvocationReason::AwaitingContinuation),
+                ) => Ok(ChildInvocationResolution::Pending(reason)),
+                Some(reason) => Ok(ChildInvocationResolution::RecoveryBlocked(reason)),
+                None => Err(error),
+            },
+            result => result,
         }
     }
 
@@ -6152,11 +6264,6 @@ impl RuntimeHost {
         delivery_id: &str,
         invocation_task_id: &str,
     ) -> Result<Option<InvocationTerminalEvidence>> {
-        use crate::domain::execution_protocol::{
-            ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
-            ExecutionSourceIdentity, WorkItemExecutionState, WorkItemOutcome,
-        };
-
         let Some(delivery) = self
             .runtime_db()
             .agent_message_deliveries()
@@ -6229,6 +6336,33 @@ impl RuntimeHost {
                 completion_ref: None,
             }));
         };
+        self.canonical_invocation_terminal_evidence(
+            storage,
+            child_agent_id,
+            delivery_id,
+            root_activation_id,
+            delivery.turn_id,
+            matches!(
+                delivery.state,
+                AgentMessageDeliveryState::Queued | AgentMessageDeliveryState::Dispatched
+            ),
+        )
+    }
+
+    fn canonical_invocation_terminal_evidence(
+        &self,
+        storage: &AppStorage,
+        child_agent_id: &str,
+        delivery_id: &str,
+        root_activation_id: String,
+        root_turn_id: Option<String>,
+        awaiting_recovery: bool,
+    ) -> Result<Option<InvocationTerminalEvidence>> {
+        use crate::domain::execution_protocol::{
+            ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
+            ExecutionSourceIdentity, WorkItemExecutionState, WorkItemOutcome,
+        };
+
         let Some(execution) = self
             .runtime_db()
             .transitions()
@@ -6248,51 +6382,70 @@ impl RuntimeHost {
                 }
             };
             if !visited.insert(cursor_key) {
-                return Ok(Some(InvocationTerminalEvidence {
-                    status: TaskStatus::Failed,
-                    text: format!(
-                        "agent invocation delivery {delivery_id} has a cyclic execution continuation"
-                    ),
-                    activation_id: Some(root_activation_id),
-                    turn_id: delivery.turn_id,
-                    completion_ref: None,
-                }));
+                return Err(ChildInvocationReason::CyclicContinuation.into());
             }
             match cursor.clone() {
                 InvocationSettlementCursor::Attempt(attempt_id) => {
                     let Some(attempt) = execution.attempts.get(&attempt_id).cloned() else {
-                        return Ok(Some(InvocationTerminalEvidence {
-                            status: TaskStatus::Failed,
-                            text: format!(
-                                "agent invocation delivery {delivery_id} references missing activation {attempt_id}"
-                            ),
-                            activation_id: Some(attempt_id),
-                            turn_id: delivery.turn_id,
-                            completion_ref: None,
-                        }));
+                        return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                     };
                     match attempt.state {
                         ExecutionAttemptState::Open => return Ok(None),
                         ExecutionAttemptState::Interrupted => {
-                            if let Some(recovery) = execution
-                                .attempts
-                                .values()
-                                .filter(|candidate| {
-                                    candidate.recovery_of_attempt_id.as_deref()
-                                        == Some(attempt.attempt_id.as_str())
-                                })
-                                .max_by_key(|candidate| candidate.source.generation)
-                            {
+                            let mut recoveries = execution.attempts.values().filter(|candidate| {
+                                candidate.recovery_of_attempt_id.as_deref()
+                                    == Some(attempt.attempt_id.as_str())
+                            });
+                            if let Some(recovery) = recoveries.next() {
+                                anyhow::ensure!(
+                                    recoveries.next().is_none(),
+                                    ChildInvocationReason::AmbiguousContinuation
+                                );
                                 cursor = InvocationSettlementCursor::Attempt(
                                     recovery.attempt_id.clone(),
                                 );
                                 continue;
                             }
-                            if matches!(
-                                delivery.state,
-                                AgentMessageDeliveryState::Queued
-                                    | AgentMessageDeliveryState::Dispatched
-                            ) {
+                            // A failed source is terminal; a shutdown interruption may recover.
+                            if let Some(source_id) = attempt.source_message_id.as_deref() {
+                                if self
+                                    .runtime_db()
+                                    .queue_entries()
+                                    .latest(source_id)?
+                                    .is_some_and(|entry| {
+                                        entry.agent_id == child_agent_id
+                                            && matches!(
+                                                entry.status,
+                                                QueueEntryStatus::Aborted
+                                                    | QueueEntryStatus::Quarantined
+                                            )
+                                    })
+                                {
+                                    let mut evidence = self
+                                        .invocation_terminal_evidence_for_turn(
+                                            child_agent_id,
+                                            delivery_id,
+                                            &attempt,
+                                        )?
+                                        .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+                                    evidence.status = TaskStatus::Failed;
+                                    evidence.text = storage
+                                        .read_briefs_for_turn(attempt.turn_id.as_deref().ok_or(
+                                            ChildInvocationReason::MissingCanonicalTerminal,
+                                        )?)?
+                                        .into_iter()
+                                        .rev()
+                                        .find(|brief| {
+                                            brief.kind == crate::types::BriefKind::Failure
+                                        })
+                                        .map(|brief| brief.text)
+                                        .unwrap_or_else(|| {
+                                            format!("child agent failed: {}", evidence.text)
+                                        });
+                                    return Ok(Some(evidence));
+                                }
+                            }
+                            if awaiting_recovery {
                                 return Ok(None);
                             }
                             return Ok(Some(InvocationTerminalEvidence {
@@ -6320,31 +6473,49 @@ impl RuntimeHost {
                         }
                         ExecutionAttemptState::Settled => {}
                     }
-                    let Some(outcome_id) = attempt.terminal_outcome_id.as_deref() else {
-                        return Ok(None);
-                    };
-                    let Some(outcome) = execution.outcomes.get(outcome_id) else {
-                        return Ok(None);
-                    };
+                    let outcome_id = attempt
+                        .terminal_outcome_id
+                        .as_deref()
+                        .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+                    let outcome = execution
+                        .outcomes
+                        .get(outcome_id)
+                        .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
                     match &outcome.outcome {
                         ExecutionOutcome::Conversation(ConversationOutcome::Replied)
                         | ExecutionOutcome::Command(_) => {
                             let Some(turn_id) = attempt.turn_id.as_deref() else {
-                                return Ok(Some(InvocationTerminalEvidence {
-                                    status: TaskStatus::Failed,
-                                    text: format!(
-                                        "agent invocation activation {} settled without a turn identity",
-                                        attempt.attempt_id
-                                    ),
-                                    activation_id: Some(attempt.attempt_id),
-                                    turn_id: None,
-                                    completion_ref: None,
-                                }));
+                                return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                             };
-                            let tasks = self
+                            let all_tasks = self
                                 .runtime_db()
                                 .tasks()
-                                .latest_for_agent(child_agent_id, usize::MAX)?
+                                .latest_for_agent(child_agent_id, usize::MAX)?;
+                            anyhow::ensure!(
+                                !all_tasks.iter().any(|task| {
+                                    matches!(
+                                        task.status,
+                                        TaskStatus::Queued
+                                            | TaskStatus::Running
+                                            | TaskStatus::Cancelling
+                                    ) && task
+                                        .detail
+                                        .as_ref()
+                                        .and_then(|detail| detail["parent_turn_id"].as_str())
+                                        .is_none()
+                                }),
+                                ChildInvocationReason::MissingInvocationBinding
+                            );
+                            for wait in storage.active_wait_conditions_for_agent(child_agent_id)? {
+                                anyhow::ensure!(
+                                    wait.turn_id.is_some(),
+                                    ChildInvocationReason::MissingInvocationBinding
+                                );
+                                if wait.turn_id.as_deref() == Some(turn_id) {
+                                    return Ok(None);
+                                }
+                            }
+                            let tasks = all_tasks
                                 .into_iter()
                                 .filter(|task| {
                                     task.detail
@@ -6412,10 +6583,8 @@ impl RuntimeHost {
                             );
                         }
                         ExecutionOutcome::Conversation(ConversationOutcome::Wait { wait }) => {
-                            let Some(next) = execution
-                                .attempts
-                                .values()
-                                .filter(|candidate| {
+                            let Some(next) = unique_invocation_continuation(
+                                execution.attempts.values().filter(|candidate| {
                                     matches!(
                                         &candidate.source.identity,
                                         ExecutionSourceIdentity::TriggeredWait {
@@ -6423,8 +6592,8 @@ impl RuntimeHost {
                                             ..
                                         } if wait_id == &wait.wait_id
                                     )
-                                })
-                                .max_by_key(|candidate| candidate.source.generation)
+                                }),
+                            )?
                             else {
                                 return Ok(None);
                             };
@@ -6483,14 +6652,7 @@ impl RuntimeHost {
                         ) => {
                             let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding
                             else {
-                                return Ok(Some(InvocationTerminalEvidence {
-                                    status: TaskStatus::Failed,
-                                    text: "agent invocation WorkItem outcome lost its execution binding"
-                                        .into(),
-                                    activation_id: Some(attempt.attempt_id),
-                                    turn_id: attempt.turn_id,
-                                    completion_ref: None,
-                                }));
+                                return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                             };
                             cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
                         }
@@ -6540,25 +6702,15 @@ impl RuntimeHost {
                 }
                 InvocationSettlementCursor::WorkItem(work_item_id) => {
                     let Some(work_item) = execution.work_items.get(&work_item_id) else {
-                        return Ok(Some(InvocationTerminalEvidence {
-                            status: TaskStatus::Failed,
-                            text: format!(
-                                "agent invocation references missing WorkItem execution {work_item_id}"
-                            ),
-                            activation_id: Some(root_activation_id),
-                            turn_id: delivery.turn_id,
-                            completion_ref: None,
-                        }));
+                        return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                     };
                     match &work_item.state {
                         WorkItemExecutionState::InFlight { attempt_id, .. } => {
                             cursor = InvocationSettlementCursor::Attempt(attempt_id.clone());
                         }
                         WorkItemExecutionState::Waiting { wait, .. } => {
-                            let Some(next) = execution
-                                .attempts
-                                .values()
-                                .filter(|candidate| {
+                            let Some(next) = unique_invocation_continuation(
+                                execution.attempts.values().filter(|candidate| {
                                     matches!(
                                         &candidate.source.identity,
                                         ExecutionSourceIdentity::TriggeredWait {
@@ -6571,8 +6723,8 @@ impl RuntimeHost {
                                             work_item_id: candidate_work_item_id
                                         } if candidate_work_item_id == &work_item_id
                                     )
-                                })
-                                .max_by_key(|candidate| candidate.source.generation)
+                                }),
+                            )?
                             else {
                                 return Ok(None);
                             };
@@ -6600,10 +6752,10 @@ impl RuntimeHost {
                                     status: TaskStatus::Completed,
                                     text: storage
                                         .read_brief_by_id(completion)?
-                                        .map(|brief| brief.text)
-                                        .unwrap_or_default(),
+                                        .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?
+                                        .text,
                                     activation_id: Some(root_activation_id),
-                                    turn_id: delivery.turn_id,
+                                    turn_id: root_turn_id,
                                     completion_ref: Some(completion.clone()),
                                 }
                             }));
@@ -6615,7 +6767,7 @@ impl RuntimeHost {
                                     "agent invocation WorkItem requires repair: {repair_id}"
                                 ),
                                 activation_id: Some(root_activation_id),
-                                turn_id: delivery.turn_id,
+                                turn_id: root_turn_id,
                                 completion_ref: None,
                             }));
                         }
@@ -6625,15 +6777,7 @@ impl RuntimeHost {
                 }
             }
         }
-        Ok(Some(InvocationTerminalEvidence {
-            status: TaskStatus::Failed,
-            text: format!(
-                "agent invocation delivery {delivery_id} exceeded the bounded continuation chain"
-            ),
-            activation_id: Some(root_activation_id),
-            turn_id: delivery.turn_id,
-            completion_ref: None,
-        }))
+        Err(ChildInvocationReason::CyclicContinuation.into())
     }
 
     fn invocation_terminal_evidence_for_turn(
@@ -6645,20 +6789,19 @@ impl RuntimeHost {
         let Some(turn_id) = attempt.turn_id.as_deref() else {
             return Ok(None);
         };
-        let Some(turn) = self
+        let turn = self
             .runtime_db()
             .turn_records()
             .by_id(Some(child_agent_id), turn_id)?
-        else {
-            return Ok(None);
-        };
-        let Some(terminal) = turn.terminal else {
-            return Ok(None);
-        };
-        let status = if terminal.kind.is_failure() {
-            TaskStatus::Failed
-        } else {
-            TaskStatus::Completed
+            .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+        let terminal = turn
+            .terminal
+            .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+        let status = match terminal.kind {
+            crate::types::TurnTerminalKind::Completed => TaskStatus::Completed,
+            crate::types::TurnTerminalKind::Aborted => TaskStatus::Cancelled,
+            crate::types::TurnTerminalKind::Interrupted => TaskStatus::Interrupted,
+            _ => TaskStatus::Failed,
         };
         let text = self
             .assistant_text_for_turn(child_agent_id, turn_id)?
@@ -6687,8 +6830,8 @@ impl RuntimeHost {
             status: TaskStatus::Completed,
             text: storage
                 .read_brief_by_id(completion)?
-                .map(|brief| brief.text)
-                .unwrap_or_default(),
+                .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?
+                .text,
             activation_id: Some(attempt.attempt_id.clone()),
             turn_id: attempt.turn_id.clone(),
             completion_ref: Some(completion.to_string()),
@@ -6735,9 +6878,43 @@ impl RuntimeHost {
         evidence: InvocationTerminalEvidence,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let state = storage
-            .read_agent()?
-            .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id));
+        let state = if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
+            runtime.agent_state().await?
+        } else {
+            storage
+                .read_agent()?
+                .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id))
+        };
+        let turn = evidence
+            .turn_id
+            .as_deref()
+            .map(|turn_id| {
+                self.runtime_db()
+                    .turn_records()
+                    .by_id(Some(&identity.agent_id), turn_id)
+            })
+            .transpose()?
+            .flatten();
+        let briefs = evidence
+            .turn_id
+            .as_deref()
+            .map(|turn_id| storage.read_briefs_for_turn(turn_id))
+            .transpose()?
+            .unwrap_or_default();
+        // Terminal observability belongs to this invocation, never later child activity.
+        let observability = crate::types::ChildAgentObservabilitySnapshot {
+            phase: crate::types::ChildAgentPhase::Terminal,
+            blocked_reason: None,
+            waiting_reason: None,
+            current_work_item_id: turn.and_then(|turn| turn.current_work_item_id),
+            work_summary: None,
+            last_progress_brief: briefs
+                .iter()
+                .rev()
+                .find(|brief| brief.kind == crate::types::BriefKind::Ack)
+                .map(|brief| brief.text.clone()),
+            last_result_brief: Some(evidence.text.clone()),
+        };
         let mut metadata = json!({
             "target_agent_id": identity.agent_id,
             "target_agent_kind": identity.kind,
@@ -6748,6 +6925,7 @@ impl RuntimeHost {
             "activation_id": evidence.activation_id,
             "turn_id": evidence.turn_id,
             "completion_ref": evidence.completion_ref,
+            "child_observability": observability,
             "token_usage": json!({
                 "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
                 "last_turn": state.last_turn_token_usage.clone(),
@@ -6779,88 +6957,6 @@ impl RuntimeHost {
             text: evidence.text,
             task_detail: Some(metadata),
         })
-    }
-
-    async fn completed_child_terminal_from_storage(
-        &self,
-        storage: &AppStorage,
-        identity: &AgentIdentityRecord,
-        child_turn_baseline: u64,
-    ) -> Result<Option<ChildTaskTerminalResult>> {
-        let Some(state) = storage.read_agent()? else {
-            return Ok(None);
-        };
-        let Some(terminal) = state
-            .last_turn_terminal
-            .as_ref()
-            .filter(|record| record.turn_index == state.turn_index)
-            .filter(|record| record.turn_index > child_turn_baseline)
-            .cloned()
-        else {
-            return Ok(None);
-        };
-        if state.current_run_id.is_some()
-            || state.pending > 0
-            || child_has_active_lifecycle_blockers(storage, &identity.agent_id)?
-        {
-            return Ok(None);
-        }
-        let closure = RuntimeHandle::closure_decision_from_storage(storage, &state)?;
-        if matches!(
-            closure.outcome,
-            ClosureOutcome::Waiting | ClosureOutcome::Continuable
-        ) {
-            return Ok(None);
-        }
-
-        let mut status = if terminal.kind.is_failure() {
-            TaskStatus::Failed
-        } else {
-            TaskStatus::Completed
-        };
-        if state.status == AgentStatus::Stopped {
-            status = TaskStatus::Cancelled;
-        }
-        let text = terminal
-            .last_assistant_message
-            .or_else(|| {
-                if status == TaskStatus::Failed {
-                    state
-                        .last_runtime_failure
-                        .as_ref()
-                        .map(|failure| failure.summary.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default();
-
-        Ok(Some(ChildTaskTerminalResult {
-            status,
-            text,
-            task_detail: {
-                let mut detail = json!( {
-                    "target_agent_id": identity.agent_id,
-                    "target_agent_kind": identity.kind,
-                    "target_agent_visibility": identity.visibility,
-                    "target_agent_ownership": identity.ownership(),
-                    "target_agent_profile_preset": identity.profile_preset(),
-                });
-                if identity.kind == AgentKind::Child {
-                    detail["child_agent_id"] = json!(identity.agent_id);
-                    detail["child_kind"] = json!(identity.kind);
-                    detail["child_visibility"] = json!(identity.visibility);
-                    detail["child_ownership"] = json!(identity.ownership());
-                    detail["child_profile_preset"] = json!(identity.profile_preset());
-                }
-                detail["token_usage"] = json!({
-                    "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
-                    "last_turn": state.last_turn_token_usage.clone(),
-                    "total_model_rounds": state.total_model_rounds,
-                });
-                Some(detail)
-            },
-        }))
     }
 
     pub(crate) fn agent_data_dir(&self, agent_id: &str) -> PathBuf {
@@ -7216,11 +7312,6 @@ impl RuntimeHostBridge {
         self.host()?.create_agent(parent_runtime, request).await
     }
 
-    pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {
-        let runtime = self.host()?.get_or_create_agent(agent_id).await?;
-        Ok(runtime.agent_state().await?.turn_index)
-    }
-
     pub(crate) async fn record_operator_notification(
         &self,
         agent_id: &str,
@@ -7245,7 +7336,7 @@ impl RuntimeHostBridge {
     pub(crate) async fn await_agent_invocation_terminal_result(
         &self,
         child_agent_id: &str,
-        child_turn_baseline: u64,
+        _child_turn_baseline: u64,
         delivery_id: Option<&str>,
         invocation_task_id: &str,
         worktree: bool,
@@ -7261,8 +7352,17 @@ impl RuntimeHostBridge {
                 )
                 .await;
         }
+        anyhow::bail!("source-bound child invocations require canonical resolution")
+    }
+
+    pub(crate) async fn resolve_supervised_invocation(
+        &self,
+        task: &TaskRecord,
+        child_agent_id: &str,
+        worktree: bool,
+    ) -> Result<ChildInvocationResolution> {
         self.host()?
-            .await_child_terminal_result(child_agent_id, child_turn_baseline, worktree)
+            .resolve_supervised_invocation(task, child_agent_id, worktree)
             .await
     }
 
@@ -7426,33 +7526,6 @@ impl RuntimeHostBridge {
     }
 }
 
-fn child_has_active_lifecycle_blockers(storage: &AppStorage, child_agent_id: &str) -> Result<bool> {
-    // Check if the child agent has any active tasks other than its own ChildAgentTask.
-    // A child's ChildAgentTask reflects the parent-child supervision relationship, not
-    // an independent lifecycle blocker. Only other tasks (command tasks, etc.) block recovery.
-    let has_active_tasks = storage
-        .latest_active_task_records_for_agent(child_agent_id, usize::MAX)?
-        .into_iter()
-        .filter(|task| !matches!(task.kind, TaskKind::ChildAgentTask))
-        .any(|task| {
-            matches!(
-                task.status,
-                TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-            )
-        });
-    if has_active_tasks {
-        return Ok(true);
-    }
-
-    Ok(storage
-        .active_wait_conditions_for_agent(child_agent_id)?
-        .into_iter()
-        .any(|condition| {
-            condition.status == crate::types::WaitConditionStatus::Active
-                && condition.kind == crate::types::WaitConditionKind::Task
-        }))
-}
-
 #[cfg(test)]
 mod memory_indexer_retry_tests {
     use super::*;
@@ -7539,7 +7612,7 @@ mod tests {
             AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
             BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
             InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
-            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord,
             TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TurnTerminalKind,
             WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
             WorkItemRecord, WorkItemState, ACTOR_INVOCATION_TASK_KIND,
@@ -9700,6 +9773,192 @@ mod tests {
             .latest_for_agent(&created.agent_id)
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn recovered_actor_invocation_uses_its_original_terminal_not_later_child_output() {
+        struct InvocationProvider {
+            started: Notify,
+            release: Notify,
+            first: AtomicBool,
+        }
+        #[async_trait]
+        impl AgentProvider for InvocationProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> anyhow::Result<ProviderTurnResponse> {
+                let text = if !self.first.swap(true, Ordering::SeqCst) {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                    "original invocation result"
+                } else {
+                    "unrelated later result"
+                };
+                StubProvider::new(text).complete_turn(request).await
+            }
+        }
+
+        for load_order in ["parent-first", "child-first", "child-unloaded"] {
+            let home = tempdir().unwrap();
+            write_test_model_config(home.path());
+            let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+            config.user_home_dir = Some(home.path().to_path_buf());
+            let provider = Arc::new(InvocationProvider {
+                started: Notify::new(),
+                release: Notify::new(),
+                first: AtomicBool::new(false),
+            });
+            let host = RuntimeHost::new_with_provider(config.clone(), provider.clone()).unwrap();
+            let parent = host.default_runtime().await.unwrap();
+            let receipt = parent
+                .agent_invocation_service()
+                .invoke(InvokeAgentRequest {
+                    target: InvokeAgentTarget::NewSubagent {
+                        template: None,
+                        workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                        model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                    },
+                    message: "finish this exact invocation".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                })
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), provider.started.notified())
+                .await
+                .unwrap();
+            let task_id = &receipt.task_handle.task_id;
+            parent.abort_async_task_monitor_for_test(task_id).await;
+            let original_task = parent
+                .storage()
+                .latest_task_record(task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(original_task.kind, TaskKind::ActorInvocation);
+            assert!(matches!(
+                original_task.recovery.as_ref(),
+                Some(TaskRecoverySpec::AgentInvocation {
+                    created_new_subagent: true,
+                    lifecycle_disposition: crate::types::AgentLifecycleDisposition::Retain,
+                    ..
+                })
+            ));
+            assert_eq!(
+                original_task.target().unwrap().kind,
+                crate::types::TaskTargetKind::ChildAgent
+            );
+            provider.release.notify_one();
+            let child = host.get_or_create_agent(&receipt.agent_id).await.unwrap();
+            let wait_for_turn = |turn_index| {
+                let child = child.clone();
+                async move {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        loop {
+                            let state = child.agent_state().await.unwrap();
+                            if state.last_turn_terminal.as_ref().is_some_and(|terminal| {
+                                terminal.turn_index == turn_index && state.current_run_id.is_none()
+                            }) {
+                                return state.last_turn_terminal.unwrap();
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .expect("child must finish its admitted turn")
+                }
+            };
+            let original_terminal = wait_for_turn(1).await;
+            assert_eq!(
+                original_terminal.last_assistant_message.as_deref(),
+                Some("original invocation result")
+            );
+            child
+                .enqueue(crate::types::MessageEnvelope::new(
+                    receipt.agent_id.clone(),
+                    crate::types::MessageKind::OperatorPrompt,
+                    crate::types::MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    crate::types::Priority::Normal,
+                    crate::types::MessageBody::Text {
+                        text: "independent later input".into(),
+                    },
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                wait_for_turn(2).await.last_assistant_message.as_deref(),
+                Some("unrelated later result")
+            );
+            assert!(matches!(
+                parent
+                    .storage()
+                    .latest_task_record(task_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                TaskStatus::Queued | TaskStatus::Running
+            ));
+            host.shutdown().await.unwrap();
+            drop(host);
+
+            let restarted = RuntimeHost::new_with_provider(
+                config,
+                Arc::new(StubProvider::new("must not rerun")),
+            )
+            .unwrap();
+            if load_order == "child-first" {
+                restarted
+                    .get_or_create_agent(&receipt.agent_id)
+                    .await
+                    .unwrap();
+            }
+            let parent = restarted.default_runtime().await.unwrap();
+            if load_order == "parent-first" {
+                restarted
+                    .get_or_create_agent(&receipt.agent_id)
+                    .await
+                    .unwrap();
+            }
+            let terminal = wait_for_terminal_task(&parent, task_id).await;
+            assert_eq!(terminal.status, TaskStatus::Completed);
+            let output = parent.task_output(task_id, false, 0).await.unwrap();
+            assert!(
+                output
+                    .task
+                    .output_preview
+                    .contains("original invocation result"),
+                "{output:?}"
+            );
+            assert!(!output
+                .task
+                .output_preview
+                .contains("unrelated later result"));
+            assert!(!output.task.output_preview.contains("must not rerun"));
+            let identity = restarted
+                .agent_identity_record(&receipt.agent_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(identity.status, AgentRegistryStatus::Active);
+            assert_eq!(
+                identity.incarnation,
+                original_task.target().unwrap().incarnation.unwrap()
+            );
+            assert_eq!(
+                restarted
+                    .agent_storage(&receipt.agent_id)
+                    .unwrap()
+                    .read_agent()
+                    .unwrap()
+                    .unwrap()
+                    .turn_index,
+                2,
+                "{load_order}: recovery must not execute another child turn"
+            );
+            restarted.shutdown().await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -12023,6 +12282,873 @@ mod tests {
         assert_eq!(summary.active_children[0].identity.agent_id, "child_test");
     }
 
+    fn seed_supervised_child_terminal(host: &RuntimeHost, task_id: &str, child_id: &str) {
+        use crate::domain::execution_protocol::*;
+        let identity = host.agent_identity_record(child_id).unwrap().unwrap();
+        let relations = crate::runtime_db::agent_relations::supervised_creation_records(
+            &identity,
+            identity.parent_agent_id.as_deref().unwrap(),
+            task_id,
+            None,
+        );
+        host.runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::agent_relations::upsert_canonical_record_set_tx(tx, &relations)
+            })
+            .unwrap();
+        let storage = host.agent_storage(child_id).unwrap();
+        let state = storage.read_agent().unwrap().unwrap();
+        let terminal = state.last_turn_terminal.as_ref().unwrap();
+        let mut source = crate::types::MessageEnvelope::new(
+            child_id,
+            crate::types::MessageKind::InternalFollowup,
+            crate::types::MessageOrigin::Task {
+                task_id: task_id.into(),
+            },
+            AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "original delegated input".into(),
+            },
+        );
+        source.turn_id = Some(terminal.turn_id.clone());
+        source.metadata = Some(json!({
+            "parent_agent_id": identity.parent_agent_id,
+            "supervision_task_id": task_id,
+            "child_agent_id": child_id,
+            "parent_supervised": true,
+        }));
+        storage.append_message(&source).unwrap();
+        let mut turn =
+            crate::types::TurnRecord::new(child_id, &terminal.turn_id, terminal.turn_index);
+        let mut summary = crate::types::TurnTerminalSummary::from_terminal(terminal);
+        summary.reason = terminal.last_assistant_message.clone();
+        turn.terminal = Some(summary);
+        turn.input_message_ids = vec![source.id.clone()];
+        host.runtime_db().turn_records().upsert(&turn).unwrap();
+        let attempt_id = format!("activation:message:{}", source.id);
+        let outcome_id = format!("outcome:{attempt_id}");
+        let authority = host
+            .runtime_db()
+            .transitions()
+            .load_execution_authority_fences(child_id)
+            .unwrap();
+        let attempt = ExecutionAttempt {
+            attempt_id: attempt_id.clone(),
+            agent_id: child_id.into(),
+            source_message_id: Some(source.id.clone()),
+            source: ExecutionSource {
+                identity: ExecutionSourceIdentity::InternalFollowup {
+                    message_id: source.id,
+                },
+                generation: 1,
+            },
+            binding: ExecutionBinding::Conversation {
+                interaction_id: terminal.turn_id.clone(),
+            },
+            provenance: ExecutionProvenance {
+                origin: ExecutionOrigin::Task,
+                trust: ExecutionTrust::OperatorInstruction,
+                priority: ExecutionPriority::Normal,
+                correlation_id: None,
+                causation_id: None,
+            },
+            admitted_fences: AdmittedFences {
+                source_revision: 1,
+                work_item_source_revision: None,
+                work_item_generation: None,
+                rejoin: None,
+                agent_control_revision: authority.agent_control_revision,
+                host_registry_revision: authority.host_registry_revision,
+            },
+            state: ExecutionAttemptState::Settled,
+            run_id: None,
+            turn_id: Some(terminal.turn_id.clone()),
+            recovery_of_attempt_id: None,
+            terminal_outcome_id: Some(outcome_id.clone()),
+            admitted_at: Utc::now().to_rfc3339(),
+            terminal_at: Some(Utc::now().to_rfc3339()),
+        };
+        let mut execution = ExecutionProtocolState::empty(child_id);
+        execution.attempts.insert(attempt_id.clone(), attempt);
+        execution.outcomes.insert(
+            outcome_id.clone(),
+            ExecutionOutcomeRecord {
+                outcome_id,
+                attempt_id,
+                outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        );
+        host.runtime_db()
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+            .unwrap();
+    }
+
+    fn source_bound_invocation_fixture() -> (tempfile::TempDir, RuntimeHost, TaskRecord) {
+        let (home, host) = test_host();
+        let parent_id = host.config().default_agent_id.clone();
+        let child_id = "source-bound-child";
+        let task = TaskRecord {
+            id: "task-source-bound".into(),
+            agent_id: parent_id.clone(),
+            kind: TaskKind::ActorInvocation,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            recovery: None,
+            detail: Some(
+                json!({"created_new_subagent":true,"child_agent_id":child_id,
+                "target":{"kind":"child_agent","agent_id":child_id,"incarnation":1}}),
+            ),
+        };
+        let identity = AgentIdentityRecord::new(
+            child_id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id),
+            Some(task.id.clone()),
+        );
+        host.append_agent_identity(&identity).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+        let storage = host.agent_storage(child_id).unwrap();
+        let mut state = AgentState::new(child_id);
+        state.turn_index = 1;
+        state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
+            turn_id: "original-source-turn".into(),
+            turn_index: 1,
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: Some("original-source-result".into()),
+            no_brief_reason: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        });
+        storage.write_agent(&state).unwrap();
+        seed_supervised_child_terminal(&host, &task.id, child_id);
+        (home, host, task)
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_terminal_observability_excludes_later_activity() {
+        let (_home, host, task) = source_bound_invocation_fixture();
+        let child_id = "source-bound-child";
+        let storage = host.agent_storage(child_id).unwrap();
+        for (turn_id, kind, text) in [
+            (
+                "original-source-turn",
+                crate::types::BriefKind::Ack,
+                "original progress",
+            ),
+            ("later-turn", crate::types::BriefKind::Ack, "later progress"),
+            (
+                "later-turn",
+                crate::types::BriefKind::Result,
+                "later result",
+            ),
+        ] {
+            let mut brief = crate::types::BriefRecord::new(child_id, kind, text, None, None);
+            brief.turn_id = Some(turn_id.into());
+            storage.append_brief(&brief).unwrap();
+        }
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.turn_index = 2;
+        state.last_turn_terminal.as_mut().unwrap().turn_id = "later-turn".into();
+        state
+            .last_turn_terminal
+            .as_mut()
+            .unwrap()
+            .last_assistant_message = Some("later result".into());
+        state
+            .working_memory
+            .current_working_memory
+            .current_work_item_id = Some("later-work-item".into());
+        state.working_memory.current_working_memory.work_summary = Some("later work".into());
+        storage.write_agent(&state).unwrap();
+
+        assert!(host.try_get_loaded_runtime(child_id).await.is_none());
+        let ChildInvocationResolution::Ready(result) = host
+            .resolve_supervised_invocation(&task, child_id, false)
+            .await
+            .unwrap()
+        else {
+            panic!("original invocation should be terminal");
+        };
+        let snapshot: crate::types::ChildAgentObservabilitySnapshot =
+            serde_json::from_value(result.task_detail.unwrap()["child_observability"].clone())
+                .unwrap();
+        assert_eq!(snapshot.phase, crate::types::ChildAgentPhase::Terminal);
+        assert_eq!(snapshot.current_work_item_id, None);
+        assert_eq!(snapshot.work_summary, None);
+        assert_eq!(
+            snapshot.last_progress_brief.as_deref(),
+            Some("original progress")
+        );
+        assert_eq!(
+            snapshot.last_result_brief.as_deref(),
+            Some("original-source-result")
+        );
+        assert!(host.try_get_loaded_runtime(child_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_resolution_is_source_bound_and_fail_closed() {
+        use crate::domain::execution_protocol::*;
+        let (_home, host, task) = source_bound_invocation_fixture();
+        let child_id = "source-bound-child";
+        let execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(child_id)
+            .unwrap()
+            .unwrap();
+        let root = execution.attempts.values().next().unwrap().clone();
+        let outcome_id = root.terminal_outcome_id.clone().unwrap();
+        let store = |execution: &ExecutionProtocolState| {
+            host.runtime_db()
+                .transaction(|tx| {
+                    // Independent adversarial fixtures, not legal runtime rewinds.
+                    for table in [
+                        "execution_protocol_outcomes",
+                        "execution_protocol_attempts",
+                        "execution_protocol_work_items",
+                    ] {
+                        tx.execute(
+                            &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                            [child_id],
+                        )?;
+                    }
+                    crate::runtime_db::transitions::persist_state_tx(tx, execution)
+                })
+                .unwrap()
+        };
+        // Missing legacy baseline/linkage is recoverable from unique authoritative input.
+        let resolved = host
+            .resolve_supervised_invocation(&task, child_id, false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resolved, ChildInvocationResolution::Ready(result) if result.text == "original-source-result"),
+            "{resolved:?}"
+        );
+        let mut bad = task.clone();
+        bad.detail.as_mut().unwrap()["target"]["incarnation"] = json!(2);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&bad, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(ChildInvocationReason::IdentityMismatch)
+        ));
+        bad = task.clone();
+        bad.detail.as_mut().unwrap()["child_turn_baseline"] = json!(1);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&bad, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(ChildInvocationReason::SourceMismatch)
+        ));
+        bad = task.clone();
+        bad.detail.as_mut().unwrap()["source_message_id"] = json!("missing-source");
+        assert!(matches!(
+            host.resolve_supervised_invocation(&bad, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::MissingInvocationBinding
+            )
+        ));
+
+        let mut changed = execution.clone();
+        let pending = changed.attempts.get_mut(&root.attempt_id).unwrap();
+        pending.state = ExecutionAttemptState::Open;
+        pending.terminal_outcome_id = None;
+        pending.terminal_at = None;
+        changed.outcomes.clear();
+        store(&changed);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+        ));
+        store(&execution);
+        let original_turn = host
+            .runtime_db()
+            .turn_records()
+            .by_id(Some(child_id), root.turn_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+                    rusqlite::params![child_id, original_turn.turn_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::MissingCanonicalTerminal
+            )
+        ));
+        host.runtime_db()
+            .turn_records()
+            .upsert(&original_turn)
+            .unwrap();
+        host.agent_storage(child_id).unwrap().append_event(&crate::types::AuditEvent::legacy(
+            "runtime_error",
+            json!({"turn_id":"unrelated-historical-turn","message":"unrelated historical failure"}),
+        )).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+            ChildInvocationResolution::Ready(result) if result.status == TaskStatus::Completed
+                && result.text == "original-source-result"
+        ));
+        for (kind, expected) in [
+            (
+                crate::types::TurnTerminalKind::Aborted,
+                TaskStatus::Cancelled,
+            ),
+            (
+                crate::types::TurnTerminalKind::ProviderFailedNeedsRecovery,
+                TaskStatus::Failed,
+            ),
+        ] {
+            let mut turn = original_turn.clone();
+            turn.terminal.as_mut().unwrap().kind = kind;
+            host.runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+                        rusqlite::params![child_id, turn.turn_id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            host.runtime_db().turn_records().upsert(&turn).unwrap();
+            assert!(matches!(
+                host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+                ChildInvocationResolution::Ready(result) if result.status == expected
+                    && !result.text.contains("unrelated historical failure")
+            ));
+        }
+        host.runtime_db()
+            .transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+                    rusqlite::params![child_id, original_turn.turn_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        host.runtime_db()
+            .turn_records()
+            .upsert(&original_turn)
+            .unwrap();
+        changed = execution.clone();
+        let mut duplicate = root.clone();
+        duplicate.attempt_id = "duplicate-root".into();
+        duplicate.terminal_outcome_id = Some("duplicate-outcome".into());
+        let mut duplicate_outcome = execution.outcomes[&outcome_id].clone();
+        duplicate_outcome.outcome_id = "duplicate-outcome".into();
+        duplicate_outcome.attempt_id = duplicate.attempt_id.clone();
+        changed
+            .outcomes
+            .insert(duplicate_outcome.outcome_id.clone(), duplicate_outcome);
+        changed
+            .attempts
+            .insert(duplicate.attempt_id.clone(), duplicate);
+        store(&changed);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::AmbiguousInvocationBinding
+            )
+        ));
+
+        changed = execution.clone();
+        changed.attempts.get_mut(&root.attempt_id).unwrap().state =
+            ExecutionAttemptState::Interrupted;
+        store(&changed);
+        let storage = host.agent_storage(child_id).unwrap();
+        let source_id = root.source_message_id.as_deref().unwrap();
+        let mut queue = crate::types::QueueEntryRecord {
+            message_id: source_id.into(),
+            agent_id: child_id.into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        storage.append_queue_entry(&queue).unwrap();
+        let mut unrelated = queue.clone();
+        unrelated.message_id = "other-failed-source".into();
+        unrelated.status = QueueEntryStatus::Aborted;
+        storage.append_queue_entry(&unrelated).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+        ));
+        let mut failure = crate::types::BriefRecord::new(
+            child_id,
+            crate::types::BriefKind::Failure,
+            "original source failed",
+            Some(source_id.into()),
+            None,
+        );
+        failure.turn_id = root.turn_id.clone();
+        storage.append_brief(&failure).unwrap();
+        for status in [QueueEntryStatus::Aborted, QueueEntryStatus::Quarantined] {
+            // Independent terminal fixtures, not an aborted -> quarantined transition.
+            host.runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM queue_entries WHERE message_id = ?1",
+                        [source_id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            queue.status = status;
+            storage.append_queue_entry(&queue).unwrap();
+            assert!(matches!(
+                host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+                ChildInvocationResolution::Ready(result)
+                    if result.status == TaskStatus::Failed && result.text == "original source failed"
+            ));
+        }
+        for suffix in ["a", "b"] {
+            let mut recovery = root.clone();
+            recovery.attempt_id = format!("recovery-{suffix}");
+            recovery.recovery_of_attempt_id = Some(root.attempt_id.clone());
+            recovery.terminal_outcome_id = Some(format!("outcome-recovery-{suffix}"));
+            let mut recovered_outcome = execution.outcomes[&outcome_id].clone();
+            recovered_outcome.outcome_id = recovery.terminal_outcome_id.clone().unwrap();
+            recovered_outcome.attempt_id = recovery.attempt_id.clone();
+            changed
+                .outcomes
+                .insert(recovered_outcome.outcome_id.clone(), recovered_outcome);
+            changed
+                .attempts
+                .insert(recovery.attempt_id.clone(), recovery);
+            if suffix == "a" {
+                store(&changed);
+                assert!(matches!(
+                    host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+                    ChildInvocationResolution::Ready(result)
+                    if result.text == "original-source-result"
+                        && result.task_detail.as_ref().unwrap()["activation_id"] == "recovery-a"
+                ));
+            }
+        }
+        store(&changed);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::AmbiguousContinuation
+            )
+        ));
+        changed = execution.clone();
+        changed.outcomes.get_mut(&outcome_id).unwrap().outcome =
+            ExecutionOutcome::Conversation(ConversationOutcome::HandoffToWorkItemContinue {
+                work_item_id: "cyclic-work".into(),
+            });
+        changed.work_items.insert(
+            "cyclic-work".into(),
+            WorkItemExecutionRecord {
+                source_revision: 1,
+                state: WorkItemExecutionState::Waiting {
+                    generation: 1,
+                    wait: WaitReference {
+                        wait_id: "cycle-wait".into(),
+                    },
+                },
+            },
+        );
+        store(&changed);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+        ));
+        let waiting = changed.work_items["cyclic-work"].state.clone();
+        for state in [
+            WorkItemExecutionState::Runnable {
+                generation: 2,
+                recovery_ref: None,
+            },
+            WorkItemExecutionState::Paused {
+                generation: 2,
+                reason: "yielded_to:other-work".into(),
+            },
+        ] {
+            changed.work_items.get_mut("cyclic-work").unwrap().state = state;
+            store(&changed);
+            assert!(matches!(
+                host.resolve_supervised_invocation(&task, child_id, false)
+                    .await
+                    .unwrap(),
+                ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+            ));
+        }
+        changed.work_items.get_mut("cyclic-work").unwrap().state = waiting;
+        let mut next = root.clone();
+        next.attempt_id = "cycle-successor".into();
+        next.binding = ExecutionBinding::WorkItem {
+            work_item_id: "cyclic-work".into(),
+        };
+        next.source.identity = ExecutionSourceIdentity::TriggeredWait {
+            wait_id: "cycle-wait".into(),
+            trigger_message_id: "cycle-trigger".into(),
+            ingress: None,
+        };
+        next.terminal_outcome_id = Some("cycle-outcome".into());
+        changed.outcomes.insert(
+            "cycle-outcome".into(),
+            ExecutionOutcomeRecord {
+                outcome_id: "cycle-outcome".into(),
+                attempt_id: next.attempt_id.clone(),
+                outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Continue),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        );
+        changed.attempts.insert(next.attempt_id.clone(), next);
+        store(&changed);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(ChildInvocationReason::CyclicContinuation)
+        ));
+        changed = execution.clone();
+        changed.outcomes.get_mut(&outcome_id).unwrap().outcome =
+            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                reason: "exact-source-stop".into(),
+            });
+        store(&changed);
+        assert!(
+            matches!(host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+            ChildInvocationResolution::Ready(result) if result.status == TaskStatus::Interrupted)
+        );
+        store(&execution);
+        let source_id = root.source_message_id.unwrap();
+        let mut source = host
+            .runtime_db()
+            .messages()
+            .by_id(Some(child_id), &source_id)
+            .unwrap()
+            .unwrap();
+        source.id = "another-task-origin-input".into();
+        host.agent_storage(child_id)
+            .unwrap()
+            .append_message(&source)
+            .unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::AmbiguousInvocationBinding
+            )
+        ));
+        bad = task.clone();
+        bad.detail.as_mut().unwrap()["source_message_id"] = json!(source_id);
+        assert!(matches!(
+            host.resolve_supervised_invocation(&bad, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Ready(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_distinguishes_original_later_and_unknown_activity() {
+        let (_home, host, task) = source_bound_invocation_fixture();
+        let child_id = "source-bound-child";
+        let storage = host.agent_storage(child_id).unwrap();
+        let mut nested = TaskRecord {
+            id: "nested-command".into(),
+            agent_id: child_id.into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: Some(json!({"parent_turn_id": "original-source-turn"})),
+            recovery: None,
+        };
+        storage.append_task(&nested).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+        ));
+        // Known later activity must not suppress a proven original result.
+        nested.detail = Some(json!({"parent_turn_id": "later-turn"}));
+        storage.append_task(&nested).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+            ChildInvocationResolution::Ready(result) if result.text == "original-source-result"
+        ));
+        nested.detail = None;
+        storage.append_task(&nested).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::MissingInvocationBinding
+            )
+        ));
+        nested.status = TaskStatus::Completed;
+        storage.append_task(&nested).unwrap();
+        let now = Utc::now();
+        let mut wait = WaitConditionRecord {
+            id: "nested-wait".into(),
+            agent_id: child_id.into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: None,
+            subject_ref: Some(nested.id.clone()),
+            waiting_for: "nested result".into(),
+            wake_sources: vec![WakeSource::TaskResult { task_id: nested.id }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: Some("original-source-turn".into()),
+            trigger_message_id: None,
+            triggered_at: None,
+        };
+        storage.append_wait_condition(&wait).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+        ));
+        wait.status = WaitConditionStatus::Cancelled;
+        wait.cancelled_at = Some(Utc::now());
+        storage.append_wait_condition(&wait).unwrap();
+        wait.id = "later-wait".into();
+        wait.status = WaitConditionStatus::Active;
+        wait.cancelled_at = None;
+        wait.turn_id = Some("later-turn".into());
+        storage.append_wait_condition(&wait).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
+            ChildInvocationResolution::Ready(result) if result.text == "original-source-result"
+        ));
+        wait.status = WaitConditionStatus::Cancelled;
+        wait.cancelled_at = Some(Utc::now());
+        storage.append_wait_condition(&wait).unwrap();
+        wait.id = "unknown-wait".into();
+        wait.status = WaitConditionStatus::Active;
+        wait.cancelled_at = None;
+        wait.turn_id = None;
+        storage.append_wait_condition(&wait).unwrap();
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::RecoveryBlocked(
+                ChildInvocationReason::MissingInvocationBinding
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_diagnostic_retries_after_storage_recovers() {
+        let (_home, host, mut task) = source_bound_invocation_fixture();
+        let parent = host.default_runtime().await.unwrap();
+        task.detail.as_mut().unwrap()["source_message_id"] = json!("missing-source");
+        task.recovery = Some(TaskRecoverySpec::ChildAgentTask {
+            summary: "reattach without replay".into(),
+            prompt: "must never be replayed".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+            workspace_mode: ChildAgentWorkspaceMode::Inherit,
+            lifecycle_disposition: crate::types::AgentLifecycleDisposition::Retain,
+        });
+        parent.storage().append_task(&task).unwrap();
+        // Fail only diagnostic writes, not the preceding Running projection.
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_recovery_diagnostic BEFORE INSERT ON tasks
+             WHEN NEW.task_id = 'task-source-bound'
+               AND json_extract(NEW.payload_json, '$.detail.recovery_diagnostic') IS NOT NULL
+             BEGIN SELECT RAISE(ABORT, 'diagnostic storage unavailable'); END;",
+            )
+            .unwrap();
+        parent
+            .recover_supervised_child_tasks(vec![task.clone()])
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let blocked = parent
+            .storage()
+            .latest_task_record(&task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(blocked.status, TaskStatus::Running);
+        assert!(blocked.detail.unwrap().get("recovery_diagnostic").is_none());
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_recovery_diagnostic;")
+            .unwrap();
+        let diagnostic = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current = parent
+                    .storage()
+                    .latest_task_record(&task.id)
+                    .unwrap()
+                    .unwrap();
+                if let Some(diagnostic) = current
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("recovery_diagnostic"))
+                {
+                    break diagnostic.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("unchanged diagnostic must retry after storage recovery");
+        assert_eq!(diagnostic["reason"], "missing_invocation_binding");
+        assert_eq!(diagnostic["state"], "recovery_blocked");
+        // Persisted diagnostics are deduplicated across subsequent polls.
+        let persisted = parent.storage().latest_task_record(&task.id).unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(
+            parent.storage().latest_task_record(&task.id).unwrap(),
+            persisted
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_monitor_retains_responsibility_after_commit_retry_exhaustion() {
+        let (_home, host, mut task) = source_bound_invocation_fixture();
+        let parent = host.default_runtime().await.unwrap();
+        task.recovery = Some(TaskRecoverySpec::ChildAgentTask {
+            summary: "retry original terminal publication".into(),
+            prompt: "must never be replayed".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+            workspace_mode: ChildAgentWorkspaceMode::Inherit,
+            lifecycle_disposition: crate::types::AgentLifecycleDisposition::Retain,
+        });
+        parent.storage().append_task(&task).unwrap();
+        let resolved = host
+            .resolve_supervised_invocation(&task, "source-bound-child", false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(resolved, ChildInvocationResolution::Ready(_)),
+            "{resolved:?}"
+        );
+        parent.inject_terminal_task_transition_conflicts(3);
+        let (reattached, remaining) = parent
+            .recover_supervised_child_tasks(vec![task.clone()])
+            .await
+            .unwrap();
+        assert_eq!(reattached.len(), 1);
+        assert!(remaining.is_empty());
+        let diagnostic = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let current = parent
+                    .storage()
+                    .latest_task_record(&task.id)
+                    .unwrap()
+                    .unwrap();
+                if let Some(diagnostic) = current
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("recovery_diagnostic"))
+                    .filter(|diagnostic| diagnostic["stage"] == "commit")
+                {
+                    assert!(!matches!(
+                        current.status,
+                        TaskStatus::Completed | TaskStatus::Failed
+                    ));
+                    break diagnostic.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "exhaustion diagnostic missing: {error}; task={:?}",
+                parent.storage().latest_task_record(&task.id).unwrap()
+            )
+        });
+        assert_eq!(diagnostic["reason"], "monitor_commit_failed");
+        assert_eq!(diagnostic["state"], "recovery_blocked");
+        assert!(!diagnostic.to_string().contains("original-source-result"));
+        // A second recovery must not replace the effective monitor.
+        parent
+            .recover_supervised_child_tasks(vec![task.clone(), task.clone()])
+            .await
+            .unwrap();
+        let terminal = wait_for_terminal_task(&parent, &task.id).await;
+        assert_eq!(terminal.status, TaskStatus::Completed);
+        assert_eq!(
+            terminal.parent_message_id.as_deref(),
+            Some(format!("message:child-invocation-result:{}", task.id).as_str())
+        );
+        assert!(terminal
+            .detail
+            .as_ref()
+            .unwrap()
+            .get("recovery_diagnostic")
+            .is_none());
+        let results = host.runtime_db().messages().all(Some(&task.agent_id)).unwrap().into_iter()
+            .filter(|message| message.kind == crate::types::MessageKind::TaskResult
+                && matches!(&message.origin, crate::types::MessageOrigin::Task { task_id } if task_id == &task.id))
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(&results[0].body, crate::types::MessageBody::Text { text } if text == "original-source-result")
+        );
+        assert_eq!(
+            host.agent_identity_record("source-bound-child")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        host.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn recovered_runtime_reattaches_supervised_child_monitor() {
         let (_home, host) = test_host();
@@ -12085,6 +13211,8 @@ mod tests {
             duration_ms: 1,
         });
         child_storage.write_agent(&child_state).unwrap();
+
+        seed_supervised_child_terminal(&host, "task-recover-child", "child_recover");
 
         drop(host);
 
@@ -12245,7 +13373,7 @@ mod tests {
                 parent_message_id: None,
                 work_item_id: None,
                 summary: Some("verification".into()),
-                detail: None,
+                detail: Some(json!({"parent_turn_id": "test"})),
                 recovery: None,
             })
             .unwrap();
@@ -12275,11 +13403,17 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
-                turn_id: None,
+                turn_id: Some("test".into()),
                 trigger_message_id: None,
                 triggered_at: None,
             })
             .unwrap();
+
+        seed_supervised_child_terminal(
+            &host,
+            "task-recover-active-child-task",
+            "child_recover_active_task",
+        );
 
         drop(host);
 
@@ -12386,11 +13520,17 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
-                turn_id: None,
+                turn_id: Some("test".into()),
                 trigger_message_id: None,
                 triggered_at: None,
             })
             .unwrap();
+
+        seed_supervised_child_terminal(
+            &host,
+            "task-recover-active-child-wait",
+            "child_recover_active_wait",
+        );
 
         drop(host);
 

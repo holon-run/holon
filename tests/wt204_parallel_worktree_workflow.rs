@@ -263,7 +263,7 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
                     let status = records
                         .iter()
                         .find(|record| record.id == task.id)
-                        .map(|record| format!("{:?}", record.status))
+                        .map(|record| format!("{:?}, detail={:?}", record.status, record.detail))
                         .unwrap_or_else(|| "missing".into());
                     format!("{}={}", task.id, status)
                 })
@@ -282,26 +282,12 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
                 else {
                     continue;
                 };
-                let child = host.get_or_create_agent(child_agent_id).await?;
-                let state = child.agent_state().await?;
-                let closure = child.current_closure().await?;
-                let child_events = child
-                    .storage()
-                    .read_recent_events(12)?
-                    .into_iter()
-                    .map(|event| format!("{}={}", event.kind, event.data))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                child_states.push(format!(
-                    "{}(turn={}, pending={}, run={:?}, current_work_item={:?}, closure={:?}, events=[{}])",
-                    child_agent_id,
-                    state.turn_index,
-                    state.pending,
-                    state.current_run_id,
-                    state.current_work_item_id,
-                    closure,
-                    child_events
-                ));
+                // Diagnostics must not reload a terminal child racing with deletion.
+                let snapshot = (|| -> Result<_> {
+                    let storage = host.agent_storage(child_agent_id)?;
+                    Ok((storage.read_agent()?, storage.read_recent_events(12)?))
+                })();
+                child_states.push(format!("{child_agent_id}: {snapshot:?}"));
             }
             let recent_events = runtime
                 .storage()

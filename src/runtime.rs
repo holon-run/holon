@@ -4676,7 +4676,20 @@ impl RuntimeHandle {
     }
 
     pub async fn enqueue(&self, message: MessageEnvelope) -> Result<MessageEnvelope> {
-        let (message, _) = self.enqueue_internal(message, None).await?;
+        // Keep admission state out of nested provider/dispatch futures.
+        let (message, _) = Box::pin(self.enqueue_internal(message, None, None)).await?;
+        Ok(message)
+    }
+
+    pub(crate) async fn enqueue_supervised_invocation(
+        &self,
+        message: MessageEnvelope,
+        parent_task: &TaskRecord,
+        child_incarnation: u64,
+    ) -> Result<MessageEnvelope> {
+        let (message, _) = self
+            .enqueue_internal(message, None, Some((parent_task, child_incarnation)))
+            .await?;
         Ok(message)
     }
 
@@ -4685,7 +4698,7 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<AgentMessageDeliveryReceipt> {
-        let (_, receipt) = self.enqueue_internal(message, Some(delivery)).await?;
+        let (_, receipt) = self.enqueue_internal(message, Some(delivery), None).await?;
         receipt.context("delivery admission completed without a receipt")
     }
 
@@ -4693,8 +4706,19 @@ impl RuntimeHandle {
         &self,
         mut message: MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
+        supervised_invocation: Option<(&TaskRecord, u64)>,
     ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
         let _admission = self.execution_admission_lease()?;
+        if supervised_invocation.is_some() {
+            if let Some(existing) = self.inner.storage.read_message_by_id(&message.id)? {
+                if message.turn_id.is_none() {
+                    message.turn_id = existing.turn_id;
+                }
+                if message.trace_context.is_none() {
+                    message.trace_context = existing.trace_context;
+                }
+            }
+        }
         message.normalize_admission_fields();
         message.turn_id = normalized_turn_id(message.turn_id.as_deref());
         if message.turn_id.is_none() {
@@ -4705,7 +4729,10 @@ impl RuntimeHandle {
         }
         let enqueue_started_at = chrono::Utc::now();
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            match self.enqueue_attempt(&message, delivery).await {
+            match self
+                .enqueue_attempt(&message, delivery, supervised_invocation)
+                .await
+            {
                 Ok(mut commit) => {
                     commit.effects.notify_scheduler =
                         commit.delivery_receipt.as_ref().is_none_or(|receipt| {
@@ -4777,6 +4804,7 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
+        supervised_invocation: Option<(&TaskRecord, u64)>,
     ) -> Result<TransitionCommit> {
         let message_is_new = self
             .inner
@@ -4784,17 +4812,19 @@ impl RuntimeHandle {
             .read_message_by_id(&message.id)?
             .is_none();
         let existing_queue_entry = self.inner.runtime_db.queue_entries().latest(&message.id)?;
-        if existing_queue_entry.as_ref().is_some_and(|entry| {
-            matches!(
-                entry.status,
-                QueueEntryStatus::Dequeued
-                    | QueueEntryStatus::Interjected
-                    | QueueEntryStatus::Processed
-                    | QueueEntryStatus::Aborted
-                    | QueueEntryStatus::Dropped
-                    | QueueEntryStatus::Quarantined
-            )
-        }) {
+        if supervised_invocation.is_none()
+            && existing_queue_entry.as_ref().is_some_and(|entry| {
+                matches!(
+                    entry.status,
+                    QueueEntryStatus::Dequeued
+                        | QueueEntryStatus::Interjected
+                        | QueueEntryStatus::Processed
+                        | QueueEntryStatus::Aborted
+                        | QueueEntryStatus::Dropped
+                        | QueueEntryStatus::Quarantined
+                )
+            })
+        {
             return Ok(TransitionCommit::default());
         }
         let mut audit_events = vec![AuditEvent::legacy(
@@ -4822,6 +4852,12 @@ impl RuntimeHandle {
                 !self.inner.shutdown_requested.load(Ordering::SeqCst),
                 "runtime_execution_admission_closed"
             );
+            if supervised_invocation.is_some() {
+                anyhow::ensure!(
+                    guard.state.id == message.agent_id,
+                    "supervised_invocation_runtime_target_mismatch"
+                );
+            }
             if matches!(
                 &message.origin,
                 MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
@@ -4944,7 +4980,16 @@ impl RuntimeHandle {
                 fault: self.take_transition_fault(),
                 brief_evidence: Vec::new(),
             };
-            let mut commit = if let Some(delivery) = delivery {
+            let mut commit = if let Some((parent_task, child_incarnation)) = supervised_invocation {
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_supervised_invocation_admission(
+                        &command,
+                        parent_task,
+                        child_incarnation,
+                    )?
+            } else if let Some(delivery) = delivery {
                 self.inner
                     .runtime_db
                     .transitions()
@@ -4955,6 +5000,9 @@ impl RuntimeHandle {
                     .transitions()
                     .commit_queue_with_wait_trigger(&command)?
             };
+            if supervised_invocation.is_some() && !commit.applied {
+                return Ok(commit);
+            }
             let queue_admitted = commit.delivery_receipt.as_ref().is_none_or(|receipt| {
                 receipt.outcome == AgentMessageDeliveryOutcome::Accepted
                     && !receipt.idempotent_replay
