@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 
+import { resolveRuntimeApiBase } from "./client";
 import { backfillRetryDelayMs } from "./global-sync-coordinator";
 import { type BootstrapRefreshOptions, useRuntimeStore } from "./runtime-store";
 import type { RuntimeBootstrap } from "./types";
@@ -53,7 +54,8 @@ export function useRuntimeDashboard(): RuntimeDashboardState {
 
   const connection = bootstrap.connection;
   useEffect(() => {
-    if (connection.error == null || connection.baseUrl == null) {
+    // Local requests use /api even when pending/cached presentation has no base.
+    if (connection.error == null || resolveRuntimeApiBase(connection) == null) {
       // Recovered or not retryable: stop the chain and reset the ladder.
       stopRetryChain(retryChainRef.current);
       retryChainRef.current = null;
@@ -77,7 +79,7 @@ export function useRuntimeDashboard(): RuntimeDashboardState {
         return;
       }
       const live = useRuntimeStore.getState().bootstrap.connection;
-      if (live.error == null || live.baseUrl == null) {
+      if (live.error == null || resolveRuntimeApiBase(live) == null) {
         // The connection recovered under this chain: stop instead of
         // scheduling another attempt.
         chain.cancelled = true;
