@@ -744,6 +744,156 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(credentials, ["saved-session"])
     }
 
+    func testRuntimeBrowserLeaseRequiresConnectedAuthority() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        XCTAssertNil(c.runtimeBrowserLease())
+        await c.connect(p)
+        XCTAssertEqual(c.status, .needsLogin)
+        XCTAssertNil(c.runtimeBrowserLease())
+        try saved(f, profile: p)
+        await c.connect(p)
+        XCTAssertEqual(c.status, .connected)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        XCTAssertTrue(c.isRuntimeBrowserLeaseCurrent(lease))
+    }
+
+    func testBindRuntimeBrowserCookieBindsHttpOnlySessionHeader() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        let header = try XCTUnwrap(try c.bindRuntimeBrowserCookie(lease, url: "https://a.example.test/settings").get())
+        XCTAssertEqual(header, "holon_session=saved-session; Path=/; HttpOnly; SameSite=Lax; Secure")
+        if case .failure(let failure) = c.bindRuntimeBrowserCookie(lease, url: "https://other.example.test/x") {
+            XCTAssertEqual(failure, .foreignOrigin)
+        } else {
+            XCTFail("A page outside the runtime origin must not receive the cookie")
+        }
+    }
+
+    func testBindRuntimeBrowserCookieRejectsInvalidAndMissingCredentials() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p, credential: "bad;value")
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        if case .failure(let failure) = c.bindRuntimeBrowserCookie(lease, url: "https://a.example.test/settings") {
+            XCTAssertEqual(failure, .invalidCredential)
+        } else {
+            XCTFail("A credential with cookie delimiters must never become a Set-Cookie value")
+        }
+
+        try f.store.removeSession(for: p)
+        let reconnected = coordinator(f, transport: CoordinatorTransport())
+        try saved(f, profile: p)
+        await reconnected.connect(p)
+        XCTAssertEqual(reconnected.status, .connected)
+        let validLease = try XCTUnwrap(reconnected.runtimeBrowserLease())
+        try f.store.removeSession(for: validLease.profile)
+        if case .failure(let failure) = reconnected.bindRuntimeBrowserCookie(validLease, url: "https://a.example.test/settings") {
+            XCTAssertEqual(failure, .credentialMissing)
+        } else {
+            XCTFail("A lease without a stored session credential must not bind a cookie")
+        }
+    }
+
+    func testBindRuntimeBrowserCookieFailsOnceTheLeaseIsStale() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let stale = try XCTUnwrap(c.runtimeBrowserLease())
+        await c.logout()
+        XCTAssertNil(c.runtimeBrowserLease())
+        XCTAssertFalse(c.isRuntimeBrowserLeaseCurrent(stale))
+        if case .failure(let failure) = c.bindRuntimeBrowserCookie(stale, url: "https://a.example.test/settings") {
+            XCTAssertEqual(failure, .leaseChanged)
+        } else {
+            XCTFail("A retired lease must not bind cookies")
+        }
+
+        // A→B→A: reconnecting the same profile issues a fresh identity generation.
+        // logout deleted the stored credential, so save a fresh one first.
+        try saved(f, profile: p)
+        await c.connect(p)
+        XCTAssertEqual(c.status, .connected)
+        XCTAssertFalse(c.isRuntimeBrowserLeaseCurrent(stale))
+        XCTAssertNotEqual(try XCTUnwrap(c.runtimeBrowserLease()), stale)
+    }
+
+    func testRuntimeBrowserAuthenticationFailedRevokesSharedSessionLifecycle() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        c.runtimeBrowserAuthenticationFailed(lease)
+        XCTAssertEqual(c.status, .sessionExpired)
+        XCTAssertNil(c.identity)
+        XCTAssertNil(try f.store.session(for: p))
+        XCTAssertFalse(c.isRuntimeBrowserLeaseCurrent(lease))
+        XCTAssertNil(c.runtimeBrowserLease())
+    }
+
+    func testRevalidationUnauthorizedMappingRevokesSharedSession() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        XCTAssertEqual(c.status, .connected)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        // The mapping revalidateRuntimeBrowserSession applies to a 401 failure.
+        c.runtimeBrowserRevalidationUnauthorized(lease)
+        XCTAssertEqual(c.status, .sessionExpired)
+        XCTAssertNil(c.identity)
+        XCTAssertNil(try f.store.session(for: p))
+        XCTAssertFalse(c.isRuntimeBrowserLeaseCurrent(lease))
+        XCTAssertNil(c.runtimeBrowserLease())
+    }
+
+    func testRevalidationUserMismatchFailsClosedWithoutRevoking() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        XCTAssertEqual(c.status, .connected)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        let leaseUser = try XCTUnwrap(lease.identity.userID)
+        let current = { (user: String) throws -> HolonCurrentUser in
+            try HolonCurrentUser(data: Data("{\"ok\":true,\"user_id\":\"\(user)\",\"auth_method\":\"bearer\"}".utf8))
+        }
+        XCTAssertTrue(c.runtimeBrowserSessionMatches(try current(leaseUser), lease: lease))
+        XCTAssertFalse(c.runtimeBrowserSessionMatches(try current("fixture-other-user"), lease: lease))
+        XCTAssertEqual(c.status, .connected)
+        XCTAssertNotNil(try f.store.session(for: p))
+        XCTAssertTrue(c.isRuntimeBrowserLeaseCurrent(lease))
+    }
+
+    func testRuntimeBrowserAuthenticationFailedIgnoresForeignLease() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        try saved(f, profile: p)
+        let c = coordinator(f, transport: CoordinatorTransport())
+        await c.connect(p)
+        XCTAssertEqual(c.status, .connected)
+        let lease = try XCTUnwrap(c.runtimeBrowserLease())
+        let foreign = RuntimeBrowserLease(profile: try profile(f, name: "B"), identity: lease.identity)
+        c.runtimeBrowserAuthenticationFailed(foreign)
+        XCTAssertEqual(c.status, .connected)
+        XCTAssertNotNil(c.identity)
+        XCTAssertNotNil(try f.store.session(for: p))
+        XCTAssertTrue(c.isRuntimeBrowserLeaseCurrent(lease))
+    }
+
     func testReadingClientRequiresConfirmedIdentityAndUsesAnIndependentGeneration() async throws {
         let f = try fixture()
         let p = try profile(f)

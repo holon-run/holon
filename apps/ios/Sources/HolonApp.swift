@@ -88,26 +88,28 @@ struct HolonApp: App {
                         } else if displayedReadingPartition != coordinator.readingContext?.partition {
                             ProgressView("onboarding.restoring")
                         } else {
-                            NavigationStack(path: $router.path) {
-                                ReadingView(reader: reader, connection: coordinator)
-                                    .navigationDestination(for: AppRoute.self) { route in
-                                        destination(route, connection: coordinator)
+                            RuntimeBrowserHost(connection: coordinator) {
+                                NavigationStack(path: $router.path) {
+                                    ReadingView(reader: reader, connection: coordinator)
+                                        .navigationDestination(for: AppRoute.self) { route in
+                                            destination(route, connection: coordinator)
+                                        }
+                                }
+                                .safeAreaInset(edge: .top, spacing: 0) {
+                                    if !imports.pending.isEmpty, router.path.last != .tools {
+                                        Button {
+                                            router.path.append(.tools)
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "square.and.arrow.down")
+                                                Text("share.pending \(imports.pending.count)")
+                                                Spacer()
+                                                Image(systemName: "chevron.right").font(.caption)
+                                            }.font(.callout).padding(.horizontal, 16).frame(minHeight: 44)
+                                        }
+                                        .background(.bar)
+                                        .accessibilityIdentifier("share.inboxBanner")
                                     }
-                            }
-                            .safeAreaInset(edge: .top, spacing: 0) {
-                                if !imports.pending.isEmpty, router.path.last != .tools {
-                                    Button {
-                                        router.path.append(.tools)
-                                    } label: {
-                                        HStack {
-                                            Image(systemName: "square.and.arrow.down")
-                                            Text("share.pending \(imports.pending.count)")
-                                            Spacer()
-                                            Image(systemName: "chevron.right").font(.caption)
-                                        }.font(.callout).padding(.horizontal, 16).frame(minHeight: 44)
-                                    }
-                                    .background(.bar)
-                                    .accessibilityIdentifier("share.inboxBanner")
                                 }
                             }
                         }

@@ -314,7 +314,8 @@ with fixture_directory(repo) as root:
                     "```swift\nlet message = \"Hello Holon\"\n```\n\n"
                     f"![Explicit image only](http://127.0.0.1:{provider.server_port}/must-not-auto-load.png)\n\n"
                     f"[Open fixture file]({root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'})\n\n"
-                    f"File: {root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'}")
+                    f"File: {root / 'holon' / 'agents' / 'holon-tester' / 'ios-populated.txt'}\n\n"
+                    "[Open runtime app page](/apps/holon-tester/browser-probe/)")
             if tool_calls:
                 text = f"IOS_RICH_ASSISTANT: read-only inspection batch {FakeProvider.rich_batches}."
                 if report_acceptance:
@@ -638,6 +639,25 @@ with fixture_directory(repo) as root:
             file_path = "ios-populated.txt"
             workspace = root / "holon" / "agents" / agent
             (workspace / file_path).write_text("IOS_POPULATED_FILE\n")
+            app_dir = workspace / "apps" / "browser-probe"
+            app_dir.mkdir(parents=True, exist_ok=True)
+            (app_dir / "manifest.json").write_text(json.dumps(
+                {"id": "browser-probe", "name": "Browser Probe", "version": "1.0.0", "entry": "index.html"}))
+            # The runtime browser opens this same-origin Holon App page. The page's
+            # fetch proves the WKHTTPCookieStore-bound holon_session cookie reaches
+            # /api (SESSION_200), and its link exercises the external-confirm dialog.
+            (app_dir / "index.html").write_text(
+                "<!doctype html><html><head><title>IOS_BROWSER_APP</title></head><body>"
+                "<h1>IOS_BROWSER_APP_PAGE</h1>"
+                "<p id=\"session\">SESSION_PENDING</p>"
+                "<a id=\"external\" href=\"https://example.com/ios-fixture-external\">External probe</a>"
+                "<script>"
+                "fetch('/api/agents/holon-tester/state', {credentials: 'include'})"
+                ".then(function (response) {"
+                "document.getElementById('session').textContent = 'SESSION_' + response.status; })"
+                ".catch(function () {"
+                "document.getElementById('session').textContent = 'SESSION_ERROR'; })"
+                "</script></body></html>\n")
             state = local("GET", f"/agents/{agent}/state")
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
@@ -841,6 +861,8 @@ with fixture_directory(repo) as root:
                     ])
                 cases.append(("testLoginConsentRestorationAndWithdrawal", "large"))
                 cases.append(("testOfflineReadingCacheSignOutBoundary", "large"))
+                # Pairs through its own fresh ticket; needs the fixture reply's app link.
+                cases.append(("testRuntimeBrowserWorkflow", "large"))
                 # Deletes the saved fixture session, so run last in a full sweep.
                 cases.append(("testNetworkManagementWorkflow", "large"))
                 selected_cases = os.environ.get("IOS_UI_CASES")
@@ -849,6 +871,14 @@ with fixture_directory(repo) as root:
                     if not requested or len(set(requested)) != len(requested) or set(requested) - {method for method, _ in cases}:
                         raise RuntimeError("IOS_UI_CASES must select known unique UI methods")
                     cases = [(method, size) for method, size in cases if method in requested]
+                    # A subset skips the sweep ordering that establishes app
+                    # state (disconnected cases first, the first authenticator
+                    # installs credentials, sign-out cases restore onboarding).
+                    # Uninstall the app so every selection starts from the same
+                    # clean install a fresh full sweep would use.
+                    subprocess.run(["xcrun", "simctl", "uninstall", simulator, "run.holon.ios"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   check=False)
                 bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult")
                            for method, _ in cases]
                 if any(path.exists() for path in bundles):
@@ -899,12 +929,39 @@ with fixture_directory(repo) as root:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
+                            if method == "testRuntimeBrowserWorkflow":
+                                # A full sweep stacks seeded history turns (history-window,
+                                # automatic-read cases) on the shared agent, burying the
+                                # populated app-link brief. Enqueue a fresh reply so the
+                                # link brief is the newest turn in every run mode. The
+                                # conversation summary windows turns (latest 30 by
+                                # default), so length-based settle detection stays flat
+                                # once a full sweep passes the window edge; match this
+                                # turn by its unique input marker instead.
+                                local("POST", f"/agents/{agent}/enqueue",
+                                      {"text": "IOS_BROWSER_LINK_TURN: surface the runtime app page link."})
+                                for attempt in range(300):
+                                    turns = local("GET", f"/agents/{agent}/conversation")["turns"]
+                                    marked = [turn for turn in turns
+                                              if "IOS_BROWSER_LINK_TURN" in json.dumps(turn)]
+                                    newest = max(marked, key=lambda turn: turn["key"]["turn_index"],
+                                                 default=None)
+                                    if newest is not None and newest.get("brief_ids"):
+                                        brief = local("GET", f"/agents/{agent}/briefs/{newest['brief_ids'][-1]}")
+                                        text = next((brief.get(key) for key in ("text", "body", "content")
+                                                     if isinstance(brief.get(key), str)), "")
+                                        if "Open runtime app page" in text:
+                                            break
+                                    time.sleep(.1)
+                                else:
+                                    raise RuntimeError("browser workflow link turn never settled")
                             if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
                                           "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
                                           "testOfflineReadingCacheColdLaunchAndRetry",
                                           "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount",
                                           "testOfflineReadingCacheSignOutBoundary",
                                           "testTaskResultProcessWorkflow",
+                                          "testRuntimeBrowserWorkflow",
                                           "testContentReportFullResponseIncludesTail",
                                           "testContentReportConfirmationCancelDoesNotPersist",
                                           "testContentReportInvalidExplanationCannotShowAccepted",

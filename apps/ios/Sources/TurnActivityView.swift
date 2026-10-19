@@ -2,12 +2,17 @@ import SwiftUI
 import HolonClient
 
 private struct OpenReferenceKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
+private struct OpenWebLinkKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
 private struct OpenTaskKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
 private struct OpenWorkKey: EnvironmentKey { static var defaultValue: ((String) -> Void)? { nil } }
 extension EnvironmentValues {
     var holonOpenTask: ((String) -> Void)? {
         get { self[OpenTaskKey.self] }
         set { self[OpenTaskKey.self] = newValue }
+    }
+    var holonOpenWebLink: ((String) -> Void)? {
+        get { self[OpenWebLinkKey.self] }
+        set { self[OpenWebLinkKey.self] = newValue }
     }
     var holonOpenReference: ((String) -> Void)? {
         get { self[OpenReferenceKey.self] }
