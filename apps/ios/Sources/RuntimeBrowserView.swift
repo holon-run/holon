@@ -134,7 +134,10 @@ private struct RuntimeBrowserScreen: View {
             }
             if page?.loading == true { ProgressView().frame(maxWidth: .infinity) }
             if let page {
-                RuntimeWebView(page: page, revision: revision)
+                RuntimeWebView(page: page)
+                    // Mirror Android's key(page): a new RuntimeWebPage must mount a new
+                    // WKWebView, otherwise updateUIView (empty) leaves the slot blank.
+                    .id(ObjectIdentifier(page))
                     .ignoresSafeArea(edges: .bottom)
             } else {
                 Text("browser.placeholder")
@@ -174,7 +177,6 @@ private struct RuntimeBrowserScreen: View {
 
 private struct RuntimeWebView: UIViewRepresentable {
     let page: RuntimeWebPage
-    let revision: Int
 
     func makeUIView(context: Context) -> WKWebView { page.webView }
 
