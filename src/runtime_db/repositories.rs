@@ -6128,6 +6128,46 @@ fn merge_legacy_turn_evidence_tx(tx: &Transaction<'_>, derived: &TurnRecord) -> 
     Ok(existing)
 }
 
+pub(crate) fn validate_turn_record_identity(
+    existing: &TurnRecord,
+    record: &TurnRecord,
+) -> Result<()> {
+    let replay_identity_matches = match (&existing.replay, &record.replay) {
+        (Some(existing), Some(record)) => {
+            existing.source_message_id == record.source_message_id
+                && existing.source_turn_id == record.source_turn_id
+                && existing.reason == record.reason
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    let identity_matches = existing.agent_id == record.agent_id
+        && existing.turn_index == record.turn_index
+        && existing.run_id == record.run_id
+        && existing.current_work_item_id == record.current_work_item_id
+        && (existing.owner == record.owner || existing.owner.is_none())
+        && existing
+            .trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_deref())
+            == record
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+        && existing.created_at == record.created_at
+        && replay_identity_matches;
+    if !identity_matches {
+        return Err(RuntimeStateTransitionConflict::new(
+            "turn identity",
+            &record.turn_id,
+            "immutable",
+            "conflicting",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
     if let Some(owner) = record.owner.as_ref() {
         let owner_work_item_id = owner.work_item_id();
@@ -6153,39 +6193,7 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
         .map(decode_turn_record_payload)
         .transpose()?;
     if let Some(existing) = existing.as_ref() {
-        let replay_identity_matches = match (&existing.replay, &record.replay) {
-            (Some(existing), Some(record)) => {
-                existing.source_message_id == record.source_message_id
-                    && existing.source_turn_id == record.source_turn_id
-                    && existing.reason == record.reason
-            }
-            (None, None) => true,
-            _ => false,
-        };
-        let identity_matches = existing.agent_id == record.agent_id
-            && existing.turn_index == record.turn_index
-            && existing.run_id == record.run_id
-            && existing.current_work_item_id == record.current_work_item_id
-            && (existing.owner == record.owner || existing.owner.is_none())
-            && existing
-                .trigger
-                .as_ref()
-                .and_then(|trigger| trigger.message_id.as_deref())
-                == record
-                    .trigger
-                    .as_ref()
-                    .and_then(|trigger| trigger.message_id.as_deref())
-            && existing.created_at == record.created_at
-            && replay_identity_matches;
-        if !identity_matches {
-            return Err(RuntimeStateTransitionConflict::new(
-                "turn identity",
-                &record.turn_id,
-                "immutable",
-                "conflicting",
-            )
-            .into());
-        }
+        validate_turn_record_identity(existing, record)?;
     }
     let payload_json = serde_json::to_string(record)?;
     let terminal_kind = record

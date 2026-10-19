@@ -19337,7 +19337,7 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::Stopped;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let mut message = MessageEnvelope::new(
@@ -19435,7 +19435,7 @@ async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
         {
             let mut guard = runtime.inner.agent.lock().await;
             guard.state.status = status.clone();
-            runtime.storage().write_agent(&guard.state).unwrap();
+            guard.persist_state(&runtime.inner.storage).unwrap();
         }
 
         let message = MessageEnvelope::new(

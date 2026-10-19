@@ -43,6 +43,7 @@ http_async_tests!(
     control_agent_delete_fences_runtime_and_is_idempotent,
     control_agent_delete_rejects_default_and_reports_unknown,
     control_agent_recreate_after_completed_deletion_reincarnates,
+    control_agent_reincarnation_preserves_turn_sequence_and_conversation_window,
     control_agent_name_validation_and_default_rename_are_applied,
     control_prompt_requires_bearer_token_when_required,
     control_prompt_rejects_oversized_body,

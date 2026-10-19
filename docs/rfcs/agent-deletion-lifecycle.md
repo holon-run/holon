@@ -184,6 +184,11 @@ a new incarnation with a fresh AgentHome bootstrap and no inherited
 WorkItems, tasks, waits, timers, triggers, queue entries, occupancy, or
 workspace bindings.
 
+Retained turns remain historical evidence keyed by agent id. Their `turn_index`
+high-water mark survives recreation without restoring the previous runtime state.
+The first new canonical turn allocates above that mark; creation itself does not
+restore an old AgentState or make old execution bindings valid.
+
 - The identity record carries a monotonic `incarnation` counter (`1` for the
   original identity, `+1` per recreation) and continues its `revision`
   counter so stale observers cannot write back.
