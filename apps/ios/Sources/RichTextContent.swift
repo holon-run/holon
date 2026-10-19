@@ -4,13 +4,18 @@ import UIKit
 
 /// A host file reference stays opaque until the authorized server resolver reads it.
 enum RichTextLink: Equatable {
-    case external(URL), reference(String), relative(String), unsupported
+    case external(URL), reference(String), relative(String), runtimeWeb(String), unsupported
 
     static func classify(_ url: URL) -> Self {
         let value = url.absoluteString
         guard value.utf8.count <= 16_384, !value.contains("\0"),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.user == nil, components.password == nil else { return .unsupported }
+        if components.scheme?.lowercased() == "holon-web" {
+            // A classified web target; bound to the runtime origin only at open time.
+            guard let href = components.percentEncodedPath.removingPercentEncoding, !href.isEmpty else { return .unsupported }
+            return .runtimeWeb(href)
+        }
         switch components.scheme?.lowercased() {
         case "http", "https":
             return components.host?.isEmpty == false ? .external(url) : .unsupported
@@ -49,6 +54,18 @@ enum RichTextLink: Equatable {
         }
     }
 
+    /// Opaque marker for a classified web target. The href stays verbatim and is
+    /// resolved against the current runtime origin when the link is opened.
+    static func runtimeWebURL(_ href: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "holon-web"
+        components.percentEncodedPath = href.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        return components.url
+    }
+
+    /// A rejected web candidate must never fall through to a host-file link.
+    static let unsupportedWebMarker = URL(string: "holon-unsupported:web")!
+
     static func literalPathURL(_ path: String) -> URL? {
         guard path.hasPrefix("/"), !path.hasPrefix("//"), path.utf8.count <= 16_384, !path.contains("\0") else { return nil }
         var components = URLComponents()
@@ -81,7 +98,16 @@ enum MessagePathLinks {
         options: [.caseInsensitive])
 
     static func matches(_ text: String, preceding: Character? = nil) -> [Match] {
-        pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+        var appLinks: [(range: Range<String.Index>, url: URL)] = []
+        var search = text.startIndex
+        while let found = text.range(of: "/apps/", range: search..<text.endIndex) {
+            let boundary = found.lowerBound == text.startIndex ? preceding : nil
+            if let app = BareAppLinks.at(text, found.lowerBound, preceding: boundary) {
+                appLinks.append((app.range, appMarkerURL(app.href)))
+            }
+            search = found.upperBound
+        }
+        let fileLinks = pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match -> Match? in
             guard var range = Range(match.range, in: text) else { return nil }
             let absolute = text[range.lowerBound] == "/"
             if absolute, range.lowerBound == text.startIndex, let preceding,
@@ -95,6 +121,16 @@ enum MessagePathLinks {
             guard let url = URL(string: candidate), case .reference = RichTextLink.classify(url) else { return nil }
             return Match(range: range, url: url)
         }
+        let disjoint = fileLinks.filter { candidate in !appLinks.contains { $0.range.overlaps(candidate.range) } }
+        return (appLinks.map { Match(range: $0.range, url: $0.url) } + disjoint)
+            .sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
+    /// Bare app-shaped candidates are always web targets: valid ones become runtime
+    /// web links, rejected ones stay inert instead of host-file links.
+    private static func appMarkerURL(_ href: String) -> URL {
+        if case .web = MarkdownWebLink.classify(href), let url = RichTextLink.runtimeWebURL(href) { return url }
+        return RichTextLink.unsupportedWebMarker
     }
 
     static func annotate(_ content: inout AttributedString, range: Range<AttributedString.Index>) {
@@ -118,7 +154,14 @@ struct HolonMarkdownParser: MarkupParser {
         for run in Array(content.runs) {
             if let image = run.imageURL {
                 content[run.range].imageURL = nil
-                content[run.range].link = image
+                // The run snapshot keeps link == nil for images, so classify here.
+                if image.scheme == nil, case .web = MarkdownWebLink.classify(image.absoluteString) {
+                    content[run.range].link = RichTextLink.runtimeWebURL(image.absoluteString)
+                } else if image.scheme == nil, MarkdownWebLink.classify(image.absoluteString) != nil {
+                    content[run.range].link = RichTextLink.unsupportedWebMarker
+                } else {
+                    content[run.range].link = image
+                }
             }
             let blockCode = run.presentationIntent?.components.contains {
                 if case .codeBlock = $0.kind { return true }
@@ -126,23 +169,36 @@ struct HolonMarkdownParser: MarkupParser {
             } == true
             if blockCode { content[run.range].link = nil; continue }
             if let link = run.link, link.scheme == nil {
+                // Classified web targets bind to the runtime origin at open time
+                // and never fall through to the host-file resolver.
+                let web = MarkdownWebLink.classify(link.absoluteString)
+                if case .web = web {
+                    content[run.range].link = RichTextLink.runtimeWebURL(link.absoluteString)
+                } else if web != nil {
+                    content[run.range].link = RichTextLink.unsupportedWebMarker
+                } else {
                 // Give relative links an explicit app-routed scheme. This is
                 // still an opaque host reference, never a device file URL.
-                if case .reference(let path) = RichTextLink.classify(link) {
-                    content[run.range].link = RichTextLink.literalPathURL(path)
-                } else if case .relative(let path) = RichTextLink.classify(link) {
-                    content[run.range].link = RichTextLink.relativeURL(path)
-                } else { content[run.range].link = URL(string: "holon-unsupported:relative") }
+                    if case .reference(let path) = RichTextLink.classify(link) {
+                        content[run.range].link = RichTextLink.literalPathURL(path)
+                    } else if case .relative(let path) = RichTextLink.classify(link) {
+                        content[run.range].link = RichTextLink.relativeURL(path)
+                    } else { content[run.range].link = URL(string: "holon-unsupported:relative") }
+                }
             }
             if run.link == nil, run.inlinePresentationIntent?.contains(.code) == true {
                 let text = String(content[run.range].characters)
-                if text.hasPrefix("/") {
+                // Code stays code: a classified web candidate keeps no link here.
+                if MarkdownWebLink.classify(text) == nil, text.hasPrefix("/") {
                     content[run.range].link = RichTextLink.literalPathURL(text)
-                } else if let url = URL(string: text), case .reference = RichTextLink.classify(url) {
+                } else if MarkdownWebLink.classify(text) == nil,
+                          let url = URL(string: text), case .reference = RichTextLink.classify(url) {
                     content[run.range].link = url
-                } else {
+                } else if MarkdownWebLink.classify(text) == nil {
                     content[run.range].link = RichTextLink.literalPathURL(text) ??
                         (allowsRelativePaths ? RichTextLink.literalRelativeURL(text) : nil)
+                } else {
+                    content[run.range].link = nil
                 }
             } else if run.link == nil {
                 MessagePathLinks.annotate(&content, range: run.range)
@@ -178,13 +234,23 @@ struct HolonMarkdownParser: MarkupParser {
 struct OperatorMessageText: View {
     let text: String
     @Environment(\.holonOpenReference) private var openReference
+    @Environment(\.holonOpenWebLink) private var openWebLink
     @State private var unavailable = false
     var body: some View {
         Text(Self.attributed(text)).textSelection(.enabled)
             .environment(\.openURL, OpenURLAction { url in
-                if case .reference(let reference) = RichTextLink.classify(url), let openReference {
-                    openReference(reference)
-                } else { unavailable = true }
+                switch RichTextLink.classify(url) {
+                case .reference(let reference):
+                    if let openReference { openReference(reference) } else { unavailable = true }
+                case .runtimeWeb(let href):
+                    if let openWebLink { openWebLink(href) } else { unavailable = true }
+                case .external(let url):
+                    guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                          let openWebLink else { unavailable = true; break }
+                    openWebLink(url.absoluteString)
+                default:
+                    unavailable = true
+                }
                 return .handled
             })
             .alert("reading.linkUnavailable", isPresented: $unavailable) {
@@ -203,6 +269,7 @@ struct RichTextContent: View {
     var openReference: ((String) -> Void)? = nil
     var openRelative: ((String) -> Void)? = nil
     var onReport: (() -> Void)? = nil
+    @Environment(\.holonOpenWebLink) private var openWebLink
     @State private var unsupportedLink = false
     @State private var selectingText = false
 
@@ -220,7 +287,17 @@ struct RichTextContent: View {
             .geometryGroup()
             .environment(\.openURL, OpenURLAction { url in
                 switch RichTextLink.classify(url) {
-                case .external: return .systemAction
+                case .external(let url):
+                    // Absolute http(s) targets still route through the runtime
+                    // web opener so same-origin pages can stay in-app.
+                    guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                          let openWebLink else { return .systemAction }
+                    openWebLink(url.absoluteString)
+                    return .handled
+                case .runtimeWeb(let href):
+                    if let openWebLink { openWebLink(href); return .handled }
+                    unsupportedLink = true
+                    return .handled
                 case .reference(let reference):
                     if let openReference { openReference(reference) }
                     else { unsupportedLink = true }
