@@ -3943,8 +3943,10 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
         .unwrap();
         target.recover_scheduler_bootstrap_claims().await.unwrap();
         if invalid_evidence == "owner" {
-            // Canonical predecessor selection rejects this before a replay
-            // turn or any source admission can be committed.
+            // A foreign-owner attached turn is deterministic corrupted
+            // local state: the claim must quarantine the queue head
+            // instead of failing the loop, before a replay turn or any
+            // source admission can be committed (#3607).
             let turns = target.storage().read_recent_turns(2).unwrap();
             let entries = [&first, &second].map(|id| {
                 target
@@ -3961,28 +3963,58 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
                 .task_result_settlements()
                 .unsettled_for_agent("batch-target", 8)
                 .unwrap();
-            let error = scheduler_executor::SchedulerDecisionExecutor::new(&target)
-                .poll()
-                .await
-                .err()
-                .expect("foreign predecessor owner must be rejected");
-            assert!(error
-                .to_string()
-                .contains("interrupted replay source attachment is invalid or ambiguous"));
+            for _ in 0..2 {
+                assert!(matches!(
+                    scheduler_executor::SchedulerDecisionExecutor::new(&target)
+                        .poll()
+                        .await
+                        .unwrap(),
+                    scheduler_executor::RunLoopPoll::AuthorityBlocked
+                ));
+            }
+            assert!(matches!(
+                scheduler_executor::SchedulerDecisionExecutor::new(&target)
+                    .poll()
+                    .await
+                    .unwrap(),
+                scheduler_executor::RunLoopPoll::Idle
+            ));
+            let events = target.storage().read_recent_events(usize::MAX).unwrap();
+            assert!(events.iter().any(|event| {
+                event.kind == "scheduling_advisory"
+                    && event.data["kind"] == "interrupted_replay_source_invalid"
+                    && event.data["evidence"]
+                        .to_string()
+                        .contains("violation=attachment_invalid_or_ambiguous")
+            }));
+            assert!(events.iter().any(|event| {
+                event.kind == "scheduler_queue_head_quarantined"
+                    && event.data["message_id"] == first
+                    && event.data["reason"] == "interrupted_replay_source_invalid"
+            }));
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&first)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Quarantined
+            );
             assert_eq!(turns.len(), 1);
             assert_eq!(turns[0].turn_id, source.turn_id);
             assert_eq!(target.storage().read_recent_turns(2).unwrap(), turns);
             assert_eq!(
-                [&first, &second].map(|id| {
-                    target
-                        .inner
-                        .runtime_db
-                        .queue_entries()
-                        .latest(id)
-                        .unwrap()
-                        .unwrap()
-                }),
-                entries
+                target
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&second)
+                    .unwrap()
+                    .unwrap(),
+                entries[1]
             );
             assert_eq!(entries[1].status, QueueEntryStatus::Interjected);
             assert_eq!(

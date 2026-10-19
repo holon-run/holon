@@ -160,6 +160,7 @@ enum QueueHeadNoProgressCause {
     HardBlocker(CanonicalClaimHardBlocker),
     AmbiguousWait,
     ReplanExhausted,
+    InterruptedReplaySourceInvalid,
 }
 
 impl QueueHeadNoProgressCause {
@@ -167,7 +168,9 @@ impl QueueHeadNoProgressCause {
         match self {
             Self::RetainedAuthority { scenario_class, .. } => Some(*scenario_class),
             Self::HardBlocker(blocker) => Some(blocker.scenario_class),
-            Self::AmbiguousWait | Self::ReplanExhausted => None,
+            Self::AmbiguousWait | Self::ReplanExhausted | Self::InterruptedReplaySourceInvalid => {
+                None
+            }
         }
     }
 
@@ -177,6 +180,7 @@ impl QueueHeadNoProgressCause {
             Self::HardBlocker(blocker) => blocker.blocker_code,
             Self::AmbiguousWait => "canonical_wait_ambiguous",
             Self::ReplanExhausted => "canonical_claim_replan_exhausted",
+            Self::InterruptedReplaySourceInvalid => "interrupted_replay_source_invalid",
         }
     }
 }
@@ -825,37 +829,69 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Err(error);
             }
         };
-        let replay_source_turn_id =
-            if queue_entry.is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted) {
-                let prior_id = canonical_claim.as_ref().and_then(|plan| {
-                    plan.execution_protocol.commands.iter().find_map(|command| {
-                        if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(
-                            admission,
-                        ) = command
-                        {
-                            admission.attempt.recovery_of_attempt_id.as_deref()
-                        } else {
-                            None
-                        }
-                    })
-                });
-                let attached_turn_id = if let Some(prior_id) = prior_id {
-                    self.runtime
-                        .inner
-                        .runtime_db
-                        .task_result_settlements()
-                        .interrupted_attached_turn_id(
-                            &persisted_message.agent_id,
-                            prior_id,
-                            &persisted_message.id,
-                        )?
-                } else {
-                    None
-                };
-                attached_turn_id.or_else(|| persisted_message.turn_id.clone())
+        let replay_source_turn_id = if queue_entry
+            .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted)
+        {
+            let prior_id = canonical_claim.as_ref().and_then(|plan| {
+                plan.execution_protocol.commands.iter().find_map(|command| {
+                    if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(
+                        admission,
+                    ) = command
+                    {
+                        admission.attempt.recovery_of_attempt_id.as_deref()
+                    } else {
+                        None
+                    }
+                })
+            });
+            let attached_turn_id = if let Some(prior_id) = prior_id {
+                match self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .interrupted_attached_turn_id(
+                        &persisted_message.agent_id,
+                        prior_id,
+                        &persisted_message.id,
+                    ) {
+                    Ok(turn_id) => turn_id,
+                    Err(error) => {
+                        // A poisoned (interrupted attempt, terminal turn)
+                        // pair is deterministic local state: quarantine
+                        // the queue head instead of failing the loop
+                        // (#3607).
+                        let Some(invalid) = error
+                                .downcast_ref::<crate::runtime_db::task_result_settlement::live_turn::InterruptedReplaySourceInvalid>()
+                            else {
+                                return Err(error);
+                            };
+                        scheduler::append_interrupted_replay_source_advisory(
+                            &self.runtime.inner.storage,
+                            &persisted_message,
+                            invalid,
+                        )?;
+                        scheduler::append_scheduling_advisories(
+                            &self.runtime.inner.storage,
+                            &candidate.prior_state,
+                            candidate.queue_len,
+                        )?;
+                        return Ok(PrepareMessageOutcome::Poll(
+                            self.defer_or_quarantine_queue_head(
+                                &candidate,
+                                QueueHeadNoProgressCause::InterruptedReplaySourceInvalid,
+                            )
+                            .await?,
+                        ));
+                    }
+                }
             } else {
                 None
             };
+            attached_turn_id.or_else(|| persisted_message.turn_id.clone())
+        } else {
+            None
+        };
         let settle_reducer_only_wait =
             canonical_claim.is_none() && persisted_message.kind == MessageKind::TaskResult;
         if let Some(plan) = canonical_claim.as_ref() {
@@ -3862,6 +3898,9 @@ mod tests {
             }
             "canonical_wait_ambiguous" => QueueHeadNoProgressCause::AmbiguousWait,
             "canonical_claim_replan_exhausted" => QueueHeadNoProgressCause::ReplanExhausted,
+            "interrupted_replay_source_invalid" => {
+                QueueHeadNoProgressCause::InterruptedReplaySourceInvalid
+            }
             other => panic!("unknown queue-head no-progress test cause: {other}"),
         }
     }
@@ -4408,6 +4447,7 @@ mod tests {
             "canonical_activation_scenario_unresolved",
             "canonical_wait_ambiguous",
             "canonical_claim_replan_exhausted",
+            "interrupted_replay_source_invalid",
         ] {
             let dir = tempdir().unwrap();
             let workspace = tempdir().unwrap();

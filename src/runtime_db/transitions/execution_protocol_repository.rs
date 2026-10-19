@@ -330,6 +330,9 @@ fn reduce(
         ExecutionProtocolCommand::Interrupt(command) => {
             execution_protocol::interrupt_execution(state, command)
         }
+        ExecutionProtocolCommand::FinalizeInterrupted(command) => {
+            execution_protocol::finalize_interrupted_execution(state, command)
+        }
         ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
             execution_protocol::recover_interrupted_task_result_claim(state, command)
         }
@@ -374,6 +377,9 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         }
         ExecutionProtocolCommand::Interrupt(command) => {
             ("interrupt_execution", &command.outcome_id)
+        }
+        ExecutionProtocolCommand::FinalizeInterrupted(command) => {
+            ("finalize_interrupted_execution", &command.command_id)
         }
         ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(command) => {
             ("recover_interrupted_task_result_claim", &command.command_id)

@@ -709,6 +709,43 @@ fn canonical_live_turn_lookup_uses_durable_activation_and_known_run_not_ingress(
 }
 
 #[test]
+fn interrupted_attached_turn_rejects_terminal_attached_turn_as_typed_invariant_error() {
+    let (_dir, db) = runtime_db();
+    let record = live_result(&db, 0, TaskKind::CommandTask, "live-parent", None);
+    // Poisoned pair shape from #3607: an interrupted attempt whose attached
+    // turn already reached a different terminal state.
+    let mut turn = interrupted_turn("live-parent", &[record.clone()], false);
+    turn.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: crate::types::TurnTerminalKind::Aborted,
+        reason: Some("operator_abort".into()),
+        no_brief_reason: None,
+        completed_at: Utc::now(),
+        duration_ms: 0,
+    });
+    db.turn_records().upsert(&turn).unwrap();
+    recovery_attempt(
+        &db,
+        "live-activation",
+        "live-parent",
+        ExecutionAttemptState::Interrupted,
+        None,
+    );
+
+    let error = db
+        .task_result_settlements()
+        .interrupted_attached_turn_id("agent-a", "live-activation", "live-anchor")
+        .unwrap_err();
+    let invalid = error
+        .downcast_ref::<crate::runtime_db::task_result_settlement::live_turn::InterruptedReplaySourceInvalid>()
+        .expect("poisoned pair must surface the typed invariant error");
+    assert_eq!(invalid.violation, "turn_not_interrupted");
+    assert_eq!(invalid.agent_id, "agent-a");
+    assert_eq!(invalid.activation_id, "live-activation");
+    assert_eq!(invalid.turn_id.as_deref(), Some("live-parent"));
+    assert_eq!(invalid.terminal_kind.as_deref(), Some("aborted"));
+}
+
+#[test]
 fn canonical_live_turn_lookup_never_uses_unbound_idle_or_text_only_activation_evidence() {
     for evidence in ["idle-batch", "body-key", "ingress-only"] {
         let (_dir, db) = runtime_db();

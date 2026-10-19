@@ -172,7 +172,10 @@ mod diagnostics;
 mod projection;
 mod semantic_selection;
 
-pub(crate) use diagnostics::{append_ambiguous_wait_advisory, append_scheduling_advisories};
+pub(crate) use diagnostics::{
+    append_ambiguous_wait_advisory, append_interrupted_replay_source_advisory,
+    append_scheduling_advisories,
+};
 // Preserve the pre-split scheduler facade even when the current crate has no callers.
 #[cfg(test)]
 pub(crate) use diagnostics::{

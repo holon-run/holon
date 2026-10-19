@@ -632,6 +632,14 @@ pub struct InterruptExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizeInterruptedExecution {
+    pub command_id: String,
+    pub attempt_id: String,
+    pub reason: String,
+    pub finalized_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoverInterruptedTaskResultClaim {
     pub command_id: String,
     pub attempt_id: String,
@@ -674,6 +682,7 @@ pub enum ExecutionProtocolCommand {
     Admit(Box<AdmitExecution>),
     Settle(SettleExecution),
     Interrupt(InterruptExecution),
+    FinalizeInterrupted(FinalizeInterruptedExecution),
     RecoverInterruptedTaskResultClaim(Box<RecoverInterruptedTaskResultClaim>),
     RecoverUnadvancedTaskResultClaim(Box<RecoverUnadvancedTaskResultClaim>),
 }
@@ -1161,6 +1170,40 @@ pub fn interrupt_execution(
     attempt.state = ExecutionAttemptState::Interrupted;
     assert_invariants(&transition.state)?;
     Ok(transition)
+}
+
+/// Release an interrupted attempt's replay anchor without rewriting its
+/// outcome history. Used when the attached turn already reached a different
+/// terminal state, so replay-anchored admission can never succeed again.
+pub fn finalize_interrupted_execution(
+    state: &ExecutionProtocolState,
+    command: &FinalizeInterruptedExecution,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.attempt_id.is_empty()
+        || command.reason.is_empty()
+        || command.finalized_at.is_empty()
+    {
+        return Err("interrupted execution finalization requires complete identity".into());
+    }
+    let mut next = state.clone();
+    let attempt = next.attempts.get_mut(&command.attempt_id).ok_or_else(|| {
+        "interrupted execution finalization references an unknown attempt".to_string()
+    })?;
+    if attempt.state != ExecutionAttemptState::Interrupted {
+        return Err("only an interrupted attempt may finalize".into());
+    }
+    // Terminal outcome evidence stays as recorded at interruption time.
+    attempt.state = ExecutionAttemptState::Settled;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![
+            format!("attempt:{}", command.attempt_id),
+            format!("finalized:{}", command.command_id),
+        ],
+    })
 }
 
 pub fn recover_interrupted_task_result_claim(
@@ -2422,5 +2465,77 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("incompatible"));
+    }
+
+    #[test]
+    fn finalize_interrupted_execution_releases_replay_anchor_only() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        state.work_items.insert(
+            "work-a".into(),
+            work_item_record(WorkItemExecutionState::Runnable {
+                generation: 1,
+                recovery_ref: None,
+            }),
+        );
+        let admitted = admit_execution(
+            &state,
+            &AdmitExecution {
+                attempt: attempt("attempt-1", None),
+            },
+        )
+        .unwrap();
+        let interrupted = interrupt_execution(
+            &admitted.state,
+            &InterruptExecution {
+                attempt_id: "attempt-1".into(),
+                outcome_id: "outcome-1".into(),
+                reason: "runtime_interrupted".into(),
+                interrupted_at: "2026-08-01T00:01:00Z".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            interrupted.state.attempts["attempt-1"].state,
+            ExecutionAttemptState::Interrupted
+        );
+
+        let finalized = finalize_interrupted_execution(
+            &interrupted.state,
+            &FinalizeInterruptedExecution {
+                command_id: "startup_finalize_interrupted:attempt-1".into(),
+                attempt_id: "attempt-1".into(),
+                reason: "startup_recovery/interrupted_replay_source_aborted".into(),
+                finalized_at: "2026-08-02T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        let attempt = &finalized.state.attempts["attempt-1"];
+        assert_eq!(attempt.state, ExecutionAttemptState::Settled);
+        assert_eq!(attempt.terminal_outcome_id.as_deref(), Some("outcome-1"));
+
+        // Finalization is a one-way release: a settled attempt cannot
+        // re-finalize, and identity fields are mandatory.
+        let error = finalize_interrupted_execution(
+            &finalized.state,
+            &FinalizeInterruptedExecution {
+                command_id: "retry".into(),
+                attempt_id: "attempt-1".into(),
+                reason: "again".into(),
+                finalized_at: "2026-08-03T00:00:00Z".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("only an interrupted attempt may finalize"));
+        let error = finalize_interrupted_execution(
+            &interrupted.state,
+            &FinalizeInterruptedExecution {
+                command_id: String::new(),
+                attempt_id: "attempt-1".into(),
+                reason: "again".into(),
+                finalized_at: "2026-08-03T00:00:00Z".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("complete identity"));
     }
 }
