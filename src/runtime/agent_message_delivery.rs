@@ -379,6 +379,154 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operator_authorized_agent_message_anchor_can_reply() -> Result<()> {
+        real_agent_message_can_reply(false).await
+    }
+
+    #[tokio::test]
+    async fn runtime_authorized_agent_message_live_follower_can_reply() -> Result<()> {
+        real_agent_message_can_reply(true).await
+    }
+
+    async fn real_agent_message_can_reply(live_follower: bool) -> Result<()> {
+        use crate::runtime::tests::support::host_backed_test_runtime;
+        use crate::types::{CreateAgentRequest, QueueEntryStatus};
+        use anyhow::Context;
+
+        let (_home, host, sender) = host_backed_test_runtime().await;
+        let sender_id = sender.agent_id().await?;
+        sender
+            .enqueue(
+                MessageEnvelope::new(
+                    sender_id.clone(),
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: Some("reply-test-operator".into()),
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "contact the peer agent".into(),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::HttpControlPrompt,
+                    AdmissionContext::ControlAuthenticated,
+                ),
+            )
+            .await?;
+        let operator_input = start_reply_selector_turn(&sender).await?;
+        sender
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "reply-peer".into(),
+                name: None,
+                template: None,
+                initial_message: None,
+                authority_class: operator_input.authority_class.clone(),
+                model_resolution: None,
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: false,
+            })
+            .await?;
+        let target = host.get_or_create_agent("reply-peer").await?;
+        let first = sender
+            .agent_messaging_service()
+            .send(
+                request("reply-peer", "anchor"),
+                if live_follower {
+                    AuthorityClass::RuntimeInstruction
+                } else {
+                    operator_input.authority_class.clone()
+                },
+            )
+            .await?;
+        let anchor = start_reply_selector_turn(&target).await?;
+        assert_eq!(first.message_id.as_deref(), Some(anchor.id.as_str()));
+        let selected_id = if live_follower {
+            assert!(target.attach_idle_sender_inputs(&anchor, 24 * 1024).await?);
+            let queued = sender
+                .agent_messaging_service()
+                .send(
+                    request("reply-peer", "operator-follower"),
+                    operator_input.authority_class,
+                )
+                .await?;
+            let queued_id = queued.message_id.context("accepted operator input")?;
+            assert!(target
+                .attach_live_inputs("reply-peer", 2, 24 * 1024, false)
+                .await?
+                .is_empty());
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&queued_id)?
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Queued
+            );
+            let follower = sender
+                .agent_messaging_service()
+                .send(
+                    request("reply-peer", "live-follower"),
+                    AuthorityClass::RuntimeInstruction,
+                )
+                .await?;
+            let id = follower.message_id.context("accepted live input")?;
+            assert!(!target
+                .attach_live_inputs("reply-peer", 2, 24 * 1024, false)
+                .await?
+                .is_empty());
+            assert_eq!(
+                target
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&id)?
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Interjected
+            );
+            id
+        } else {
+            anchor.id
+        };
+        let input = target.storage().read_message_by_id(&selected_id)?.unwrap();
+        let expected_authority = if live_follower {
+            AuthorityClass::RuntimeInstruction
+        } else {
+            AuthorityClass::OperatorInstruction
+        };
+        assert_eq!(input.authority_class, expected_authority);
+        assert_eq!(
+            input.admission_context,
+            Some(AdmissionContext::RuntimeOwned)
+        );
+        assert_eq!(input.kind, MessageKind::InternalFollowup);
+        let mut reply = request(&sender_id, "reply");
+        reply.reply_context_id = Some(selected_id.clone());
+        let receipt = target
+            .agent_messaging_service()
+            .send(reply, input.authority_class)
+            .await?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+        let reply = sender
+            .storage()
+            .read_message_by_id(receipt.message_id.as_deref().context("accepted reply")?)?
+            .context("durable reply")?;
+        let route = reply.routing_context.context("reply routing context")?;
+        assert_eq!(route.sender_agent_id.as_deref(), Some("reply-peer"));
+        assert_eq!(route.recipient_agent_id, sender_id);
+        assert_eq!(route.in_reply_to_message_id, Some(selected_id.clone()));
+        assert_eq!(reply.causation_id, Some(selected_id));
+        assert_eq!(reply.authority_class, expected_authority);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reply_selector_routes_real_p1_followers_and_their_interrupted_replay() -> Result<()> {
         real_p1_reply_selector_followers_and_interrupted_replay(false).await
     }

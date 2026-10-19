@@ -46,7 +46,19 @@ identities.
 ID, not a sender, correlation, or authority. Eligible routes are reconstructed
 from the live canonical execution and its nonterminal `TurnRecord.input_message_ids`,
 using the original durable runtime-owned agent-message envelopes attached to that
-turn. A batched follower may retain its original ingress turn assignment:
+turn. Every route must also match an accepted durable agent delivery: message,
+target, routing context, immediate agent sender/principal, principal kind, and
+original origin/authority/admission/surface must agree. Inherited
+`OperatorInstruction` does not turn a legitimate agent delivery into operator
+input and is not by itself a reason to reject its reply route. An operator
+prompt, capability principal, task result, or copied routing metadata without
+matching delivery evidence cannot create a route.
+
+This reply eligibility check does not alter live or idle input admission.
+Operator-authorized followers remain subject to the existing queue and batching
+policy; delivery evidence alone does not admit an input to the current turn.
+
+A batched follower may retain its original ingress turn assignment:
 the existing `idle_input_batch` source ID/reference plus atomic `Interject`
 queue consumption and turn input admission prove its attachment. The durable
 current execution binding links the turn to its canonical open activation;

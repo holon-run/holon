@@ -377,6 +377,48 @@ pub struct AgentMessageDeliveryReceipt {
 }
 
 impl AgentMessageDeliveryRecord {
+    /// Match accepted agent delivery evidence, not route-shaped input metadata.
+    pub(crate) fn authenticates_agent_message(
+        &self,
+        message: &crate::types::MessageEnvelope,
+    ) -> bool {
+        let Some(sender) = self
+            .caller
+            .caller_agent_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+        else {
+            return false;
+        };
+        let Some(route) = message.routing_context.as_ref() else {
+            return false;
+        };
+        self.outcome == AgentMessageDeliveryOutcome::Accepted
+            && self.accepted_at.is_some()
+            && self.message_id.as_deref() == Some(message.id.as_str())
+            && self.target_agent_id == message.agent_id
+            && self.routing_context.as_ref() == Some(route)
+            && route.message_id == message.id
+            && route.recipient_agent_id == message.agent_id
+            && route.sender_agent_id.as_deref() == Some(sender)
+            && self.caller.caller_principal == format!("agent:{sender}")
+            && matches!(
+                self.caller.principal_kind,
+                AgentMessagePrincipalKind::PeerAgent | AgentMessagePrincipalKind::SupervisingParent
+            )
+            && message.kind == crate::types::MessageKind::InternalFollowup
+            && matches!(
+                message.origin,
+                MessageOrigin::System { .. } | MessageOrigin::Task { .. }
+            )
+            && message.origin == self.caller.origin
+            && message.authority_class == self.caller.authority_class
+            && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+            && self.caller.delivery_surface == MessageDeliverySurface::RuntimeSystem
+            && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+            && self.caller.admission_context == AdmissionContext::RuntimeOwned
+    }
+
     pub fn receipt(&self, idempotent_replay: bool) -> AgentMessageDeliveryReceipt {
         AgentMessageDeliveryReceipt {
             delivery_id: self.delivery_id.clone(),
