@@ -6366,7 +6366,7 @@ impl RuntimeHandle {
                     let (terminal, queue_status, mut audit_events, failure_artifacts) =
                         if let Some(aborted) = aborted.as_ref() {
                             (
-                                self.build_turn_aborted_record(
+                                self.build_turn_interrupted_record(
                                     &aborted.reason,
                                     None,
                                     u64::try_from(processing_started.elapsed().as_millis())
@@ -6387,8 +6387,19 @@ impl RuntimeHandle {
                             )
                         } else {
                             let descriptor = describe_runtime_error(&err);
-                            let terminal = self
-                                .build_turn_aborted_record(
+                            let (queue_status, settlement_reason) =
+                                runtime_error_queue_settlement(&message.kind, &err);
+                            let terminal = if matches!(&queue_status, QueueEntryStatus::Interrupted)
+                            {
+                                self.build_turn_interrupted_record(
+                                    settlement_reason,
+                                    None,
+                                    u64::try_from(processing_started.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
+                                )
+                                .await
+                            } else {
+                                self.build_turn_aborted_record(
                                     if err.is::<crate::runtime_error::IdleInputRecoveryRejection>()
                                     {
                                         "idle_input_recovery_rejected"
@@ -6399,7 +6410,8 @@ impl RuntimeHandle {
                                     u64::try_from(processing_started.elapsed().as_millis())
                                         .unwrap_or(u64::MAX),
                                 )
-                                .await;
+                                .await
+                            };
                             error!(
                                 message_id = %message.id,
                                 turn_id = %terminal.turn_id,
@@ -6410,8 +6422,6 @@ impl RuntimeHandle {
                                 safe_context = ?descriptor.safe_context,
                                 "failed to process message"
                             );
-                            let (queue_status, settlement_reason) =
-                                runtime_error_queue_settlement(&message.kind, &err);
                             let artifacts = self
                                 .build_runtime_failure_artifacts(&message, &err, &terminal)
                                 .await?;

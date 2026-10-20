@@ -17751,7 +17751,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
             .last_turn_terminal
             .as_ref()
             .map(|terminal| terminal.kind),
-        Some(TurnTerminalKind::Aborted)
+        Some(TurnTerminalKind::Interrupted)
     );
     assert_eq!(
         state
