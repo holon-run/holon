@@ -123,13 +123,18 @@ export function buildConversationSessionModel(
   return {
     status: input.status,
     view,
-    // Reducer-only task receipts update runtime state without a model response.
-    // Keep them in the canonical view and input deduplication, out of chat history.
+    // Task receipts that never triggered a model turn (reducer-only result,
+    // no brief, no attention) update runtime state without anything to show.
+    // Keep them in the canonical view and input deduplication, out of chat
+    // history. Receipts with a linked reply or an explicit non-runtime-only
+    // provenance stay visible, as do failures that may need operator action.
     turns: turns.filter((turn) => turn.turnId === input.locatedTurnId || !(turn.presentationClass === "task"
       && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       && turn.settled && !turn.attention && turn.briefIds.length === 0
       && turn.result.kind === "none" && turn.result.reason.kind === "reducer_only"
-      && !turn.inputs.some((input) => input.task_result !== undefined))),
+      && turn.inputs.every((input) => input.task_result === undefined
+        || (input.task_result.status === "completed" && input.task_result.response_message_id == null
+          && input.task_result.runtime_only !== false)))),
     localPendingPrompts: (input.localPendingPrompts ?? []).filter(
       (entry) => entry.messageId === undefined || !serverEchoedMessageIds.has(entry.messageId),
     ),

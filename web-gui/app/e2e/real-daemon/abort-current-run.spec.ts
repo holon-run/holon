@@ -155,7 +155,7 @@ test("turn-scoped abort settles the current run and keeps the agent schedulable 
     expect(finished.duration_ms).toBeGreaterThan(0);
     const finalDuration = `PT${Math.floor(finished.duration_ms! / 1000)}S`;
     await expect(clock).toHaveAttribute("datetime", finalDuration);
-    await expect(page.locator(`[data-turn-id="${active.turn_id}"] .conversation-detail-toggle`)).toContainText("Stopped");
+    await expect(page.locator(`[data-turn-id="${active.turn_id}"] .conversation-turn-header-status`)).toContainText("Stopped");
     await page.reload();
     await expect(clock).toHaveAttribute("datetime", finalDuration);
 
