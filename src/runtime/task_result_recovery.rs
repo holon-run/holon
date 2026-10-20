@@ -11,6 +11,9 @@ const RESULT_RECHECK_LIMIT: usize = 8;
 mod budget_tests;
 
 #[cfg(test)]
+mod terminal_anchor_tests;
+
+#[cfg(test)]
 mod repeated_failure_tests;
 
 fn hex(bytes: &[u8]) -> String {
@@ -365,6 +368,45 @@ impl RuntimeHandle {
                         reason,
                         now,
                         now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS),
+                    )?;
+                continue;
+            }
+            // A lifecycle-owned settlement whose result message already exists
+            // can only be delivered through its anchor turn, a live exact
+            // waiter, or a work-item wake root. When the anchor turn is
+            // terminal with no open bound attempt and no exact waiter claims
+            // the result, every admission channel is unreachable: converge to
+            // the same terminal disposition as an unavailable owner instead of
+            // rechecking forever. Reply-anchored records keep their distinct
+            // dispositions below.
+            if record.work_item_id.is_none()
+                && exact_continuation.is_none()
+                && !self
+                    .inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .anchor_turn_live(&record.agent_id, &record.parent_turn_id)?
+                && self
+                    .inner
+                    .storage
+                    .read_message_by_id(&record.message_id)?
+                    .as_ref()
+                    .and_then(crate::wake_contract::agent_message_reply_reference)
+                    .is_none()
+            {
+                tracing::debug!(
+                    agent_id = %state.id,
+                    result_identity = %record.result_identity,
+                    parent_turn_id = %record.parent_turn_id,
+                    "converging lifecycle task-result settlement with a terminal anchor turn"
+                );
+                self.inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .settle_owner_unavailable(
+                        &record.message_id,
+                        TaskResultSettlementDisposition::InvalidOrStale,
+                        now,
                     )?;
                 continue;
             }
