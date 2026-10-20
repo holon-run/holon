@@ -35,6 +35,8 @@ pub(crate) enum ProviderWebSearch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelDiscoveryAuth {
+    /// Public catalog requests must not receive inference credentials.
+    Public,
     Required,
     Optional,
 }
@@ -310,7 +312,7 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         OpenAiChatCompletions, "https://opencode.ai/inference/go/openai/v1", ["OPENCODE_GO_API_KEY"],
         Generic, Default, None, None,
         discovery!(
-            Optional,
+            Public,
             ModelDiscoveryRoute::Fixed("https://opencode.ai/inference/go/v1/models"),
             OpenCodeGo
         ),

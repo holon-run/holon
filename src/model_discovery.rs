@@ -237,17 +237,7 @@ pub async fn refresh_provider_models(
     if discovery.decoder == ModelDiscoveryDecoder::Ollama {
         return refresh_ollama_models(provider, cache_path, source_url).await;
     }
-    let request = reqwest::Client::builder()
-        .user_agent("holon-model-discovery")
-        .build()
-        .context("failed to build model discovery HTTP client")?
-        .get(&source_url);
-    let request = if let Some(credential) = provider.credential.as_deref() {
-        request.bearer_auth(credential)
-    } else {
-        request
-    };
-    let response = request
+    let response = provider_models_request(provider, discovery, &source_url)?
         .send()
         .await
         .with_context(|| format!("{} model discovery request failed", provider.id.as_str()))?
@@ -334,6 +324,28 @@ pub async fn refresh_provider_models(
         model_count: models.len(),
         cache_path: cache_path.to_path_buf(),
     })
+}
+
+fn provider_models_request(
+    provider: &ProviderRuntimeConfig,
+    discovery: &ModelDiscoveryDefinition,
+    source_url: &str,
+) -> Result<reqwest::RequestBuilder> {
+    let request = reqwest::Client::builder()
+        .user_agent("holon-model-discovery")
+        .build()
+        .context("failed to build model discovery HTTP client")?
+        .get(source_url);
+    match discovery.auth {
+        ModelDiscoveryAuth::Public => Ok(request),
+        ModelDiscoveryAuth::Required | ModelDiscoveryAuth::Optional => {
+            Ok(if let Some(credential) = provider.credential.as_deref() {
+                request.bearer_auth(credential)
+            } else {
+                request
+            })
+        }
+    }
 }
 
 fn provider_models_url(provider: &ProviderRuntimeConfig) -> Result<String> {
@@ -2601,6 +2613,77 @@ mod tests {
             provider_models_url(&provider).unwrap(),
             "https://opencode.ai/inference/go/v1/models"
         );
+    }
+
+    #[test]
+    fn public_model_discovery_request_omits_custom_gateway_credentials() {
+        let mut provider = opencode_go_provider();
+        provider.base_url = "https://gateway.example.invalid/openai/v1".into();
+        provider.credential = Some("test-only-gateway-credential".into());
+        let discovery = provider_discovery_definition(&provider).unwrap();
+        let request = provider_models_request(
+            &provider,
+            discovery,
+            &provider_models_url(&provider).unwrap(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://opencode.ai/inference/go/v1/models"
+        );
+        assert!(!request
+            .headers()
+            .contains_key(reqwest::header::AUTHORIZATION));
+        assert_eq!(
+            provider.credential.as_deref(),
+            Some("test-only-gateway-credential")
+        );
+    }
+
+    #[test]
+    fn authenticated_model_discovery_request_preserves_required_and_optional_credentials() {
+        for mut provider in [
+            arcee_provider(),
+            openrouter_provider(),
+            custom_openai_provider("https://gateway.example.invalid/v1".into()),
+        ] {
+            provider.credential = Some("test-only-discovery-credential".into());
+            let discovery = provider_discovery_definition(&provider).unwrap();
+            let request = provider_models_request(
+                &provider,
+                discovery,
+                &provider_models_url(&provider).unwrap(),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+            assert_eq!(
+                request.headers()[reqwest::header::AUTHORIZATION],
+                "Bearer test-only-discovery-credential"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_model_discovery_request_allows_missing_credentials() {
+        let provider = custom_openai_provider("https://gateway.example.invalid/v1".into());
+        let discovery = provider_discovery_definition(&provider).unwrap();
+        let request = provider_models_request(
+            &provider,
+            discovery,
+            &provider_models_url(&provider).unwrap(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert!(!request
+            .headers()
+            .contains_key(reqwest::header::AUTHORIZATION));
     }
 
     #[test]
