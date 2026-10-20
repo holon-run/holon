@@ -12480,7 +12480,7 @@ async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim(
     assert!(retained_turn
         .terminal
         .as_ref()
-        .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Aborted));
+        .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Interrupted));
     assert!(runtime
         .storage()
         .read_recent_events(128)
@@ -17751,7 +17751,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
             .last_turn_terminal
             .as_ref()
             .map(|terminal| terminal.kind),
-        Some(TurnTerminalKind::Aborted)
+        Some(TurnTerminalKind::Interrupted)
     );
     assert_eq!(
         state

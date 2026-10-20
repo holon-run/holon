@@ -546,6 +546,40 @@ impl RuntimeHandle {
         last_assistant_message: Option<String>,
         duration_ms: u64,
     ) -> TurnTerminalRecord {
+        self.build_turn_terminal_record(
+            TurnTerminalKind::Aborted,
+            TurnNoBriefReason::Aborted,
+            reason,
+            last_assistant_message,
+            duration_ms,
+        )
+        .await
+    }
+
+    pub(super) async fn build_turn_interrupted_record(
+        &self,
+        reason: &str,
+        last_assistant_message: Option<String>,
+        duration_ms: u64,
+    ) -> TurnTerminalRecord {
+        self.build_turn_terminal_record(
+            TurnTerminalKind::Interrupted,
+            TurnNoBriefReason::Interrupted,
+            reason,
+            last_assistant_message,
+            duration_ms,
+        )
+        .await
+    }
+
+    async fn build_turn_terminal_record(
+        &self,
+        kind: TurnTerminalKind,
+        no_brief_reason: TurnNoBriefReason,
+        reason: &str,
+        last_assistant_message: Option<String>,
+        duration_ms: u64,
+    ) -> TurnTerminalRecord {
         let guard = self.inner.agent.lock().await;
         let turn_id = guard
             .state
@@ -556,10 +590,10 @@ impl RuntimeHandle {
         TurnTerminalRecord {
             turn_id,
             turn_index: guard.state.turn_index,
-            kind: TurnTerminalKind::Aborted,
+            kind,
             reason: Some(reason.to_string()),
             last_assistant_message,
-            no_brief_reason: Some(TurnNoBriefReason::Aborted),
+            no_brief_reason: Some(no_brief_reason),
             checkpoint: None,
             completed_at: chrono::Utc::now(),
             duration_ms,

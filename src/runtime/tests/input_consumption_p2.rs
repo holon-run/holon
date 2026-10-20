@@ -3455,7 +3455,7 @@ async fn p2_stop_during_provider_flight_does_not_consume_new_inputs() {
     assert!(turn.live_input_batches.is_empty());
     assert_eq!(
         turn.terminal.as_ref().unwrap().kind,
-        TurnTerminalKind::Aborted
+        TurnTerminalKind::Interrupted
     );
     let source = provider.sources.lock().await[0].clone();
     assert!(!turn.input_message_ids.contains(&source));
