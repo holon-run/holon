@@ -904,12 +904,15 @@ pub async fn apps_settings_follow_existing_config_reload() -> Result<()> {
     let asset_url = format!("{base}/apps/{agent}/settings/asset.data");
     assert_eq!(client.get(&asset_url).send().await?.status(), 200);
     let policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'";
+    // Reload rebuilds providers instead of retaining the injected StubProvider.
+    // Use a credential-free local route; this test never sends a model request.
     let update: serde_json::Value = client
         .patch(format!("{base}/api/control/runtime/config"))
         .bearer_auth("secret")
         .json(&serde_json::json!({"updates":[
             {"key":"local_apps.max_asset_bytes","value":4},
-            {"key":"local_apps.csp","value":policy}
+            {"key":"local_apps.csp","value":policy},
+            {"key":"model.default","value":"ollama/qwen3:latest"}
         ]}))
         .send()
         .await?

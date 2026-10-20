@@ -2904,6 +2904,7 @@ fn local_apps_config_defaults_are_backward_compatible() {
 #[test]
 fn local_apps_config_set_get_unset_and_persistence() {
     let mut config = HolonConfigFile::default();
+    set_config_key(&mut config, "model.default", "openai/gpt-5.4").unwrap();
     let policy = " default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src https: ";
     set_config_key(&mut config, "local_apps.max_asset_bytes", "134217728").unwrap();
     set_config_key(&mut config, "local_apps.csp", policy).unwrap();
