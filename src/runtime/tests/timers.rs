@@ -151,6 +151,63 @@ async fn repeating_timer_rechecks_wall_clock_on_each_arm_without_replaying_histo
 }
 
 #[tokio::test(start_paused = true)]
+async fn suppressed_timer_fire_emits_observable_audit_event() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let timer = runtime
+        .schedule_timer(3_600_000, Some(7 * 3_600_000), None)
+        .await
+        .unwrap();
+    yield_timer_loop().await;
+
+    // First fire creates the durable pending wake.
+    clock.advance(std::time::Duration::from_secs(24 * 3_600));
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    yield_timer_loop().await;
+    assert_timer_fire_count(&runtime, &timer.id, 1).await;
+    let wake_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+
+    // Second fire is suppressed by the one-pending-wake guard and must be
+    // observable instead of silently advancing fire_count (#3607).
+    clock.advance(std::time::Duration::from_secs(8 * 3_600));
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    yield_timer_loop().await;
+    assert_timer_fire_count(&runtime, &timer.id, 2).await;
+    assert_eq!(
+        assert_single_durable_timer_wake(&runtime, &timer.id),
+        wake_id
+    );
+
+    let suppressed = runtime
+        .storage()
+        .read_recent_events(64)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "timer_wake_suppressed")
+        .expect("suppressed timer fire must emit an audit event");
+    assert_eq!(suppressed.data["timer_id"], serde_json::json!(timer.id));
+    assert_eq!(suppressed.data["fire_count"], serde_json::json!(2));
+    assert_eq!(
+        suppressed.data["pending_message_id"],
+        serde_json::json!(wake_id)
+    );
+    assert!(suppressed.data["pending_age_ms"].as_i64().unwrap() > 0);
+    runtime.cancel_timer(&timer.id).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn cancelled_sleeping_timer_cannot_fire_after_wall_clock_suspend() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

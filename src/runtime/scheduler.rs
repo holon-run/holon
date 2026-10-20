@@ -174,7 +174,8 @@ mod semantic_selection;
 
 pub(crate) use diagnostics::{
     append_ambiguous_wait_advisory, append_interrupted_replay_source_advisory,
-    append_scheduling_advisories,
+    append_queue_head_starved_advisory, append_scheduling_advisories,
+    QUEUE_HEAD_STARVATION_AFTER_MS,
 };
 // Preserve the pre-split scheduler facade even when the current crate has no callers.
 #[cfg(test)]

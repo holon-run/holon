@@ -6209,8 +6209,23 @@ impl RuntimeHandle {
                     }
                     let idle_snapshot = {
                         let guard = self.inner.agent.lock().await;
-                        (guard.state.clone(), guard.queue.len())
+                        (
+                            guard.state.clone(),
+                            guard.queue.len(),
+                            guard
+                                .queue
+                                .peek()
+                                .map(|head| (head.agent_id.clone(), head.id.clone())),
+                        )
                     };
+                    if let Some((head_agent_id, head_message_id)) = idle_snapshot.2.as_ref() {
+                        scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                            .append_queue_head_starved_advisory_if_due(
+                                head_agent_id,
+                                head_message_id,
+                                idle_snapshot.1,
+                            )?;
+                    }
                     let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
                         &self.inner.storage,
                         &idle_snapshot.0,
