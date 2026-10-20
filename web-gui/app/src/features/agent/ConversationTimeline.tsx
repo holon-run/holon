@@ -22,7 +22,7 @@ import {
   ExternalLink,
   GitBranch,
 } from "lucide-react";
-import { Fragment, memo, useEffect, useMemo, useState, useRef, useId } from "react";
+import { Fragment, memo, useEffect, useMemo, useState, useRef, useId, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -295,27 +295,46 @@ function LocalPendingPromptChip({ prompt }: { prompt: LocalPendingOperatorPrompt
  * commands and errors never appear here; they stay inside the execution
  * details so a failed task cannot masquerade as a failed turn.
  */
-function TurnBoundaryHeader({ turn, execution, timingStatus, syncing }: {
+function TurnBoundaryHeader({ turn, execution, timingStatus, syncing, onInspectActivity, children }: {
   turn: ConversationTurnGroup;
   execution: string;
   timingStatus: string;
   syncing: boolean;
+  onInspectActivity?: ConversationTimelineActions["onInspectActivity"];
+  children: ReactNode;
 }) {
   const { t } = useTranslation();
+  const trigger = turn.inputs.find((input) => !input.interjected);
+  const sourceLabel = t(`agentPage.turnSource.${turn.presentationClass}`);
+  // Shared source semantics: docs/ui/conversation-presentation.md.
+  const SourceIcon = {
+    operator: User, task: Wrench, external: MessageSquare, timer: Clock,
+    internal: GitBranch, system: Bot, operational: Wrench,
+  }[turn.presentationClass];
+  const source = <SourceIcon size={14} aria-hidden="true" />;
   return (
     <header className="conversation-turn-header">
-      <span className="conversation-turn-header-source">
-        {execution === "running" && !syncing ? <LoaderCircle size={12} className="is-spinning" /> : null}
-        {t(`agentPage.turnSource.${turn.presentationClass}`)}
-      </span>
+      {trigger && onInspectActivity ? (
+        <button type="button" className="conversation-turn-header-source conversation-turn-source-button"
+          title={sourceLabel} aria-label={`${sourceLabel}: ${t("agentPage.openEventDetail")}`}
+          onClick={() => onInspectActivity(inputInspectorActivity(trigger, trigger.presentation_class ?? turn.presentationClass))}>
+          {source}
+        </button>
+      ) : <span className="conversation-turn-header-source" title={sourceLabel} role="img" aria-label={sourceLabel}>{source}</span>}
       <span className="conversation-turn-header-index">#{turn.turnIndex}</span>
       <InputTimestamp timestamp={turn.startedAt} />
-      <span className={`conversation-turn-header-status is-${execution}`}>
-        {t(`agentPage.turnTimingStatus.${timingStatus}`)}
+      <span className="conversation-turn-header-actions">
+        {timingStatus !== "completed" ? (
+          <span className={`conversation-turn-header-status is-${execution}`}>
+            {execution === "running" && !syncing ? <LoaderCircle size={12} className="is-spinning" aria-hidden="true" /> : null}
+            {t(`agentPage.turnTimingStatus.${timingStatus}`)}
+          </span>
+        ) : null}
+        {timingStatus !== "syncing" && timingStatus !== "waiting" && timingStatus !== "waitingResult"
+          ? <TurnElapsedTime turn={turn} />
+          : null}
+        {children}
       </span>
-      {timingStatus !== "syncing" && timingStatus !== "waiting" && timingStatus !== "waitingResult"
-        ? <TurnElapsedTime turn={turn} />
-        : null}
     </header>
   );
 }
@@ -377,6 +396,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     && (actions.revealTarget.anchor.startsWith("activity:") || revealNeedsExpansion);
   const expanded = revealTarget || (manualExpanded ?? (autoExpanded || readingDetail));
   const [mounted, setMounted] = useState(expanded);
+  const showNoBriefNotice = presentation.kind === "terminal_without_result" && execution === "completed"
+    && !turn.inputs.some((input) => input.task_result);
+  const compact = !expanded && turn.execution.kind === "terminal" && execution === "completed"
+    && operatorInputs.length === 0 && interjections.length === 0 && responseBriefIds.length === 0
+    && !turn.inputsTruncated && !showNoBriefNotice && presentation.kind !== "unavailable";
 
   useEffect(() => {
     if (turn.execution.kind === "active") wasActive.current = true;
@@ -420,20 +444,24 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   }, []);
 
   return (
-    <section className={`conversation-turn is-${execution}`} data-turn-id={turn.turnId}
+    <section className={`conversation-turn is-${execution}${compact ? " is-compact" : ""}`} data-turn-id={turn.turnId}
       data-conversation-anchor={`turn:${turn.turnId}`}
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
-      <TurnBoundaryHeader turn={turn} execution={execution} timingStatus={timingStatus} syncing={syncing} />
+      <TurnBoundaryHeader turn={turn} execution={execution} timingStatus={timingStatus} syncing={syncing}
+        onInspectActivity={actions.onInspectActivity}>
+        <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
+          data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
+          aria-label={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionDetails")}
+          title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
+          onClick={() => setManualExpanded(!expanded)}>
+          <ChevronRight size={16} className="conversation-disclosure-chevron" aria-hidden="true" />
+        </button>
+      </TurnBoundaryHeader>
       {operatorInputs.map((input) => (
         <ConversationInputLine key={input.message_id} input={input} />
       ))}
       <div className={runtimeResultOnly ? "conversation-process" : "conversation-response"}>
-        <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
-          data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
-          title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
-          onClick={() => setManualExpanded(!expanded)}>
-          <ChevronRight size={14} className="conversation-disclosure-chevron" />
-          <span className="conversation-detail-toggle-label">{t("agentPage.executionDetails")}</span>
+        {expanded && taskInputs.length > 0 ? <div className="conversation-task-summary">
           {taskInputs.length > 0 ? <span>{t("agentPage.executionTaskResults", { count: taskInputs.length })}</span> : null}
           {failedTaskCount > 0 ? (
             <span className="conversation-task-failure-hint">
@@ -446,7 +474,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
               {t("agentPage.executionCancelledTasks", { count: cancelledTaskCount })}
             </span>
           ) : null}
-        </button>
+        </div> : null}
         {turn.inputsTruncated ? <div className="conversation-detail-notice">{t("agentPage.inputsTruncated")}</div> : null}
         {interjections.length > 0 ? (
           <div id={detailId} ref={detailRef}>
@@ -471,7 +499,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           </div>
         ) : null}
         {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
-        {presentation.kind === "terminal_without_result" && execution === "completed" && !turn.inputs.some((input) => input.task_result) ? (
+        {showNoBriefNotice && presentation.kind === "terminal_without_result" ? (
           <div className="conversation-turn-notice">{t("agentPage.turnNoBrief", { outcome: t(`agentPage.outcome.${presentation.outcome}`) })}</div>
         ) : null}
         {presentation.kind === "unavailable" ? (

@@ -1,5 +1,8 @@
 # Holon iOS
 
+Use the shared [conversation presentation contract](../../docs/ui/conversation-presentation.md)
+for source icons and turn-header interactions; iOS adoption is tracked in #3622.
+
 Native SwiftUI remote client, targeting iOS 18+ on iPhone and iPad. This directory
 contains first-connection onboarding, camera QR scanning, connection profiles,
 token/session login, offline invitation preview and confirmed redemption,

@@ -291,9 +291,9 @@ test("turn clock survives refresh, hides while waiting for a brief, and opens a 
   current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["timed-brief"] };
   await update();
   await expect(card.getByText("Timing is ready.")).toBeVisible();
-  await expect(turnStatus).toHaveText("Turn ended");
+  await expect(turnStatus).toHaveCount(0);
   // The clock returns with the frozen terminal duration, not the advanced wall clock.
-  await expect(clock).toHaveText("Took 1:23");
+  await expect(clock).toHaveText("1:23");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
   await disclosure.click();
   await page.clock.runFor(250);
@@ -306,7 +306,7 @@ test("turn clock survives refresh, hides while waiting for a brief, and opens a 
   await update();
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
   await page.reload();
-  await expect(clock).toHaveText("Took 1:23");
+  await expect(clock).toHaveText("1:23");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
 });
 
@@ -402,6 +402,90 @@ test("queued task results are compact events above the latest turn while operato
   await update();
   await expect(events).toHaveCount(0);
   await expect(page.locator(".conversation-pending-chip")).toHaveCount(1);
+});
+
+test("empty executed turns stay compact with accessible icon controls", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "icon-header");
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  await request.post(`/__e2e__/conversation?session=${encodeURIComponent(session)}`, { data: { agentId,
+    turns: [1, 2].map((index) => turn(`receipt-${index}`, index, {
+      presentation_class: "task",
+      inputs: [{ message_id: `receipt-input-${index}`, preview: "Task trigger",
+        task_result: { task_id: `task-${index}`, status: "completed", summary: "Background command",
+          preview: "", response_message_id: null, runtime_only: false } }],
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } }, settled: true,
+    })),
+  } });
+  await page.goto(`/agents/${agentId}/conversation`);
+  const first = page.locator('[data-turn-id="receipt-1"]');
+  const second = page.locator('[data-turn-id="receipt-2"]');
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 800 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport);
+    await expect(first).toHaveClass(/is-compact/);
+    await expect.poll(async () => (await first.boundingBox())?.height ?? Infinity).toBeLessThanOrEqual(40);
+    const a = await first.boundingBox();
+    const b = await second.boundingBox();
+    expect(a!.height).toBeLessThanOrEqual(40);
+    expect(b!.y - a!.y - a!.height).toBeLessThanOrEqual(16);
+    const header = first.locator(".conversation-turn-header");
+    await expect(header).not.toContainText("Task result");
+    await expect(header).not.toContainText("Execution details");
+    await expect(header.getByRole("button", { name: "Task result: Open full event details" })).toHaveAttribute("title", "Task result");
+    const toggle = header.locator(".conversation-detail-toggle");
+    await expect(toggle).toHaveAccessibleName("Execution details");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const target = await toggle.boundingBox();
+    expect(target!.width).toBeGreaterThanOrEqual(28);
+    expect(target!.height).toBeGreaterThanOrEqual(28);
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(first).not.toHaveClass(/is-compact/);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(toggle).toHaveAccessibleName("Hide execution process");
+    await toggle.click();
+    await expect(first).toHaveClass(/is-compact/);
+  }
+});
+
+test("collapsed source inspection is independent from the compact execution disclosure", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "compact-header");
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  await request.post(`/__e2e__/conversation?session=${encodeURIComponent(session)}`, { data: { agentId,
+    turns: ["system", "task"].map((source, index) => turn(source, index + 1, {
+      presentation_class: source as "system" | "task",
+      inputs: [{ message_id: `${source}-trigger`, preview: `Original ${source} trigger`,
+        ...(source === "task" ? { task_result: { task_id: "inspectable-task", status: "completed" as const,
+          summary: "Peer result", preview: "", response_message_id: null, runtime_only: false } } : {}) },
+        { message_id: `${source}-steering`, preview: "Later steering", interjected: true }],
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } }, settled: true,
+    })),
+  } });
+  const requested: string[] = [];
+  await page.route("**/api/agents/bootstrap-agent/messages:batchGet", async (route) => {
+    const id = route.request().postDataJSON().message_ids[0];
+    requested.push(id);
+    await route.fulfill({ json: { messages: [{ id, agent_id: agentId,
+      body: { type: "text", text: `Full ${id} payload` } }], missing_message_ids: [] } });
+  });
+  await page.goto(`/agents/${agentId}/conversation`);
+  for (const source of ["system", "task"]) {
+    const card = page.locator(`[data-turn-id="${source}"]`);
+    const toggle = card.locator(".conversation-turn-header .conversation-detail-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(card.locator(".conversation-turn-header-status")).toHaveCount(0);
+    await card.locator(".conversation-turn-source-button").click();
+    await expect(page.locator(".side-panel .inspector-detail pre")).toContainText(`Full ${source}-trigger payload`);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await page.getByRole("button", { name: "Close side panel", exact: true }).click();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(card.getByRole("button", {
+      name: source === "task" ? "Open full event details" : `Original ${source} trigger`, exact: source === "task",
+    })).toBeVisible();
+  }
+  expect(requested).toEqual(["system-trigger", "task-trigger"]);
 });
 
 test("wake and task JSON open full canonical messages in the inspector", async ({ page, context, request }, info) => {
@@ -698,18 +782,23 @@ test("task results fold into receipt processes with lazy source reads on desktop
   await expect(legacy.locator(".conversation-task-result-row")).toHaveCount(0);
   await expect(legacy.locator(".conversation-response")).toHaveCount(0);
   await expect(page.getByText("Historical synthetic result", { exact: true })).toHaveCount(0);
-  // Attention-worthy receipts stay visible with a concise hint instead of a
-  // command title, so a failed task cannot read as a failed turn.
+  // Attention-worthy receipts stay inspectable, but task failure hints belong
+  // inside execution details rather than the compact turn header.
   for (const status of ["failed", "cancelled", "interrupted"]) {
-    await expect(page.locator(`[data-turn-id="${status}-task"]`)).toHaveCount(1);
+    const card = page.locator(`[data-turn-id="${status}-task"]`);
+    await expect(card).toHaveCount(1);
+    await expect(card.locator(".conversation-task-summary")).toHaveCount(0);
+    await card.locator(".conversation-detail-toggle").click();
+    const hint = status === "cancelled" ? ".conversation-task-cancelled-hint" : ".conversation-task-failure-hint";
+    await expect(card.locator(`.conversation-task-summary ${hint}`)).toBeVisible();
+    await card.locator(".conversation-detail-toggle").click();
+    await expect(card.locator(".conversation-task-summary")).toHaveCount(0);
   }
-  await expect(page.locator(".conversation-detail-toggle .conversation-task-failure-hint")).toHaveCount(2);
-  await expect(page.locator(".conversation-detail-toggle .conversation-task-cancelled-hint")).toHaveCount(1);
   expect(sourceRequests).toEqual([]);
   await model.locator(".conversation-detail-toggle").click();
   await expect(model.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
   expect(sourceRequests).toEqual([]);
-  await model.getByRole("button", { name: "Open full event details" }).click();
+  await model.getByRole("button", { name: "Open full event details", exact: true }).click();
   await expect(page.locator(".side-panel")).toContainText("COMPLETE OUTPUT AVAILABLE IN INSPECTOR");
   await page.getByRole("button", { name: "Close side panel", exact: true }).click();
   await expect.poll(() => sourceRequests).toContain("model-result");
@@ -725,8 +814,8 @@ test("task results fold into receipt processes with lazy source reads on desktop
   await page.screenshot({ path: info.outputPath("task-results-desktop.png"), fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await model.scrollIntoViewIfNeeded();
   await expect(model.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  // click retries across hydration remounts and scrolls the control into view.
   await model.locator(".conversation-detail-toggle").click();
   await expect(model.locator(".conversation-task-result-preview")).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);

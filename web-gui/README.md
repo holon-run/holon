@@ -1,5 +1,8 @@
 # Holon Web GUI
 
+Cross-platform source icons, turn headers and execution disclosure follow the
+[conversation presentation contract](../docs/ui/conversation-presentation.md).
+
 This directory contains the first local Web GUI design assets for Holon:
 
 - `DESIGN.md` — the visual and interaction contract, written in a
