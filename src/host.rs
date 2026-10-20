@@ -13852,7 +13852,7 @@ mod tests {
         let terminal = persisted
             .last_turn_terminal
             .expect("aborted run should persist a terminal record");
-        assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+        assert_eq!(terminal.kind, TurnTerminalKind::Interrupted);
         assert_eq!(terminal.reason.as_deref(), Some("daemon_shutdown"));
         let events = storage.read_recent_events(32).unwrap();
         assert!(events.iter().any(|event| {
