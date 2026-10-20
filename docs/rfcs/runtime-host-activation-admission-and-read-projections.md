@@ -153,6 +153,11 @@ without provider latency or production sleep switches.
 Optional observation uses one await path for the underlying future; separate
 observed/unobserved await branches can multiply large inline runtime future
 frames and overflow otherwise unchanged callers' stacks.
+The startup future is heap-pinned at its construction boundary so its
+instrumentation does not inflate the long-lived run loop's inline state or poll
+stack. This does not spawn another task or alter cancellation or completion.
+The public `run()` entrypoint returns the original run future directly rather
+than adding another inline async wrapper.
 
 Non-stopped agents retain the normal task-kind recovery policy: supervised child
 tasks may reattach, while process-local command tasks become

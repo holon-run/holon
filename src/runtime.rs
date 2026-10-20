@@ -6142,41 +6142,17 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn run(self) -> Result<()> {
-        self.run_with_startup_observation(None).await
+    pub fn run(self) -> impl std::future::Future<Output = Result<()>> {
+        // Do not wrap the large run future in another inline async frame.
+        self.run_with_startup_observation(None)
     }
 
     pub(crate) async fn run_with_startup_observation(
         self,
         observation: Option<crate::startup::StartupObservation>,
     ) -> Result<()> {
-        if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            observe_startup_phase(
-                observation.as_ref(),
-                "runtime.onboarding_gate",
-                bridge.wait_for_bootstrap_ready(),
-            )
+        self.bootstrap_with_startup_observation(observation.as_ref())
             .await?;
-        }
-        let bootstrap = observe_startup_phase(observation.as_ref(), "runtime.bootstrap", async {
-            self.bootstrap_recovery(observation.as_ref()).await?;
-            observe_startup_phase(
-                observation.as_ref(),
-                "runtime.bootstrap.scheduler",
-                scheduler_executor::SchedulerDecisionExecutor::new(&self).bootstrap_recovered(),
-            )
-            .await?;
-            observe_startup_phase(
-                observation.as_ref(),
-                "runtime.bootstrap.retained_claims",
-                self.recover_scheduler_bootstrap_claims(),
-            )
-            .await?;
-            Ok(())
-        })
-        .await;
-        self.complete_bootstrap(&bootstrap);
-        bootstrap?;
 
         loop {
             if self.emit_due_task_result_recovery().await? {
@@ -7276,6 +7252,42 @@ impl RuntimeHandle {
             self.apply_transition_commit(commit).await;
         }
         Ok(recovered)
+    }
+
+    fn bootstrap_with_startup_observation<'a>(
+        &'a self,
+        observation: Option<&'a crate::startup::StartupObservation>,
+    ) -> impl std::future::Future<Output = Result<()>> + 'a {
+        // Keep startup's instrumented future out of the long-lived run frame.
+        Box::pin(async move {
+            if let Some(bridge) = self.inner.host_bridge.as_ref() {
+                observe_startup_phase(
+                    observation,
+                    "runtime.onboarding_gate",
+                    bridge.wait_for_bootstrap_ready(),
+                )
+                .await?;
+            }
+            let bootstrap = observe_startup_phase(observation, "runtime.bootstrap", async {
+                self.bootstrap_recovery(observation).await?;
+                observe_startup_phase(
+                    observation,
+                    "runtime.bootstrap.scheduler",
+                    scheduler_executor::SchedulerDecisionExecutor::new(self).bootstrap_recovered(),
+                )
+                .await?;
+                observe_startup_phase(
+                    observation,
+                    "runtime.bootstrap.retained_claims",
+                    self.recover_scheduler_bootstrap_claims(),
+                )
+                .await?;
+                Ok(())
+            })
+            .await;
+            self.complete_bootstrap(&bootstrap);
+            bootstrap
+        })
     }
 
     async fn bootstrap_recovery(
