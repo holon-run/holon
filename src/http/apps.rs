@@ -9,16 +9,17 @@
 
 use std::path::{Path as FsPath, PathBuf};
 
-use axum::http::header::{CONTENT_SECURITY_POLICY, X_CONTENT_TYPE_OPTIONS};
+use axum::http::{header::RETRY_AFTER, Method};
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 
 use crate::http::state::trace_context_from_headers;
 
+use super::file_response::{serve_file, FileResponseOptions};
 use super::*;
 
 const MANIFEST_FILE: &str = "manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-const MAX_ASSET_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SEGMENT_LEN: usize = 128;
 
 #[derive(RustEmbed)]
@@ -27,13 +28,6 @@ const MAX_SEGMENT_LEN: usize = 128;
 #[allow_missing = true]
 #[folder = "packages/app-sdk/dist/"]
 struct EmbeddedAppSdk;
-
-/// Baseline response policy for hosted apps. Apps run their own scripts and may
-/// talk to the same-origin SDK endpoints, but may not embed the host page or
-/// pull remote resources. Stronger isolation (separate origin, sandboxed
-/// iframe, host-credential isolation) is intentionally out of scope for the
-/// first Local App Engine slice.
-const APP_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'; form-action 'self'";
 
 /// Router for the top-level `/apps` surface.
 pub(crate) fn router() -> Router<Arc<AppState>> {
@@ -322,12 +316,17 @@ struct AppManifest {
     description: Option<String>,
 }
 
+struct ResolvedApp {
+    root: PathBuf,
+    manifest: AppManifest,
+}
+
 /// Discover the valid apps owned by an agent.
 ///
 /// A valid agent with a missing or empty `apps/` directory yields an empty
 /// list rather than an error, and GET never creates directories. Entries whose
 /// id fails segment validation, whose directory escapes `apps/` after
-/// canonicalize, or whose manifest is missing/invalid are skipped so
+/// canonicalize, or whose manifest/default entry is invalid are skipped so
 /// discovery only surfaces usable apps.
 async fn list_apps(
     State(state): State<Arc<AppState>>,
@@ -390,22 +389,27 @@ async fn serve_app_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((agent_id, app_id)): Path<(String, String)>,
+    method: Method,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
-    let app_root = resolve_app(&state, &headers, &agent_id, &app_id).await?;
-    let manifest = read_manifest(&app_root, &app_id).await?;
-    serve_relative(&app_root, &manifest.entry).await
+    let app = resolve_app(&state, &headers, &agent_id, &app_id).await?;
+    serve_relative(&state, &app.root, &app.manifest.entry, &headers, &method).await
 }
 
 async fn serve_app_asset(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((agent_id, app_id, asset_path)): Path<(String, String, String)>,
+    method: Method,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
-    let app_root = resolve_app(&state, &headers, &agent_id, &app_id).await?;
-    // Serving assets still requires a valid app manifest so discovery, entry,
-    // and asset access share one definition of "this is an app".
-    let _manifest = read_manifest(&app_root, &app_id).await?;
-    serve_relative(&app_root, asset_path.trim_start_matches('/')).await
+    let app = resolve_app(&state, &headers, &agent_id, &app_id).await?;
+    serve_relative(
+        &state,
+        &app.root,
+        asset_path.trim_start_matches('/'),
+        &headers,
+        &method,
+    )
+    .await
 }
 
 async fn resolve_app(
@@ -413,15 +417,18 @@ async fn resolve_app(
     headers: &HeaderMap,
     agent_id: &str,
     app_id: &str,
-) -> Result<PathBuf, (StatusCode, Json<Value>)> {
+) -> Result<ResolvedApp, (StatusCode, Json<Value>)> {
     authorize_remote_access(headers, state).map_err(|err| auth_required(err.to_string()))?;
     validate_segment("agent_id", agent_id)?;
     validate_segment("app_id", app_id)?;
     let agent_home = state.host.agent_data_dir(agent_id);
     let apps_dir = agent_home.join("apps");
     let app_root = canonical_app_root(&agent_home, &apps_dir, app_id).await?;
-    read_manifest(&app_root, app_id).await?;
-    Ok(app_root)
+    let manifest = read_manifest(&app_root, app_id).await?;
+    Ok(ResolvedApp {
+        root: app_root,
+        manifest,
+    })
 }
 
 /// Canonicalize an app directory and prove it stays inside the agent's
@@ -487,16 +494,41 @@ async fn read_manifest(
     app_id: &str,
 ) -> Result<AppManifest, (StatusCode, Json<Value>)> {
     let path = app_root.join(MANIFEST_FILE);
-    let metadata = fs::metadata(&path)
-        .await
-        .map_err(|_| unprocessable("app manifest.json is missing"))?;
-    if !metadata.is_file() {
-        return Err(unprocessable("app manifest.json is missing"));
+    match fs::symlink_metadata(&path).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Only absence opts into defaults. Dangling links, bad JSON and
+            // unreadable manifests are errors, never a fallback.
+            open_app_file(app_root, "index.html").await?;
+            return Ok(AppManifest {
+                id: app_id.to_string(),
+                name: app_id.to_string(),
+                version: "0.0.0".to_string(),
+                entry: "index.html".to_string(),
+                description: None,
+            });
+        }
+        Err(error) => {
+            return Err(unprocessable(format!(
+                "cannot inspect app manifest: {error}"
+            )))
+        }
+        Ok(_) => {}
     }
+    let (file, _) = open_app_file(app_root, MANIFEST_FILE)
+        .await
+        .map_err(|_| unprocessable("app manifest.json is not a readable file within the app"))?;
+    let metadata = file.metadata().await.map_err(internal)?;
     if metadata.len() > MAX_MANIFEST_BYTES {
         return Err(unprocessable("app manifest.json exceeds the size limit"));
     }
-    let bytes = fs::read(&path).await.map_err(internal)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(internal)?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(unprocessable("app manifest.json exceeds the size limit"));
+    }
     let raw: RawManifest = serde_json::from_slice(&bytes)
         .map_err(|error| unprocessable(format!("app manifest.json is invalid: {error}")))?;
 
@@ -532,10 +564,10 @@ async fn read_manifest(
     })
 }
 
-async fn serve_relative(
+async fn open_app_file(
     app_root: &FsPath,
     relative: &str,
-) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+) -> Result<(fs::File, PathBuf), (StatusCode, Json<Value>)> {
     let relative_path = sanitized_relative(relative)?;
     if relative_path.as_os_str().is_empty() {
         return Err(not_found("app entry path is empty"));
@@ -548,35 +580,76 @@ async fn serve_relative(
     if !canonical.starts_with(app_root) {
         return Err(forbidden("app asset escapes the app root"));
     }
+    sanitized_relative(
+        &canonical
+            .strip_prefix(app_root)
+            .map_err(internal)?
+            .to_string_lossy(),
+    )?;
     let metadata = fs::metadata(&canonical)
         .await
         .map_err(|_| not_found("app asset not found"))?;
     if !metadata.is_file() {
         return Err(not_found("app asset is not a file"));
     }
-    if metadata.len() > MAX_ASSET_BYTES {
+    let file = fs::File::open(&canonical)
+        .await
+        .map_err(|_| not_found("app asset is not readable"))?;
+    if !file.metadata().await.map_err(internal)?.is_file() {
+        return Err(not_found("app asset is not a file"));
+    }
+    Ok((file, canonical))
+}
+
+async fn serve_relative(
+    state: &AppState,
+    app_root: &FsPath,
+    relative: &str,
+    headers: &HeaderMap,
+    method: &Method,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let permit = match state.app_asset_streams.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            let mut response = http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                HttpErrorEnvelope::new("app_asset_busy", "app asset transfer capacity is busy")
+                    .retryable(true),
+            )
+            .into_response();
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+            return Ok(response);
+        }
+    };
+    let (file, canonical) = open_app_file(app_root, relative).await?;
+    let metadata = file.metadata().await.map_err(internal)?;
+    let config = &state.host.config().local_apps;
+    if metadata.len() > config.max_asset_bytes() {
         return Err(http_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             HttpErrorEnvelope::new("app_asset_too_large", "app asset exceeds the size limit"),
         ));
     }
-    let content_type = asset_content_type(&canonical).ok_or_else(|| {
-        http_error(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            HttpErrorEnvelope::new(
-                "unsupported_app_asset_type",
-                format!(
-                    "app asset type is not allowed: {}",
-                    canonical
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .unwrap_or("<none>")
-                ),
-            ),
-        )
-    })?;
-    let bytes = fs::read(&canonical).await.map_err(internal)?;
-    Ok(asset_response(content_type, bytes))
+    let csp = config.csp_header_value().map_err(internal)?;
+    let options = FileResponseOptions {
+        content_type: asset_content_type(&canonical),
+        disposition: None,
+        csp,
+        cache_control: Some(HeaderValue::from_static("no-store")),
+    };
+    serve_file(
+        file,
+        &metadata,
+        relative,
+        headers,
+        method,
+        options,
+        Some(permit),
+    )
+    .await
+    .map_err(internal)
 }
 
 /// Validate a single logical path segment (`agent_id` or `app_id`).
@@ -618,7 +691,10 @@ fn sanitized_relative(raw: &str) -> Result<PathBuf, (StatusCode, Json<Value>)> {
                 if part.is_empty() {
                     return Err(bad_request("app asset path contains an empty segment"));
                 }
-                if part.contains('\\') || part.chars().any(char::is_control) {
+                if part.starts_with('.')
+                    || part.contains('\\')
+                    || part.chars().any(char::is_control)
+                {
                     return Err(bad_request(
                         "app asset path contains unsupported characters",
                     ));
@@ -641,10 +717,13 @@ fn is_html(path: &FsPath) -> bool {
     )
 }
 
-/// Static asset allowlist. Executable server handlers, arbitrary methods, and
-/// reverse-proxy behavior are not part of the hosting contract.
-fn asset_content_type(path: &FsPath) -> Option<&'static str> {
-    let extension = path.extension().and_then(|ext| ext.to_str())?;
+/// MIME describes a file, not whether it may be published. Unknown files are
+/// opaque downloads; nothing on this route executes server-side code.
+fn asset_content_type(path: &FsPath) -> String {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
     match extension.to_ascii_lowercase().as_str() {
         "html" | "htm" => Some("text/html; charset=utf-8"),
         "js" | "mjs" => Some("text/javascript; charset=utf-8"),
@@ -661,18 +740,16 @@ fn asset_content_type(path: &FsPath) -> Option<&'static str> {
         "woff2" => Some("font/woff2"),
         "ttf" => Some("font/ttf"),
         "otf" => Some("font/otf"),
+        "wasm" => Some("application/wasm"),
+        "data" => Some("application/octet-stream"),
         _ => None,
     }
-}
-
-fn asset_response(content_type: &'static str, bytes: Vec<u8>) -> AxumResponse {
-    let mut response = Response::new(Body::from(bytes));
-    let headers = response.headers_mut();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(APP_CSP));
-    response
+    .map(str::to_string)
+    .unwrap_or_else(|| {
+        mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string()
+    })
 }
 
 fn unprocessable(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
@@ -718,21 +795,33 @@ mod tests {
         assert!(sanitized_relative("../secret").is_err());
         assert!(sanitized_relative("a/../../b").is_err());
         assert!(sanitized_relative("a\\..\\b").is_err());
+        assert!(sanitized_relative(".env").is_err());
+        assert!(sanitized_relative("assets/.git/config").is_err());
         // Interior `.` segments are normalized away by `Path::components`.
         assert_eq!(sanitized_relative("a/./b").unwrap(), PathBuf::from("a/b"));
     }
 
     #[test]
-    fn asset_content_type_is_allowlisted() {
+    fn asset_content_type_describes_known_and_unknown_files() {
         assert_eq!(
             asset_content_type(FsPath::new("index.html")),
-            Some("text/html; charset=utf-8")
+            "text/html; charset=utf-8"
         );
         assert_eq!(
             asset_content_type(FsPath::new("app.js")),
-            Some("text/javascript; charset=utf-8")
+            "text/javascript; charset=utf-8"
         );
-        assert_eq!(asset_content_type(FsPath::new("run.sh")), None);
-        assert_eq!(asset_content_type(FsPath::new("data.bin")), None);
+        assert_eq!(
+            asset_content_type(FsPath::new("game.wasm")),
+            "application/wasm"
+        );
+        assert_eq!(
+            asset_content_type(FsPath::new("data.bin")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            asset_content_type(FsPath::new("unknown-extension")),
+            "application/octet-stream"
+        );
     }
 }

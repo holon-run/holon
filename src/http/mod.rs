@@ -110,6 +110,7 @@ mod tailscale_serve;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
 // unit tests now and wired into handlers by the S2/S4/S5 slices.
 mod desktop;
+mod file_response;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod observer_sync;
 mod projection_gate;
@@ -234,6 +235,7 @@ pub struct AppState {
     pub(crate) projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits,
     pub(crate) conversation_read_limits: conversation::ConversationReadLimits,
     pub(crate) unread_db_jobs: Arc<tokio::sync::Semaphore>,
+    pub(crate) app_asset_streams: Arc<tokio::sync::Semaphore>,
     pub(crate) projection_gate: Arc<ProjectionGate>,
 }
 
@@ -431,6 +433,7 @@ impl AppState {
             projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits::default(),
             conversation_read_limits: conversation::ConversationReadLimits::default(),
             unread_db_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
+            app_asset_streams: Arc::new(tokio::sync::Semaphore::new(16)),
             projection_gate,
         }
     }
@@ -472,6 +475,7 @@ impl AppState {
             projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits::default(),
             conversation_read_limits: conversation::ConversationReadLimits::default(),
             unread_db_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
+            app_asset_streams: Arc::new(tokio::sync::Semaphore::new(16)),
             projection_gate,
         }
     }

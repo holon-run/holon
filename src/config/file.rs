@@ -8,6 +8,8 @@ pub struct HolonConfigFile {
     pub auth: AuthConfigFile,
     #[serde(default, skip_serializing_if = "ApiConfigFile::is_empty")]
     pub api: ApiConfigFile,
+    #[serde(default, skip_serializing_if = "LocalAppsConfigFile::is_empty")]
+    pub local_apps: LocalAppsConfigFile,
     #[serde(default, skip_serializing_if = "ModelConfigFile::is_empty")]
     pub model: ModelConfigFile,
     #[serde(default, skip_serializing_if = "ModelsConfigFile::is_empty")]
@@ -30,6 +32,38 @@ pub struct HolonConfigFile {
     pub x_search: XSearchConfigFile,
     #[serde(default, skip_serializing_if = "AgentTemplatesConfigFile::is_empty")]
     pub agent_templates: AgentTemplatesConfigFile,
+}
+
+pub const DEFAULT_LOCAL_APP_MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct LocalAppsConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_asset_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csp: Option<String>,
+}
+
+impl LocalAppsConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.max_asset_bytes.is_none() && self.csp.is_none()
+    }
+
+    pub fn max_asset_bytes(&self) -> u64 {
+        self.max_asset_bytes
+            .unwrap_or(DEFAULT_LOCAL_APP_MAX_ASSET_BYTES)
+    }
+
+    pub fn csp_header_value(&self) -> Result<Option<HeaderValue>> {
+        self.csp
+            .as_ref()
+            .map(|policy| {
+                policy
+                    .parse::<HeaderValue>()
+                    .context("local_apps.csp must be a valid HTTP header value")
+            })
+            .transpose()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

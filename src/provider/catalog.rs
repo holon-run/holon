@@ -207,6 +207,7 @@ mod tests {
             auth: Default::default(),
             api_cors: Default::default(),
             api_projection: Default::default(),
+            local_apps: Default::default(),
             config_file_path: home.join("config.json"),
             stored_config: Default::default(),
             default_model: route,

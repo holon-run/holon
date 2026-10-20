@@ -15,9 +15,11 @@ order: 240
 - 使用运行时的浏览器同源地址；远程访问时需具备有效会话。请参阅[连接到远程运行时](connect-remote-runtime.md)。
 - 仅托管你信任的代码。本地应用与运行时共享同源域和会话，并不对主机凭据构成隔离屏障。
 
-## 1. 创建目录与清单文件
+## 1. 创建目录与可选清单文件
 
-在已确认的 Agent Home 中创建 `apps/ping-card/` 目录，并保存 `manifest.json`：
+在已确认的 Agent Home 中创建 `apps/ping-card/`。无需清单也能托管根目录下的 `index.html`：运行时用目录名作为 `id` 和 `name`，`version` 为 `"0.0.0"`，`entry` 为 `"index.html"`，`description` 为 `null`。默认值仅存在于内存中；Holon 不写入清单，也不修改应用文件。
+
+若要使用本例的展示名称和描述，可选择保存 `apps/ping-card/manifest.json`：
 
 ```json
 {
@@ -116,11 +118,23 @@ order: 240
 
 ## 故障排查
 
-- **应用未找到或被拒绝访问：** 检查 `manifest.json` 格式是否合法、`id` 是否严格等于 `ping-card`，且入口文件是否存在于该目录下。
+- **应用未找到或被拒绝访问：** 无清单时须提供可读的根目录 `index.html`，运行时不会猜测其他入口。存在清单时，检查必填字段、`id`（本例为 `ping-card`）及入口路径。无效、超限、不可读、目录冒充、悬空链接或越界链接清单均报错，不回退到默认值。路径不得包含隐藏组件或逃出应用根目录。
 - **鉴权失败：** 在登录或配对后，从运行时同源地址直接打开应用。严禁在 HTML 或 JavaScript 中硬编码 Bearer Token。
 - **SDK 不可用：** 检查 `holon.js` 请求的响应。源码构建必须包含 App SDK 静态资源；单独的 HTML 页面无法自包含这些实现。
 - **未收到任何事件：** 在浏览器控制台的 Network 面板中检查 `/events` 请求。刷新页面并在连接建立后重新提交请求。切勿将网络断开期间遗漏的事件误判为服务故障。
-- **外部脚本或跨域请求被拦截：** 仅使用同源静态资源。严禁为了引入不受信任的代码而放宽 CSP 内容安全策略。
+- **外部脚本或跨域请求被拦截：** 检查浏览器 CORS、应用自身的 CSP 及操作者配置的 App CSP。Holon 默认不附加平台 App CSP。不要在运行时的共享会话中引入不受信任的代码。
+- **`413` / `app_asset_too_large`：** 完整文件超过 daemon 的 `local_apps.max_asset_bytes`（默认 64 MiB），即使只请求一个 Range 也会被拒绝。
+- **`503` / `app_asset_busy`：** 16 个共享资源流均被占用。遵循 `Retry-After: 1` 后重试；SDK/API 请求不占这些 permit。
+
+## 托管已有静态构建
+
+对于静态站点或未预压缩、单线程的 Unity Web 构建，将准备发布的产物复制到已确认 Agent Home 的 `apps/<app-id>/`，保留相对目录结构和根目录 `index.html`，登录后访问 `/apps/<agent-id>/<app-id>/`。单纯托管静态文件不需要单独的 HTTP 服务、清单或 SDK 集成。如果构建使用其他 HTML 入口名，请提供完整的显式清单并设置 `entry`；Holon 不会猜测或重命名文件。
+
+普通文件不受扩展名白名单限制，包括 WASM（`application/wasm`）、data 和未知类型（`application/octet-stream`）。隐藏文件及路径/软链接逃逸被拒绝；不提供目录列表或服务端执行。不要把源码目录、密钥或私有文件复制到应用目录。
+
+daemon 级大小上限、可选 CSP、CLI 示例与生效时机详见 [Daemon 配置](../reference/local-apps.md#daemon-configuration)。daemon 运行时，`holon config set` 和 `holon config unset` 通过现有配置 API 持久化修改并调度 reload。成功 reload 后，后续 App 请求使用新设置；在途流保留已取得的策略。直接编辑文件不会自动触发配置 reload；离线设置在 daemon 启动或重启后生效。这些设置不改变 Web GUI 或 Explorer 的沙箱策略。
+
+在浏览器 Network 面板检查入口、脚本、WASM 和 data 响应，然后实际操作应用，不要把下载成功当成游戏运行成功。`.gz`、`.br`、`.unityweb` 按普通文件提供，不承诺预压缩构建可运行或原始 MIME/编码协商正确。多线程 Unity 与 COOP/COEP 不在首期范围。真实游戏与真实 Mac/Safari 验收仍未完成，自动化 HTTP 检查不能证明这些结果。已有服务需要升级二进制并使配置生效；本文档不会重启它们。
 
 ## 契约细节
 

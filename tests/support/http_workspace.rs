@@ -375,6 +375,15 @@ pub async fn workspace_files_serves_range_requests() -> Result<()> {
     let client = reqwest::Client::new();
     let url = format!("{base}/api/workspaces/{workspace_id}/files/data.bin");
 
+    let head = client
+        .head(&url)
+        .header("Range", "bytes=0-3")
+        .send()
+        .await?;
+    assert_eq!(head.status(), 200);
+    assert_eq!(head.headers()["content-length"], "26");
+    assert!(head.bytes().await?.is_empty());
+
     // Full response advertises range support and cache validators.
     let response = client.get(&url).send().await?;
     assert_eq!(response.status(), 200, "{}", response.text().await?);
@@ -534,6 +543,17 @@ pub async fn workspace_files_download_and_inline_safety() -> Result<()> {
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-security-policy"], "sandbox");
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+
+    let etag = response.headers()["etag"].clone();
+    let unchanged = client
+        .get(format!(
+            "{base}/api/workspaces/{workspace_id}/files/page.html"
+        ))
+        .header("if-none-match", etag)
+        .send()
+        .await?;
+    assert_eq!(unchanged.status(), 304);
+    assert_eq!(unchanged.headers()["content-security-policy"], "sandbox");
 
     // Direct-link text access streams the full file instead of truncating.
     let response = client
