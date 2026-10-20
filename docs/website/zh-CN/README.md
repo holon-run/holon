@@ -1,6 +1,6 @@
 ---
-title: Holon
-summary: Agent 主动工作，持续跟进。Holon 是可部署在个人电脑或团队服务器上的 Agent 工作台；接入系统事件和定时安排，让 Agent 按约定行动、保留进度，并在需要时请你参与。
+title: 创建和运行 AI 助手
+summary: 在自己的电脑或服务器上，创建和运行 AI 助手。分配任务、查看进展、持续跟进工作。Holon 是面向个人和团队的开源软件。
 order: 1
 ---
 
@@ -10,16 +10,16 @@ order: 1
 
 <p class="home-eyebrow">为需要持续跟进的工作而建</p>
 
-# Agent 主动工作，<br>持续跟进。
+# 在自己的电脑或服务器上，创建和运行 AI 助手。
 
-<p class="home-hero__lede">Holon 是可部署在个人电脑或团队服务器上的 Agent 工作台。从邮件处理、订单异常到代码审阅，接入系统事件或定时安排，让 Agent 按约定行动、保留进度，并在需要时请你参与。</p>
+<p class="home-hero__lede">面向个人和团队的开源软件。把任务交给 AI 助手，查看执行进展，让它们持续跟进工作。</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">开始使用</a>
-<a class="home-button home-button--quiet" href="#capabilities">了解如何工作 ↓</a>
+<a class="home-button home-button--quiet" href="#capabilities">了解工作原理 ↓</a>
 </div>
 
-<p class="home-hero__note">你设定职责与权限，Agent 按约定工作。</p>
+<p class="home-hero__note">给助手明确的职责和任务。查看进展，在需要时补充信息，并验收结果。</p>
 
 <div class="home-litepaper" role="group" aria-label="Holon 产品概览 PDF">
 <span class="home-litepaper__label">产品概览 · 6 页 PDF</span>

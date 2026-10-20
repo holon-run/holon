@@ -1,6 +1,6 @@
 {
   "siteTitle": "Holon",
-  "siteDescription": "Agents that act and follow through. Run Holon on your computer or a team server. Connect events and schedules so agents can act, save progress, and ask for your input when needed.",
+  "siteDescription": "Create and run AI assistants on your own computer or server. Assign tasks, track progress, and let them follow up. Open source for individuals and teams.",
   "siteUrl": "https://holon.run",
   "locales": [
     {
@@ -11,7 +11,7 @@
     {
       "code": "zh-CN",
       "label": "中文",
-      "siteDescription": "Agent 主动工作，持续跟进。Holon 是可部署在个人电脑或团队服务器上的 Agent 工作台；接入系统事件和定时安排，让 Agent 按约定行动、保留进度，并在需要时请你参与。",
+      "siteDescription": "在自己的电脑或服务器上，创建和运行 AI 助手。分配任务、查看进展、持续跟进工作。Holon 是面向个人和团队的开源软件。",
       "topNav": [
         {
           "label": "开始",
