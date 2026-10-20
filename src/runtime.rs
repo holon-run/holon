@@ -7346,10 +7346,26 @@ async fn observe_startup_phase<T>(
     phase: &'static str,
     future: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
-    match observation {
-        Some(observation) => observation.observe(phase, future).await,
-        None => future.await,
+    // Await the payload once: separate observed/unobserved branches retain
+    // multiple copies of large runtime futures in the generated state machine.
+    let phase_observation = observation.map(|observation| observation.phase(phase));
+    #[cfg(test)]
+    if let Some(observation) = observation {
+        if let Some(hook) = &observation.test_hook {
+            if let Err(error) = hook(observation.clone(), phase).await {
+                let result = Err(error);
+                if let Some(phase_observation) = phase_observation {
+                    phase_observation.finish(&result);
+                }
+                return result;
+            }
+        }
     }
+    let result = future.await;
+    if let Some(phase_observation) = phase_observation {
+        phase_observation.finish(&result);
+    }
+    result
 }
 
 fn decode_exec_command_batch_result(value: &serde_json::Value) -> Option<ExecCommandBatchResult> {

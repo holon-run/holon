@@ -150,6 +150,9 @@ These observations do not add deadlines, parallel recovery, retries,
 cancellation, earlier listeners, or new readiness guarantees. Characterization
 tests gate real bootstrap subphases using test-only per-observation hooks,
 without provider latency or production sleep switches.
+Optional observation uses one await path for the underlying future; separate
+observed/unobserved await branches can multiply large inline runtime future
+frames and overflow otherwise unchanged callers' stacks.
 
 Non-stopped agents retain the normal task-kind recovery policy: supervised child
 tasks may reattach, while process-local command tasks become
