@@ -684,6 +684,57 @@ test("brief cache hits skip the network and fetched briefs are persisted", async
   second.dispose();
 });
 
+for (const result of ["hit", "miss", "foreign-agent", "foreign-id", "error", "unavailable"]) {
+  test(`cache-only brief restoration never requests the network: ${result}`, async () => {
+    const client = fakeClient();
+    const cached = briefRecord("brief-1");
+    if (result === "foreign-agent") cached.agent_id = "other-agent";
+    if (result === "foreign-id") cached.id = "other-brief";
+    const controller = new ConversationController({
+      client, agentId: identity.agent_id,
+      ...(result === "unavailable" ? {} : { briefCache: {
+        async get() {
+          if (result === "error") throw new Error("storage unavailable");
+          return result === "miss" ? null : cached;
+        },
+        async put() {},
+      } }),
+    });
+    await controller.restoreCachedBrief("brief-1");
+    assert.equal(client.calls.brief.length, 0);
+    assert.equal(controller.briefState("brief-1")?.kind ?? null, result === "hit" ? "ready" : null);
+    // Cache misses must remain loadable once online admission is restored.
+    assert.equal((await controller.loadBrief("brief-1")).kind, "ready");
+    assert.equal(client.calls.brief.length, result === "hit" ? 0 : 1);
+    controller.dispose();
+  });
+}
+
+for (const terminal of ["dispose", "network-load"]) {
+  test(`late cache-only brief restoration cannot overwrite ${terminal}`, async () => {
+    const client = fakeClient();
+    let release;
+    const pending = new Promise((resolve) => { release = resolve; });
+    let reads = 0;
+    const controller = new ConversationController({
+      client, agentId: identity.agent_id,
+      briefCache: {
+        async get() { return reads++ === 0 ? pending : null; },
+        async put() {},
+      },
+    });
+    const restoring = controller.restoreCachedBrief("brief-1");
+    if (terminal === "dispose") controller.dispose(false);
+    else {
+      await controller.loadBrief("brief-1");
+    }
+    release({ ...briefRecord("brief-1"), text: "stale cache" });
+    await restoring;
+    assert.notEqual(controller.briefState("brief-1")?.brief?.text, "stale cache");
+    controller.dispose(false);
+  });
+}
+
 test("brief cache entries bound to another agent or id are ignored", async () => {
   const client = fakeClient();
   const foreign = { ...briefRecord("brief-1"), agent_id: "other-agent" };

@@ -41,10 +41,10 @@ test("refresh preserves overview width, header and close control until agent acc
   await expect(panel.getByRole("button", { name: "Close side panel", exact: true })).toBeVisible();
   await expect(panel.locator(".agent-overview-stack")).toBeVisible();
   await expect(panel.locator(".agent-overview-skeleton")).toHaveCount(0);
-  await expect(page.locator(".conversation-sync-status")).toContainText("cached history is read-only");
+  await expect(page.locator(".conversation-sync-status")).toBeEmpty();
   await expect(page.locator(".composer textarea")).toBeEnabled();
   await page.locator(".composer textarea").fill("Draft while verifying access");
-  await expect(page.locator(".composer .send-button")).toBeDisabled();
+  await expect(page.locator(".composer .send-button")).toBeEnabled();
   const loading = await panel.boundingBox();
   expect(Math.abs(loading!.width - before!.width)).toBeLessThan(1);
   await page.screenshot({ path: info.outputPath("agent-overview-loading.png") });
@@ -56,7 +56,7 @@ test("refresh preserves overview width, header and close control until agent acc
   expect(Math.abs((await panel.boundingBox())!.width - before!.width)).toBeLessThan(1);
 });
 
-test("delayed access retains the read-only overview and retry restores online access", async ({ page }) => {
+test("delayed access retains the overview and explicit sending while retry restores online access", async ({ page }) => {
   await rememberOpenPanel(page);
   let fail = true;
   await page.route("**/api/control/agents/bootstrap-agent/detail", async (route) => {
@@ -67,10 +67,10 @@ test("delayed access retains the read-only overview and retry restores online ac
   const panel = page.locator(".side-panel");
   await expect(panel).toBeVisible();
   await expect(panel.locator(".agent-overview-stack")).toBeVisible();
-  await expect(page.locator(".conversation-sync-status")).toContainText("Agent refresh is delayed");
+  await expect(page.locator(".conversation-sync-status")).toContainText("Agent status refresh is delayed");
   await expect(page.locator(".composer textarea")).toBeEnabled();
   await page.locator(".composer textarea").fill("Draft while access is delayed");
-  await expect(page.locator(".composer .send-button")).toBeDisabled();
+  await expect(page.locator(".composer .send-button")).toBeEnabled();
   await expect(panel.getByText("Could not load this agent", { exact: true })).toHaveCount(0);
   await expect(panel.locator(".agent-overview-skeleton")).toHaveCount(0);
   fail = false;
@@ -85,6 +85,8 @@ for (const width of [1440, 390]) {
   test(`closing the loading panel stays closed after data arrives and reload (${width}px)`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 900 });
     await rememberOpenPanel(page);
+    // Keep this a cold path; a confirmed subject may legitimately show roster previews.
+    await page.route("**/api/auth/session/me", (route) => route.fulfill({ json: {} }));
     const release = await holdAgentAccess(page, info.testId);
     await page.goto("/agents/bootstrap-agent/conversation");
     const panel = page.locator(".side-panel");
@@ -102,6 +104,7 @@ for (const width of [1440, 390]) {
 
 test("a mobile refresh never opens a panel without an existing open preference", async ({ page }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/auth/session/me", (route) => route.fulfill({ json: {} }));
   const release = await holdAgentAccess(page, info.testId);
   await page.goto("/agents/bootstrap-agent/conversation");
   const panel = page.locator(".side-panel");

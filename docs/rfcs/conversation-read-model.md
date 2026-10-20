@@ -894,6 +894,13 @@ operator endpoint with `expected_incarnation`; neither the cache nor the GUI
 grants server-side input permission. Failed sends retain the draft and
 attachments with a retryable error. This is not an offline sending queue:
 only a successful server response clears the draft, and retries are manual.
+Persisted summaries retain the last known input lifecycle hint, including
+explicit stops, rather than fabricating an input denial for read-only history.
+Presentation schema v2 rejects v1 summaries whose forced `acceptsInput: false`
+cannot be distinguished from a real stop; conversation snapshots remain intact.
+Read-only previews may restore persisted brief bodies through a cache-only
+controller path. Cache misses and storage failures leave online loading available,
+without issuing requests before read admission or accepting revoked/foreign data.
 
 ## 10. Acceptance evidence required for implementation
 

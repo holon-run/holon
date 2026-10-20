@@ -64,8 +64,9 @@ describe("conversation session identity binding", () => {
       loadOlderActivities: vi.fn(), loadBrief: vi.fn(), locateSource: vi.fn(),
       returnToLatest: vi.fn(), retry: vi.fn(),
     };
+    const restoreCachedBrief = vi.fn();
     mocks.peek.mockReturnValue({
-      ...actions, browseState: () => null, historyState: () => ({ kind: "idle" }),
+      ...actions, restoreCachedBrief, browseState: () => null, historyState: () => ({ kind: "idle" }),
       view: () => ({ reset_reason: null }),
     });
     const key = resolveConversationScopeKey("local", "child", mocks.state.currentUser, 1);
@@ -81,6 +82,7 @@ describe("conversation session identity binding", () => {
       current.returnToLatest(); current.retry();
     });
     for (const action of Object.values(actions)) expect(action).not.toHaveBeenCalled();
+    expect(restoreCachedBrief).toHaveBeenCalledWith("b");
     expect(retryPendingReadMarker).not.toHaveBeenCalled();
     expect(current.conversationReady).toBe(false);
     await render("child", 1, false);

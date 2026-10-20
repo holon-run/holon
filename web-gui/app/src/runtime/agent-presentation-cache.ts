@@ -67,7 +67,12 @@ function presentation(value: unknown): AgentSummary | undefined {
     if (value.modelSource !== "runtime_default" && value.modelSource !== "agent_override") return undefined;
     result.modelSource = value.modelSource;
   }
-  return { ...result, acceptsInput: false, canRename: false } as unknown as AgentSummary;
+  if (value.acceptsInput !== undefined) {
+    if (typeof value.acceptsInput !== "boolean") return undefined;
+    result.acceptsInput = value.acceptsInput;
+  }
+  // Lifecycle hints gate explicit attempts, never server-side authorization.
+  return { ...result, canRename: false } as unknown as AgentSummary;
 }
 
 function retired(value: unknown): boolean {

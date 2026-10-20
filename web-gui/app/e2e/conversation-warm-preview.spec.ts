@@ -39,7 +39,7 @@ test("cold access does not expose a composer before identity validation", async 
   }
 });
 
-for (const result of ["available", "offline", "forbidden", "missing", "replaced",
+for (const result of ["available", "reloaded", "offline", "forbidden", "missing", "replaced",
   "send-forbidden", "send-missing", "send-replaced", "stopped"] as const) {
   test(`warm history revalidates silently while explicit sends remain server-validated: ${result}`, async ({
     page, context, request,
@@ -50,7 +50,7 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
     await context.addCookies([{
       name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/",
     }]);
-    // Warm previews require a verified user; the generic fixture is anonymous.
+    // Keep the confirmed subject stable across navigation and reload.
     await page.route("**/api/auth/session/me", (route) => route.fulfill({
       json: { user_id: "warm-preview-user", auth_method: "static_token" },
     }));
@@ -60,6 +60,7 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
         id: "cached", agent_id: agentId, workspace_id: "holon", kind: "result",
         text: cachedText, created_at: "2026-10-16T08:00:00Z",
         content_source: { kind: "inline" },
+        attachments: null, related_message_id: null, related_task_id: null,
       } },
     } });
     await request.post(control("/__e2e__/conversation"), { data: {
@@ -81,6 +82,27 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
     }
     await page.goto(conversationPath);
     await expect(page.getByText(cachedText, { exact: true })).toBeVisible();
+    if (result === "reloaded" || result === "stopped") {
+      // Reload only after the best-effort brief write has actually committed.
+      await expect.poll(() => page.evaluate(async () => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const open = indexedDB.open("holon-webgui-cache");
+          open.onsuccess = () => resolve(open.result);
+          open.onerror = () => reject(open.error);
+        });
+        try {
+          return await new Promise<unknown[]>((resolve, reject) => {
+            const read = db.transaction("briefs").objectStore("briefs").getAll();
+            read.onsuccess = () => resolve(read.result);
+            read.onerror = () => reject(read.error);
+          });
+        } finally {
+          db.close();
+        }
+      })).toEqual(expect.arrayContaining([expect.objectContaining({
+        agentId, briefId: "cached", brief: expect.objectContaining({ text: cachedText }),
+      })]));
+    }
     await expect(page.locator(".composer textarea")).toBeEnabled();
     await page.locator(`.agent-row[title*="${buddyId}"]`).click();
     await expect(page.locator(".composer textarea")).toBeEnabled();
@@ -151,10 +173,15 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
     });
 
     try {
-      await page.evaluate((path) => {
-        history.pushState(null, "", path);
-        window.dispatchEvent(new PopStateEvent("popstate"));
-      }, conversationPath);
+      if (result === "reloaded" || result === "stopped") {
+        // Discard in-memory access records and exercise the persisted lifecycle hint.
+        await page.goto(conversationPath);
+      } else {
+        await page.evaluate((path) => {
+          history.pushState(null, "", path);
+          window.dispatchEvent(new PopStateEvent("popstate"));
+        }, conversationPath);
+      }
       // These assertions run while BOTH network responses are held indefinitely.
       // A missing access/cache split therefore fails rather than passing after a timeout.
       await expect(page.getByText(cachedText, { exact: true })).toBeVisible();
@@ -174,7 +201,7 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
       await expect.poll(() => identities).toBeGreaterThan(0);
       await expect.poll(() => states).toBeGreaterThan(0);
       expect(previewWrites).toEqual([]);
-      if (result === "available" || result.startsWith("send-")) {
+      if (result === "available" || result === "reloaded" || result.startsWith("send-")) {
         // Identity and state remain held: sending must not depend on read admission.
         await send.click();
         await expect.poll(() => prompts.length).toBe(1);
@@ -182,7 +209,7 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
           text: "Draft typed before verification", expected_incarnation: 1,
           attachments: [{ name: "draft.txt", media_type: "text/plain" }],
         });
-        if (result === "available") {
+        if (result === "available" || result === "reloaded") {
           await expect(textarea).toHaveValue("");
           await expect(page.locator(".composer-attachments")).toHaveCount(0);
           expect(previewWrites).toEqual([]);
