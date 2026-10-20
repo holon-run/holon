@@ -2315,20 +2315,43 @@ impl RuntimeHost {
     }
 
     pub async fn default_runtime(&self) -> Result<RuntimeHandle> {
+        self.default_runtime_observed(None).await
+    }
+
+    pub async fn default_runtime_observed(
+        &self,
+        observation: Option<crate::startup::StartupObservation>,
+    ) -> Result<RuntimeHandle> {
         if self
             .agent_identity_record(&self.config().default_agent_id)?
             .is_none()
         {
             self.ensure_default_agent_identity()?;
         }
-        self.activate_agent(
+        self.activate_agent_observed(
             &self.config().default_agent_id,
             RuntimeActivationReason::AgentLifecycle,
+            observation,
         )
         .await
     }
 
     pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
+        self.recover_startup_observed(&crate::startup::StartupObservation::new())
+            .await
+    }
+
+    pub async fn recover_startup_observed(
+        &self,
+        observation: &crate::startup::StartupObservation,
+    ) -> Result<Vec<String>> {
+        let phase = observation.phase("agent_recovery");
+        let mut candidates = 0usize;
+        let mut completed = 0usize;
+        let mut skipped = 0usize;
+        let mut failed = 0usize;
+        let result = async {
+        let recovery_report = observation.observe("durable_reconcile", async {
         let recovery_report = self
             .runtime_db()
             .recover_interrupted_runtime_state_at_startup()?;
@@ -2359,6 +2382,7 @@ impl RuntimeHost {
             }
         }
         tracing::info!(
+            startup_id = %observation.startup_id,
             queue_entries_changed = recovery_report.queue_entries_changed,
             interrupted_turns = recovery_report.interrupted_turns,
             superseded_turns = recovery_report.superseded_turns,
@@ -2366,9 +2390,13 @@ impl RuntimeHost {
             daemon_restart_turns = recovery_report.daemon_restart_turns,
             interrupted_execution_attempts = recovery_report.interrupted_execution_attempts,
             stale_waits_cancelled = stale_waits,
-            "startup runtime state recovery completed"
+            "startup durable reconciliation completed"
         );
+        Ok(recovery_report)
+        }).await?;
         let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids;
+        let (recovery_agent_ids, queue_recovery_candidate_ids, active_task_owner_ids, active_timer_owner_ids) =
+            observation.observe_sync("candidate_discovery", || {
         let queue_recovery_candidate_ids = self
             .runtime_db()
             .queue_entries()
@@ -2407,14 +2435,38 @@ impl RuntimeHost {
                 .iter()
                 .cloned(),
         );
+        tracing::info!(
+            startup_id = %observation.startup_id,
+            recovered_queue = recovered_queue_agent_ids.len(),
+            queue = queue_recovery_candidate_ids.len(),
+            tasks = active_task_owner_ids.len(),
+            timers = active_timer_owner_ids.len(),
+            waits = wait_recheck_owner_ids.len(),
+            executions = recovery_report.recovered_execution_agent_ids.len(),
+            candidates = recovery_agent_ids.len(),
+            duplicates_removed = recovered_queue_agent_ids.len()
+                + queue_recovery_candidate_ids.len()
+                + active_task_owner_ids.len()
+                + active_timer_owner_ids.len()
+                + wait_recheck_owner_ids.len()
+                + recovery_report.recovered_execution_agent_ids.len()
+                - recovery_agent_ids.len(),
+            "startup recovery candidates discovered"
+        );
+        Ok((recovery_agent_ids, queue_recovery_candidate_ids, active_task_owner_ids, active_timer_owner_ids))
+        })?;
+        candidates = recovery_agent_ids.len();
         for agent_id in recovery_agent_ids {
+            let agent_observation = observation.for_agent(&agent_id, None);
+            let agent_result = async {
+            let skip_reason = agent_observation.observe_sync("candidate_inspection", || {
             if self
                 .runtime_db()
                 .agent_identities()
                 .latest(&agent_id)?
                 .is_none_or(|identity| identity.status != AgentRegistryStatus::Active)
             {
-                continue;
+                return Ok(Some("identity_inactive_or_missing"));
             }
             let state = self
                 .agent_storage_read_only(&agent_id)?
@@ -2425,14 +2477,44 @@ impl RuntimeHost {
                 && !queue_recovery_candidate_ids.contains(&agent_id)
                 && !active_timer_owner_ids.contains(&agent_id)
             {
-                continue;
+                return Ok(Some("stopped_without_task_queue_or_timer"));
             }
-            let runtime = self
-                .activate_agent(&agent_id, RuntimeActivationReason::StartupRecovery)
-                .await?;
-            runtime.wait_for_bootstrap().await?;
+            Ok(None)
+            })?;
+            if let Some(skip_reason) = skip_reason {
+                tracing::info!(startup_id = %observation.startup_id, agent_id, skip_reason, "startup recovery candidate skipped");
+                return Ok(false);
+            }
+            let runtime = agent_observation.observe(
+                "activation",
+                self.activate_agent_observed(&agent_id, RuntimeActivationReason::StartupRecovery, Some(observation.clone())),
+            ).await?;
+            agent_observation.observe("bootstrap_wait", runtime.wait_for_bootstrap()).await?;
+            Ok(true)
+            }.await;
+            match agent_result {
+                Ok(true) => completed += 1,
+                Ok(false) => skipped += 1,
+                Err(error) => {
+                    failed += 1;
+                    return Err(error);
+                }
+            }
         }
         Ok(recovered_queue_agent_ids)
+        }.await;
+        tracing::info!(
+            startup_id = %observation.startup_id,
+            candidates,
+            completed,
+            skipped,
+            failed,
+            pending = candidates - completed - skipped - failed,
+            outcome = if result.is_ok() { "ok" } else { "error" },
+            "startup agent recovery summary"
+        );
+        phase.finish(&result);
+        result
     }
 
     fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
@@ -4332,6 +4414,15 @@ impl RuntimeHost {
         agent_id: &'a str,
         reason: RuntimeActivationReason,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
+        self.activate_agent_observed(agent_id, reason, None)
+    }
+
+    fn activate_agent_observed<'a>(
+        &'a self,
+        agent_id: &'a str,
+        reason: RuntimeActivationReason,
+        observation: Option<crate::startup::StartupObservation>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
         Box::pin(async move {
             self.ensure_runtime_recovery_coordinator();
             self.validate_agent_id(agent_id)?;
@@ -4415,7 +4506,7 @@ impl RuntimeHost {
                 let generation = registry.next_generation;
                 registry.next_generation = registry.next_generation.saturating_add(1);
                 let (runtime, runtime_task, phase) =
-                    self.spawn_runtime(agent_id, Some(generation))?;
+                    self.spawn_runtime(agent_id, Some(generation), observation.clone())?;
                 tracing::debug!(
                     agent_id,
                     activation_reason = reason.as_str(),
@@ -4466,7 +4557,7 @@ impl RuntimeHost {
             .agent_identities()
             .create_with_relations(&identity, &relations)?;
         self.cache_agent_identity(&identity)?;
-        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None) {
+        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None, None) {
             Ok(spawned) => spawned,
             Err(error) => {
                 let _ = self.archive_temporary_runtime_identity(&agent_id);
@@ -6992,6 +7083,7 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
         recovery_generation: Option<u64>,
+        observation: Option<crate::startup::StartupObservation>,
     ) -> Result<(
         RuntimeHandle,
         JoinHandle<()>,
@@ -7004,7 +7096,12 @@ impl RuntimeHost {
             .lock()
             .expect("static provider lock poisoned")
             .clone();
-        let runtime = if let Some(provider) = static_provider {
+        let observation =
+            observation.map(|observation| observation.for_agent(agent_id, recovery_generation));
+        let constructor = observation
+            .as_ref()
+            .map(|observation| observation.phase("storage_constructor"));
+        let runtime_result = if let Some(provider) = static_provider {
             RuntimeHandle::new_static_with_host_bridge(
                 agent_id.to_string(),
                 self.agent_data_dir(agent_id),
@@ -7019,7 +7116,7 @@ impl RuntimeHost {
                 RuntimeModelCatalog::from_config(&config),
                 self.inner.event_bus.clone(),
                 config.stored_config.runtime.timezone.clone(),
-            )?
+            )
         } else {
             RuntimeHandle::new_reconfigurable_with_host_bridge(
                 agent_id.to_string(),
@@ -7032,8 +7129,12 @@ impl RuntimeHost {
                 self.inner.runtime_db.clone(),
                 self.bridge(),
                 self.inner.event_bus.clone(),
-            )?
+            )
         };
+        if let Some(constructor) = constructor {
+            constructor.finish(&runtime_result);
+        }
+        let runtime = runtime_result?;
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let (phase_tx, phase_rx) = watch::channel(AgentRuntimePhase::Bootstrapping);
         let runtime_recovery_tx = self.inner.runtime_recovery_tx.clone();
@@ -7041,7 +7142,7 @@ impl RuntimeHost {
             let runtime = runtime.clone();
             let agent_id = agent_id.to_string();
             async move {
-                let mut run = Box::pin(runtime.clone().run());
+                let mut run = Box::pin(runtime.clone().run_with_startup_observation(observation));
                 let result = tokio::select! {
                     result = &mut run => result,
                     bootstrap = runtime.wait_for_bootstrap() => {
@@ -18322,6 +18423,219 @@ mod tests {
             .public_agent_scheduler_repair_inspection(&agent_id)
             .expect("scheduler repair inspection");
         assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    async fn seed_observed_startup_owner(host: &RuntimeHost, agent_id: &str) {
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        host.agent_storage(agent_id)
+            .unwrap()
+            .append_task(&TaskRecord {
+                id: format!("task-{agent_id}"),
+                agent_id: agent_id.into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: None,
+                detail: None,
+                recovery: None,
+            })
+            .unwrap();
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                &format!("timer-{agent_id}"),
+                agent_id,
+                TimerStatus::Active,
+                None,
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            ))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_observes_multiple_slow_owners_without_changing_serial_gate() {
+        let (_home, host) = canonical_test_host();
+        for agent_id in ["a-slow", "b-slow", "c-fast"] {
+            seed_observed_startup_owner(&host, agent_id).await;
+        }
+        let a_reached = Arc::new(Notify::new());
+        let b_reached = Arc::new(Notify::new());
+        let a_release = Arc::new(Notify::new());
+        let b_release = Arc::new(Notify::new());
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observation = crate::startup::StartupObservation::with_id("startup-multi".into())
+            .with_test_hook(Arc::new({
+                let (a_reached, b_reached, a_release, b_release, observed) = (
+                    a_reached.clone(),
+                    b_reached.clone(),
+                    a_release.clone(),
+                    b_release.clone(),
+                    observed.clone(),
+                );
+                move |observation, phase| {
+                    let (a_reached, b_reached, a_release, b_release, observed) = (
+                        a_reached.clone(),
+                        b_reached.clone(),
+                        a_release.clone(),
+                        b_release.clone(),
+                        observed.clone(),
+                    );
+                    Box::pin(async move {
+                        if phase == "runtime.bootstrap.tasks" {
+                            let agent_id = observation.agent_id.unwrap();
+                            observed
+                                .lock()
+                                .unwrap()
+                                .push((agent_id.clone(), observation.generation));
+                            match agent_id.as_str() {
+                                "a-slow" => {
+                                    a_reached.notify_one();
+                                    a_release.notified().await;
+                                }
+                                "b-slow" => {
+                                    b_reached.notify_one();
+                                    b_release.notified().await;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(())
+                    })
+                }
+            }));
+        let recovery = host.recover_startup_observed(&observation);
+        tokio::pin!(recovery);
+        tokio::select! {
+            reached = tokio::time::timeout(Duration::from_secs(30), a_reached.notified()) => reached.unwrap(),
+            result = &mut recovery => panic!("returned before first bootstrap gate: {result:?}"),
+        }
+        assert!(host.try_get_loaded_runtime("a-slow").await.is_some());
+        assert!(host.try_get_loaded_runtime("b-slow").await.is_none());
+        assert!(host.try_get_loaded_runtime("c-fast").await.is_none());
+        a_release.notify_one();
+        tokio::select! {
+            reached = tokio::time::timeout(Duration::from_secs(30), b_reached.notified()) => reached.unwrap(),
+            result = &mut recovery => panic!("returned before second bootstrap gate: {result:?}"),
+        }
+        assert!(host.try_get_loaded_runtime("c-fast").await.is_none());
+        b_release.notify_one();
+        tokio::time::timeout(Duration::from_secs(30), recovery)
+            .await
+            .unwrap()
+            .unwrap();
+        let observed = observed.lock().unwrap().clone();
+        assert_eq!(
+            observed
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["a-slow", "b-slow", "c-fast"]
+        );
+        for (agent_id, generation) in observed {
+            assert_eq!(
+                generation,
+                Some(host.inner.runtimes.read().await.agents[&agent_id].generation)
+            );
+            let task = host
+                .agent_storage(&agent_id)
+                .unwrap()
+                .latest_task_record(&format!("task-{agent_id}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(task.status, TaskStatus::Interrupted);
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_failure_summary_preserves_pending_candidates_and_error() {
+        use tracing::instrument::WithSubscriber;
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (_home, host) = canonical_test_host();
+        for agent_id in ["a-done", "b-failed", "c-pending"] {
+            seed_observed_startup_owner(&host, agent_id).await;
+        }
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || Writer(writer.clone()))
+            .finish();
+        let observation = crate::startup::StartupObservation::with_id("startup-failure".into())
+            .with_test_hook(Arc::new(|observation, phase| {
+                Box::pin(async move {
+                    if observation.agent_id.as_deref() == Some("b-failed")
+                        && phase == "runtime.bootstrap.tasks"
+                    {
+                        return Err(anyhow!("injected bootstrap task failure"));
+                    }
+                    Ok(())
+                })
+            }));
+        let error = tokio::time::timeout(
+            Duration::from_secs(30),
+            host.recover_startup_observed(&observation)
+                .with_subscriber(subscriber),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected bootstrap task failure"));
+        assert!(host.try_get_loaded_runtime("c-pending").await.is_none());
+        let task = host
+            .agent_storage("c-pending")
+            .unwrap()
+            .latest_task_record("task-c-pending")
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Running);
+        let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        let summary = output
+            .lines()
+            .find(|line| line.contains("startup agent recovery summary"))
+            .unwrap();
+        for field in [
+            "startup-failure",
+            "candidates=3",
+            "completed=1",
+            "skipped=0",
+            "failed=1",
+            "pending=1",
+            "outcome=\"error\"",
+        ] {
+            assert!(summary.contains(field), "{summary}");
+        }
+        let discovery = output
+            .lines()
+            .find(|line| line.contains("startup recovery candidates discovered"))
+            .unwrap();
+        for field in [
+            "tasks=3",
+            "timers=3",
+            "candidates=3",
+            "duplicates_removed=3",
+        ] {
+            assert!(discovery.contains(field), "{discovery}");
+        }
+        assert!(!output.contains("startup runtime state recovery completed"));
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]

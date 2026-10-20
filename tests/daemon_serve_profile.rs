@@ -383,6 +383,151 @@ fn assert_profile_options(profile: &Value, address: &str, home: &Path) {
 }
 
 #[test]
+fn startup_phase_logs_preserve_serving_order_and_daemon_handoff_correlation() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let assert_phases = |log: &str, expected: &[&str]| -> String {
+        // tracing's terminal styling must not affect the semantic assertions.
+        let mut plain = String::new();
+        let mut escape = false;
+        for c in log.chars() {
+            if c == '\x1b' {
+                escape = true;
+            } else if escape {
+                if c == 'm' {
+                    escape = false;
+                }
+            } else {
+                plain.push(c);
+            }
+        }
+        assert!(
+            !plain.contains("startup runtime state recovery completed"),
+            "{plain}"
+        );
+        let mut cursor = 0;
+        let mut startup_id = None;
+        for phase in expected {
+            for state in ["started", "finished"] {
+                let line = plain[cursor..]
+                    .lines()
+                    .find(|line| {
+                        line.contains(&format!("phase=\"{phase}\""))
+                            && line.contains(&format!("state=\"{state}\""))
+                    })
+                    .unwrap_or_else(|| panic!("missing {phase}/{state}:\n{plain}"));
+                if state == "finished" {
+                    assert!(line.contains("outcome=\"ok\""), "{line}");
+                    assert!(line.contains("elapsed_ms="), "{line}");
+                }
+                let id = line
+                    .split("startup_id=")
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .to_string();
+                if let Some(expected_id) = &startup_id {
+                    assert_eq!(&id, expected_id, "{line}");
+                } else {
+                    startup_id = Some(id);
+                }
+                cursor += plain[cursor..].find(line).unwrap() + line.len();
+            }
+        }
+        startup_id.unwrap()
+    };
+    let foreground = fixture.foreground(&[
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--token-file",
+        "control.token",
+    ]);
+    let foreground_log = fs::read_to_string(&fixture.processes[foreground].stderr).unwrap();
+    assert_phases(
+        &foreground_log,
+        &[
+            "storage_prepare",
+            "host_init",
+            "durable_reconcile",
+            "candidate_discovery",
+            "default_activation",
+            "first_run",
+            "bind",
+            "router",
+            "serving_ready",
+        ],
+    );
+    fixture.stop();
+    let started = fixture.run(&[
+        "daemon",
+        "start",
+        "--listen",
+        "127.0.0.1:0",
+        "--token-file",
+        "control.token",
+    ]);
+    assert_success(&started);
+    let preparation_id = assert_phases(
+        std::str::from_utf8(&started.stderr).unwrap(),
+        &["storage_prepare"],
+    );
+    let daemon_log = fs::read_to_string(fixture.path("run/daemon.log")).unwrap();
+    let serve_id = assert_phases(
+        &daemon_log,
+        &[
+            "host_init",
+            "durable_reconcile",
+            "candidate_discovery",
+            "default_activation",
+            "first_run",
+            "bind",
+            "router",
+            "serving_ready",
+        ],
+    );
+    assert_eq!(
+        preparation_id, serve_id,
+        "daemon handoff lost startup correlation"
+    );
+    fixture.stop();
+}
+
+#[test]
+fn startup_phase_logs_classify_real_bind_failure_as_error_not_cancellation() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = occupied.local_addr().unwrap().to_string();
+    // The legacy marker bypasses parent preflight, so the compiled serve path
+    // reaches a real bind failure without adding any production fault switch.
+    let failed = fixture.run_env(
+        &[
+            "serve",
+            "--listen",
+            &address,
+            "--token-file",
+            "control.token",
+        ],
+        &[("HOLON_PRE_SERVER_RUNTIME_PREPARED", "1")],
+    );
+    assert!(!failed.status.success(), "{}", output_text(&failed));
+    let log = String::from_utf8(failed.stderr).unwrap();
+    for phase in ["bind", "serve_startup"] {
+        let finished = log
+            .lines()
+            .find(|line| line.contains(&format!("\"{phase}\"")) && line.contains("\"finished\""))
+            .unwrap_or_else(|| panic!("missing {phase} result:\n{log}"));
+        assert!(finished.contains("\"error\""), "{finished}");
+        assert!(!finished.contains("\"incomplete\""), "{finished}");
+    }
+    assert!(!log.contains("serving_ready"), "{log}");
+    fixture.assert_no_secrets();
+}
+
+#[test]
 fn ephemeral_port_intent_survives_foreground_start_and_restart() {
     let _lock = server_lock();
     let mut fixture = Fixture::new();

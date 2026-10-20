@@ -6142,21 +6142,17 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn run(self) -> Result<()> {
-        if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.wait_for_bootstrap_ready().await?;
-        }
-        let bootstrap = async {
-            self.bootstrap_recovery().await?;
-            scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                .bootstrap_recovered()
-                .await?;
-            self.recover_scheduler_bootstrap_claims().await?;
-            Ok(())
-        }
-        .await;
-        self.complete_bootstrap(&bootstrap);
-        bootstrap?;
+    pub fn run(self) -> impl std::future::Future<Output = Result<()>> {
+        // Do not wrap the large run future in another inline async frame.
+        self.run_with_startup_observation(None)
+    }
+
+    pub(crate) async fn run_with_startup_observation(
+        self,
+        observation: Option<crate::startup::StartupObservation>,
+    ) -> Result<()> {
+        self.bootstrap_with_startup_observation(observation.as_ref())
+            .await?;
 
         loop {
             if self.emit_due_task_result_recovery().await? {
@@ -7258,31 +7254,83 @@ impl RuntimeHandle {
         Ok(recovered)
     }
 
-    async fn bootstrap_recovery(&self) -> Result<()> {
-        if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
-            if self.agent_state().await?.status == AgentStatus::Stopped {
-                self.interrupt_active_tasks_for_lifecycle_stop(tasks)
-                    .await?;
-            } else {
-                let (reattached, interrupted_tasks) =
-                    self.recover_supervised_child_tasks(tasks).await?;
-                let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
-                if !reattached.is_empty() {
-                    self.inner.storage.append_event(&AuditEvent::legacy(
-                        "supervised_child_task_monitor_reattached",
-                        serde_json::json!({
-                            "agent_id": self.agent_id().await?,
-                            "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
-                        }),
-                    ))?;
-                }
-                drop(interrupted);
+    fn bootstrap_with_startup_observation<'a>(
+        &'a self,
+        observation: Option<&'a crate::startup::StartupObservation>,
+    ) -> impl std::future::Future<Output = Result<()>> + 'a {
+        // Keep startup's instrumented future out of the long-lived run frame.
+        Box::pin(async move {
+            if let Some(bridge) = self.inner.host_bridge.as_ref() {
+                observe_startup_phase(
+                    observation,
+                    "runtime.onboarding_gate",
+                    bridge.wait_for_bootstrap_ready(),
+                )
+                .await?;
             }
-        }
-        if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
-            self.recover_active_timers(timers).await?;
-        }
-        self.emit_recovered_pending_wake_hint().await?;
+            let bootstrap = observe_startup_phase(observation, "runtime.bootstrap", async {
+                self.bootstrap_recovery(observation).await?;
+                observe_startup_phase(
+                    observation,
+                    "runtime.bootstrap.scheduler",
+                    scheduler_executor::SchedulerDecisionExecutor::new(self).bootstrap_recovered(),
+                )
+                .await?;
+                observe_startup_phase(
+                    observation,
+                    "runtime.bootstrap.retained_claims",
+                    self.recover_scheduler_bootstrap_claims(),
+                )
+                .await?;
+                Ok(())
+            })
+            .await;
+            self.complete_bootstrap(&bootstrap);
+            bootstrap
+        })
+    }
+
+    async fn bootstrap_recovery(
+        &self,
+        observation: Option<&crate::startup::StartupObservation>,
+    ) -> Result<()> {
+        observe_startup_phase(observation, "runtime.bootstrap.tasks", async {
+            if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
+                if self.agent_state().await?.status == AgentStatus::Stopped {
+                    self.interrupt_active_tasks_for_lifecycle_stop(tasks)
+                        .await?;
+                } else {
+                    let (reattached, interrupted_tasks) =
+                        self.recover_supervised_child_tasks(tasks).await?;
+                    let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
+                    if !reattached.is_empty() {
+                        self.inner.storage.append_event(&AuditEvent::legacy(
+                            "supervised_child_task_monitor_reattached",
+                            serde_json::json!({
+                                "agent_id": self.agent_id().await?,
+                                "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
+                            }),
+                        ))?;
+                    }
+                    drop(interrupted);
+                }
+            }
+            Ok(())
+        })
+        .await?;
+        observe_startup_phase(observation, "runtime.bootstrap.timers", async {
+            if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
+                self.recover_active_timers(timers).await?;
+            }
+            Ok(())
+        })
+        .await?;
+        observe_startup_phase(
+            observation,
+            "runtime.bootstrap.wake_hint",
+            self.emit_recovered_pending_wake_hint(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -7303,6 +7351,33 @@ impl RuntimeHandle {
             notified.await;
         }
     }
+}
+
+async fn observe_startup_phase<T>(
+    observation: Option<&crate::startup::StartupObservation>,
+    phase: &'static str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    // Await the payload once: separate observed/unobserved branches retain
+    // multiple copies of large runtime futures in the generated state machine.
+    let phase_observation = observation.map(|observation| observation.phase(phase));
+    #[cfg(test)]
+    if let Some(observation) = observation {
+        if let Some(hook) = &observation.test_hook {
+            if let Err(error) = hook(observation.clone(), phase).await {
+                let result = Err(error);
+                if let Some(phase_observation) = phase_observation {
+                    phase_observation.finish(&result);
+                }
+                return result;
+            }
+        }
+    }
+    let result = future.await;
+    if let Some(phase_observation) = phase_observation {
+        phase_observation.finish(&result);
+    }
+    result
 }
 
 fn decode_exec_command_batch_result(value: &serde_json::Value) -> Option<ExecCommandBatchResult> {

@@ -119,6 +119,46 @@ completion includes task/timer recovery, scheduler bootstrap settlement, and
 canonical orphan-claim recovery; spawning a runtime task alone is not sufficient
 evidence that startup reconciliation completed.
 
+### Startup phase observations
+
+Startup observations are diagnostic evidence, not admission or readiness state.
+One `startup_id` correlates storage preparation, host construction, durable
+reconciliation, candidate discovery, serial owner activation, first-run work,
+listener binding, router construction, and the existing healthy transition.
+The internal pre-server-prepared marker carries this identifier across daemon
+launch; legacy markers remain accepted, and the marker is removed before
+runtime commands can inherit it.
+
+Each phase emits a start and a finish with monotonic elapsed milliseconds and
+an outcome (`ok`, `error`, or `incomplete` if unwound or cancelled). Errors are
+classified by the failing phase; arbitrary error text, provider payloads, and
+credentials are not added to these observations. Agent observations identify
+the agent; constructor and runtime bootstrap observations also identify the
+actual host generation. Bootstrap distinguishes onboarding, task/child recovery,
+timers, wake hints, scheduler settlement, and retained claims.
+
+The durable-reconciliation completion message describes only that phase.
+Candidate discovery reports the queue/task/timer/wait/execution source counts,
+the distinct candidate count, and duplicates removed across sources. Candidate
+skips carry a reason. The final recovery summary reports completed, skipped,
+failed, and still-pending candidates, including on early failure; it is not an
+assertion that listeners are serving. `serving_ready` observes the existing
+healthy transition, not a new requirement that every loaded runtime has
+completed bootstrap (default activation alone still does not await bootstrap).
+
+These observations do not add deadlines, parallel recovery, retries,
+cancellation, earlier listeners, or new readiness guarantees. Characterization
+tests gate real bootstrap subphases using test-only per-observation hooks,
+without provider latency or production sleep switches.
+Optional observation uses one await path for the underlying future; separate
+observed/unobserved await branches can multiply large inline runtime future
+frames and overflow otherwise unchanged callers' stacks.
+The startup future is heap-pinned at its construction boundary so its
+instrumentation does not inflate the long-lived run loop's inline state or poll
+stack. This does not spawn another task or alter cancellation or completion.
+The public `run()` entrypoint returns the original run future directly rather
+than adding another inline async wrapper.
+
 Non-stopped agents retain the normal task-kind recovery policy: supervised child
 tasks may reattach, while process-local command tasks become
 `interrupted(runtime_restarted)` and emit an idempotent terminal result. A

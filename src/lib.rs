@@ -7,6 +7,7 @@ mod callbacks;
 pub(crate) mod github;
 pub(crate) mod github_archive;
 pub mod ids;
+pub mod startup;
 
 pub mod brief;
 pub mod cli;

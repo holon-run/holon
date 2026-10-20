@@ -25,7 +25,7 @@ use holon::{
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
         daemon_launch_with_profile, daemon_logs, daemon_prepare_update, daemon_status, daemon_stop,
-        prepare_runtime_before_server, prepare_serve_with_profile, DaemonServeProfile,
+        prepare_runtime_before_server_observed, prepare_serve_with_profile, DaemonServeProfile,
         ResolvedDaemonServePlan, RuntimeControlAuthMode, RuntimeServiceHandle, ServeProfileAccess,
         ServeProfileAuthentication, DAEMON_SERVE_ARGS_ENV, DAEMON_SERVE_RESOLUTION_ENV,
         PRE_SERVER_PREPARED_ENV,
@@ -1229,112 +1229,172 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     if let Some(report) = startup_report() {
         println!("{}", report.startup_summary());
     }
-    if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
-        prepare_runtime_before_server(&config)?;
-    }
-    if std::env::var_os(DAEMON_SERVE_ARGS_ENV).is_none() {
-        std::env::set_var(
-            DAEMON_SERVE_ARGS_ENV,
-            serde_json::to_string(&safe_serve_args_for_metadata(&serve_args))?,
-        );
-    }
+    // Correlation only; keep accepting the legacy internal "1" marker.
+    let startup = std::env::var(PRE_SERVER_PREPARED_ENV)
+        .ok()
+        .filter(|value| value.starts_with("startup_") && value.len() <= 128)
+        .map(holon::startup::StartupObservation::with_id)
+        .unwrap_or_default();
+    let (
+        host,
+        diagnostics_writer,
+        otlp_exporter,
+        runtime_service,
+        listener,
+        local_listener,
+        tcp_router,
+        unix_server,
+    ) = startup
+        .observe("serve_startup", async {
+            if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
+                prepare_runtime_before_server_observed(&config, &startup)?;
+            }
+            if std::env::var_os(DAEMON_SERVE_ARGS_ENV).is_none() {
+                std::env::set_var(
+                    DAEMON_SERVE_ARGS_ENV,
+                    serde_json::to_string(&safe_serve_args_for_metadata(&serve_args))?,
+                );
+            }
 
-    let host = RuntimeHost::new(config.clone())?;
-    let diagnostics_writer = DiagnosticsWriter::start(
-        config.diagnostics_db_path(),
-        config.diagnostics_writer_config()?,
-    )?;
-    diagnostics_writer.install();
-    let otlp_exporter = config
-        .otlp_exporter_config()?
-        .map(OtlpExporter::start)
-        .transpose()?;
-    if let Some(exporter) = otlp_exporter.as_ref() {
-        exporter.install();
-    }
-    let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
-    // Internal launch handoff must not leak into commands spawned by this runtime.
-    std::env::remove_var(PRE_SERVER_PREPARED_ENV);
-    std::env::remove_var(DAEMON_SERVE_ARGS_ENV);
-    std::env::remove_var(DAEMON_SERVE_RESOLUTION_ENV);
-    host.recover_orphaned_queue_claims_at_startup().await?;
-    let runtime = if host.configured_default_agent_id()?.is_some() {
-        Some(host.default_runtime().await?)
-    } else {
-        None
-    };
-    host.spawn_daemon_memory_indexer();
-    host.spawn_daemon_runtime_db_retention();
-    host.spawn_daemon_deletion_coordinator();
-    spawn_stale_agent_template_remote_source_sync(&config, &host);
-    if let Some(runtime) = runtime.as_ref() {
-        emit_first_run_intro(&config, runtime).await;
-    }
+            let host = startup.observe_sync("host_init", || RuntimeHost::new(config.clone()))?;
+            let diagnostics_writer = DiagnosticsWriter::start(
+                config.diagnostics_db_path(),
+                config.diagnostics_writer_config()?,
+            )?;
+            diagnostics_writer.install();
+            let otlp_exporter = config
+                .otlp_exporter_config()?
+                .map(OtlpExporter::start)
+                .transpose()?;
+            if let Some(exporter) = otlp_exporter.as_ref() {
+                exporter.install();
+            }
+            let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
+            // Internal launch handoff must not leak into commands spawned by this runtime.
+            std::env::remove_var(PRE_SERVER_PREPARED_ENV);
+            std::env::remove_var(DAEMON_SERVE_ARGS_ENV);
+            std::env::remove_var(DAEMON_SERVE_RESOLUTION_ENV);
+            host.recover_startup_observed(&startup).await?;
+            let runtime = startup
+                .observe("default_activation", async {
+                    if host.configured_default_agent_id()?.is_some() {
+                        Ok(Some(
+                            host.default_runtime_observed(Some(startup.clone())).await?,
+                        ))
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .await?;
+            host.spawn_daemon_memory_indexer();
+            host.spawn_daemon_runtime_db_retention();
+            host.spawn_daemon_deletion_coordinator();
+            spawn_stale_agent_template_remote_source_sync(&config, &host);
+            startup
+                .observe("first_run", async {
+                    if let Some(runtime) = runtime.as_ref() {
+                        emit_first_run_intro(&config, runtime).await;
+                    }
+                    Ok(())
+                })
+                .await?;
 
-    let listener = TcpListener::bind(&config.http_addr)
-        .await
-        .with_context(|| format!("failed to bind {}", config.http_addr))?;
-    let primary_addr = listener.local_addr()?;
-    println!("Holon listening on {primary_addr}");
-    if let Some(advertise_url) = &advertise_url {
-        println!("Holon advertised at {advertise_url}");
-    }
-    // Keep local control and the Serve backend reachable for LAN/tailnet primaries.
-    // Loopback and wildcard primaries already cover their loopback address family.
-    let local_listener = if !primary_addr.ip().is_loopback() && !primary_addr.ip().is_unspecified()
-    {
-        let local_addr = std::net::SocketAddr::new(
-            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            primary_addr.port(),
-        );
-        let local = TcpListener::bind(local_addr)
-            .await
-            .with_context(|| format!("failed to bind localhost listener on {local_addr}"))?;
-        println!("Holon local listening on {}", local.local_addr()?);
-        Some(local)
-    } else {
-        None
-    };
-    let local_addr = local_listener
-        .as_ref()
-        .map(TcpListener::local_addr)
-        .transpose()?;
+            let listener = startup
+                .observe("bind", async {
+                    TcpListener::bind(&config.http_addr)
+                        .await
+                        .with_context(|| format!("failed to bind {}", config.http_addr))
+                })
+                .await?;
+            let primary_addr = listener.local_addr()?;
+            println!("Holon listening on {primary_addr}");
+            if let Some(advertise_url) = &advertise_url {
+                println!("Holon advertised at {advertise_url}");
+            }
+            // Keep local control and the Serve backend reachable for LAN/tailnet primaries.
+            // Loopback and wildcard primaries already cover their loopback address family.
+            let local_listener =
+                if !primary_addr.ip().is_loopback() && !primary_addr.ip().is_unspecified() {
+                    let local_addr = std::net::SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                        primary_addr.port(),
+                    );
+                    let local = startup
+                        .observe("bind_loopback", async {
+                            TcpListener::bind(local_addr).await.with_context(|| {
+                                format!("failed to bind localhost listener on {local_addr}")
+                            })
+                        })
+                        .await?;
+                    println!("Holon local listening on {}", local.local_addr()?);
+                    Some(local)
+                } else {
+                    None
+                };
+            let local_addr = local_listener
+                .as_ref()
+                .map(TcpListener::local_addr)
+                .transpose()?;
 
-    let tcp_state =
-        AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-            .with_http_listener_addresses(primary_addr, local_addr)
-            .with_desktop_integration(desktop_integration)
-            .with_advertise_url(advertise_url.clone())
-            .with_web_dist(web_dist.clone());
+            let tcp_state =
+                AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                    .with_http_listener_addresses(primary_addr, local_addr)
+                    .with_desktop_integration(desktop_integration)
+                    .with_advertise_url(advertise_url.clone())
+                    .with_web_dist(web_dist.clone());
 
-    #[cfg(unix)]
-    let unix_server = {
-        ensure_socket_parent(&config.socket_path)?;
-        let unix_listener = tokio::net::UnixListener::bind(&config.socket_path)
-            .with_context(|| format!("failed to bind {}", config.socket_path.display()))?;
-        runtime_service.write_state_files(&config)?;
-        println!("Holon control socket on {}", config.socket_path.display());
-        let unix_router = http::router(
-            AppState::for_unix_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-                .share_listener_state_from(&tcp_state)
-                .with_web_dist(web_dist.clone()),
-        );
-        tokio::spawn(http::serve_unix(
-            unix_listener,
-            unix_router,
-            runtime_service.shutdown_signal(),
-        ))
-    };
+            #[cfg(unix)]
+            let unix_server = {
+                ensure_socket_parent(&config.socket_path)?;
+                let unix_listener = startup.observe_sync("bind_unix", || {
+                    tokio::net::UnixListener::bind(&config.socket_path)
+                        .with_context(|| format!("failed to bind {}", config.socket_path.display()))
+                })?;
+                runtime_service.write_state_files(&config)?;
+                println!("Holon control socket on {}", config.socket_path.display());
+                let unix_router = http::router(
+                    AppState::for_unix_with_runtime_service(
+                        host.clone(),
+                        Some(runtime_service.clone()),
+                    )
+                    .share_listener_state_from(&tcp_state)
+                    .with_web_dist(web_dist.clone()),
+                );
+                tokio::spawn(http::serve_unix(
+                    unix_listener,
+                    unix_router,
+                    runtime_service.shutdown_signal(),
+                ))
+            };
+            #[cfg(not(unix))]
+            runtime_service.write_state_files(&config)?;
+            #[cfg(not(unix))]
+            let unix_server = ();
+            drop(registration_lock);
+
+            // The advertised address and the localhost alias are one daemon-wide HTTP
+            // state: one-time pairing tickets are minted over loopback and redeemed from
+            // the advertised LAN or Tailscale address, so both sockets must serve the
+            // same state instead of a per-listener copy.
+            let tcp_router = startup.observe_sync("router", || Ok(http::router(tcp_state)))?;
+            startup.observe_sync("serving_ready", || {
+                runtime_service.mark_healthy();
+                Ok(())
+            })?;
+            Ok((
+                host,
+                diagnostics_writer,
+                otlp_exporter,
+                runtime_service,
+                listener,
+                local_listener,
+                tcp_router,
+                unix_server,
+            ))
+        })
+        .await?;
     #[cfg(not(unix))]
-    runtime_service.write_state_files(&config)?;
-    drop(registration_lock);
-
-    // The advertised address and the localhost alias are one daemon-wide HTTP
-    // state: one-time pairing tickets are minted over loopback and redeemed from
-    // the advertised LAN or Tailscale address, so both sockets must serve the
-    // same state instead of a per-listener copy.
-    let tcp_router = http::router(tcp_state);
-    runtime_service.mark_healthy();
+    let _ = unix_server;
 
     #[cfg(unix)]
     {
