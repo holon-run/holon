@@ -41,7 +41,8 @@ mod tests {
                 let server = tokio::spawn(async move {
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let mut request = [0; 4096];
-                    socket.read(&mut request).await.unwrap();
+                    let bytes_read = socket.read(&mut request).await.unwrap();
+                    assert!(bytes_read > 0, "expected request bytes before responding");
                     socket
                         .write_all(
                             b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 10\r\n\r\n",
