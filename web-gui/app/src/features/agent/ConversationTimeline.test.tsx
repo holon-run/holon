@@ -207,7 +207,8 @@ describe("ConversationTimeline", () => {
     expect(html).toContain('aria-label="Conversation turn 2"');
     expect(html).not.toContain("timeline-turn-rail");
     expect(html).toContain("Operator message");
-    expect(html.indexOf("Turn ended")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
+    expect(html).not.toContain("Turn ended");
+    expect(html.indexOf("Execution details")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
   });
 
   it("keeps legacy historical briefs readable without claiming delivery is pending", () => {
@@ -410,6 +411,8 @@ describe("conversation presentation boundaries", () => {
     })]);
     expect(html).toContain('class="conversation-turn-elapsed"');
     expect(html).toContain("Took 1:00");
+    expect(html).toContain('aria-label="Took 1:00">1:00</time>');
+    expect(html).not.toContain(">Took ");
   });
 
   it("preserves Markdown links and ordinary JSON in display text", () => {
@@ -598,7 +601,40 @@ describe("task result presentation", () => {
     expect(html).not.toContain("task-secret-id");
     expect(html).not.toContain("conversation-turn-notice");
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('conversation-turn is-completed is-compact');
     expect(html).not.toContain('class="conversation-task-result-row');
+  });
+  it("uses labelled icons without visible source or disclosure text", () => {
+    const html = renderTimeline([turnSummary("icon-header", 1, { inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: false } }], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } },
+    })]);
+    const header = html.match(/<header class="conversation-turn-header">([\s\S]*?)<\/header>/)![1];
+    expect(header.replace(/<[^>]*>/g, "")).toBe("#1");
+    expect(header).toContain('role="img" aria-label="Task result"');
+    expect(header).toContain('aria-label="Execution details"');
+  });
+  it("never compacts visible replies, prompts, steering, notices or active executions", () => {
+    const base = turnSummary("not-empty", 1, { inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: false } }], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } },
+    });
+    const cases: Partial<ConversationTurnSummary>[] = [
+      { brief_ids: ["brief-1"], result: { kind: "available" } },
+      { presentation_class: "operator", inputs: [{ message_id: "prompt", preview: "User prompt", presentation_class: "operator" }] },
+      { inputs: [...base.inputs, { message_id: "steering", preview: "Steering", interjected: true }] },
+      { execution: { kind: "terminal", outcome: "provider_failed_needs_recovery" } },
+      { execution: { kind: "active" }, result: { kind: "pending" } },
+      { inputs: [], presentation_class: "system", result: { kind: "none", reason: { kind: "aborted" } } },
+      { result: { kind: "unavailable", reason: "retention_gap", retryable: false } },
+    ];
+    for (const overrides of cases) {
+      const html = renderTimeline([{ ...base, ...overrides }]);
+      expect(html).toContain('data-turn-id="not-empty"');
+      expect(html).not.toContain(" is-compact");
+    }
   });
   it("shows the model response once and folds its task source into the process", () => {
     const html = renderTimeline([turnSummary("response", 1, { inputs: [input], presentation_class: "task",
@@ -606,7 +642,7 @@ describe("task result presentation", () => {
       result: { kind: "available" }, settled: true,
     })]);
     expect(html).toContain("Execution details");
-    expect(html).toContain("1 task result received");
+    expect(html).not.toContain("1 task result received");
     expect(html).not.toContain("bounded runtime output");
     expect(html.match(/这是结果内容 markdown/g)).toHaveLength(1);
   });
@@ -634,8 +670,7 @@ describe("task result presentation", () => {
         result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
       })]);
       expect(html).toContain(`data-turn-id="${status}"`);
-      expect(html).toContain(status === "cancelled" ? "conversation-task-cancelled-hint" : "conversation-task-failure-hint");
-      expect(html).toContain(status === "cancelled" ? "1 cancelled" : "1 failed");
+      expect(html).not.toContain("conversation-task-summary");
       expect(html).not.toContain("bounded runtime output");
     }
     const html = renderTimeline([turnSummary("reference", 1, { inputs: [{ ...input, task_result: {
@@ -645,7 +680,7 @@ describe("task result presentation", () => {
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
     expect(html).toContain('data-turn-id="reference"');
-    expect(html).toContain("1 task result received");
+    expect(html).not.toContain("1 task result received");
     expect(html).not.toContain("internal reference text");
   });
 });

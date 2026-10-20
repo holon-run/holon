@@ -1,5 +1,8 @@
 # Holon Android
 
+Use the shared [conversation presentation contract](../../docs/ui/conversation-presentation.md)
+for source icons and turn-header interactions; Android adoption is tracked in #3622.
+
 This directory contains the native Android client implementation.
 
 Markdown links to this runtime's hosted Apps and exact GUI routes open in an
