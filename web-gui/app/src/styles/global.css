@@ -1632,6 +1632,7 @@ code {
 
 .conversation-pane {
   --conversation-content-max: 760px;
+  --conversation-frame-width: min(var(--conversation-content-max), calc(100% - 60px));
   position: relative;
   background: var(--surface);
 
@@ -2546,8 +2547,14 @@ code {
   color: var(--accent);
 }
 
+.conversation-header,
+.conversation-pane > .composer-status,
 .composer {
-  width: min(var(--conversation-content-max), calc(100% - 60px));
+  width: var(--conversation-frame-width);
+  margin-inline: auto;
+}
+
+.composer {
   margin: 0 auto 18px;
   position: relative;
   border: 1px solid var(--line);
@@ -7112,7 +7119,7 @@ code {
   .app-shell .sidebar { width: 72px; }
   .sidebar .brand-name, .sidebar .global-nav strong, .sidebar .agent-row-main, .sidebar .agent-row-status, .sidebar .side-heading, .sidebar .connection-status span:last-child { display: none; }
   .message-list { padding: 12px 16px 20px; }
-  .composer { width: calc(100% - 24px); }
+  .conversation-pane { --conversation-frame-width: calc(100% - 24px); }
   .conversation-input-line, .conversation-pending-chip { max-width: 94%; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -7480,8 +7487,8 @@ code {
   .agent-stream-controls .live-status { display: none; }
 
   .message-list { padding: 12px 12px 18px; }
+  .conversation-pane { --conversation-frame-width: calc(100% - 16px); }
   .composer {
-    width: calc(100% - 16px);
     margin-bottom: max(8px, env(safe-area-inset-bottom));
   }
   .composer textarea {
