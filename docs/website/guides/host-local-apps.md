@@ -23,10 +23,16 @@ permission to run arbitrary work. For the underlying model, see
 - Host only code you trust. Apps share the runtime's origin and session;
   they are not isolated from host credentials.
 
-## 1. Create the directory and manifest
+## 1. Create the directory and optional manifest
 
+In the confirmed Agent Home, create `apps/ping-card/`. A root `index.html`
+is enough to host it without a manifest: the runtime uses the directory name
+for `id` and `name`, `"0.0.0"` for `version`, `"index.html"` for `entry`,
+and `null` for `description`. These defaults exist only in memory; Holon
+does not write a manifest or change your files.
 
-In the confirmed Agent Home, create `apps/ping-card/` and save `manifest.json`:
+For the display name and description used in this example, optionally save
+`apps/ping-card/manifest.json`:
 
 ```json
 {
@@ -39,6 +45,8 @@ In the confirmed Agent Home, create `apps/ping-card/` and save `manifest.json`:
 ```
 
 ## 2. Write the page
+
+Save this as `apps/ping-card/index.html`:
 
 ```html
 <!DOCTYPE html>
@@ -129,8 +137,12 @@ workflow that the app requests.
 
 ## If it does not work
 
-- **App missing or rejected:** check that `manifest.json` is valid, its `id`
-  equals `ping-card`, and its entry file exists inside that directory.
+- **App missing or rejected:** without a manifest, provide a readable root
+  `index.html`; no other entry is guessed. If a manifest exists, check its
+  required fields, its `id` (`ping-card` here), and its entry path. Invalid,
+  oversized, unreadable, directory, dangling-link, or escaping-link manifests
+  are errors, not a fallback to defaults. Keep paths non-hidden and contained
+  in the app root.
 - **Authentication fails:** open the app from the runtime origin after logging
   in or pairing. Never put a bearer token in the HTML or JavaScript.
 - **SDK unavailable:** check the `holon.js` response. Source builds must include
@@ -138,8 +150,47 @@ workflow that the app requests.
 - **No events:** check the browser's network panel for the `/events` stream.
   Reload and submit another request after it connects. Do not infer failure
   from an event missed during a disconnect.
-- **External script or request blocked:** use same-origin assets. Do not weaken
-  the CSP to import untrusted code.
+- **External script or request blocked:** inspect browser CORS, the app's own
+  CSP, and any operator-configured App CSP. Holon sends no platform App CSP
+  by default. Do not import untrusted code into the runtime's shared session.
+- **`413` / `app_asset_too_large`:** the complete file exceeds the daemon's
+  `local_apps.max_asset_bytes` (64 MiB by default), even if requesting a range.
+- **`503` / `app_asset_busy`:** all 16 shared asset streams are occupied.
+  Honor `Retry-After: 1` and retry; SDK/API requests do not use these permits.
+
+## Host an existing static build
+
+For a static site or uncompressed, single-threaded Unity Web build, copy only
+the intended publication output into `apps/<app-id>/` in the confirmed Agent
+Home. Keep its relative layout and root `index.html`, then open
+`/apps/<agent-id>/<app-id>/` after logging in. No separate HTTP server,
+manifest, or SDK integration is needed just to serve static files. If the
+build uses a different HTML entry name, provide an explicit manifest with
+all required fields and set `entry`; Holon does not guess or rename it.
+
+Ordinary files are served without an extension allowlist, including WASM
+(`application/wasm`) and data or unknown types (`application/octet-stream`).
+Hidden files and path/symlink escapes are rejected; there is no directory
+listing or server-side execution. Do not copy source trees, secrets, or
+private files into the app directory.
+
+The daemon-wide size and optional CSP settings, CLI examples, and activation
+semantics are in [Daemon configuration](../reference/local-apps.md#daemon-configuration).
+With a running daemon, `holon config set` and `holon config unset` persist
+changes through the existing configuration API and schedule reload. After a
+successful reload, subsequent App requests use the new settings; in-flight
+streams retain their acquired policy. Direct file edits do not automatically
+reload configuration; offline settings take effect on daemon startup or restart.
+These settings do not change Web GUI or Explorer sandbox policy.
+
+Check entry, script, WASM, and data responses in the browser network panel,
+then exercise the application rather than treating a successful download as
+a successful game run. `.gz`, `.br`, and `.unityweb` are served as ordinary
+files; runnable precompressed builds and original MIME/encoding negotiation
+are not promised. Multithreaded Unity and COOP/COEP are outside this slice.
+Real-game and real Mac/Safari acceptance remain outstanding; automated HTTP
+checks do not establish those results. Existing services need the updated
+binary and configuration activation; this guide does not restart them.
 
 ## Contract details
 

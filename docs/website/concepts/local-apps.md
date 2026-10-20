@@ -11,6 +11,12 @@ It can present a focused view of work, collect input, or offer controls for
 a particular workflow. The app's files live under that agent's `apps/`
 directory; users open it through a logical app route.
 
+An app may also be a static site or an uncompressed, single-threaded Unity
+Web build. A root `index.html` is enough when no `manifest.json` exists:
+the runtime derives metadata in memory without changing the build output.
+An explicit manifest still controls metadata and custom entry pages; a broken
+manifest is an error, not a reason to guess another entry.
+
 For example, a documentation agent could host a review queue with a button to
 request a fresh link check. The app presents the queue and sends the request.
 The agent performs the authorized work and reports the result.
@@ -55,10 +61,20 @@ The SDK uses that existing session; it grants no extra authority. Requests
 preserve their App provenance. Neither a button label nor the app owner's
 agent ID makes submitted text an operator instruction.
 
-The host applies path checks and a Content Security Policy to served assets.
-These measures do not provide separate browser origins for each app or a
-general isolation boundary between mutually untrusted apps. Review app code
-before hosting it in a session that can access the control plane.
+The host enforces contained, non-hidden file paths and a configurable
+per-file size limit (64 MiB by default). It does not impose an extension
+allowlist or a platform Content Security Policy by default. Operators may
+configure a complete App CSP; browser CORS and any app-supplied CSP still
+apply. These settings do not change Web GUI or Explorer sandbox policy.
+With a running daemon, `holon config set` and `holon config unset` persist
+these settings through the existing configuration API and schedule reload.
+After a successful reload, subsequent App requests use the new settings;
+in-flight streams retain their acquired policy. Direct configuration-file edits
+do not automatically reload; offline settings take effect on daemon startup
+or restart.
+They also do not provide separate browser origins or isolation between
+mutually untrusted apps. Review app code before hosting it in a session
+that can access the control plane.
 
 Cross-agent actions remain subject to the runtime's authority checks. The SDK
 does not supply a separate permission system or bypass those checks.

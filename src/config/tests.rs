@@ -205,6 +205,7 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         auth: Default::default(),
         api_cors: Default::default(),
         api_projection: Default::default(),
+        local_apps: Default::default(),
         config_file_path: home_path.join("config.json"),
         stored_config: Default::default(),
         default_model: route_ref(default_model),
@@ -2855,6 +2856,192 @@ fn api_prompt_config_defaults_and_round_trips() {
     );
     assert_eq!(config.api.prompt.attachment_max_bytes(), 64 * 1024 * 1024);
     assert!(config.api.is_empty());
+}
+
+#[test]
+fn local_apps_config_defaults_are_backward_compatible() {
+    for config in [
+        HolonConfigFile::default(),
+        serde_json::from_str::<HolonConfigFile>("{}").unwrap(),
+        toml::from_str::<HolonConfigFile>("").unwrap(),
+    ] {
+        assert!(config.local_apps.is_empty());
+        assert_eq!(config.local_apps.max_asset_bytes(), 64 * 1024 * 1024);
+        assert!(config.local_apps.csp_header_value().unwrap().is_none());
+        assert_eq!(
+            get_config_key(&config, "local_apps.max_asset_bytes").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "local_apps.csp").unwrap(),
+            Value::Null
+        );
+        assert!(serde_json::to_value(&config)
+            .unwrap()
+            .get("local_apps")
+            .is_none());
+        assert!(!toml::to_string(&config).unwrap().contains("[local_apps]"));
+    }
+    let schema = config_schema();
+    assert_eq!(
+        schema
+            .iter()
+            .find(|entry| entry.key == "local_apps.max_asset_bytes")
+            .unwrap()
+            .default,
+        json!(64 * 1024 * 1024)
+    );
+    assert_eq!(
+        schema
+            .iter()
+            .find(|entry| entry.key == "local_apps.csp")
+            .unwrap()
+            .default,
+        Value::Null
+    );
+}
+
+#[test]
+fn local_apps_config_set_get_unset_and_persistence() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(&mut config, "model.default", "openai/gpt-5.4").unwrap();
+    let policy = " default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src https: ";
+    set_config_key(&mut config, "local_apps.max_asset_bytes", "134217728").unwrap();
+    set_config_key(&mut config, "local_apps.csp", policy).unwrap();
+    assert_eq!(config.local_apps.max_asset_bytes(), 128 * 1024 * 1024);
+    assert_eq!(
+        get_config_key(&config, "local_apps.max_asset_bytes").unwrap(),
+        json!(128 * 1024 * 1024)
+    );
+    assert_eq!(
+        get_config_key(&config, "local_apps.csp").unwrap(),
+        json!(policy)
+    );
+    assert_eq!(
+        config
+            .local_apps
+            .csp_header_value()
+            .unwrap()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        policy
+    );
+    let encoded = toml::to_string(&config).unwrap();
+    assert!(encoded.contains("[local_apps]"));
+    let restored: HolonConfigFile = toml::from_str(&encoded).unwrap();
+    assert_eq!(restored.local_apps, config.local_apps);
+
+    let home = tempfile::tempdir().unwrap();
+    let path = persisted_config_path(home.path());
+    save_persisted_config_at(&path, &config).unwrap();
+    let restored = load_persisted_config_at(&path).unwrap();
+    assert_eq!(restored.local_apps, config.local_apps);
+    let runtime =
+        AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf())).unwrap();
+    assert_eq!(runtime.local_apps, config.local_apps);
+
+    unset_config_key(&mut config, "local_apps.csp").unwrap();
+    unset_config_key(&mut config, "local_apps.max_asset_bytes").unwrap();
+    assert!(config.local_apps.is_empty());
+    assert_eq!(config.local_apps.max_asset_bytes(), 64 * 1024 * 1024);
+    assert!(config.local_apps.csp_header_value().unwrap().is_none());
+    assert_eq!(
+        get_config_key(&config, "local_apps.max_asset_bytes").unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        get_config_key(&config, "local_apps.csp").unwrap(),
+        Value::Null
+    );
+    save_persisted_config_at(&path, &config).unwrap();
+    let reloaded = runtime.reload_runtime_config().unwrap();
+    assert_eq!(reloaded.local_apps, config.local_apps);
+    assert_eq!(runtime.local_apps.max_asset_bytes(), 128 * 1024 * 1024);
+    assert_eq!(runtime.local_apps.csp.as_deref(), Some(policy));
+}
+
+#[test]
+fn local_apps_config_accepts_positive_u64_limits_without_truncation() {
+    let mut config = HolonConfigFile::default();
+    for value in [1, u64::MAX] {
+        set_config_key(
+            &mut config,
+            "local_apps.max_asset_bytes",
+            &value.to_string(),
+        )
+        .unwrap();
+        let restored: HolonConfigFile =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        crate::config::validate_local_apps_config(&restored.local_apps).unwrap();
+        assert_eq!(restored.local_apps.max_asset_bytes(), value);
+        assert_eq!(
+            get_config_key(&restored, "local_apps.max_asset_bytes").unwrap(),
+            json!(value)
+        );
+    }
+    for value in ["0", "-1", "1.5", "64m", "18446744073709551616"] {
+        assert!(set_config_key(&mut config, "local_apps.max_asset_bytes", value).is_err());
+        assert_eq!(config.local_apps.max_asset_bytes(), u64::MAX);
+    }
+}
+
+#[test]
+fn local_apps_config_rejects_invalid_headers_without_replacing_policy() {
+    let mut config = HolonConfigFile::default();
+    let policy = "default-src 'self'";
+    set_config_key(&mut config, "local_apps.csp", policy).unwrap();
+    for invalid in [
+        "default-src 'self'\nscript-src *",
+        "default-src 'self'\r\nX-Injected: true",
+        "default-src \0",
+        "default-src \u{7f}",
+    ] {
+        let error = set_config_key(&mut config, "local_apps.csp", invalid).unwrap_err();
+        assert!(error.to_string().contains("local_apps.csp"));
+        assert_eq!(config.local_apps.csp.as_deref(), Some(policy));
+        let mut invalid_config = config.local_apps.clone();
+        invalid_config.csp = Some(invalid.to_string());
+        assert!(invalid_config.csp_header_value().is_err());
+    }
+    set_config_key(&mut config, "local_apps.csp", "").unwrap();
+    assert_eq!(
+        config
+            .local_apps
+            .csp_header_value()
+            .unwrap()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn local_apps_config_runtime_load_rejects_invalid_persisted_values() {
+    for (local_apps, key) in [
+        (json!({"max_asset_bytes": 0}), "local_apps.max_asset_bytes"),
+        (json!({"max_asset_bytes": -1}), "failed to parse"),
+        (
+            json!({"max_asset_bytes": "18446744073709551616"}),
+            "failed to parse",
+        ),
+        (
+            json!({"csp": "default-src 'self'\r\nX-Injected: true"}),
+            "local_apps.csp",
+        ),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            persisted_config_path(home.path()),
+            json!({"local_apps": local_apps}).to_string(),
+        )
+        .unwrap();
+        let error =
+            AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf()))
+                .unwrap_err();
+        assert!(format!("{error:#}").contains(key), "{error:#}");
+    }
 }
 
 #[test]

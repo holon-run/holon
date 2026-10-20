@@ -623,6 +623,8 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "api.cors.max_age_seconds"
             | "api.csrf.trusted_origins"
             | "api.prompt.attachment_max_bytes"
+            | "local_apps.max_asset_bytes"
+            | "local_apps.csp"
             | "model.default"
             | "model.route_options"
             | "model.fallbacks"
@@ -1867,6 +1869,8 @@ mod tests {
         assert!(is_runtime_mutable_config_key("decision.model"));
         assert!(is_runtime_mutable_config_key("decision.local_onnx.preset"));
         assert!(is_runtime_mutable_config_key("api.csrf.trusted_origins"));
+        assert!(is_runtime_mutable_config_key("local_apps.max_asset_bytes"));
+        assert!(is_runtime_mutable_config_key("local_apps.csp"));
         assert!(is_runtime_mutable_config_key(
             "api.prompt.attachment_max_bytes"
         ));

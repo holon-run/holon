@@ -197,6 +197,20 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "local_apps.max_asset_bytes",
+            kind: "positive_integer",
+            description: "Daemon-wide maximum bytes per Local App static asset. Defaults to 64 MiB; Apps cannot override it. Persisted updates apply to new requests after the existing config reload completes, or after daemon restart.",
+            default: json!(DEFAULT_LOCAL_APP_MAX_ASSET_BYTES),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "local_apps.csp",
+            kind: "string",
+            description: "Daemon-wide complete Content-Security-Policy header for Local Apps. Unset means no platform App CSP header; Apps cannot override it. Persisted updates apply to new requests after the existing config reload completes, or after daemon restart.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "model.route_options",
             kind: "object",
             description: "Request options keyed by exact canonical provider@endpoint/model route. Options never propagate to other fallback candidates.",
@@ -1033,6 +1047,8 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .cache_ttl_ms
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "local_apps.max_asset_bytes" => Ok(json!(config.local_apps.max_asset_bytes)),
+        "local_apps.csp" => Ok(json!(config.local_apps.csp)),
         "model.route_options" => Ok(serde_json::to_value(&config.model.route_options)?),
         "model.default" => Ok(config
             .model
@@ -1575,6 +1591,15 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "api.projection.cache_ttl_ms" => {
             config.api.projection.cache_ttl_ms = Some(parse_positive_u64_key(key, raw_value)?);
         }
+        "local_apps.max_asset_bytes" => {
+            config.local_apps.max_asset_bytes = Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "local_apps.csp" => {
+            let mut local_apps = config.local_apps.clone();
+            local_apps.csp = Some(raw_value.to_string());
+            validate_local_apps_config(&local_apps)?;
+            config.local_apps = local_apps;
+        }
         "model.route_options" => {
             config.model.route_options = serde_json::from_str(raw_value)?;
         }
@@ -2051,6 +2076,8 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "api.prompt.attachment_max_bytes" => config.api.prompt.attachment_max_bytes = None,
         "api.projection.max_leaders" => config.api.projection.max_leaders = None,
         "api.projection.cache_ttl_ms" => config.api.projection.cache_ttl_ms = None,
+        "local_apps.max_asset_bytes" => config.local_apps.max_asset_bytes = None,
+        "local_apps.csp" => config.local_apps.csp = None,
         "model.route_options" => config.model.route_options.clear(),
         "model.default" => config.model.default = None,
         "model.fallbacks" => config.model.fallbacks.clear(),
@@ -2283,6 +2310,17 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     validate_api_csrf_config(&config.api.csrf)?;
     validate_api_projection_config(&config.api.projection)?;
     validate_api_prompt_config(&config.api.prompt)?;
+    validate_local_apps_config(&config.local_apps)?;
+    Ok(())
+}
+
+pub fn validate_local_apps_config(local_apps: &LocalAppsConfigFile) -> Result<()> {
+    if local_apps.max_asset_bytes() == 0 {
+        return Err(anyhow!(
+            "local_apps.max_asset_bytes must be a positive integer"
+        ));
+    }
+    local_apps.csp_header_value()?;
     Ok(())
 }
 
