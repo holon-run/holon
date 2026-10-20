@@ -396,11 +396,9 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     && (actions.revealTarget.anchor.startsWith("activity:") || revealNeedsExpansion);
   const expanded = revealTarget || (manualExpanded ?? (autoExpanded || readingDetail));
   const [mounted, setMounted] = useState(expanded);
-  const showNoBriefNotice = presentation.kind === "terminal_without_result" && execution === "completed"
-    && !turn.inputs.some((input) => input.task_result);
   const compact = !expanded && turn.execution.kind === "terminal" && execution === "completed"
     && operatorInputs.length === 0 && interjections.length === 0 && responseBriefIds.length === 0
-    && !turn.inputsTruncated && !showNoBriefNotice && presentation.kind !== "unavailable";
+    && !turn.inputsTruncated && presentation.kind !== "unavailable";
 
   useEffect(() => {
     if (turn.execution.kind === "active") wasActive.current = true;
@@ -499,9 +497,6 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           </div>
         ) : null}
         {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
-        {showNoBriefNotice && presentation.kind === "terminal_without_result" ? (
-          <div className="conversation-turn-notice">{t("agentPage.turnNoBrief", { outcome: t(`agentPage.outcome.${presentation.outcome}`) })}</div>
-        ) : null}
         {presentation.kind === "unavailable" ? (
           <div className="conversation-turn-notice is-error" role="note">{t("agentPage.turnResultUnavailable")}</div>
         ) : null}

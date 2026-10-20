@@ -565,7 +565,6 @@ const zh: Record<string, any> = {
       deferred_to_fallback: "已转交备用通道",
       provider_failed_needs_recovery: "提供方失败待恢复",
     },
-    turnNoBrief: "本轮已结束（{{outcome}}），没有结果摘要。",
     turnResultUnavailable: "结果不可用（超出保留期或缺少关联）。",
     hideExecutionProcess: "收起执行过程",
     turnElapsed: "耗时 {{duration}}",

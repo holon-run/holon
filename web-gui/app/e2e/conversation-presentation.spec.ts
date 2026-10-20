@@ -730,6 +730,40 @@ test("unmatched historical input opens complete text and does not repeat represe
 });
 
 
+test("completed turns without briefs stay quiet and keep their execution details accessible", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "no-brief");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const turns = (["operator", "timer", "external"] as const).map((source, index) => turn(source, index + 1, {
+    presentation_class: source,
+    inputs: [{ message_id: `input-${source}`, preview: `Original ${source} input`, presentation_class: source }],
+    execution: { kind: "terminal", outcome: "completed" }, settled: true,
+    result: { kind: "none", reason: { kind: "aborted" } },
+  }));
+  expect((await request.post(control("/__e2e__/conversation"), { data: { agentId, turns } })).ok()).toBe(true);
+  await page.goto(`/agents/${agentId}/conversation`);
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    for (const source of ["operator", "timer", "external"]) {
+      const card = page.locator(`[data-turn-id="${source}"]`);
+      await expect(card).toBeVisible();
+      await expect(card.locator(".conversation-turn-notice")).toHaveCount(0);
+      await expect(card.locator(".conversation-brief")).toHaveCount(0);
+      if (source === "operator") {
+        await expect(card.getByText("Original operator input", { exact: true })).toBeVisible();
+        await expect(card).not.toHaveClass(/is-compact/);
+      } else {
+        await expect(card).toHaveClass(/is-compact/);
+      }
+      const disclosure = card.getByRole("button", { name: /^(Execution details|Hide execution process)$/ });
+      await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+      await disclosure.click();
+      await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+      await disclosure.click();
+    }
+  }
+});
+
 test("task results fold into receipt processes with lazy source reads on desktop and mobile", async ({ page, context, request }, info) => {
   const session = sessionFor(info, "task-result-cards");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;

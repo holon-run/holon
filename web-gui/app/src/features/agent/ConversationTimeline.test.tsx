@@ -221,7 +221,30 @@ describe("ConversationTimeline", () => {
     expect(html).not.toContain("waiting for the result");
   });
 
-  it("shows terminal-without-result notice and unavailable reason", () => {
+  it.each(["operator", "timer", "external", "system", "task"] as const)(
+    "omits the completed-without-brief fallback for %s turns while preserving input and details",
+    (presentationClass) => {
+      const html = renderTimeline([turnSummary("no-brief", 1, {
+        presentation_class: presentationClass,
+        inputs: [{ message_id: "source", preview: "Original prompt", presentation_class: presentationClass }],
+        execution: { kind: "terminal", outcome: "completed" }, settled: true,
+        result: { kind: "none", reason: { kind: "aborted" } },
+      })]);
+      expect(html).toContain('data-turn-id="no-brief"');
+      expect(html).not.toContain("conversation-turn-notice");
+      expect(html).not.toContain("conversation-brief");
+      expect(html).toContain("Execution details");
+      expect(html).toContain('aria-expanded="false"');
+      if (presentationClass === "operator") {
+        expect(html).toContain("Original prompt");
+        expect(html).not.toContain(" is-compact");
+      } else {
+        expect(html).toContain(" is-compact");
+      }
+    },
+  );
+
+  it("preserves stopped and unavailable notices", () => {
     const html = renderTimeline([
       turnSummary("turn-a", 1, {
         execution: { kind: "terminal", outcome: "aborted" },
@@ -614,7 +637,6 @@ describe("task result presentation", () => {
       { inputs: [...base.inputs, { message_id: "steering", preview: "Steering", interjected: true }] },
       { execution: { kind: "terminal", outcome: "provider_failed_needs_recovery" } },
       { execution: { kind: "active" }, result: { kind: "pending" } },
-      { inputs: [], presentation_class: "system", result: { kind: "none", reason: { kind: "aborted" } } },
       { result: { kind: "unavailable", reason: "retention_gap", retryable: false } },
     ];
     for (const overrides of cases) {
