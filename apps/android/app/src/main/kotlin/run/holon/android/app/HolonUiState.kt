@@ -120,6 +120,7 @@ internal data class ConversationUiState(
     val selectedActivity: HolonConversationActivity? = null,
     val selectedToolExecution: HolonToolExecutionSnapshot? = null,
     val detailBusy: Boolean = false,
+    val sourceInspection: SourceInspection? = null,
     val reportTarget: ContentReportTarget? = null,
     val reportCategory: HolonContentReportCategory? = null,
     val reportDescription: String = "",
@@ -340,6 +341,7 @@ internal data class HolonUiState(
     val selectedActivity: HolonConversationActivity? get() = conversationState.selectedActivity
     val selectedToolExecution: HolonToolExecutionSnapshot? get() = conversationState.selectedToolExecution
     val detailBusy: Boolean get() = conversationState.detailBusy
+    val sourceInspection: SourceInspection? get() = conversationState.sourceInspection
     val reportTarget: ContentReportTarget? get() = conversationState.reportTarget
     val reportCategory: HolonContentReportCategory? get() = conversationState.reportCategory
     val reportDescription: String get() = conversationState.reportDescription
@@ -457,7 +459,7 @@ internal data class HolonUiState(
     ): HolonUiState = HolonUiState(
         connectionState = ConnectionUiState(phase = phase, baseUrl = baseUrl, token = token, showToken = showToken, allowInsecureHttp = allowInsecureHttp, pendingPairing = pendingPairing, authenticationMethod = authenticationMethod, browserLoginUrl = browserLoginUrl),
         agentsState = AgentsUiState(agents = agents, rosterState = rosterState, operatorPreviews = operatorPreviews, briefReadStates = briefReadStates, briefReadStatesLoaded = briefReadStatesLoaded, readBriefIds = readBriefIds, readBriefsLoaded = readBriefsLoaded, search = search),
-        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError),
+        conversationState = ConversationUiState(enqueueing = enqueueing, stagingAttachment = stagingAttachment, abortingRun = abortingRun, modelCatalog = modelCatalog, modelBusy = modelBusy, modelError = modelError, conversation = conversation, syncState = conversationSyncState, lastSyncedAt = conversationLastSyncedAt, olderTurns = olderTurns, historyBeforeCursor = historyBeforeCursor, hasOlderTurns = hasOlderTurns, historyBusy = historyBusy, outbox = outbox, draft = draft, attachments = attachments, briefs = briefs, briefLoads = briefLoads, selectedBrief = selectedBrief, briefOriginWork = briefOriginWork, workOriginBrief = workOriginBrief, selectedTurn = selectedTurn, fullScreenTurn = fullScreenTurn, conversationDetail = conversationDetail, olderActivitiesBusy = olderActivitiesBusy, olderActivitiesLoaded = olderActivitiesLoaded, selectedActivity = selectedActivity, selectedToolExecution = selectedToolExecution, detailBusy = detailBusy, reportTarget = reportTarget, reportCategory = reportCategory, reportDescription = reportDescription, reportSubmitting = reportSubmitting, reportError = reportError, sourceInspection = this.sourceInspection?.takeIf { it.scope.matches(session, selectedAgent, conversation) }),
         workState = WorkUiState(workItems = workItems, workItemsLimit = workItemsLimit, workItemsHasMore = workItemsHasMore, workItemsLoadingMore = workItemsLoadingMore, selectedWorkItem = selectedWorkItem, tasks = tasks, tasksBusy = tasksBusy, tasksError = tasksError, selectedTask = selectedTask, taskOutput = taskOutput, workItemsBusy = workItemsBusy),
         filesState = FilesUiState(planFile = planFile, workspaces = workspaces, selectedWorkspace = selectedWorkspace, workspaceDirectory = workspaceDirectory, workspaceBusy = workspaceBusy, preparedArtifact = preparedArtifact, fileLinkOrigin = fileLinkOrigin),
         shareState = ShareUiState(pendingShare = pendingShare, queuedShares = queuedShares, shareSending = shareSending, shareError = shareError),

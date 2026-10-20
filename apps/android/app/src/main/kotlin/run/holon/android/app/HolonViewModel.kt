@@ -118,6 +118,8 @@ internal class HolonViewModel(
     @Volatile private var liveEventLogEpoch: String? = null
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
+    private var sourceInspectionJob: Job? = null
+    private var sourceRequestId = 0L
     private var workspaceBrowseJob: Job? = null
     private var artifactJob: Job? = null
     private var workspaceBrowseGeneration = 0L
@@ -968,6 +970,7 @@ internal class HolonViewModel(
 
     private fun invalidateLiveSync(): Long {
         liveSyncGeneration += 1
+        closeSource()
         operatorPreviewLoader.reset()
         briefReadStateWriter.reset()
         taskRefreshJob?.cancel()
@@ -1006,6 +1009,7 @@ internal class HolonViewModel(
         if (!sameAgentBeforeLoad) rememberConversation()
         val savedReading = if (!sameAgentBeforeLoad) readingCache["${state.value.session?.scopeKey}:${agent.id}"] else null
         if (!sameAgentBeforeLoad) {
+            closeSource()
             taskRefreshJob?.cancel()
             taskRefreshPending = false
             artifactJob?.cancel()
@@ -1133,6 +1137,7 @@ internal class HolonViewModel(
 
     fun closeConversation() {
         if (state.value.enqueueing) return
+        closeSource()
         artifactJob?.cancel()
         rememberConversation()
         briefLoader.reset()
@@ -1623,6 +1628,69 @@ internal class HolonViewModel(
             )
         }
         if (section == AgentSection.Work) refreshTasks()
+    }
+
+    fun inspectSource(turn: HolonConversationTurn) {
+        val input = canonicalTriggerInput(turn) ?: return
+        loadSource(turn.id, input)
+    }
+
+    fun retrySource() {
+        val source = state.value.sourceInspection ?: return
+        if (!source.loading) loadSource(source.turnId, source.input)
+    }
+
+    fun closeSource() {
+        sourceInspectionJob?.cancel()
+        sourceRequestId++
+        mutableState.update { it.copy(conversationState = it.conversationState.copy(sourceInspection = null)) }
+    }
+
+    private fun loadSource(turnId: String, input: run.holon.android.sdk.HolonTurnInput) {
+        val current = state.value
+        val agent = current.selectedAgent ?: return
+        val lease = repository.sessions.current ?: return
+        val scope = SourceInspectionScope(current.session?.scopeKey, agent.id, agent.incarnation,
+            current.conversation?.runtimeId, current.conversation?.eventLogEpoch)
+        val previous = current.sourceInspection
+        if (previous?.loading == true && previous.scope == scope && previous.input.messageId == input.messageId) return
+        sourceInspectionJob?.cancel()
+        val request = SourceInspection(scope, turnId, input, ++sourceRequestId,
+            loading = current.online, failure = if (current.online) null else SourceFailure.Offline)
+        mutableState.update { it.copy(conversationState = it.conversationState.copy(sourceInspection = request)) }
+        if (!current.online) return
+        fun isCurrent(value: HolonUiState = state.value): Boolean = repository.sessions.current === lease &&
+            value.sourceInspection?.requestId == request.requestId &&
+            scope.matches(value.session, value.selectedAgent, value.conversation)
+        sourceInspectionJob = viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.messageBatch(agent.id, listOf(input.messageId)) }
+            }.onSuccess { batch ->
+                if (!isCurrent()) return@onSuccess
+                val message = batch.messages.firstOrNull { it.id == input.messageId && it.agentId == agent.id }
+                val failure = when {
+                    message != null -> null
+                    input.messageId in batch.missingMessageIds -> SourceFailure.Missing
+                    else -> SourceFailure.Unavailable
+                }
+                mutableState.update {
+                    if (!isCurrent(it)) it else it.copy(conversationState = it.conversationState.copy(
+                        sourceInspection = request.copy(loading = false, message = message, failure = failure)))
+                }
+            }.onFailure { error ->
+                if (error is CancellationException || !isCurrent()) return@onFailure
+                val failure = when ((error as? HolonHttpException)?.statusCode) {
+                    401 -> SourceFailure.Unauthorized
+                    403 -> SourceFailure.Forbidden
+                    404 -> SourceFailure.Missing
+                    else -> if (error !is HolonHttpException && error.isTransientNetworkFailure()) SourceFailure.Offline else SourceFailure.Unavailable
+                }
+                mutableState.update {
+                    if (!isCurrent(it)) it else it.copy(conversationState = it.conversationState.copy(
+                        sourceInspection = request.copy(loading = false, failure = failure)))
+                }
+            }
+        }
     }
 
     fun openTurn(turn: HolonConversationTurn) {
@@ -2227,6 +2295,7 @@ internal class HolonViewModel(
             BackTarget.AddingNetwork -> cancelAddNetwork()
             BackTarget.MessageFile -> returnFromMessageFile()
             BackTarget.Plan -> closePlanFile()
+            BackTarget.Source -> closeSource()
             BackTarget.Activity -> closeActivity()
             BackTarget.FullScreenTurn -> setTurnFullScreen(false)
             BackTarget.Task -> closeTask()

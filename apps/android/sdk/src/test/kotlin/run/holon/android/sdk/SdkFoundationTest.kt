@@ -45,9 +45,29 @@ class SdkFoundationTest {
                 effectiveModel = "openai/gpt-5.6",
                 pending = 2,
                 currentRunId = null,
+                incarnation = 1,
             ),
             agents.single().toAgentSummary(),
         )
+    }
+
+    @Test
+    fun `agent roster keeps generated incarnation default and explicit values`() {
+        val original = fixture("agent-list-v1.json")
+        for ((wireValue, expected) in listOf(null to 1, "7" to 7, "null" to null)) {
+            val body = if (wireValue == null) {
+                original
+            } else {
+                original.replace(
+                    "\"future_identity_field\"",
+                    "\"incarnation\":$wireValue,\"future_identity_field\"",
+                )
+            }
+            val agent = HolonWire.json.decodeFromString<List<AgentListEntry>>(body).single()
+
+            assertEquals(expected, agent.identity.incarnation)
+            assertEquals(expected, agent.toAgentSummary().incarnation)
+        }
     }
 
     @Test

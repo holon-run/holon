@@ -3,6 +3,7 @@ package run.holon.android.sdk
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -386,6 +387,8 @@ public data class HolonConversationTurn(
     public val revision: Long? = null,
     public val turnIndex: Long? = null,
     public val durationMillis: Long? = null,
+    public val resultReasonKind: String? = null,
+    public val inputsTruncated: Boolean = false,
 )
 
 public data class HolonConversationSnapshot(
@@ -449,6 +452,11 @@ public data class HolonConversationSnapshot(
                         revision = turn.longValue("revision"),
                         turnIndex = (turn["key"] as? JsonObject).longValue("turn_index"),
                         durationMillis = turn.longValue("duration_ms"),
+                        resultReasonKind = (turn["result"] as? JsonObject)?.get("reason")?.let { reason ->
+                            (reason as? JsonObject).stringValue("kind")
+                                ?: (reason as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        },
+                        inputsTruncated = turn["inputs_truncated"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                     )
                 }
             val turns = decodeTurns("turns")

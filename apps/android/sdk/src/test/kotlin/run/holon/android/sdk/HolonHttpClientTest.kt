@@ -360,7 +360,37 @@ class HolonHttpClientTest {
             assertEquals(1, agents.size)
             assertEquals("main", agents.single().id)
             assertEquals("Primary", agents.single().displayName)
+            assertEquals(1, agents.single().incarnation)
             assertEquals("/agents/list", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun `agent incarnation is optional in constructors and preserves nullable wire values`() {
+        val summary = AgentSummary(
+            id = "main",
+            displayName = "Primary",
+            isDefault = true,
+            registryStatus = "active",
+            runtimeStatus = "awake_idle",
+            effectiveModel = "openai/gpt-5.6",
+            pending = 2,
+            currentRunId = null,
+        )
+        assertNull(summary.incarnation)
+        MockWebServer().use { server ->
+            val client = HolonHttpClient(server.url("/").toString())
+            for ((value, expected) in listOf("7" to 7, "null" to null)) {
+                val body = fixture("agent-list-v1.json").replace(
+                    "\"future_identity_field\"",
+                    "\"incarnation\":$value,\"future_identity_field\"",
+                )
+                server.enqueue(jsonResponse(body))
+                val agent = client.listAgents().single()
+                assertEquals(expected, agent.incarnation)
+                assertEquals("Primary", agent.displayName)
+                assertEquals("/agents/list", server.takeRequest().path)
+            }
         }
     }
 

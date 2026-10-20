@@ -23,6 +23,7 @@ public data class AgentSummary(
     val executionRootId: String? = null,
     val workspaceProjectionKind: String? = null,
     val latestBrief: HolonLatestBrief? = null,
+    val incarnation: Int? = null,
 )
 
 internal fun AgentListEntry.toAgentSummary(): AgentSummary =
@@ -46,4 +47,5 @@ internal fun AgentListEntry.toAgentSummary(): AgentSummary =
         workspaceId = activeWorkspaceEntry?.workspaceId,
         executionRootId = activeWorkspaceEntry?.executionRootId,
         workspaceProjectionKind = activeWorkspaceEntry?.projectionKind?.value,
+        incarnation = identity.incarnation,
     )

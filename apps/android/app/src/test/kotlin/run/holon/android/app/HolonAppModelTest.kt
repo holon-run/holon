@@ -191,7 +191,7 @@ class HolonAppModelTest {
         assertEquals(false, staleActive.isRunning())
         assertEquals(null, staleActive.compactStatusText())
         assertEquals(false, terminal.isRunning())
-        assertEquals(ui("没有结果摘要"), terminal.compactStatusText())
+        assertEquals(ui("等待中"), terminal.compactStatusText())
     }
 
     private fun agent(id: String, createdAt: String) =
