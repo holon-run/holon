@@ -123,6 +123,34 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
       await expect(accessNotice.getByRole("button")).toHaveCount(0);
       // The existing fixed status row must remain readable on narrow screens too.
       if (result === "available") {
+        const assertNoticeAlignment = async () => {
+          await expect(page.locator(".conversation-pane > .composer-status")).toBeVisible();
+          await expect.poll(async () => {
+            const composer = (await page.locator(".composer").boundingBox())!;
+            const notices = await Promise.all([
+              page.locator(".conversation-header").boundingBox(),
+              page.locator(".conversation-pane > .composer-status").boundingBox(),
+            ]);
+            return Math.max(...notices.flatMap((notice) => notice
+              ? [Math.abs(notice.x - composer.x), Math.abs(notice.width - composer.width)]
+              : [Number.POSITIVE_INFINITY]));
+          }).toBeLessThanOrEqual(1);
+          await expect(page.locator(".conversation-sync-status")).toHaveCSS("height", "32px");
+        };
+        for (const width of [1600, 1100, 760]) {
+          await page.setViewportSize({ width, height: 900 });
+          const toggle = page.getByRole("button", { name: "Context side panel", exact: true });
+          if (await page.locator(".side-panel").isVisible()) await toggle.click();
+          await assertNoticeAlignment();
+          if (width > 760) {
+            await toggle.click();
+            await expect(page.locator(".side-panel")).toBeVisible();
+            await assertNoticeAlignment();
+            await toggle.click();
+            await expect(page.locator(".side-panel")).not.toBeVisible();
+            await assertNoticeAlignment();
+          }
+        }
         await page.setViewportSize({ width: 390, height: 844 });
         await expect.poll(async () => {
           const sidebar = await page.locator(".sidebar").boundingBox();
@@ -131,8 +159,12 @@ for (const result of ["available", "offline", "forbidden", "missing", "replaced"
         await expect(accessNotice.locator(":scope > svg")).toBeInViewport();
         await expect(accessNotice.locator(":scope > span")).toBeInViewport();
         await expect(accessNotice.locator(":scope > span")).toHaveCSS("text-overflow", "ellipsis");
+        await assertNoticeAlignment();
         await page.screenshot({ path: info.outputPath("access-notice-mobile.png"), animations: "disabled" });
+        await page.setViewportSize({ width: 844, height: 390 });
+        await assertNoticeAlignment();
         await page.setViewportSize({ width: 1280, height: 720 });
+        await assertNoticeAlignment();
         await page.screenshot({ path: info.outputPath("access-notice-desktop.png"), animations: "disabled" });
       }
       await expect.poll(() => identities).toBeGreaterThan(0);

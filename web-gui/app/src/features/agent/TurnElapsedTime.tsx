@@ -43,10 +43,9 @@ export function TurnElapsedTime({ turn }: { turn: TurnTiming }) {
   if (elapsed === null) return null;
   const duration = formatTurnDuration(elapsed);
   const label = t("agentPage.turnElapsed", { duration });
-  return <>
-    <span aria-hidden="true">·</span>
+  return (
     <time className="conversation-turn-elapsed" dateTime={`PT${Math.floor(elapsed / 1000)}S`} aria-label={label}>
-      {active ? duration : label}
+      {duration}
     </time>
-  </>;
+  );
 }
