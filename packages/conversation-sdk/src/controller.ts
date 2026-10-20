@@ -702,6 +702,24 @@ export class ConversationController {
     return this.#requestDetail(turnId, detail.next_before_cursor);
   }
 
+  /** Restore presentation only; a miss never starts or blocks a network load. */
+  async restoreCachedBrief(briefId: string): Promise<void> {
+    if (this.#disposed || this.#briefCache === undefined || this.#briefStates.has(briefId)) return;
+    const generation = this.#cacheGeneration;
+    let cached: BriefRecord | null | undefined;
+    try {
+      cached = await readCache(() => this.#briefCache!.get(briefId));
+    } catch {
+      return;
+    }
+    if (this.#disposed || generation !== this.#cacheGeneration || this.#briefStates.has(briefId)
+      || cached == null || cached.id !== briefId || cached.agent_id !== this.agentId) return;
+    this.#briefStates.set(briefId, { kind: "ready", brief: cached });
+    this.#briefOrder.push(briefId);
+    this.#evictBriefCache();
+    this.#emitChange();
+  }
+
   async loadBrief(briefId: string): Promise<ConversationBriefLoadState> {
     if (this.#disposed) {
       return {

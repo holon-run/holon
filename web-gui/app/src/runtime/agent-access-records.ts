@@ -322,6 +322,11 @@ export function retryAgentAccess(key: string): void {
 }
 
 export function agentAccessRejection(error: unknown): AgentAccessStatus | undefined {
+  if (error instanceof RuntimeHttpError) {
+    if (error.status === 409 && error.code === "agent_incarnation_mismatch") return "replaced";
+    return error.status === 401 || error.status === 403 ? "unauthorized"
+      : error.status === 404 ? "missing" : undefined;
+  }
   if (!(error instanceof ConversationHttpError)) return undefined;
   if (error.body.code === "conversation_identity_changed") return "replaced";
   return error.status === 401 || error.status === 403 ? "unauthorized"

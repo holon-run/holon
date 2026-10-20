@@ -2,7 +2,7 @@ import { IDBFactory, IDBDatabase } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary } from "./types";
 import {
-  _resetDbPromise, cacheClearAll, cacheClearRemote, cacheGetAgentPresentations,
+  AGENT_PRESENTATION_CACHE_SCHEMA_VERSION, _resetDbPromise, cacheClearAll, cacheClearRemote, cacheGetAgentPresentations,
   cachePutAgentPresentations, type CachedAgentPresentations,
 } from "./idb-cache";
 import {
@@ -24,7 +24,7 @@ const agent = (id = "agent"): AgentSummary => ({
   postureReason: "", acceptsInput: true, canRename: true,
 });
 const entry = (overrides: Partial<CachedAgentPresentations> = {}): CachedAgentPresentations => ({
-  remoteKey: key, schemaVersion: 1, cachedAt: Date.now(), agents: [agent()], ...overrides,
+  remoteKey: key, schemaVersion: AGENT_PRESENTATION_CACHE_SCHEMA_VERSION, cachedAt: Date.now(), agents: [agent()], ...overrides,
 });
 
 describe("agent presentation cache", () => {
@@ -68,7 +68,7 @@ describe("agent presentation cache", () => {
     expect(await readCachedAgents(single)).toEqual([]);
   });
 
-  it("persists only display fields and always restores read-only capabilities", async () => {
+  it("persists display and lifecycle hints without restoring privileged capabilities", async () => {
     const live = {
       ...agent(), tasks: [{ id: "private-task" }], workItems: [{ id: "private-work" }],
       attachedWorkspaces: [{ id: "private-workspace" }], currentRunId: "private-run",
@@ -76,13 +76,18 @@ describe("agent presentation cache", () => {
       workspaceSummary: { secret: true }, unknownAuthorization: true,
     } as unknown as AgentSummary;
     await writeCachedAgents(key, [live]);
-    const expected = { ...agent(), acceptsInput: false, canRename: false };
+    const expected = { ...agent(), canRename: false };
     expect(await readCachedAgents(key)).toEqual([expected]);
     expect((await cacheGetAgentPresentations(key) as CachedAgentPresentations).agents).toEqual([expected]);
-    // Even a legacy/tampered entry cannot restore action eligibility or deep execution data.
+    // Even a tampered entry cannot restore rename eligibility or deep execution data.
     await cachePutAgentPresentations(entry({ agents: [live] }));
     expect(await readCachedAgents(key)).toEqual([expected]);
     expect(live.acceptsInput).toBe(true);
+  });
+
+  it.each([true, false, undefined])("preserves the input lifecycle hint: %s", async (acceptsInput) => {
+    await writeCachedAgents(key, [{ ...agent(), acceptsInput }]);
+    expect((await readCachedAgents(key))?.[0].acceptsInput).toBe(acceptsInput);
   });
 
   it("restores a legitimate empty list and filters retiring/deleted agents", async () => {
@@ -101,14 +106,14 @@ describe("agent presentation cache", () => {
     { incarnation: Number.MAX_SAFE_INTEGER + 1 }, { incarnation: Infinity },
     { pending: NaN }, { activeTaskCount: Infinity }, { waitingCount: -1 }, { waitingCount: "2" },
     { badgeHue: NaN }, { badgeHue: "3" }, { name: {} }, { modelSource: "unexpected" },
-    { badgeTone: "unexpected" },
+    { badgeTone: "unexpected" }, { acceptsInput: "false" },
   ])("rejects malformed display summaries: %j", async (overrides) => {
     await cachePutAgentPresentations(entry({ agents: [{ ...agent(), ...overrides }] }));
     expect(await readCachedAgents(key)).toBeUndefined();
   });
 
   it.each([
-    { schemaVersion: 0 }, { cachedAt: NaN }, { cachedAt: Infinity }, { cachedAt: 0 },
+    { schemaVersion: 0 }, { schemaVersion: 1 }, { cachedAt: NaN }, { cachedAt: Infinity }, { cachedAt: 0 },
     { cachedAt: Date.now() + 60_000 }, { cachedAt: Date.now() - AGENT_PRESENTATION_CACHE_MAX_AGE_MS - 60_000 },
     { agents: undefined }, { agents: {} }, { agents: [null] }, { agents: [agent(), agent()] },
   ])("ignores incompatible, expired or corrupted envelopes: %j", async (overrides) => {

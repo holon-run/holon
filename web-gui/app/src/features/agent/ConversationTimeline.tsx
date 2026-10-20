@@ -130,12 +130,12 @@ export const ConversationTimeline = memo(function ConversationTimeline({
 });
 
 /** Connection notices occupy a permanent row outside the scrolling transcript. */
-export function ConversationSyncStatus({ model, onRetry }: Pick<ConversationTimelineProps, "model" | "onRetry">) {
+export function ConversationSyncStatus({ model, onRetry, backgroundAccessCheck = false }: Pick<ConversationTimelineProps, "model" | "onRetry"> & { backgroundAccessCheck?: boolean }) {
   const { t } = useTranslation();
   const status = model.status;
   return (
     <div className="conversation-sync-status">
-      {(status.kind === "loading" || status.kind === "paused") && model.view ? (
+      {!backgroundAccessCheck && (status.kind === "loading" || status.kind === "paused") && model.view ? (
         <div className="conversation-status-banner" role="status">
           <RefreshCw size={14} /><span>{t("agentPage.conversationSyncing")}</span>
         </div>

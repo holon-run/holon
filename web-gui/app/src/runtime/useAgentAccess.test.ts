@@ -99,6 +99,35 @@ afterEach(() => {
 });
 
 describe("route-selected agent admission", () => {
+  it.each([
+    [401, undefined, "unauthorized"], [403, undefined, "unauthorized"],
+    [404, undefined, "missing"], [409, "agent_incarnation_mismatch", "replaced"],
+  ] as const)("revokes warm access on a definitive prompt rejection %s/%s", async (status, code, rejection) => {
+    await render();
+    let key = "";
+    act(() => { key = warm(); });
+    await render("other");
+    const identity = deferred();
+    mocks.identity.mockReturnValue(identity.promise);
+    await render();
+    expect(current.status).toBe("revalidating");
+    const signal = mocks.state.mock.calls.at(-1)?.[1] as AbortSignal;
+    act(() => current.rejectInput(new RuntimeHttpError("POST", "/prompt", status, "Rejected", code)));
+    expect(current.status).toBe(rejection);
+    expect(current.agent).toBeUndefined();
+    expect(signal.aborted).toBe(true);
+    expect(useConversationScopeStore.getState().scopes[key]?.displayView).toBeUndefined();
+    await act(async () => identity.resolve(childDetail()));
+    expect(current.status).toBe(rejection);
+  });
+
+  it.each([429, 503, 409])("does not revoke read access for a non-identity prompt failure %s", async (status) => {
+    await render();
+    act(() => current.rejectInput(new RuntimeHttpError("POST", "/prompt", status)));
+    expect(current.status).toBe("available");
+    expect(current.agent?.incarnation).toBe(1);
+  });
+
   it.each([429, 503, "timeout", "network"] as const)(
     "retains only continuous online admission through a transient background %s and clears its notice on recovery",
     async (failure) => {

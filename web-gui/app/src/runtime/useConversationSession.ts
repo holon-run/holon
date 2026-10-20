@@ -271,8 +271,9 @@ export function useConversationSession(
 
   const loadBrief = useCallback(
     (briefId: string) => {
-      if (readOnly || controller === null || controller.view().reset_reason !== null) return;
-      void controller.loadBrief(briefId);
+      if (controller === null || controller.view().reset_reason !== null) return;
+      if (readOnly) void controller.restoreCachedBrief(briefId);
+      else void controller.loadBrief(briefId);
     },
     [controller, readOnly],
   );

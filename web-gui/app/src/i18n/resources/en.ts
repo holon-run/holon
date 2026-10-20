@@ -4,8 +4,6 @@
 const en = {
   agentAccess: {
     loading: "Loading agent…",
-    revalidating: "Verifying access — cached history is read-only.",
-    cachedOffline: "Agent refresh is delayed — cached history is read-only while we retry.",
     refreshDelayed: "Agent status refresh is delayed — retrying in the background.",
     available: "Agent conversation",
     unauthorized: "Authentication required to open this agent",

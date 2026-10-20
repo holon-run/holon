@@ -817,10 +817,8 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
-            sendDisabledReason={agentAccess.status !== "available"
-              ? t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating")
-              : activeAgent.acceptsInput === false ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
-            inputStatusTone={agentAccess.status !== "available" ? "neutral" : "error"}
+            sendDisabledReason={activeAgent.acceptsInput === false
+              ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
             parentAgentId={agentAccess.parentAgentId}
             parentTaskId={agentAccess.parentTaskId}
             conversation={
@@ -829,9 +827,8 @@ export function App() {
                 : {
                     model: conversationSession.model,
                     scopeKey: conversationSession.scopeKey,
-                    readOnlyNotice: agentAccess.status === "available" ? undefined
-                      : t(agentAccess.status === "error" ? "agentAccess.cachedOffline" : "agentAccess.revalidating"),
-                    accessRefreshNotice: agentAccess.status === "available" && agentAccess.error
+                    backgroundAccessCheck: agentAccess.status === "revalidating",
+                    accessRefreshNotice: agentAccess.error
                       ? t("agentAccess.refreshDelayed") : undefined,
                     onRetryAccess: agentAccess.status === "error" ? agentAccess.retry : undefined,
                     location: conversationSession.location,
@@ -892,9 +889,14 @@ export function App() {
             onSetModel={(model, reasoningEffort, serviceTier) => setAgentModel(activeAgent.id, model, reasoningEffort, serviceTier)}
             onClearModel={() => clearAgentModel(activeAgent.id)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
-            onSendPrompt={(text, attachments) => {
-              if (agentAccess.status !== "available") return Promise.resolve();
-              return sendOperatorPrompt(activeAgent.id, text, attachments, activeAgent.incarnation);
+            onSendPrompt={async (text, attachments) => {
+              // Read admission is separate from an explicit, server-validated send.
+              try {
+                await sendOperatorPrompt(activeAgent.id, text, attachments, activeAgent.incarnation);
+              } catch (error) {
+                agentAccess.rejectInput(error);
+                throw error;
+              }
             }}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
