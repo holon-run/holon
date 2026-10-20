@@ -31,7 +31,10 @@ use crate::{
     },
 };
 
-use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
+use super::{
+    build_http_client, read_error_response_body, response_body_timeout, send_provider_request,
+    stream_idle_timeout, RequestDeadline,
+};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
@@ -498,22 +501,17 @@ impl AgentProvider for AnthropicProvider {
             request_builder = request_builder.header(*name, value);
         }
         let request_started_at = chrono::Utc::now();
-        let response = request_builder
-            .timeout(request_send_timeout())
-            .json(&request_payload)
-            .send()
-            .await
-            .map_err(|error| {
-                classify_reqwest_transport_error_with_trace(
-                    "Anthropic request failed",
-                    "request_send",
-                    &self.route_provider,
-                    Some(&model_ref),
-                    Some(url.as_str()),
-                    error,
-                    request_trace.as_ref(),
-                )
-            })?;
+        let response = send_provider_request(
+            request_builder.json(&request_payload),
+            "Anthropic request failed",
+            "request_send",
+            &self.route_provider,
+            Some(&model_ref),
+            Some(url.as_str()),
+            RequestDeadline::TextStream,
+            request_trace.as_ref(),
+        )
+        .await?;
         let response_headers_at = chrono::Utc::now();
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_headers(response.status(), response.headers());
@@ -523,13 +521,7 @@ impl AgentProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let retry_after = parse_retry_after(response.headers());
-            let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-                Ok(Ok(text)) => text,
-                _ => String::new(),
-            };
-            if let Some(trace) = request_trace.as_ref() {
-                trace.write_response_body(&body);
-            }
+            let body = read_error_response_body(response, request_trace.as_ref()).await;
             return Err(crate::provider::retry::set_provider_transport_streaming(
                 classify_status_error_with_trace(
                     "Anthropic request failed",

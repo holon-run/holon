@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
-use reqwest::{header::HeaderMap, Client, RequestBuilder, Response};
+use reqwest::{header::HeaderMap, Client, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -44,7 +44,10 @@ use crate::{
 };
 
 use super::super::budget::effective_output_tokens;
-use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
+use super::{
+    build_http_client, build_oauth_http_client, read_error_response_body, response_body_timeout,
+    send_provider_request as send_openai_request, stream_idle_timeout, RequestDeadline,
+};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     empty_response_error, extract_upstream_error_detail_from_value, format_upstream_error_detail,
@@ -116,7 +119,7 @@ use responses::{
 };
 
 use http::{
-    provider_model_ref, provider_request_id_from_headers, send_openai_request, trace_response_body,
+    provider_model_ref, provider_request_id_from_headers, trace_response_body,
     trace_response_headers, trace_stream_chunk, trace_stream_terminal,
 };
 
@@ -153,6 +156,7 @@ pub(crate) struct OpenAiBearerAuth {
 #[derive(Clone)]
 pub struct OpenAiCodexProvider {
     client: Client,
+    oauth_client: Client,
     provider_id: String,
     base_url: String,
     credential_profile: Option<String>,
@@ -379,7 +383,8 @@ impl OpenAiProvider {
         compaction_policy: OpenAiCompactionPolicy,
     ) -> Result<Self> {
         let client = build_http_client()?;
-        let auth = OpenAiBearerAuth::from_runtime_config(provider_config, client.clone())?;
+        let auth =
+            OpenAiBearerAuth::from_runtime_config(provider_config, build_oauth_http_client()?)?;
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),

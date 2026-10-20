@@ -1,6 +1,8 @@
 mod compaction;
 mod continuation;
 mod parse;
+#[cfg(test)]
+mod phase_timeout_tests;
 mod plan;
 mod send;
 

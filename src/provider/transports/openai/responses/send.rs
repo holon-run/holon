@@ -36,7 +36,7 @@ pub(in super::super) async fn send_openai_responses_request(
         provider,
         Some(model_ref),
         Some(url.as_str()),
-        true,
+        RequestDeadline::FullRequest,
         request_trace.as_ref(),
     )
     .await?;
@@ -51,11 +51,7 @@ pub(in super::super) async fn send_openai_responses_request(
     if !response.status().is_success() {
         let status = response.status();
         let retry_after = parse_retry_after(response.headers());
-        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-            Ok(Ok(text)) => text,
-            _ => String::new(),
-        };
-        trace_response_body(request_trace.as_ref(), &body);
+        let body = read_error_response_body(response, request_trace.as_ref()).await;
         return Err(crate::provider::retry::set_provider_transport_streaming(
             classify_status_error_with_trace(
                 "OpenAI-style request failed",
@@ -205,6 +201,15 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     }
 
     let request_started_at = chrono::Utc::now();
+    let deadline = if body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "image_generation"))
+    {
+        RequestDeadline::HeadersOnly
+    } else {
+        RequestDeadline::TextStream
+    };
     let response = send_openai_request(
         request.json(&body),
         "OpenAI-style streaming request failed",
@@ -212,7 +217,7 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         provider,
         Some(model_ref),
         Some(url.as_str()),
-        false,
+        deadline,
         request_trace.as_ref(),
     )
     .await?;
@@ -227,11 +232,7 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     if !response.status().is_success() {
         let status = response.status();
         let retry_after = parse_retry_after(response.headers());
-        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-            Ok(Ok(text)) => text,
-            _ => String::new(),
-        };
-        trace_response_body(request_trace.as_ref(), &body);
+        let body = read_error_response_body(response, request_trace.as_ref()).await;
         return Err(crate::provider::retry::set_provider_transport_streaming(
             classify_status_error_with_trace(
                 if provider == "openai-codex" {

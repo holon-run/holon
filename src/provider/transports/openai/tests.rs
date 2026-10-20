@@ -1,3 +1,6 @@
+#[path = "oauth_timeout_tests.rs"]
+mod oauth_timeout_tests;
+
 use super::{
     build_images_request, build_openai_codex_image_generation_request,
     build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,

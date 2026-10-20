@@ -1,12 +1,19 @@
 mod anthropic;
 mod gemini;
+mod http;
 mod openai;
+mod timeouts;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{env, time::Duration};
+use std::time::Duration;
+
+use http::{read_error_response_body, send_provider_request, RequestDeadline};
+use timeouts::http_timeouts;
+#[cfg(test)]
+pub(crate) use timeouts::{HttpTimeouts, HTTP_TIMEOUTS_OVERRIDE};
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
@@ -23,24 +30,35 @@ pub(crate) use openai::{
 };
 pub use openai::{OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider};
 
-const DEFAULT_REQUEST_SEND_TIMEOUT_SECS: u64 = 300;
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 #[cfg(test)]
 static STREAM_IDLE_TIMEOUT_OVERRIDE_MS: AtomicU64 = AtomicU64::new(0);
 
 fn build_http_client() -> Result<Client> {
-    let timeout_secs = env::var("HOLON_PROVIDER_HTTP_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0);
+    build_provider_http_client(Some(http_timeouts().connect))
+}
+
+fn build_oauth_http_client() -> Result<Client> {
+    // Refresh previously shared only the optional legacy total cap.
+    build_provider_http_client(None)
+}
+
+fn build_provider_http_client(connect: Option<Duration>) -> Result<Client> {
+    let timeouts = http_timeouts();
     let mut builder = Client::builder();
-    if let Some(timeout_secs) = timeout_secs {
-        builder = builder.timeout(Duration::from_secs(timeout_secs));
+    if let Some(connect) = connect {
+        builder = builder.connect_timeout(connect);
+    }
+    if let Some(timeout) = timeouts.total {
+        builder = builder.timeout(timeout);
     }
     builder.build().context("failed to build HTTP client")
 }
 
 pub(super) fn stream_idle_timeout() -> Duration {
+    #[cfg(test)]
+    if let Ok(idle) = HTTP_TIMEOUTS_OVERRIDE.try_with(|timeouts| timeouts.idle) {
+        return idle;
+    }
     #[cfg(test)]
     {
         let override_ms = STREAM_IDLE_TIMEOUT_OVERRIDE_MS.load(Ordering::Relaxed);
@@ -48,12 +66,7 @@ pub(super) fn stream_idle_timeout() -> Duration {
             return Duration::from_millis(override_ms);
         }
     }
-    let timeout_ms = env::var("HOLON_PROVIDER_STREAM_IDLE_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT_MS);
-    Duration::from_millis(timeout_ms)
+    http_timeouts().idle
 }
 
 #[cfg(test)]
@@ -62,19 +75,9 @@ pub(crate) fn set_stream_idle_timeout_override_for_tests(timeout_ms: Option<u64>
 }
 
 pub(super) fn request_send_timeout() -> Duration {
-    let timeout_secs = env::var("HOLON_PROVIDER_HTTP_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_REQUEST_SEND_TIMEOUT_SECS);
-    Duration::from_secs(timeout_secs)
+    http_timeouts().request
 }
 
 pub(super) fn response_body_timeout() -> Duration {
-    let timeout_secs = env::var("HOLON_PROVIDER_RESPONSE_BODY_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(request_send_timeout().as_secs());
-    Duration::from_secs(timeout_secs)
+    http_timeouts().body
 }

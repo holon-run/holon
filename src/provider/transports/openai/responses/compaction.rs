@@ -834,7 +834,7 @@ pub(in super::super) async fn send_openai_compact_request(
         provider,
         Some(model_ref),
         Some(url.as_str()),
-        true,
+        RequestDeadline::FullRequest,
         request_trace.as_ref(),
     )
     .await?;
@@ -847,11 +847,7 @@ pub(in super::super) async fn send_openai_compact_request(
     if !response.status().is_success() {
         let status = response.status();
         let retry_after = parse_retry_after(response.headers());
-        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-            Ok(Ok(text)) => text,
-            _ => String::new(),
-        };
-        trace_response_body(request_trace.as_ref(), &body);
+        let body = read_error_response_body(response, request_trace.as_ref()).await;
         return Err(classify_status_error_with_trace(
             "OpenAI compact request failed",
             "response_status",
