@@ -299,11 +299,10 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await expect(stale.locator(".composer textarea")).toHaveCount(0);
     await stale.close();
 
-    const delegatedInput = cold.locator(".conversation-source").filter({ hasText: CHILD_INPUT });
-    await delegatedInput.locator("summary").click();
-    await expect(delegatedInput.getByText(CHILD_INPUT, { exact: true })).toBeVisible();
     const activityToggle = cold.locator(".conversation-detail-toggle").first();
     await activityToggle.click();
+  const delegatedInput = cold.locator(".conversation-interjection").filter({ hasText: CHILD_INPUT });
+  await expect(delegatedInput.getByText(CHILD_INPUT, { exact: true })).toBeVisible();
     await expect(cold.locator(".conversation-activity").filter({ hasText: "ExecCommand" }).first()).toBeVisible();
     await expect(cold.locator(".message-list")).toContainText(CHILD_PROGRESS);
     expect((await json<TaskStatus>(daemon, statusPath)).status).not.toBe("completed");

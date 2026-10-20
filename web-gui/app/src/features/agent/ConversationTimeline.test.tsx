@@ -190,7 +190,7 @@ describe("executionProcessActivities", () => {
 });
 
 describe("ConversationTimeline", () => {
-  it("renders inputs and briefs without visible turn chrome", () => {
+  it("renders operator inputs and briefs with a compact turn header", () => {
     const html = renderTimeline([
       turnSummary("turn-1", 1, {
         inputs: [{ message_id: "m-1", preview: '{"type":"text","text":"帮我检查发布"}' }],
@@ -206,7 +206,8 @@ describe("ConversationTimeline", () => {
     expect(html).toContain("这是结果内容 markdown");
     expect(html).toContain('aria-label="Conversation turn 2"');
     expect(html).not.toContain("timeline-turn-rail");
-    expect(html.indexOf("Completed")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
+    expect(html).toContain("Operator message");
+    expect(html.indexOf("Turn ended")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
   });
 
   it("keeps legacy historical briefs readable without claiming delivery is pending", () => {
@@ -462,7 +463,7 @@ describe("conversation presentation boundaries", () => {
       { message_id: "task", revision: 1, state: "queued", preview: "command task completed", presentation_class: "task" },
       { message_id: "legacy", revision: 1, state: "queued", preview: "unknown provenance" },
     ] } as never);
-    expect(html).toContain("Task update");
+    expect(html).toContain("Task result");
     expect(html).toContain("Incoming message");
     expect(html).not.toContain('class="conversation-pending-chip"');
     expect(html).not.toContain(' open=""');
@@ -556,16 +557,33 @@ describe("task result presentation", () => {
   const input = { message_id: "result-message", preview: "raw body", presentation_class: "task" as const,
     task_result: { task_id: "task-secret-id", status: "completed" as const, summary: "Run verification",
       preview: "bounded runtime output", response_message_id: null } };
-  it("keeps a collapsed process header without an empty response for runtime results", () => {
+  it("hides completed task receipts that never triggered a model turn", () => {
     const html = renderTimeline([turnSummary("result-only", 1, { inputs: [input], presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
-    expect(html).toContain("Run verification");
+    expect(html).not.toContain('data-turn-id="result-only"');
+    expect(html).not.toContain("Run verification");
+    expect(html).not.toContain("bounded runtime output");
+    expect(html).not.toContain("task-secret-id");
+    const explicit = renderTimeline([turnSummary("explicit-model", 1, { presentation_class: "task",
+      inputs: [{ ...input, task_result: { ...input.task_result, runtime_only: false } }],
+      execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+    })]);
+    expect(explicit).toContain('data-turn-id="explicit-model"');
+  });
+  it("keeps a collapsed receipt turn for explicit provenance without leaking task bodies", () => {
+    const html = renderTimeline([turnSummary("collapsed-receipt", 1, { inputs: [{ ...input,
+      task_result: { ...input.task_result, runtime_only: false } }], presentation_class: "task",
+      execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+    })]);
+    expect(html).toContain("Execution details");
+    expect(html).not.toContain("Run verification");
     expect(html).not.toContain("bounded runtime output");
     expect(html).not.toContain("task-secret-id");
     expect(html).not.toContain("conversation-turn-notice");
-    expect(html).not.toContain("conversation-response");
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain('class="conversation-task-result-row');
   });
@@ -574,7 +592,8 @@ describe("task result presentation", () => {
       execution: { kind: "terminal", outcome: "completed" }, brief_ids: ["brief-1"],
       result: { kind: "available" }, settled: true,
     })]);
-    expect(html).toContain("Run verification");
+    expect(html).toContain("Execution details");
+    expect(html).toContain("1 task result received");
     expect(html).not.toContain("bounded runtime output");
     expect(html.match(/这是结果内容 markdown/g)).toHaveLength(1);
   });
@@ -597,19 +616,23 @@ describe("task result presentation", () => {
   it("shows all terminal states and hides the reference signal body", () => {
     for (const status of ["failed", "cancelled", "interrupted"] as const) {
       const html = renderTimeline([turnSummary(status, 1, { inputs: [{ ...input, task_result: { ...input.task_result, status } }],
+        presentation_class: "task",
         execution: { kind: "terminal", outcome: "completed" }, settled: true,
         result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
       })]);
-      expect(html).toContain(`conversation-task-result-label is-${status}`);
-      expect(html).toContain(status === "cancelled" ? "Cancelled" : status === "failed" ? "Failed" : "Interrupted");
-      expect(html.includes("bounded runtime output")).toBe(status !== "cancelled");
+      expect(html).toContain(`data-turn-id="${status}"`);
+      expect(html).toContain(status === "cancelled" ? "conversation-task-cancelled-hint" : "conversation-task-failure-hint");
+      expect(html).toContain(status === "cancelled" ? "1 cancelled" : "1 failed");
+      expect(html).not.toContain("bounded runtime output");
     }
     const html = renderTimeline([turnSummary("reference", 1, { inputs: [{ ...input, task_result: {
       ...input.task_result, response_message_id: "reply-message", preview: "internal reference text" } }],
+      presentation_class: "task",
       execution: { kind: "terminal", outcome: "completed" }, settled: true,
       result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
     })]);
-    expect(html).toContain("Run verification");
+    expect(html).toContain('data-turn-id="reference"');
+    expect(html).toContain("1 task result received");
     expect(html).not.toContain("internal reference text");
   });
 });

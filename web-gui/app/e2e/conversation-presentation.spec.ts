@@ -266,6 +266,7 @@ test("turn clock survives refresh, hides while waiting for a brief, and opens a 
   const card = page.locator('[data-turn-id="timed"]');
   const clock = card.locator(".conversation-turn-elapsed");
   const disclosure = card.locator(".conversation-detail-toggle");
+  const turnStatus = card.locator(".conversation-turn-header-status");
   await expect(clock).toHaveText("0:24");
   await page.clock.runFor(2000);
   await expect(clock).toHaveText("0:26");
@@ -276,7 +277,7 @@ test("turn clock survives refresh, hides while waiting for a brief, and opens a 
   current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" },
     completed_at: new Date(start + 85000).toISOString(), duration_ms: 83000 };
   await update();
-  await expect(disclosure).toContainText("Waiting for result");
+  await expect(turnStatus).toHaveText("Waiting for result");
   // Waiting for result hides the live clock entirely; nothing ticks while the brief is pending.
   await expect(clock).toHaveCount(0);
   await page.clock.runFor(10000);
@@ -290,11 +291,11 @@ test("turn clock survives refresh, hides while waiting for a brief, and opens a 
   current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["timed-brief"] };
   await update();
   await expect(card.getByText("Timing is ready.")).toBeVisible();
-  await expect(disclosure).toContainText("Completed");
+  await expect(turnStatus).toHaveText("Turn ended");
   // The clock returns with the frozen terminal duration, not the advanced wall clock.
   await expect(clock).toHaveText("Took 1:23");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  await clock.click();
+  await disclosure.click();
   await page.clock.runFor(250);
   await expect(card.getByText("Checking elapsed time.")).toBeVisible();
   const process = (await card.locator(".conversation-detail").boundingBox())!;
@@ -323,11 +324,12 @@ test("a delivered brief replaces only the duplicate final activity, including af
   await page.goto(`/agents/${agentId}/conversation`);
   const card = page.locator('[data-turn-id="dedup"]');
   const disclosure = card.locator(".conversation-detail-toggle");
+  const turnStatus = card.locator(".conversation-turn-header-status");
   const finalActivity = card.locator('[data-activity-id="assistant:9"]');
   await expect(finalActivity).toContainText(result);
   current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" } };
   await update();
-  await expect(disclosure).toContainText("Waiting for result");
+  await expect(turnStatus).toContainText("Waiting for result");
   await expect(finalActivity).toBeVisible();
 
   // Delay the actual brief response so result metadata alone cannot hide the output.
@@ -428,19 +430,18 @@ test("wake and task JSON open full canonical messages in the inspector", async (
     await expect(block.getByText(`${id} progress`, { exact: true })).toBeVisible();
     await expect(block.locator(".conversation-activity.is-operator")).toHaveCount(0);
   }
-  const source = page.locator('[data-turn-id="wake"] .conversation-source');
-  await source.locator("summary").click();
-  await expect(source).toContainText("Wake notification");
-  await expect(source).not.toContainText("activationId");
+  // Machine inputs live inside the execution details; active turns render them expanded.
+  const wakeEvent = page.locator('[data-turn-id="wake"] .conversation-event-link');
+  await expect(wakeEvent).toContainText("Wake notification");
+  await expect(wakeEvent).not.toContainText("activationId");
   expect(requested).toHaveLength(0);
-  await source.getByRole("button").click();
+  await wakeEvent.click();
   const panel = page.locator(".side-panel");
   await expect(panel).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Pull request merged", exact: true })).toBeVisible();
   await expect(panel.locator(".inspector-detail pre")).toContainText("END OF MESSAGE");
-  const taskSource = page.locator('[data-turn-id="task"] .conversation-source');
-  await taskSource.locator("summary").click();
-  await taskSource.getByRole("button").click();
+  const taskEvent = page.locator('[data-turn-id="task"] .conversation-event-link');
+  await taskEvent.click();
   await expect(panel.getByRole("heading", { name: "Task completed", exact: true })).toBeVisible();
   expect(requested).toEqual(["wake-message", "task-message"]);
   await page.screenshot({ path: "/tmp/holon-event-inspector.png" });
@@ -477,10 +478,13 @@ test("operator interjections survive admission, folding, refresh and interrupted
   await expect(page.getByText(first.preview, { exact: true })).toHaveCount(1);
   await expect(live.locator(".conversation-input-line")).toHaveCount(2);
   const order = () => live.locator(".conversation-activities > li").allTextContents();
-  await expect.poll(order).toEqual([progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary]);
+  // The keyless originating input keeps its position after keyed entries.
+  const expectedOrder = [progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary,
+    `Scheduled deployment checkOpen full event details`];
+  await expect.poll(order).toEqual(expectedOrder);
   await expect(live.locator(".conversation-detail-toggle")).toHaveCount(1);
   await page.reload();
-  await expect.poll(order).toEqual([progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary]);
+  await expect.poll(order).toEqual(expectedOrder);
   current = { ...current, revision: 3, execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" },
     brief_ids: ["steered-result"], settled: true, completed_at: "2026-09-16T00:02:00Z", duration_ms: 120000 };
   await update();
@@ -490,7 +494,7 @@ test("operator interjections survive admission, folding, refresh and interrupted
   await page.reload();
   await expect.poll(order).toEqual([first.preview, second.preview]);
   await live.locator(".conversation-detail-toggle").click();
-  await expect.poll(order).toEqual([progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary]);
+  await expect.poll(order).toEqual(expectedOrder);
   current = { ...current, revision: 4, execution: { kind: "terminal", outcome: "interrupted" }, attention: { kind: "interrupted" } };
   await update();
   await live.locator(".conversation-detail-toggle").click();
@@ -682,29 +686,33 @@ test("task results fold into receipt processes with lazy source reads on desktop
       body: { type: "text", text: id === "original-reply" ? "ORIGINAL PEER REPLY" : "COMPLETE OUTPUT AVAILABLE IN INSPECTOR" } })), missing_message_ids: [] } });
   });
   await page.goto(`/agents/${agentId}/conversation`);
-  const command = page.locator('[data-turn-id="command"]');
-  await expect(command.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
-  await expect(command.locator(".conversation-task-result-row")).toHaveCount(0);
-  await expect(command.locator(".conversation-turn-notice")).toHaveCount(0);
-  await expect(command.locator(".conversation-response")).toHaveCount(0);
-  await expect(page.locator('[data-turn-id="model-result"] .conversation-task-result-preview')).toHaveCount(0);
+  // Completed receipts without model re-entry no longer occupy a turn block.
+  await expect(page.locator('[data-turn-id="command"]')).toHaveCount(0);
+  const model = page.locator('[data-turn-id="model-result"]');
+  await expect(model.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(model.locator(".conversation-task-result-row")).toHaveCount(0);
+  await expect(model.locator(".conversation-task-result-preview")).toHaveCount(0);
   await expect(page.getByText("Reviewed: ready to merge.", { exact: true })).toHaveCount(1);
   await expect(page.locator(".conversation-pending-events")).toContainText("Background verification");
   const legacy = page.locator('[data-turn-id="legacy-runtime"]');
   await expect(legacy.locator(".conversation-task-result-row")).toHaveCount(0);
   await expect(legacy.locator(".conversation-response")).toHaveCount(0);
   await expect(page.getByText("Historical synthetic result", { exact: true })).toHaveCount(0);
+  // Attention-worthy receipts stay visible with a concise hint instead of a
+  // command title, so a failed task cannot read as a failed turn.
   for (const status of ["failed", "cancelled", "interrupted"]) {
-    await expect(page.locator(`.conversation-detail-toggle .conversation-task-result-label.is-${status}`)).toHaveCount(1);
+    await expect(page.locator(`[data-turn-id="${status}-task"]`)).toHaveCount(1);
   }
+  await expect(page.locator(".conversation-detail-toggle .conversation-task-failure-hint")).toHaveCount(2);
+  await expect(page.locator(".conversation-detail-toggle .conversation-task-cancelled-hint")).toHaveCount(1);
   expect(sourceRequests).toEqual([]);
-  await command.locator(".conversation-detail-toggle").click();
-  await expect(command.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
+  await model.locator(".conversation-detail-toggle").click();
+  await expect(model.locator(".conversation-task-result-preview")).toContainText("Useful bounded output.");
   expect(sourceRequests).toEqual([]);
-  await command.getByRole("button", { name: "Open full event details" }).click();
+  await model.getByRole("button", { name: "Open full event details" }).click();
   await expect(page.locator(".side-panel")).toContainText("COMPLETE OUTPUT AVAILABLE IN INSPECTOR");
   await page.getByRole("button", { name: "Close side panel", exact: true }).click();
-  await expect.poll(() => sourceRequests).toContain("command");
+  await expect.poll(() => sourceRequests).toContain("model-result");
   const reference = page.locator('[data-turn-id="reference"]');
   await reference.locator(".conversation-detail-toggle").click();
   await expect(reference.locator(".conversation-task-result-preview")).toHaveCount(0);
@@ -713,14 +721,14 @@ test("task results fold into receipt processes with lazy source reads on desktop
   expect(sourceRequests).toContain("original-reply");
   expect(sourceRequests).not.toContain("reference");
   await page.getByRole("button", { name: "Close side panel", exact: true }).click();
-  await command.locator(".conversation-detail-toggle").click();
+  await model.locator(".conversation-detail-toggle").click();
   await page.screenshot({ path: info.outputPath("task-results-desktop.png"), fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await command.scrollIntoViewIfNeeded();
-  await expect(command.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
-  await command.locator(".conversation-detail-toggle").click();
-  await expect(command.locator(".conversation-task-result-preview")).toBeInViewport();
+  await model.scrollIntoViewIfNeeded();
+  await expect(model.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  await model.locator(".conversation-detail-toggle").click();
+  await expect(model.locator(".conversation-task-result-preview")).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   await expect(page.locator("form.composer")).toBeVisible();
   await page.screenshot({ path: info.outputPath("task-results-mobile.png"), fullPage: true, animations: "disabled" });

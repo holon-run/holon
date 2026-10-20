@@ -15,6 +15,7 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   ] } } });
   await page.goto(`/agents/${agentId}/conversation`);
   const process = page.locator('[data-turn-id="live"] .conversation-detail-toggle');
+  const turnStatus = page.locator('[data-turn-id="live"] .conversation-turn-header-status');
   const content = page.getByText("Checking the layout while the connection recovers.", { exact: true });
   await expect(content).toBeVisible();
   await expect(process).toHaveAttribute("aria-expanded", "true");
@@ -32,12 +33,12 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
     document.dispatchEvent(new Event("visibilitychange"));
   }, state);
   await setVisibility("hidden");
-  await expect(process).toContainText("Syncing");
+  await expect(turnStatus).toContainText("Syncing");
   await page.waitForTimeout(300);
   await expect(process).toHaveAttribute("aria-expanded", "true");
   expect(await geometry()).toEqual(before);
   await setVisibility("visible");
-  await expect(process).toContainText("Working");
+  await expect(turnStatus).toContainText("Working");
   expect(await geometry()).toEqual(before);
 
   await request.post(control("/__e2e__/configure"), { data: { failConversationByAgentId: [agentId] } });
@@ -52,7 +53,7 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   // Exercise a real failed reconnect, even when the local browser runs quickly.
   await unavailableStream;
   await request.post(control("/__e2e__/configure"), { data: { failConversationByAgentId: [] } });
-  await expect(process).toContainText("Working", { timeout: 10000 });
+  await expect(turnStatus).toContainText("Working", { timeout: 10000 });
   expect(await geometry()).toEqual(before);
   const diagnostics = await (await request.get(control("/__e2e__/state"))).json();
   expect(diagnostics.requests.filter((path: string) => path.startsWith(`GET /api/agents/${agentId}/conversation?`))).toHaveLength(1);
@@ -69,11 +70,11 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   });
   await request.post(control("/__e2e__/reset-conversation"), { data: { agentId, reason: "retention_expired" } });
   await expect.poll(() => summaryRequested).toBe(true);
-  await expect(process).toContainText("Syncing");
+  await expect(turnStatus).toContainText("Syncing");
   await expect(content).toBeVisible();
   expect(await geometry()).toEqual(before);
   releaseSummary();
-  await expect(process).toContainText("Working");
+  await expect(turnStatus).toContainText("Working");
   await expect(content).toBeVisible();
   await page.unroute(`**/api/agents/${agentId}/conversation?*`);
 
@@ -82,7 +83,7 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   await setVisibility("hidden");
   await expect(process).toHaveAttribute("aria-expanded", "false");
   await setVisibility("visible");
-  await expect(process).toContainText("Working");
+  await expect(turnStatus).toContainText("Working");
   await expect(process).toHaveAttribute("aria-expanded", "false");
   await page.setViewportSize({ width: 390, height: 844 });
   await setVisibility("hidden");
