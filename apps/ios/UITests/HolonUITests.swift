@@ -21,25 +21,58 @@ final class HolonUITests: XCTestCase {
         return app
     }
 
-    private func approveSharingThroughSettings(_ app: XCUIApplication) {
-        openSettings(app)
-        let review = app.buttons["privacy.review"]
-        // Form rows are lazy; reveal either state before deciding which is active.
-        let consentAction = app.buttons.matching(NSPredicate(
-            format: "identifier IN %@", ["privacy.review", "privacy.revoke"]
-        )).firstMatch
-        reveal(consentAction, in: app)
-        if review.exists {
-            review.tap()
-            let agree = app.alerts.buttons["privacy.agree"].firstMatch
-            XCTAssertTrue(agree.waitForExistence(timeout: 5))
-            agree.tap()
+    /// Backspace bursts are unreliable; only clear fields that hold text.
+    private func clearTextField(_ field: XCUIElement) {
+        let existing = (field.value as? String) ?? ""
+        if !existing.isEmpty {
+            field.typeText(String(repeating: "\u{8}", count: existing.count + 8))
         }
-        XCTAssertTrue(app.buttons["privacy.revoke"].waitForExistence(timeout: 5))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
     }
 
-    private func agreeToSharingAtLogin(_ app: XCUIApplication) {
+    /// Types a pairing link into the address field and advances; the preview
+    /// stays offline until the confirmation button is pressed.
+    private func enterPairingPayload(_ app: XCUIApplication, payload: String) throws {
+        let address = app.textFields["onboarding.address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        reveal(address, in: app)
+        address.tap()
+        clearTextField(address)
+        address.typeText(payload)
+        let typed = (address.value as? String) ?? ""
+        XCTAssertEqual(typed, payload, "Address field must hold the exact pairing payload")
+        let next = app.buttons["onboarding.checkAddress"]
+        reveal(next, in: app)
+        next.tap()
+    }
+
+    private func connectThroughPairing(_ app: XCUIApplication, endpoint: String, payload: String) throws {
+        try enterPairingPayload(app, payload: payload)
+        let target = app.staticTexts["onboarding.pairingTarget"]
+        XCTAssertTrue(target.waitForExistence(timeout: 10))
+        XCTAssertEqual(target.label, endpoint + "/")
+        let permission = app.switches["onboarding.pairingHTTP"]
+        reveal(permission, in: app)
+        permission.switches.firstMatch.tap()
+        let confirm = app.buttons["onboarding.confirmPairing"]
+        reveal(confirm, in: app)
+        XCTAssertTrue(confirm.isEnabled, "Only HTTP confirmation may gate pairing")
+        confirm.tap()
+    }
+
+    /// Consent moved after sign-in: a connected profile without consent stops
+    /// at the full-screen gate before any agent data is shown.
+    private func approveSharingAfterLogin(_ app: XCUIApplication) {
+        let consent = app.switches["privacy.accept"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 30), "Sign-in must stop at the sharing gate before data")
+        agreeToSharingConsent(app)
+        let proceed = app.buttons["privacy.continue"]
+        reveal(proceed, in: app)
+        proceed.tap()
+        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30),
+                      "Agent home appears only after consent")
+    }
+
+    private func agreeToSharingConsent(_ app: XCUIApplication) {
         let consent = app.switches["privacy.accept"]
         reveal(consent, in: app)
         XCTAssertTrue(consent.isHittable)
@@ -83,15 +116,19 @@ final class HolonUITests: XCTestCase {
             let keyboard = app.keyboards.firstMatch
             let top = navigation.exists ? max(window.minY, navigation.frame.maxY) : window.minY
             var bottom = tabs.exists ? min(window.maxY, tabs.frame.minY) : window.maxY
-            // Native searchable can dock over list rows while the toolbar's
-            // AX frame spans the entire window. Use its actual search field.
-            let dockedSearch = app.toolbars.searchFields.firstMatch
-            if dockedSearch.exists && dockedSearch.isHittable
-                && dockedSearch.frame.minY > window.midY {
-                bottom = min(bottom, dockedSearch.frame.minY)
-            }
+            // Docked search bars are handled by the static reserve below:
+            // iOS 26 drops the floating bar's AX node between snapshots, and
+            // asking for its frame — directly or through a query predicate —
+            // has both aborted tests and crashed the runner outright.
             let composer = app.otherElements["sending.composer"].firstMatch
             let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+            // Conversation content scrolls UNDER the floating composer, so
+            // the bottom clamp must apply to every target that is not a
+            // composer child. Membership is decided by identifier equality,
+            // never frame geometry: r9 proved a frame comparison misreads
+            // content scrolled beneath the composer (link top below composer
+            // top) as a child, skips the clamp, and taps the composer's text
+            // field instead of the link.
             let targetID = element.exists ? element.identifier : ""
             let insideComposer = !targetID.isEmpty && composer.exists
                 && composer.descendants(matching: .any).matching(
@@ -107,6 +144,14 @@ final class HolonUITests: XCTestCase {
                 if assistant.exists && !assistant.frame.isEmpty {
                     bottom = min(bottom, assistant.frame.minY)
                 }
+            }
+            // A docked search bar floats over rows near the bottom, and a row
+            // behind it can still report as hittable. Plain existence is a
+            // single snapshot read that stays safe when the node transiently
+            // drops; reserve the bar's resting zone instead of probing its
+            // live frame.
+            if app.searchFields.firstMatch.exists {
+                bottom -= 96
             }
             return CGRect(x: window.minX, y: top, width: window.width, height: max(0, bottom - top))
         }
@@ -438,21 +483,19 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.tabBars.firstMatch.exists, "No empty content tabs before authentication")
         capture(app, "\(language)-welcome")
         try audit(app, name: language)
-        let manual = app.buttons["onboarding.manual"]
-        reveal(manual, in: app)
-        manual.tap()
         let address = app.textFields["onboarding.address"]
-        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        XCTAssertTrue(address.waitForExistence(timeout: 10), "The address field is the single entry point")
+        let checkAddress = app.buttons["onboarding.checkAddress"]
+        reveal(checkAddress, in: app)
+        XCTAssertFalse(checkAddress.isEnabled, "An empty address cannot proceed")
         address.tap()
         address.typeText("http://host.example.test:8787")
         let permission = app.switches["onboarding.allowHTTP"]
         reveal(permission, in: app)
         XCTAssertEqual(permission.value as? String, "0")
-        let checkAddress = app.buttons["onboarding.checkAddress"]
-        reveal(checkAddress, in: app)
-        XCTAssertFalse(checkAddress.isEnabled)
-        app.buttons["onboarding.back"].tap()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertFalse(checkAddress.isEnabled, "Unconfirmed HTTP cannot proceed")
+        permission.switches.firstMatch.tap()
+        XCTAssertTrue(checkAddress.isEnabled, "Only HTTP confirmation gates the next step")
         XCTAssertFalse(app.tabBars.firstMatch.exists)
     }
 
@@ -460,36 +503,23 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
-        let pasteEntry = app.buttons["onboarding.pasteEntry"]
-        reveal(pasteEntry, in: app)
-        pasteEntry.tap()
-        let payload = app.secureTextFields["onboarding.payload"]
-        reveal(payload, in: app)
-        payload.tap()
-        payload.typeText("http://pair.example.test/login#pair=" + String(repeating: "a", count: 64))
-        app.buttons["onboarding.preview"].tap()
+        try enterPairingPayload(app, payload: "http://pair.example.test/login#pair=" + String(repeating: "a", count: 64))
         let target = app.staticTexts["onboarding.pairingTarget"]
         XCTAssertTrue(target.waitForExistence(timeout: 10))
         XCTAssertEqual(target.label, "http://pair.example.test/api/")
-        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled)
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         let permission = app.switches["onboarding.pairingHTTP"]
         reveal(permission, in: app); permission.switches.firstMatch.tap()
-        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled,
-                       "HTTP permission is not agreement to AI data sharing")
-        agreeToSharingAtLogin(app)
-        XCTAssertTrue(app.buttons["onboarding.confirmPairing"].isEnabled)
+        XCTAssertTrue(app.buttons["onboarding.confirmPairing"].isEnabled,
+                      "No data-sharing agreement may disable pairing confirmation")
+        XCTAssertFalse(app.switches["privacy.accept"].exists,
+                       "Consent is requested after sign-in, not during pairing")
         app.buttons["onboarding.back"].tap()
-        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 10))
         XCTAssertFalse(target.exists)
-        reveal(pasteEntry, in: app); pasteEntry.tap()
-        reveal(payload, in: app); payload.tap()
-        payload.typeText("https://other.example.test/login#pair=" + String(repeating: "b", count: 64))
-        app.buttons["onboarding.preview"].tap()
+        try enterPairingPayload(app, payload: "https://other.example.test/login#pair=" + String(repeating: "b", count: 64))
         XCTAssertEqual(app.staticTexts["onboarding.pairingTarget"].label, "https://other.example.test/api/")
-        XCTAssertEqual(app.switches["privacy.accept"].value as? String, "0")
-        XCTAssertFalse(app.buttons["onboarding.confirmPairing"].isEnabled,
-                       "A new server must not inherit the previous checkbox")
+        XCTAssertFalse(app.switches["privacy.accept"].exists)
     }
 
     private func audit(_ app: XCUIApplication, name: String) throws {
@@ -585,36 +615,8 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
-        let pasteEntry = app.buttons["onboarding.pasteEntry"]
-        reveal(pasteEntry, in: app)
-        pasteEntry.tap()
-        let payload = app.secureTextFields["onboarding.payload"]
-        reveal(payload, in: app)
-        payload.tap()
-        payload.typeText(try XCTUnwrap(components.string))
-        payload.typeText("\n")
-        let keyboardDismissed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
-        XCTAssertEqual(XCTWaiter.wait(for: [keyboardDismissed], timeout: 5), .completed)
-        app.buttons["onboarding.preview"].tap()
-        let target = app.staticTexts["onboarding.pairingTarget"]
-        XCTAssertTrue(target.waitForExistence(timeout: 10))
-        XCTAssertEqual(target.label, endpoint + "/")
-        XCTAssertFalse(app.tabBars.firstMatch.exists)
-        let confirm = app.buttons["onboarding.confirmPairing"]
-        XCTAssertFalse(confirm.isEnabled, "HTTP pairing requires explicit per-target consent")
-        let permission = app.switches["onboarding.pairingHTTP"]
-        reveal(permission, in: app)
-        XCTAssertEqual(permission.value as? String, "0")
-        permission.switches.firstMatch.tap()
-        XCTAssertEqual(permission.value as? String, "1")
-        XCTAssertFalse(confirm.isEnabled, "Login also requires explicit AI data sharing agreement")
-        agreeToSharingAtLogin(app)
-        reveal(confirm, in: app)
-        XCTAssertTrue(confirm.isEnabled)
-        confirm.tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
-        approveSharingThroughSettings(app)
+        try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+        approveSharingAfterLogin(app)
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
@@ -769,29 +771,8 @@ final class HolonUITests: XCTestCase {
         components.fragment = "pair=" + code
         let app = launch(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
-        let pasteEntry = app.buttons["onboarding.pasteEntry"]
-        reveal(pasteEntry, in: app)
-        pasteEntry.tap()
-        let payload = app.secureTextFields["onboarding.payload"]
-        reveal(payload, in: app)
-        payload.tap()
-        payload.typeText(try XCTUnwrap(components.string))
-        payload.typeText("\n")
-        let keyboardDismissed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
-        XCTAssertEqual(XCTWaiter.wait(for: [keyboardDismissed], timeout: 5), .completed)
-        app.buttons["onboarding.preview"].tap()
-        XCTAssertTrue(app.staticTexts["onboarding.pairingTarget"].waitForExistence(timeout: 10))
-        let permission = app.switches["onboarding.pairingHTTP"]
-        reveal(permission, in: app)
-        permission.switches.firstMatch.tap()
-        agreeToSharingAtLogin(app)
-        let confirm = app.buttons["onboarding.confirmPairing"]
-        reveal(confirm, in: app)
-        XCTAssertTrue(confirm.isEnabled)
-        confirm.tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
-        approveSharingThroughSettings(app)
+        try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+        approveSharingAfterLogin(app)
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
         agentButton.tap()
@@ -1117,19 +1098,9 @@ final class HolonUITests: XCTestCase {
                           app.buttons["conversation.more"].waitForExistence(timeout: 15))
             app.terminate(); return
         }
-        let entry = app.buttons["onboarding.pasteEntry"]
-        reveal(entry, in: app); entry.tap()
-        let payload = app.secureTextFields["onboarding.payload"]
-        reveal(payload, in: app); payload.tap()
-        payload.typeText(try XCTUnwrap(components.string)); payload.typeText("\n")
-        app.buttons["onboarding.preview"].tap()
-        let permission = app.switches["onboarding.pairingHTTP"]
-        reveal(permission, in: app); permission.switches.firstMatch.tap()
-        agreeToSharingAtLogin(app)
-        let confirm = app.buttons["onboarding.confirmPairing"]
-        reveal(confirm, in: app); confirm.tap()
-        XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
-        XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed before login")
+        try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+        approveSharingAfterLogin(app)
+        XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed at the post-login gate")
         app.terminate()
     }
 
@@ -1148,7 +1119,7 @@ final class HolonUITests: XCTestCase {
         let proceed = app.buttons["privacy.continue"]
         reveal(proceed, in: app)
         XCTAssertFalse(proceed.isEnabled)
-        agreeToSharingAtLogin(app)
+        agreeToSharingConsent(app)
         reveal(proceed, in: app); XCTAssertTrue(proceed.isEnabled); proceed.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
                       app.buttons["conversation.more"].waitForExistence(timeout: 15))
@@ -1174,7 +1145,6 @@ final class HolonUITests: XCTestCase {
         // Re-enter the same host with a different trailing-slash spelling.
         let add = app.buttons["connection.add"]
         reveal(add, in: app); add.tap()
-        app.buttons["onboarding.manual"].tap()
         let address = app.textFields["onboarding.address"]
         address.tap(); address.typeText(try required("ENDPOINT") + "///")
         let permission = app.switches["onboarding.allowHTTP"]
@@ -1195,7 +1165,6 @@ final class HolonUITests: XCTestCase {
 
         // A second, unreachable fixture-only host remains independently removable on the welcome screen.
         reveal(add, in: app); add.tap()
-        app.buttons["onboarding.manual"].tap()
         address.tap(); address.typeText("http://127.0.0.1:1")
         reveal(permission, in: app); permission.switches.firstMatch.tap()
         reveal(next, in: app); next.tap()
@@ -1402,18 +1371,8 @@ final class HolonUITests: XCTestCase {
             var components = try XCTUnwrap(URLComponents(string: endpoint))
             components.path = String(components.path.dropLast(4)) + "/login"
             components.fragment = "pair=" + (try required("PAIRING_CODE"))
-            let paste = app.buttons["onboarding.pasteEntry"]
-            reveal(paste, in: app); paste.tap()
-            let payload = app.secureTextFields["onboarding.payload"]
-            reveal(payload, in: app); payload.tap()
-            payload.typeText(try XCTUnwrap(components.string) + "\n")
-            app.buttons["onboarding.preview"].tap()
-            let permission = app.switches["onboarding.pairingHTTP"]
-            reveal(permission, in: app); permission.switches.firstMatch.tap()
-            agreeToSharingAtLogin(app)
-            let confirm = app.buttons["onboarding.confirmPairing"]
-            reveal(confirm, in: app); confirm.tap()
-            XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
+            try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
+            approveSharingAfterLogin(app)
         }
         let agent = try required("AGENT_ID")
         if app.buttons["agent." + agent].waitForExistence(timeout: 5) { app.buttons["agent." + agent].tap() }

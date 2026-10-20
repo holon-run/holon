@@ -1037,6 +1037,29 @@ final class ConnectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(credentials.isEmpty)
     }
 
+    func testOrganizationLoginAutoPresentationState() async throws {
+        let f = try fixture()
+        let p = try profile(f)
+        let c = coordinator(f, transport: CoordinatorTransport(mode: "oidc"))
+        await c.connect(p)
+        XCTAssertEqual(c.status, .needsLogin)
+        XCTAssertTrue(c.canAutoPresentOrganizationLogin,
+                      "A finished OIDC probe invites the UI to present sign-in itself")
+
+        let local = coordinator(f, transport: CoordinatorTransport())
+        await local.connect(p)
+        XCTAssertEqual(local.status, .needsLogin)
+        XCTAssertFalse(local.canAutoPresentOrganizationLogin, "Token hosts show a field instead")
+
+        let insecure = try ConnectionProfile(name: "H", apiBaseURL: XCTUnwrap(URL(string: "http://h.example.test/api")),
+                                             allowInsecureHTTP: true)
+        try f.store.saveProfile(insecure)
+        let http = coordinator(f, transport: CoordinatorTransport(mode: "oidc"))
+        await http.connect(insecure)
+        XCTAssertEqual(http.status, .needsLogin)
+        XCTAssertFalse(http.canAutoPresentOrganizationLogin, "OIDC over HTTP cannot present a browser session")
+    }
+
     func testLocalSessionUsesCurrentUserInsteadOfIssuedUser() async throws {
         let f = try fixture()
         let p = try profile(f)

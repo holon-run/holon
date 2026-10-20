@@ -37,24 +37,40 @@ final class DemoReviewUITests: XCTestCase {
         }
         components.path = "/login"
         components.fragment = "pair=" + ticket
+        let payload = try XCTUnwrap(components.string)
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en",
                                "-AppleInterfaceStyle", "Light"]
         app.launch()
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 20))
-        let paste = app.buttons["onboarding.pasteEntry"]
-        reveal(paste, in: app)
-        paste.tap()
-        let payload = app.secureTextFields["onboarding.payload"]
-        reveal(payload, in: app)
-        payload.tap()
-        payload.typeText(try XCTUnwrap(components.string))
-        payload.typeText("\n")
-        app.buttons["onboarding.preview"].tap()
+        // Single-screen flow: paste the pairing link into the address field.
+        let address = app.textFields["onboarding.address"]
+        reveal(address, in: app)
+        address.tap()
+        address.typeText(payload)
+        XCTAssertEqual(address.value as? String, payload,
+                       "Address field must hold the exact pairing link")
+        let next = app.buttons["onboarding.checkAddress"]
+        reveal(next, in: app)
+        next.tap()
+        let target = app.staticTexts["onboarding.pairingTarget"]
+        XCTAssertTrue(target.waitForExistence(timeout: 10))
+        XCTAssertTrue(target.label.hasPrefix(endpoint),
+                      "Pairing preview must name the review demo host")
         let confirm = app.buttons["onboarding.confirmPairing"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         reveal(confirm, in: app)
         XCTAssertTrue(confirm.isEnabled, "HTTPS pairing must not require insecure HTTP permission")
         confirm.tap()
+        // Sign-in stops at the full-screen sharing gate before agent data is shown.
+        let consent = app.switches["privacy.accept"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 30),
+                      "Sign-in must stop at the sharing gate before data")
+        reveal(consent, in: app)
+        XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
+        consent.switches.firstMatch.tap()
+        XCTAssertEqual(consent.value as? String, "1")
+        let proceed = app.buttons["privacy.continue"]
+        reveal(proceed, in: app)
+        proceed.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))
     }
 

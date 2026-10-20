@@ -281,6 +281,13 @@ final class ConnectionCoordinator {
         await connect(selectedProfile)
     }
 
+    /// Android-parity auto-presentation: true exactly when a finished probe
+    /// landed on organization sign-in and the UI may present it by itself.
+    /// The view keeps presentation-once and retry policy; this is the state.
+    var canAutoPresentOrganizationLogin: Bool {
+        !isBusy && status == .needsLogin && authenticationMode == "oidc" && supportsOIDC
+    }
+
     func connect(_ profile: ConnectionProfile) async {
         // Validate before withdrawing online identity: a transient reconnect can keep its
         // confirmed reading scope, but a staged login, scope change, or profile switch cannot.
