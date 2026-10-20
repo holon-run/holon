@@ -865,6 +865,27 @@ with fixture_directory(repo) as root:
                 cases.append(("testRuntimeBrowserWorkflow", "large"))
                 # Deletes the saved fixture session, so run last in a full sweep.
                 cases.append(("testNetworkManagementWorkflow", "large"))
+
+                def ensure_uninstalled(simulator, bundle_id):
+                    # simctl uninstall can fail silently while simulator
+                    # services are still settling after boot; xcodebuild then
+                    # reinstalls the bundle over the surviving data container
+                    # and leaks the previous run's authenticated state into
+                    # cases that require a clean install. Verify removal.
+                    for _ in range(3):
+                        subprocess.run(["xcrun", "simctl", "uninstall", simulator, bundle_id],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       check=False)
+                        probe = subprocess.run(
+                            ["xcrun", "simctl", "get_app_container", simulator, bundle_id, "data"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        if probe.returncode != 0:
+                            return
+                        time.sleep(2)
+                    raise RuntimeError(
+                        f"simctl uninstall left {bundle_id} installed on {simulator}; "
+                        "refusing to run UI cases against stale app data")
+
                 selected_cases = os.environ.get("IOS_UI_CASES")
                 if selected_cases:
                     requested = selected_cases.split(",")
@@ -876,9 +897,7 @@ with fixture_directory(repo) as root:
                     # installs credentials, sign-out cases restore onboarding).
                     # Uninstall the app so every selection starts from the same
                     # clean install a fresh full sweep would use.
-                    subprocess.run(["xcrun", "simctl", "uninstall", simulator, "run.holon.ios"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   check=False)
+                    ensure_uninstalled(simulator, "run.holon.ios")
                 bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult")
                            for method, _ in cases]
                 if any(path.exists() for path in bundles):
@@ -930,6 +949,14 @@ with fixture_directory(repo) as root:
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
                             if method == "testRuntimeBrowserWorkflow":
+                                # This case asserts the post-login sharing gate on a
+                                # fresh sign-in. Sharing-consent approval persists
+                                # across the prior sign-out case for the same host, so
+                                # a full sweep must reset to the clean-install state a
+                                # subset run uses. The case pairs through its own fresh
+                                # ticket, and the trailing network-management case
+                                # re-establishes its own connection.
+                                ensure_uninstalled(simulator, "run.holon.ios")
                                 # A full sweep stacks seeded history turns (history-window,
                                 # automatic-read cases) on the shared agent, burying the
                                 # populated app-link brief. Enqueue a fresh reply so the

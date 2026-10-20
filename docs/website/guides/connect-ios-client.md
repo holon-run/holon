@@ -41,14 +41,14 @@ The Xcode build and run steps have moved to
 
 The app reads the invitation ticket (`/login#pair=<ticket>`), redeems it against `POST /api/auth/pairing/redeem/native`, securely saves the session credential in the iOS Keychain, and navigates directly to your agents.
 
-If your camera is unavailable or permission is denied, tap the manual entry option and paste the pairing link into the ticket field.
+If your camera is unavailable or permission is denied, paste the pairing link into the address field on the welcome screen and confirm after tapping **Next**.
 
 ### Option B: Manual Connection
 
-1. Tap **Manual Connection** on the onboarding screen.
-2. Enter the full API base URL (e.g. `https://holon.example.com/api` or `http://192.168.1.50:7878/api`).
-3. Enter your bearer token or bootstrap secret.
-4. Review the data-sharing disclosure and tap **Connect**.
+1. Type or paste the full API base URL (e.g. `https://holon.example.com/api` or `http://192.168.1.50:7878/api`) into the address field on the welcome screen.
+2. Tap **Next**; the app probes the host's sign-in method automatically.
+3. Token hosts show an access-token field: enter your bearer token or bootstrap secret and tap **Sign in with token**.
+4. After sign-in, review the data-sharing disclosure and tap **Continue** before any agent data appears.
 
 The app calls `POST /api/auth/session/exchange/native`, stores the revocable session credential in the Keychain, and clears the raw token from memory.
 

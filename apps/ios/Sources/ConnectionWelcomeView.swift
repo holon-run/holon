@@ -1,32 +1,36 @@
 import SwiftUI
 import HolonClient
 
+/// Android-parity single-screen connection flow: enter or paste an address,
+/// press 下一步, and the host's sign-in method is probed automatically.
+/// Organization sign-in presents itself; token hosts show a token field.
+/// Data-sharing consent is enforced after sign-in: the full-screen gate
+/// (`ConnectionSharingConsentView`) blocks agent data from being shown and
+/// sending requires approved sharing; never a disabled button here.
 struct ConnectionWelcomeView: View {
     @Bindable var coordinator: ConnectionCoordinator
     var cancel: (() -> Void)? = nil
-    @State private var step = Step.welcome
+    @State private var step = Step.address
     @State private var scanning = false
     @State private var address = ""
     @State private var name = ""
     @State private var allowHTTP = false
     @State private var token = ""
-    @State private var payload = ""
     @State private var inputError = false
-    @State private var addressOnly = false
     @State private var pairingAttempt = false
-    @State private var sharingAccepted = false
+    @State private var organizationLoginShown = false
     @State private var anchor: UIWindow?
-    @FocusState private var payloadFocused: Bool
+    @FocusState private var addressFocused: Bool
 
-    private enum Step { case welcome, invitation, address, authentication, pairing }
+    private enum Step { case address, authentication, pairing }
 
     var body: some View {
         NavigationStack {
             Group {
-                if step == .welcome {
+                if step == .address {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
-                            welcome
+                            addressEntry
                         }
                         .padding()
                     }
@@ -34,9 +38,7 @@ struct ConnectionWelcomeView: View {
                 } else {
                     Form {
                         switch step {
-                        case .welcome: EmptyView()
-                        case .invitation: invitationEntry
-                        case .address: manualAddress
+                        case .address: EmptyView()
                         case .authentication: authentication
                         case .pairing: pairing
                         }
@@ -53,7 +55,7 @@ struct ConnectionWelcomeView: View {
                             .accessibilityIdentifier("onboarding.cancel")
                     }
                 }
-                if step != .welcome {
+                if step != .address {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("action.back") { back() }
                             .accessibilityIdentifier("onboarding.back")
@@ -64,7 +66,7 @@ struct ConnectionWelcomeView: View {
                 NavigationStack {
                     QRCodeScannerView { payload in
                         scanning = false
-                        receive(payload)
+                        applyScan(payload)
                     }
                     .navigationTitle("onboarding.scan")
                     .toolbar {
@@ -78,48 +80,55 @@ struct ConnectionWelcomeView: View {
                 Button("action.ok", role: .cancel) {}
             } message: { Text("onboarding.invalidInput") }
             .onChange(of: address) { allowHTTP = false }
-            .onChange(of: sharingTarget) { sharingAccepted = false }
+            .onChange(of: step) { attemptAutoOrganizationLogin() }
+            .onChange(of: coordinator.status) { attemptAutoOrganizationLogin() }
+            .onChange(of: coordinator.authenticationMode) { attemptAutoOrganizationLogin() }
+            .onAppear { organizationLoginShown = false }
             .onDisappear {
                 token = ""
-                payload = ""
                 coordinator.cancelPairing()
             }
         }
     }
 
-    private var welcome: some View {
+    private var addressEntry: some View {
         Group {
+            // Mirrors the audited welcome layout: ScrollView cards, no Form rows.
             VStack(alignment: .leading, spacing: 16) {
                 Image(systemName: "server.rack").font(.largeTitle)
                     .foregroundStyle(Color.accentColor).accessibilityHidden(true)
                 LocalizedMultilineText(key: "onboarding.welcome", isHeading: true)
                 LocalizedMultilineText(key: "onboarding.purpose")
+                TextField("profiles.address", text: $address)
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.next).onSubmit { connectAddress() }
+                    .focused($addressFocused)
+                    .accessibilityIdentifier("onboarding.address")
+                Text("onboarding.addressExample").font(.subheadline).foregroundStyle(.secondary)
                 Button {
+                    addressFocused = false
                     pairingAttempt = false
                     scanning = true
                 } label: {
                     actionLabel("onboarding.scan", image: "qrcode.viewfinder")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .accessibilityIdentifier("onboarding.scan")
-                Button {
-                    payload = ""
-                    step = .invitation
-                } label: {
-                    actionLabel("onboarding.paste", image: "doc.on.clipboard")
+                DisclosureGroup("onboarding.advanced") {
+                    TextField("profiles.name", text: $name)
+                    Text("profiles.addressHelp").font(.subheadline).foregroundStyle(.secondary)
+                    Text("onboarding.noLocalhost").font(.subheadline).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("onboarding.pasteEntry")
-                Button {
-                    token = ""
-                    addressOnly = false
-                    pairingAttempt = false
-                    step = .address
-                } label: {
-                    actionLabel("onboarding.manual", image: "keyboard")
+                if insecureAddressNeedsConfirmation {
+                    Toggle("connection.allowHTTP", isOn: $allowHTTP)
+                        .accessibilityIdentifier("onboarding.allowHTTP")
+                    Text("connection.httpWarning").font(.subheadline).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("onboarding.manual")
+                Button { connectAddress() } label: { actionLabel("onboarding.checkAddress") }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(coordinator.isBusy || !canAdvanceAddress)
+                    .accessibilityIdentifier("onboarding.checkAddress")
+                Text("onboarding.methodNote").font(.subheadline).foregroundStyle(.secondary)
             }
             .disabled(coordinator.isBusy)
             if !coordinator.profiles.isEmpty {
@@ -127,20 +136,15 @@ struct ConnectionWelcomeView: View {
                     Text("profiles.title").font(.headline)
                     ForEach(coordinator.profiles) { profile in
                         SavedNetworkRow(coordinator: coordinator, profile: profile) {
-                            token = ""
-                            pairingAttempt = false
-                            step = .authentication
-                            Task { await coordinator.connect(profile) }
+                            connectSaved(profile)
                         }
                     }
                     if coordinator.selectedProfile != nil {
                         ConnectionStatusView(coordinator: coordinator)
-                        Button("onboarding.continueLogin") { step = .authentication }
-                            .buttonStyle(.bordered)
-                            .disabled(coordinator.isBusy)
                     }
                 }
-                .padding().background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                .padding().background(Color(uiColor: .secondarySystemGroupedBackground),
+                                      in: RoundedRectangle(cornerRadius: 16))
             }
             VStack(alignment: .leading, spacing: 20) {
                 DisclosureGroup("onboarding.getCode") {
@@ -162,151 +166,116 @@ struct ConnectionWelcomeView: View {
         .multilineTextAlignment(.center)
     }
 
-    private var invitationEntry: some View {
-        Section {
-            SecureField("pairing.payload", text: $payload)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .privacySensitive().focused($payloadFocused)
-                .submitLabel(.done).onSubmit { payloadFocused = false }
-                .accessibilityIdentifier("onboarding.payload")
-            PasteButton(payloadType: String.self) { values in
-                if let value = values.first { receive(value) }
-            }
-            .accessibilityLabel(Text("onboarding.paste"))
-            Button {
-                let submitted = payload
-                payload = ""
-                payloadFocused = false
-                receive(submitted)
-            } label: { actionLabel("pairing.preview") }
-            .buttonStyle(.borderedProminent)
-            .disabled(coordinator.isBusy || payload.isEmpty)
-            .accessibilityIdentifier("onboarding.preview")
-        } header: { Text("onboarding.paste") }
-        footer: { Text("onboarding.pasteHelp") }
-    }
-
-    private var manualAddress: some View {
-        Section("onboarding.addressStep") {
-            if addressOnly { Text("onboarding.addressOnly") }
-            TextField("profiles.address", text: $address, prompt: Text("profiles.addressExample"))
-                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                .accessibilityIdentifier("onboarding.address")
-            DisclosureGroup("onboarding.advanced") {
-                TextField("profiles.name", text: $name)
-                Text("profiles.addressHelp").font(.caption).foregroundStyle(.secondary)
-                Text("onboarding.noLocalhost").font(.caption).foregroundStyle(.secondary)
-            }
-            if URL(string: address)?.scheme?.lowercased() == "http" {
-                Toggle("connection.allowHTTP", isOn: $allowHTTP)
-                    .accessibilityIdentifier("onboarding.allowHTTP")
-                Text("connection.httpWarning").font(.caption)
-            }
-            Button { connectAddress() } label: { actionLabel("onboarding.checkAddress") }
-                .buttonStyle(.borderedProminent)
-                .disabled(coordinator.isBusy || address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                          (URL(string: address)?.scheme?.lowercased() == "http" && !allowHTTP))
-                .accessibilityIdentifier("onboarding.checkAddress")
-        }
-    }
-
     private var authentication: some View {
-        Group {
-            if let url = sharingTarget {
-                LoginSharingConsentSection(apiBaseURL: url, agreed: $sharingAccepted)
-            }
-            Section("onboarding.loginStep") {
-                ConnectionStatusView(coordinator: coordinator)
-                if pairingAttempt && !coordinator.isBusy {
-                    Text("onboarding.newCode")
-                    Button("onboarding.scan") { back(); scanning = true }
-                } else if coordinator.authenticationMode == "oidc" {
-                    if coordinator.supportsOIDC {
-                        Button("login.organization") {
-                            guard let anchor, approveSharing() else { return }
-                            token = ""
-                            coordinator.startOrganizationLogin(anchor: anchor)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(coordinator.isBusy || anchor == nil || !canApproveSharing)
-                    } else {
-                        Text("onboarding.oidcHTTPS")
+        Section("onboarding.loginStep") {
+            ConnectionStatusView(coordinator: coordinator)
+            if pairingAttempt && !coordinator.isBusy {
+                Text("onboarding.newCode")
+                Button("onboarding.scan") { back(); scanning = true }
+            } else if coordinator.authenticationMode == "oidc" {
+                if coordinator.supportsOIDC {
+                    Text("login.organizationHint")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("login.organization") {
+                        guard let anchor else { return }
+                        token = ""
+                        coordinator.startOrganizationLogin(anchor: anchor)
                     }
-                } else if coordinator.authenticationMode == "local" {
-                    SecureField("login.token", text: $token)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-                        .accessibilityIdentifier("onboarding.token")
-                    Text("onboarding.tokenHelp").font(.caption).foregroundStyle(.secondary)
-                    Button {
-                        guard approveSharing() else { return }
-                        let submitted = token
-                        token = ""
-                        Task { await coordinator.login(token: submitted) }
-                    } label: { actionLabel("login.tokenSubmit") }
                     .buttonStyle(.borderedProminent)
-                    .disabled(coordinator.isBusy || token.isEmpty || !canApproveSharing)
-                    .accessibilityIdentifier("onboarding.login")
-                }
-                if coordinator.isBusy {
-                    Button("login.cancel") { coordinator.cancelLogin() }
+                    .disabled(coordinator.isBusy || anchor == nil)
+                    .accessibilityIdentifier("login.organization")
                 } else {
-                    Button("connection.refresh") {
-                        token = ""
-                        pairingAttempt = false
-                        Task { await coordinator.refresh() }
-                    }.disabled(coordinator.selectedProfile == nil)
-                    Button("onboarding.otherConnection") { back() }
+                    Text("onboarding.oidcHTTPS")
                 }
+            } else if coordinator.authenticationMode == "local" {
+                SecureField("login.token", text: $token)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                    .accessibilityIdentifier("onboarding.token")
+                Text("onboarding.tokenHelp").font(.caption).foregroundStyle(.secondary)
+                Button {
+                    let submitted = token
+                    token = ""
+                    Task { await coordinator.login(token: submitted) }
+                } label: { actionLabel("login.tokenSubmit") }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(coordinator.isBusy || token.isEmpty)
+                    .accessibilityIdentifier("onboarding.login")
+            }
+            if coordinator.isBusy {
+                Button("login.cancel") { coordinator.cancelLogin() }
+            } else {
+                Button("connection.refresh") {
+                    token = ""
+                    pairingAttempt = false
+                    Task { await coordinator.refresh() }
+                }.disabled(coordinator.selectedProfile == nil)
+                Button("onboarding.otherConnection") { back() }
             }
         }
     }
 
     private var pairing: some View {
-        Group {
-            if let url = sharingTarget {
-                LoginSharingConsentSection(apiBaseURL: url, agreed: $sharingAccepted)
-            }
-            Section("pairing.title") {
-                if let invitation = coordinator.pendingPairing {
-                    Text("pairing.confirmHelp")
-                    Text(verbatim: sharingTarget?.absoluteString ?? invitation.apiBaseURL.absoluteString)
-                        .textSelection(.enabled).accessibilityIdentifier("onboarding.pairingTarget")
-                    if invitation.apiBaseURL.scheme == "http" {
-                        Toggle("connection.allowHTTP", isOn: $allowHTTP)
-                            .accessibilityIdentifier("onboarding.pairingHTTP")
-                        Text("connection.httpWarning").font(.caption)
-                    }
-                    Button {
-                        guard approveSharing() else { return }
-                        pairingAttempt = true
-                        step = .authentication
-                        Task { await coordinator.confirmPairing(allowInsecureHTTP: allowHTTP) }
-                    } label: { actionLabel("pairing.confirm") }
+        Section("pairing.title") {
+            if let invitation = coordinator.pendingPairing {
+                Text("pairing.confirmHelp")
+                Text(verbatim: coordinator.pairingTargetURL?.absoluteString ?? invitation.apiBaseURL.absoluteString)
+                    .textSelection(.enabled).accessibilityIdentifier("onboarding.pairingTarget")
+                if invitation.apiBaseURL.scheme == "http" {
+                    Toggle("connection.allowHTTP", isOn: $allowHTTP)
+                        .accessibilityIdentifier("onboarding.pairingHTTP")
+                    Text("connection.httpWarning").font(.caption)
+                }
+                Button {
+                    pairingAttempt = true
+                    step = .authentication
+                    Task { await coordinator.confirmPairing(allowInsecureHTTP: allowHTTP) }
+                } label: { actionLabel("pairing.confirm") }
                     .buttonStyle(.borderedProminent)
-                    .disabled(coordinator.isBusy || !canApproveSharing ||
+                    .disabled(coordinator.isBusy ||
                               (invitation.apiBaseURL.scheme == "http" && !allowHTTP))
                     .accessibilityIdentifier("onboarding.confirmPairing")
-                    Button("pairing.cancel", role: .cancel) { back() }
-                }
+                Button("pairing.cancel", role: .cancel) { back() }
             }
         }
     }
 
-    private var sharingTarget: URL? {
-        step == .pairing ? coordinator.pairingTargetURL : coordinator.selectedProfile?.apiBaseURL
+    /// Organization sign-in presents itself once when the probe lands on OIDC,
+    /// mirroring Android's automatic browser open. The button remains as retry.
+    private func attemptAutoOrganizationLogin() {
+        guard step == .authentication, !organizationLoginShown, !pairingAttempt,
+              coordinator.canAutoPresentOrganizationLogin, let anchor else { return }
+        organizationLoginShown = true
+        coordinator.startOrganizationLogin(anchor: anchor)
     }
 
-    private var canApproveSharing: Bool {
-        sharingAccepted && sharingTarget != nil && SharingConsent.shared.defaults != nil
+    private func connectSaved(_ profile: ConnectionProfile) {
+        token = ""
+        pairingAttempt = false
+        organizationLoginShown = false
+        step = .authentication
+        Task { await coordinator.connect(profile) }
     }
 
-    private func approveSharing() -> Bool {
-        guard canApproveSharing, let url = sharingTarget else { return false }
-        SharingConsent.shared.approve(url)
-        return SharingConsent.shared.approved(url)
+    /// A pairing payload confirms HTTP later on its own offline confirmation
+    /// step (`onboarding.pairingHTTP`); only plain addresses gate 下一步 here.
+    private var enteredPairingPayload: Bool {
+        guard let input = try? ConnectionInput(address) else { return false }
+        if case .pairing = input { return true }
+        return false
     }
 
-    private func receive(_ payload: String) {
+    private var insecureAddressNeedsConfirmation: Bool {
+        URL(string: address)?.scheme?.lowercased() == "http" && !enteredPairingPayload
+    }
+
+    private var canAdvanceAddress: Bool {
+        guard !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return !insecureAddressNeedsConfirmation || allowHTTP
+    }
+
+    /// Scanning is offline: an address code only fills the field for review;
+    /// a pairing code opens the offline confirmation step.
+    private func applyScan(_ payload: String) {
         guard !coordinator.isBusy else { return }
         token = ""
         allowHTTP = false
@@ -318,36 +287,46 @@ struct ConnectionWelcomeView: View {
                 step = .pairing
             case .address(let url):
                 address = url.absoluteString
-                addressOnly = true
                 pairingAttempt = false
-                step = .address
             }
         } catch { inputError = true }
     }
 
+    /// 下一步 owns the transition: a pairing link opens offline confirmation;
+    /// an address is probed for its sign-in method without asking for consent.
     private func connectAddress() {
+        addressFocused = false
+        guard !coordinator.isBusy else { return }
         do {
-            guard case .address(let url) = try ConnectionInput(address) else {
-                throw HolonClientError.invalidRequest
+            switch try ConnectionInput(address) {
+            case .pairing:
+                coordinator.cancelPairing()
+                try coordinator.previewPairing(address)
+                // A consumed ticket is not an editable address; the field
+                // restarts clean when the user backs out of confirmation.
+                address = ""
+                step = .pairing
+            case .address(let url):
+                let chosenName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let profile = try coordinator.addProfile(name: chosenName.isEmpty ? url.host ?? "Holon" : chosenName,
+                                                         apiBaseURL: url, allowInsecureHTTP: allowHTTP)
+                token = ""
+                pairingAttempt = false
+                organizationLoginShown = false
+                step = .authentication
+                Task { await coordinator.connect(profile) }
             }
-            let chosenName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            let profile = try coordinator.addProfile(name: chosenName.isEmpty ? url.host ?? "Holon" : chosenName,
-                                                     apiBaseURL: url, allowInsecureHTTP: allowHTTP)
-            token = ""
-            step = .authentication
-            Task { await coordinator.connect(profile) }
         } catch { inputError = true }
     }
 
     private func back() {
-        sharingAccepted = false
         token = ""
-        payload = ""
         if coordinator.isBusy { coordinator.cancelLogin() }
         coordinator.cancelPairing()
         allowHTTP = false
         pairingAttempt = false
-        step = .welcome
+        organizationLoginShown = false
+        step = .address
     }
 }
 

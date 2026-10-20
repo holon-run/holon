@@ -12,9 +12,11 @@ Set `IOS_SIMULATOR_ID`, `IOS_DERIVED_DATA_PATH`, and an unused
 make ios-ui-test
 ```
 
-Login checks cover default-unchecked agreement, independent HTTP permission,
-reset when a pairing destination changes, and review after restoring a session
-with withdrawn consent (`testLoginConsentRestorationAndWithdrawal`).
+Login checks cover the address field as the single entry point with automatic
+sign-in-method probing after 下一步, independent HTTP permission, pairing
+confirmation never disabled by a data-sharing agreement, the post-sign-in
+consent gate before any agent data, and review after restoring a session with
+withdrawn consent (`testLoginConsentRestorationAndWithdrawal`).
 Content-report tests open the long-press menu and assert no permanent row button.
 
 ### Default offline-reading regressions

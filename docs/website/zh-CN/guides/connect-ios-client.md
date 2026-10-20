@@ -36,14 +36,14 @@ Xcode 本地构建与运行步骤已归档至[构建移动端客户端](../maint
 
 应用会读取邀请票据（`/login#pair=<ticket>`），请求 `POST /api/auth/pairing/redeem/native` 完成兑换，将会话凭据安全加密存入 iOS Keychain 中，随后直接进入 Agent 列表。
 
-如果摄像头不可用或权限受限，可点击手动输入选项并将配对链接直接粘贴到输入框。
+如果摄像头不可用或权限受限，可将配对链接直接粘贴到欢迎页的地址输入框，点击**下一步**后确认连接。
 
 ### 方案 B：手动连接
 
-1. 在欢迎页点击 **Manual Connection**。
-2. 输入完整的 API 基准 URL（例如 `https://holon.example.com/api` 或 `http://192.168.1.50:7878/api`）。
-3. 输入 Bearer Token 或 Bootstrap Secret。
-4. 阅读数据共享声明后点击 **Connect**。
+1. 在欢迎页的地址输入框输入完整的 API 基准 URL（例如 `https://holon.example.com/api` 或 `http://192.168.1.50:7878/api`），也可直接粘贴。
+2. 点击 **下一步**，应用会自动探测该主机的登录方式。
+3. Token 主机会显示访问令牌输入框，输入 Bearer Token 或 Bootstrap Secret 后点击 **使用 token 登录**。
+4. 登录后阅读数据共享声明并点击 **继续**，之后才会进入 Agent 数据。
 
 应用调用 `POST /api/auth/session/exchange/native`，将颁发的可吊销会话凭据存入 Keychain，并立即清空内存中的明文 Token。
 
@@ -51,9 +51,9 @@ Xcode 本地构建与运行步骤已归档至[构建移动端客户端](../maint
 
 当守护进程对接了 OpenID Connect 身份提供商时：
 
-1. 输入 API 基准 URL。
-2. 点击 **Sign in with Organization**。
-3. 在弹出的系统浏览器面板中完成身份认证。
+1. 在地址输入框输入 API 基准 URL 并点击 **下一步**。
+2. 应用探测到组织登录后会自动弹出系统浏览器面板；如需重试可点击 **组织浏览器登录**。
+3. 在系统浏览器面板中完成身份认证。
 4. 认证完成后通过自定义 URL 回调重定向回 Holon，应用将下发的会话 Token 妥善存入 Keychain。
 
 ## 网络与安全考量
