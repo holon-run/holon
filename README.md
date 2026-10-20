@@ -4,15 +4,9 @@ English | [中文](README.zh-CN.md)
 
 [![Release](https://img.shields.io/github/v/release/holon-run/holon?sort=semver)](https://github.com/holon-run/holon/releases/latest)[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Agents that act and follow through**
+**Create and run AI assistants on your own computer or server.**
 
-Holon is a local workbench for agents handling ongoing work—not just one-off prompts. It keeps goals, plans, progress, and wait conditions in explicit WorkItems, so work can continue across sessions, commands, human input, and external events.
-
-When the next condition is satisfied, the agent resumes the right work in the right workspace and delivers the result back to you.
-
-Use Holon when a task should keep moving after you close the terminal, wait for a command result, ask for review, or receive an external event.
-
-Holon itself is not an agent. It provides a local working environment for multiple agents. Agents understand goals and drive execution; Holon treats "work" as the core unit, preserving state, organizing context, recording waits and wakes, so tasks can resume at the right time and eventually deliver results back to the operator.
+Holon is open-source software for individuals and teams to create and run AI assistants on their own computers or servers. Assign tasks to your assistants, track their progress, and let them follow up on ongoing work.
 
 ## What does Holon provide?
 
@@ -179,6 +173,8 @@ profiles, custom providers, and Codex subscriptions, see
 [Supported Models](docs/website/reference/models.md).
 
 ## Core concepts
+
+Assistants keep track of ongoing work and can wait for results, events, or your input before continuing. WorkItems record goals and progress so work can span multiple conversations.
 
 Holon breaks agent work into a few explicit runtime objects:
 

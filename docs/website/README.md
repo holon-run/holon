@@ -1,6 +1,6 @@
 ---
-title: Holon
-summary: Agents that act and follow through. Run Holon on your computer or a team server. Connect events and schedules so agents can act, save progress, and ask for your input when needed.
+title: Create and run AI assistants
+summary: Create and run AI assistants on your own computer or server. Assign tasks, track progress, and let them follow up. Open source for individuals and teams.
 order: 1
 ---
 
@@ -10,16 +10,16 @@ order: 1
 
 <p class="home-eyebrow">Built for work that needs follow-through</p>
 
-# Agents that act<br>and follow through.
+# Create and run AI assistants on your own computer or server.
 
-<p class="home-hero__lede">Holon is an agent workbench you can run on your computer or a team server. Connect events or schedules to handle email, order issues, and code reviews. Agents keep track of progress and ask for your input when needed.</p>
+<p class="home-hero__lede">Open-source software for individuals and teams. Assign tasks to your assistants, track their progress, and let them follow up on ongoing work.</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">Get started</a>
 <a class="home-button home-button--quiet" href="#capabilities">See how it works ↓</a>
 </div>
 
-<p class="home-hero__note">You define the roles and permissions. Agents work within them.</p>
+<p class="home-hero__note">Give each assistant a role and a task. Check progress, provide input when needed, and review the result.</p>
 
 <div class="home-litepaper" role="group" aria-label="Holon product overview PDF">
 <span class="home-litepaper__label">Product overview · 6-page PDF</span>
