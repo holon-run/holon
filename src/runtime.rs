@@ -6143,17 +6143,37 @@ impl RuntimeHandle {
     }
 
     pub async fn run(self) -> Result<()> {
+        self.run_with_startup_observation(None).await
+    }
+
+    pub(crate) async fn run_with_startup_observation(
+        self,
+        observation: Option<crate::startup::StartupObservation>,
+    ) -> Result<()> {
         if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.wait_for_bootstrap_ready().await?;
+            observe_startup_phase(
+                observation.as_ref(),
+                "runtime.onboarding_gate",
+                bridge.wait_for_bootstrap_ready(),
+            )
+            .await?;
         }
-        let bootstrap = async {
-            self.bootstrap_recovery().await?;
-            scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                .bootstrap_recovered()
-                .await?;
-            self.recover_scheduler_bootstrap_claims().await?;
+        let bootstrap = observe_startup_phase(observation.as_ref(), "runtime.bootstrap", async {
+            self.bootstrap_recovery(observation.as_ref()).await?;
+            observe_startup_phase(
+                observation.as_ref(),
+                "runtime.bootstrap.scheduler",
+                scheduler_executor::SchedulerDecisionExecutor::new(&self).bootstrap_recovered(),
+            )
+            .await?;
+            observe_startup_phase(
+                observation.as_ref(),
+                "runtime.bootstrap.retained_claims",
+                self.recover_scheduler_bootstrap_claims(),
+            )
+            .await?;
             Ok(())
-        }
+        })
         .await;
         self.complete_bootstrap(&bootstrap);
         bootstrap?;
@@ -7258,31 +7278,47 @@ impl RuntimeHandle {
         Ok(recovered)
     }
 
-    async fn bootstrap_recovery(&self) -> Result<()> {
-        if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
-            if self.agent_state().await?.status == AgentStatus::Stopped {
-                self.interrupt_active_tasks_for_lifecycle_stop(tasks)
-                    .await?;
-            } else {
-                let (reattached, interrupted_tasks) =
-                    self.recover_supervised_child_tasks(tasks).await?;
-                let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
-                if !reattached.is_empty() {
-                    self.inner.storage.append_event(&AuditEvent::legacy(
-                        "supervised_child_task_monitor_reattached",
-                        serde_json::json!({
-                            "agent_id": self.agent_id().await?,
-                            "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
-                        }),
-                    ))?;
+    async fn bootstrap_recovery(
+        &self,
+        observation: Option<&crate::startup::StartupObservation>,
+    ) -> Result<()> {
+        observe_startup_phase(observation, "runtime.bootstrap.tasks", async {
+            if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
+                if self.agent_state().await?.status == AgentStatus::Stopped {
+                    self.interrupt_active_tasks_for_lifecycle_stop(tasks)
+                        .await?;
+                } else {
+                    let (reattached, interrupted_tasks) =
+                        self.recover_supervised_child_tasks(tasks).await?;
+                    let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
+                    if !reattached.is_empty() {
+                        self.inner.storage.append_event(&AuditEvent::legacy(
+                            "supervised_child_task_monitor_reattached",
+                            serde_json::json!({
+                                "agent_id": self.agent_id().await?,
+                                "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
+                            }),
+                        ))?;
+                    }
+                    drop(interrupted);
                 }
-                drop(interrupted);
             }
-        }
-        if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
-            self.recover_active_timers(timers).await?;
-        }
-        self.emit_recovered_pending_wake_hint().await?;
+            Ok(())
+        })
+        .await?;
+        observe_startup_phase(observation, "runtime.bootstrap.timers", async {
+            if let Some(timers) = self.inner.recovered_timers.lock().await.take() {
+                self.recover_active_timers(timers).await?;
+            }
+            Ok(())
+        })
+        .await?;
+        observe_startup_phase(
+            observation,
+            "runtime.bootstrap.wake_hint",
+            self.emit_recovered_pending_wake_hint(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -7302,6 +7338,17 @@ impl RuntimeHandle {
             }
             notified.await;
         }
+    }
+}
+
+async fn observe_startup_phase<T>(
+    observation: Option<&crate::startup::StartupObservation>,
+    phase: &'static str,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match observation {
+        Some(observation) => observation.observe(phase, future).await,
+        None => future.await,
     }
 }
 

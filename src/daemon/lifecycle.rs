@@ -506,7 +506,8 @@ async fn daemon_start_unlocked(
     cleanup_daemon_state(config)?;
     fs::create_dir_all(config.run_dir())
         .with_context(|| format!("failed to create {}", config.run_dir().display()))?;
-    prepare_runtime_before_server(config)?;
+    let startup = crate::startup::StartupObservation::new();
+    prepare_runtime_before_server_observed(config, &startup)?;
 
     let log_path = daemon_paths(config).log_path;
     let log = fs::OpenOptions::new()
@@ -544,7 +545,7 @@ async fn daemon_start_unlocked(
             crate::config::ControlAuthMode::Disabled => "disabled",
         },
     );
-    command.env(PRE_SERVER_PREPARED_ENV, "1");
+    command.env(PRE_SERVER_PREPARED_ENV, &startup.startup_id);
     if let Some(summary) = startup_summary {
         command.env(DAEMON_SERVE_RESOLUTION_ENV, summary);
     } else {
@@ -709,29 +710,41 @@ fn resolve_start_timeout(explicit_secs: Option<u64>) -> Result<Duration> {
 }
 
 pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
-    info!(
-        home_dir = %config.home_dir.display(),
-        "starting pre-server runtime preparation"
-    );
-    #[cfg(test)]
-    if let Some(hook) = PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap().as_ref() {
-        hook(config).with_context(|| {
+    prepare_runtime_before_server_observed(config, &crate::startup::StartupObservation::new())
+}
+
+pub fn prepare_runtime_before_server_observed(
+    config: &AppConfig,
+    startup: &crate::startup::StartupObservation,
+) -> Result<()> {
+    startup.observe_sync("storage_prepare", || {
+        info!(
+            startup_id = %startup.startup_id,
+            home_dir = %config.home_dir.display(),
+            "starting pre-server runtime preparation"
+        );
+        #[cfg(test)]
+        if let Some(hook) = PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap().as_ref() {
+            hook(config).with_context(|| {
+            "pre-server runtime preparation failed; fix the reported storage domain error and retry"
+        })?;
+            info!(
+                startup_id = %startup.startup_id,
+                home_dir = %config.home_dir.display(),
+                "finished pre-server runtime preparation"
+            );
+            return Ok(());
+        }
+        RuntimeHost::prepare_runtime_storage(config).with_context(|| {
             "pre-server runtime preparation failed; fix the reported storage domain error and retry"
         })?;
         info!(
+            startup_id = %startup.startup_id,
             home_dir = %config.home_dir.display(),
             "finished pre-server runtime preparation"
         );
-        return Ok(());
-    }
-    RuntimeHost::prepare_runtime_storage(config).with_context(|| {
-        "pre-server runtime preparation failed; fix the reported storage domain error and retry"
-    })?;
-    info!(
-        home_dir = %config.home_dir.display(),
-        "finished pre-server runtime preparation"
-    );
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(test)]
