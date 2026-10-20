@@ -263,6 +263,60 @@ impl TaskResultSettlementRepository<'_> {
             Ok(candidates)
         })
     }
+
+    /// A settlement's anchor turn is live only while its turn record is still
+    /// non-terminal, or an open execution attempt remains bound to one of its
+    /// input batches. A missing record is treated as live: turnless result
+    /// fences synthesize turn ids that never persist a record, and wake-root
+    /// admission can still deliver those records. A terminal anchor without
+    /// an open bound attempt can never run a same-turn admission again.
+    pub(crate) fn anchor_turn_live(&self, agent_id: &str, turn_id: &str) -> Result<bool> {
+        self.db
+            .transaction(|tx| anchor_turn_live_tx(tx, agent_id, turn_id))
+    }
+}
+
+/// The turn/binding witness mirrors `attached_turn_for_activation_tx`: a turn
+/// binds an attempt only through its persisted input batches.
+pub(crate) fn anchor_turn_live_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn_id: &str,
+) -> Result<bool> {
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM turn_records
+             WHERE agent_id = ?1 AND turn_id = ?2
+             LIMIT 1",
+            params![agent_id, turn_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // A missing anchor record is not proof of death; the wake and budget
+    // paths keep deciding those records.
+    let Some(payload) = payload else {
+        return Ok(true);
+    };
+    let turn: TurnRecord = serde_json::from_str(&payload)?;
+    if turn.turn_id != turn_id {
+        return Ok(false);
+    }
+    if turn.terminal.is_none() {
+        return Ok(true);
+    }
+    tx.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM execution_protocol_attempts attempts
+           WHERE attempts.agent_id = ?1
+             AND attempts.lifecycle_state = 'open'
+             AND (EXISTS(
+                   SELECT 1 FROM json_each(?2, '$.live_input_batches') batch
+                   WHERE json_extract(batch.value, '$.activation_id') = attempts.attempt_id)
+                 OR json_extract(?2, '$.idle_input_batch.activation_id') = attempts.attempt_id))",
+        params![agent_id, payload],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 /// The caller owns execution, lifecycle, attachment and persistent budget checks.
