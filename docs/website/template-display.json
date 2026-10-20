@@ -44,6 +44,13 @@
         "summary": "持续检测文档与实际情况的偏差、跟进缺口并完成纯文档变更；不实现产品功能，也不负责发布。"
       }
     },
+    "email-assistant": {
+      "category": "productivity",
+      "zh-CN": {
+        "name": "邮件助理",
+        "summary": "持续分诊已授权邮件，分流待办与阅读材料，准备待确认的回复，并跟进沟通直至事项结束。"
+      }
+    },
     "github-solver": {
       "category": "engineering",
       "zh-CN": {

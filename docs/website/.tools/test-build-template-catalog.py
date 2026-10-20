@@ -133,6 +133,39 @@ class TemplateCatalogTests(unittest.TestCase):
                 self.assertEqual(entry["contractUrl"], f"{base}/blob/{SHA}/{path}/AGENTS.md")
                 self.assertEqual(entry["mainUrl"], f"{base}/tree/main/{path}")
 
+    def test_packaged_email_assistant_renders_localized_catalog_and_skill_sources(self):
+        repo = SCRIPT.parents[3]
+        template_id = "email-assistant"
+        shutil.copytree(repo / "agent_templates" / template_id,
+                        self.templates / template_id)
+        display = json.loads((repo / "docs/website/template-display.json").read_text())
+        self.display["templates"][template_id] = display["templates"][template_id]
+        self.write_display()
+
+        catalog = self.build()
+        entry = self.entry(catalog, template_id)
+        self.assertEqual(entry["category"], "productivity")
+        self.assertIsNone(entry["featuredRank"])
+        self.assertEqual(entry["localized"]["zh-CN"]["name"], "邮件助理")
+        declarations = BUILDER.VALIDATOR.load_toml(
+            repo / "agent_templates" / template_id / "skills.toml")["skills"]
+        self.assertEqual(
+            {(skill["repo"], skill["path"]) for skill in declarations},
+            {("holon-run/holon", "skills/email-workflow"),
+             ("holon-run/uxc", "skills/uxc"),
+             ("holon-run/agentinbox", "skills/agentinbox"),
+             ("holon-run/sview", "skills/sview")},
+        )
+        self.assertTrue((repo / "skills/email-workflow/SKILL.md").is_file())
+        for locale in ("", "zh-CN/"):
+            fields = entry["localized"]["zh-CN"] if locale else entry
+            page = (self.output / locale / "templates/README.md").read_text()
+            self.assertIn(fields["name"], page)
+            self.assertIn(fields["summary"], page)
+            self.assertIn(entry["createSelector"], page)
+            self.assertNotIn(template_id,
+                             (self.output / locale / "README.md").read_text())
+
     def test_nonfeatured_add_modify_delete_updates_all_generated_outputs(self):
         self.build()
         directory = self.add_template("added-role", summary="Original nonfeatured role")
