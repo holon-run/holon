@@ -562,7 +562,6 @@ const en = {
       deferred_to_fallback: "deferred to fallback",
       provider_failed_needs_recovery: "provider failed, needs recovery",
     },
-    turnNoBrief: "Turn ended ({{outcome}}) with no result brief.",
     turnResultUnavailable: "Result unavailable (outside retention or missing linkage).",
     hideExecutionProcess: "Hide execution process",
     turnElapsed: "Took {{duration}}",
