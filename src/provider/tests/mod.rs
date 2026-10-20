@@ -24,6 +24,7 @@ use super::{
 
 mod anthropic_messages;
 mod gemini_generate_content;
+mod http_timeouts;
 mod openai_chat_completions;
 mod openai_responses;
 mod routing_auth_doctor;

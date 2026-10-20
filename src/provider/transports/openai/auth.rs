@@ -213,6 +213,7 @@ impl OpenAiCodexProvider {
         resolve_openai_codex_credential(provider_config, &codex_home)?;
         Ok(Self {
             client,
+            oauth_client: build_oauth_http_client()?,
             provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             credential_profile: provider_config.auth.profile.clone(),
@@ -315,7 +316,7 @@ impl OpenAiCodexProvider {
             return Ok(current);
         }
         let refreshed =
-            refresh_codex_oauth_profile_material(&self.client, &entry.material, profile)
+            refresh_codex_oauth_profile_material(&self.oauth_client, &entry.material, profile)
                 .await
                 .map_err(|failure| codex_refresh_error(profile, failure))?;
         store.profiles.insert(

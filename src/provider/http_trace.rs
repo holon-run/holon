@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,14 @@ struct ProviderHttpTraceRequestState {
     file_path: Option<PathBuf>,
     events: VecDeque<Value>,
     stream_text_decoder: IncrementalUtf8LossyDecoder,
+    started_at: Instant,
+    response_headers_at: Option<Duration>,
+    first_body_chunk_at: Option<Duration>,
+    last_progress_at: Option<Duration>,
+    stream_body_bytes_received: u64,
+    body_read_completed_at: Option<Duration>,
+    completed_body_bytes: Option<usize>,
+    timeout_policy: Option<Value>,
 }
 
 impl ProviderHttpTrace {
@@ -103,6 +111,7 @@ impl ProviderHttpTrace {
         headers: &[(&str, String)],
         body: &Value,
     ) -> Option<ProviderHttpTraceRequest> {
+        let started_at = Instant::now();
         let agent_id = agent_id
             .filter(|value| !value.trim().is_empty())
             .map(ToString::to_string)
@@ -122,6 +131,14 @@ impl ProviderHttpTrace {
                 file_path: None,
                 events: VecDeque::new(),
                 stream_text_decoder: IncrementalUtf8LossyDecoder::new(),
+                started_at,
+                response_headers_at: None,
+                first_body_chunk_at: None,
+                last_progress_at: None,
+                stream_body_bytes_received: 0,
+                body_read_completed_at: None,
+                completed_body_bytes: None,
+                timeout_policy: None,
             })),
         };
         request.write_event(json!({
@@ -140,32 +157,89 @@ impl ProviderHttpTrace {
 }
 
 impl ProviderHttpTraceRequest {
+    pub(crate) fn write_timeout_policy(
+        &self,
+        connect: Duration,
+        headers: Duration,
+        body: Duration,
+        idle: Duration,
+        total: Option<Duration>,
+    ) {
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        let policy = json!({
+            "connect_timeout_ms": connect.as_millis(),
+            "response_headers_timeout_ms": headers.as_millis(),
+            "response_body_timeout_ms": body.as_millis(),
+            "stream_idle_timeout_ms": idle.as_millis(),
+            "total_timeout_ms": total.map(|duration| duration.as_millis()),
+        });
+        guard.timeout_policy = Some(policy.clone());
+        write_event(
+            &mut guard,
+            json!({
+                "type": "timeout_policy",
+                "created_at_ms": current_time_millis(),
+                "policy": policy,
+            }),
+        );
+    }
+
     pub(crate) fn write_response_headers(
         &self,
         status: reqwest::StatusCode,
         headers: &reqwest::header::HeaderMap,
     ) {
-        self.write_event(json!({
-            "type": "response_headers",
-            "created_at_ms": current_time_millis(),
-            "status": status.as_u16(),
-            "headers": redact_header_map(headers),
-        }));
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        let elapsed = guard.started_at.elapsed();
+        guard.response_headers_at.get_or_insert(elapsed);
+        guard.last_progress_at = Some(elapsed);
+        write_event(
+            &mut guard,
+            json!({
+                "type": "response_headers",
+                "created_at_ms": current_time_millis(),
+                "status": status.as_u16(),
+                "headers": redact_header_map(headers),
+            }),
+        );
     }
 
     pub(crate) fn write_response_body(&self, body: &str) {
-        self.write_event(json!({
-            "type": "response_body",
-            "created_at_ms": current_time_millis(),
-            "bytes": body.len(),
-            "body": body,
-        }));
+        let Ok(mut guard) = self.inner.lock() else {
+            return;
+        };
+        let elapsed = guard.started_at.elapsed();
+        guard.body_read_completed_at = Some(elapsed);
+        guard.completed_body_bytes = Some(body.len());
+        guard.last_progress_at = Some(elapsed);
+        // A complete decoded body does not establish when its first byte arrived.
+        write_event(
+            &mut guard,
+            json!({
+                "type": "response_body",
+                "created_at_ms": current_time_millis(),
+                "bytes": body.len(),
+                "body": body,
+            }),
+        );
     }
 
     pub(crate) fn write_stream_chunk(&self, chunk: &[u8]) {
         let Ok(mut guard) = self.inner.lock() else {
             return;
         };
+        if !chunk.is_empty() {
+            let elapsed = guard.started_at.elapsed();
+            guard.first_body_chunk_at.get_or_insert(elapsed);
+            guard.last_progress_at = Some(elapsed);
+            guard.stream_body_bytes_received = guard
+                .stream_body_bytes_received
+                .saturating_add(chunk.len() as u64);
+        }
         let text = guard.stream_text_decoder.push(chunk);
         write_event(
             &mut guard,
@@ -195,6 +269,34 @@ impl ProviderHttpTraceRequest {
 
     pub(crate) fn diagnostics(&self, status: Option<u16>) -> Option<ProviderHttpTraceDiagnostics> {
         let mut guard = self.inner.lock().ok()?;
+        let elapsed = guard.started_at.elapsed();
+        let phase = if guard.body_read_completed_at.is_some() {
+            "body_complete"
+        } else if guard.first_body_chunk_at.is_some() {
+            "body_streaming"
+        } else if guard.response_headers_at.is_some() {
+            "response_headers"
+        } else {
+            "request_started"
+        };
+        let summary = json!({
+            "type": "response_phase_summary",
+            "created_at_ms": current_time_millis(),
+            "phase": phase,
+            "elapsed_ms": elapsed.as_millis(),
+            "response_headers_elapsed_ms": guard.response_headers_at.map(|at| at.as_millis()),
+            "first_body_chunk_elapsed_ms": guard.first_body_chunk_at.map(|at| at.as_millis()),
+            "last_progress_elapsed_ms": guard.last_progress_at.map(|at| at.as_millis()),
+            "since_last_progress_ms": elapsed
+                .saturating_sub(guard.last_progress_at.unwrap_or_default())
+                .as_millis(),
+            "stream_body_bytes_received": guard.stream_body_bytes_received,
+            "body_read_completed_elapsed_ms": guard.body_read_completed_at.map(|at| at.as_millis()),
+            "completed_body_bytes": guard.completed_body_bytes,
+            // Keep effective budgets even if their event fell out of the failure-only window.
+            "timeout_policy": guard.timeout_policy,
+        });
+        write_event(&mut guard, summary);
         flush_stream_text(&mut guard);
         let path = ensure_trace_file(&mut guard)?;
         Some(ProviderHttpTraceDiagnostics {
@@ -416,7 +518,201 @@ mod tests {
         ProviderHttpTrace, ProviderHttpTraceDiagnostics,
     };
     use serde_json::{json, Value};
-    use std::fs;
+    use std::{fs, path::Path, time::Duration};
+
+    fn failure_trace_request(home: &Path) -> super::ProviderHttpTraceRequest {
+        ProviderHttpTrace::failure_only_for_tests(home)
+            .begin_request(
+                Some("agent/one"),
+                "openai",
+                Some("openai/gpt-test"),
+                "https://api.example.com/v1/responses",
+                "responses",
+                &[],
+                &json!({}),
+            )
+            .unwrap()
+    }
+
+    fn failure_trace_events(request: &super::ProviderHttpTraceRequest) -> Vec<Value> {
+        let diagnostics = request.diagnostics(Some(500)).unwrap();
+        fs::read_to_string(diagnostics.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn phase_summary(events: &[Value]) -> &Value {
+        events
+            .iter()
+            .find(|event| event["type"] == "response_phase_summary")
+            .expect("phase summary should be recorded")
+    }
+
+    #[test]
+    fn provider_http_trace_records_effective_timeout_policy() {
+        for total in [None, Some(Duration::from_secs(10))] {
+            let home = tempfile::tempdir().unwrap();
+            let request = failure_trace_request(home.path());
+            request.write_timeout_policy(
+                Duration::from_millis(250),
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(3),
+                total,
+            );
+            assert!(!home.path().join(".holon/http-trace").exists());
+
+            let events = failure_trace_events(&request);
+            let policy = json!({
+                "connect_timeout_ms": 250,
+                "response_headers_timeout_ms": 1_000,
+                "response_body_timeout_ms": 2_000,
+                "stream_idle_timeout_ms": 3_000,
+                "total_timeout_ms": total.map(|duration| duration.as_millis()),
+            });
+            assert_eq!(events[1]["type"], "timeout_policy");
+            assert_eq!(events[1]["policy"], policy);
+            assert_eq!(phase_summary(&events)["timeout_policy"], policy);
+        }
+    }
+
+    #[test]
+    fn provider_http_failure_trace_summarizes_request_before_response() {
+        let home = tempfile::tempdir().unwrap();
+        let request = failure_trace_request(home.path());
+        request.inner.lock().unwrap().started_at -= Duration::from_secs(2);
+
+        let events = failure_trace_events(&request);
+        let summary = phase_summary(&events);
+        assert_eq!(summary["phase"], "request_started");
+        assert!(summary["elapsed_ms"].as_u64().unwrap() >= 2_000);
+        assert_eq!(summary["since_last_progress_ms"], summary["elapsed_ms"]);
+        assert!(summary["response_headers_elapsed_ms"].is_null());
+        assert!(summary["first_body_chunk_elapsed_ms"].is_null());
+        assert!(summary["last_progress_elapsed_ms"].is_null());
+        assert_eq!(summary["stream_body_bytes_received"], 0);
+    }
+
+    #[test]
+    fn provider_http_failure_trace_distinguishes_headers_without_body_progress() {
+        let home = tempfile::tempdir().unwrap();
+        let request = failure_trace_request(home.path());
+        request.write_response_headers(reqwest::StatusCode::OK, &reqwest::header::HeaderMap::new());
+        request.write_stream_chunk(&[]);
+        {
+            let mut state = request.inner.lock().unwrap();
+            assert_eq!(state.last_progress_at, state.response_headers_at);
+            state.started_at -= Duration::from_secs(2);
+        }
+
+        let events = failure_trace_events(&request);
+        let summary = phase_summary(&events);
+        assert_eq!(summary["phase"], "response_headers");
+        assert!(summary["response_headers_elapsed_ms"].is_number());
+        assert!(summary["first_body_chunk_elapsed_ms"].is_null());
+        assert_eq!(summary["stream_body_bytes_received"], 0);
+        assert!(summary["since_last_progress_ms"].as_u64().unwrap() >= 2_000);
+        assert!(summary["body_read_completed_elapsed_ms"].is_null());
+        assert!(summary["completed_body_bytes"].is_null());
+    }
+
+    #[test]
+    fn provider_http_failure_trace_counts_nonempty_chunks_before_utf8_is_complete() {
+        let home = tempfile::tempdir().unwrap();
+        let request = failure_trace_request(home.path());
+        request.write_response_headers(reqwest::StatusCode::OK, &reqwest::header::HeaderMap::new());
+        request.write_stream_chunk(&[0xF0, 0x9F]);
+        let first_chunk_at = {
+            let state = request.inner.lock().unwrap();
+            assert!(state.first_body_chunk_at >= state.response_headers_at);
+            assert_eq!(state.stream_body_bytes_received, 2);
+            assert_eq!(state.first_body_chunk_at, state.last_progress_at);
+            state.first_body_chunk_at.unwrap()
+        };
+        request.write_stream_chunk(&[]);
+        assert_eq!(
+            request.inner.lock().unwrap().last_progress_at,
+            Some(first_chunk_at)
+        );
+        request.write_stream_chunk(&[0x98, 0x80]);
+        {
+            let mut state = request.inner.lock().unwrap();
+            assert_eq!(state.first_body_chunk_at, Some(first_chunk_at));
+            assert!(state.last_progress_at.unwrap() >= first_chunk_at);
+            state.started_at -= Duration::from_secs(3);
+        }
+
+        let events = failure_trace_events(&request);
+        let summary = phase_summary(&events);
+        assert_eq!(summary["phase"], "body_streaming");
+        assert_eq!(
+            summary["first_body_chunk_elapsed_ms"],
+            json!(first_chunk_at.as_millis())
+        );
+        assert_eq!(summary["stream_body_bytes_received"], 4);
+        assert!(summary["since_last_progress_ms"].as_u64().unwrap() >= 3_000);
+        assert!(summary["body_read_completed_elapsed_ms"].is_null());
+    }
+
+    #[test]
+    fn provider_http_trace_complete_body_does_not_invent_first_chunk_or_double_count() {
+        for streamed in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let request = failure_trace_request(home.path());
+            let body = "hello😀";
+            if streamed {
+                request.write_stream_chunk(body.as_bytes());
+            }
+            request.write_response_body(body);
+
+            let events = failure_trace_events(&request);
+            let summary = phase_summary(&events);
+            assert_eq!(summary["phase"], "body_complete");
+            assert_eq!(summary["first_body_chunk_elapsed_ms"].is_number(), streamed);
+            assert_eq!(
+                summary["stream_body_bytes_received"],
+                json!(if streamed { body.len() } else { 0 })
+            );
+            assert_eq!(summary["completed_body_bytes"], json!(body.len()));
+            assert_eq!(
+                summary["last_progress_elapsed_ms"],
+                summary["body_read_completed_elapsed_ms"]
+            );
+        }
+    }
+
+    #[test]
+    fn provider_http_failure_trace_summary_survives_event_window_eviction() {
+        let home = tempfile::tempdir().unwrap();
+        let request = failure_trace_request(home.path());
+        request.write_timeout_policy(
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(3),
+            Duration::from_secs(4),
+            Some(Duration::from_secs(30)),
+        );
+        request.write_response_headers(reqwest::StatusCode::OK, &reqwest::header::HeaderMap::new());
+        let chunk_count = super::PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS + 10;
+        for _ in 0..chunk_count {
+            request.write_stream_chunk(b"x");
+        }
+        assert!(!home.path().join(".holon/http-trace").exists());
+
+        let events = failure_trace_events(&request);
+        assert_eq!(events.len(), super::PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS);
+        assert!(events.iter().all(|event| {
+            event["type"] == "stream_chunk" || event["type"] == "response_phase_summary"
+        }));
+        let summary = phase_summary(&events);
+        assert_eq!(summary["phase"], "body_streaming");
+        assert!(summary["response_headers_elapsed_ms"].is_number());
+        assert!(summary["first_body_chunk_elapsed_ms"].is_number());
+        assert_eq!(summary["stream_body_bytes_received"], json!(chunk_count));
+        assert_eq!(summary["timeout_policy"]["total_timeout_ms"], 30_000);
+    }
 
     #[test]
     fn provider_http_trace_diagnostics_deserialize_without_capture_id() {
@@ -675,7 +971,12 @@ mod tests {
 
         assert!(request.diagnostics(Some(500)).is_none());
         let state = request.inner.lock().unwrap();
-        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events.len(), 2);
+        assert_eq!(state.events.front().unwrap()["type"], "request");
+        assert_eq!(
+            state.events.back().unwrap()["type"],
+            "response_phase_summary"
+        );
         assert!(state.file_path.is_none());
     }
 

@@ -28,6 +28,45 @@ This RFC builds on:
 - `agent-profile-model.md`
 - `agent-control-plane-model.md`
 
+## Inference HTTP Timeout Phases
+
+Inference transports share an HTTP client with a 30-second connection timeout.
+Request setup (DNS, connection/TLS, upload, and complete response headers) is
+separate from response-body consumption; missing headers alone do not prove a
+connection failure.
+
+| Operation | Send/headers budget | Body budget |
+| --- | --- | --- |
+| Anthropic Messages; OpenAI/Codex text Responses SSE | 90 seconds | 300 seconds without a stream chunk, including the first chunk |
+| Non-streaming Responses, Chat, Gemini, compaction | Existing 300-second full-request deadline | Existing 300-second body budget, subject to the full deadline |
+| Images JSON API; Responses image generation | Existing 300-second send-only budget | Existing JSON body / SSE idle budget |
+
+Progressing text streams have no default total-duration cap. A headers timer
+must wrap only `send().await`, not use reqwest's request `.timeout()`, which
+continues through body consumption. Do not add a second client read timer over
+the existing JSON/body and stream-idle timers.
+
+For compatibility, a positive `HOLON_PROVIDER_HTTP_TIMEOUT_SECS` still supplies
+both the send/headers budget (including text SSE) and a client-wide total
+request cap. Explicit legacy configuration therefore can still terminate a
+progressing stream. `HOLON_PROVIDER_RESPONSE_BODY_TIMEOUT_SECS` overrides the
+body budget; otherwise it inherits the legacy HTTP value or 300 seconds.
+`HOLON_PROVIDER_STREAM_IDLE_TIMEOUT_MS` independently overrides stream idle,
+defaulting to 300000 milliseconds. Zero or invalid values retain the defaults.
+No new public configuration or hot-reload contract is introduced.
+
+HTTP traces distinguish received headers, first nonempty stream bytes, and
+subsequent byte progress, and record effective phase budgets. Stream pings are
+transport progress, not semantic model output. JSON completion timestamps are
+not presented as first-byte timestamps. These observations do not change retry
+classification, attempt/source lifecycle, or cancellation behavior.
+
+Decision/evaluation, OAuth, discovery, and downloads use separate clients and
+budgets; this policy does not redefine them. Production deployment and effective
+environment configuration must be checked separately from source verification.
+Provider OAuth refresh clients preserve their prior optional legacy total cap
+without inheriting the new inference connection timeout.
+
 ## Route-Aware Model Selection Amendment
 
 Model metadata identity and executable route identity are distinct:
