@@ -39,6 +39,7 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
     : { ...recorded, status: recorded.status === "revalidating" ? "loading" as const : recorded.status, agent: undefined };
   const parent = access.parent;
   const retry = useCallback(() => retryAgentAccess(key), [key]);
+  const rejectInput = useCallback((error: unknown) => rejectAgentAccess(key, error), [key]);
 
   useLayoutEffect(() => {
     if (rejected) rejectAgentAccess(key, rejectedError);
@@ -56,5 +57,5 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
     });
   }, [key, identityKey, contextKey, agentId, expectedIncarnation, client, remoteKey, user?.authMethod, user?.userId, userLoaded, connection.authRequired, authRejected]);
 
-  return { ...access, parentTaskId: access.parentAgentId ? parent?.taskId : undefined, retry };
+  return { ...access, parentTaskId: access.parentAgentId ? parent?.taskId : undefined, retry, rejectInput };
 }

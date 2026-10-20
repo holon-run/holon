@@ -52,8 +52,8 @@ import {
 export interface ConversationTimelineBundle extends ConversationTimelineActions {
   model: ConversationSessionModel;
   scopeKey?: string;
-  readOnlyNotice?: string;
   accessRefreshNotice?: string;
+  backgroundAccessCheck?: boolean;
   onRetryAccess?: () => void;
   onLoadOlderHistory: () => void;
   location?: ConversationLocation;
@@ -70,7 +70,6 @@ interface AgentPageProps {
   parentAgentId?: string;
   parentTaskId?: string;
   sendDisabledReason?: string;
-  inputStatusTone?: "neutral" | "error";
   /** Canonical conversation read-model projection; replaces the raw timeline. */
   conversation?: ConversationTimelineBundle;
   detail: AgentDetail | null;
@@ -178,7 +177,6 @@ export function AgentPage({
   parentAgentId,
   parentTaskId,
   sendDisabledReason,
-  inputStatusTone = "error",
   conversation,
   detail,
   sendingPrompt,
@@ -775,12 +773,12 @@ export function AgentPage({
                 {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
               </div>
             ) : null}
-            {conversation?.readOnlyNotice || conversation?.accessRefreshNotice ? (
+            {conversation?.accessRefreshNotice ? (
               <div className="conversation-sync-status">
                 <div className="conversation-status-banner" role="status">
                   <Info size={14} aria-hidden="true" />
-                  <span title={conversation.readOnlyNotice ?? conversation.accessRefreshNotice}>
-                    {conversation.readOnlyNotice ?? conversation.accessRefreshNotice}
+                  <span title={conversation.accessRefreshNotice}>
+                    {conversation.accessRefreshNotice}
                   </span>
                   {conversation.onRetryAccess ? (
                     <button type="button" onClick={conversation.onRetryAccess}>
@@ -790,7 +788,7 @@ export function AgentPage({
                   ) : null}
                 </div>
               </div>
-            ) : conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
+            ) : conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} backgroundAccessCheck={conversation.backgroundAccessCheck} /> : <div className="conversation-sync-status" />}
           </div>
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
             <div className="message-list-content" ref={messageContentRef}>
@@ -893,7 +891,7 @@ export function AgentPage({
 
           <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
             conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
-          {sendDisabledReason ? <div className={`composer-status${inputStatusTone === "neutral" ? " is-pending" : ""}`} role="status">{sendDisabledReason}</div> : null}
+          {sendDisabledReason ? <div className="composer-status" role="status">{sendDisabledReason}</div> : null}
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}
             aria-label={t("agent.sendInputAria", { id: activeAgent.id })}

@@ -881,8 +881,19 @@ For a continuously mounted route already admitted by online identity/state,
 a transient background projection timeout, transport failure, `429`, or `5xx`
 is degraded freshness, not an authorization denial. Keep that admission,
 display a non-error refresh-delay notice, and retry with bounded backoff.
-Route reentry always revalidates read-only; persisted summaries cannot grant
-admission. Definitive access/identity rejections still revoke immediately.
+Route reentry silently revalidates read-only history; persisted summaries
+cannot grant read admission. A refresh failure appears once above the
+conversation, not again above the composer. Definitive access/identity
+rejections still revoke immediately.
+
+Read admission is separate from an explicit operator-input attempt. A cached
+summary for the confirmed subject and pinned incarnation may render an enabled
+composer while background read validation is pending or temporarily offline,
+unless input is explicitly disabled. Sending still uses the authenticated
+operator endpoint with `expected_incarnation`; neither the cache nor the GUI
+grants server-side input permission. Failed sends retain the draft and
+attachments with a retryable error. This is not an offline sending queue:
+only a successful server response clears the draft, and retries are manual.
 
 ## 10. Acceptance evidence required for implementation
 

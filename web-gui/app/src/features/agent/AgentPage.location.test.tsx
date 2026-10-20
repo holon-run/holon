@@ -166,11 +166,11 @@ describe("AgentPage reading-position lifecycle", () => {
     expect(restored.scrollTop).toBe(900);
   });
 
-  it.each(["readOnlyNotice", "accessRefreshNotice"] as const)("styles %s consistently with conversation status notices", async (noticeKey) => {
+  it("shows a refresh failure only above the conversation without blocking sends", async () => {
     const retry = vi.fn();
-    const notice = "Verifying cached history";
-    await render({ ...bundle(), [noticeKey]: notice, onRetryAccess: retry },
-      noticeKey === "readOnlyNotice" ? { sendDisabledReason: notice } : {});
+    const notice = "Agent status refresh is delayed";
+    writeStoredComposerDraft("alpha", "My draft");
+    await render({ ...bundle(), accessRefreshNotice: notice, onRetryAccess: retry });
     const banner = host.querySelector(".conversation-sync-status .conversation-status-banner[role=status]");
     expect(banner?.querySelector("span")?.textContent).toBe(notice);
     expect(banner?.querySelector("span")?.title).toBe(notice);
@@ -178,14 +178,16 @@ describe("AgentPage reading-position lifecycle", () => {
     expect(banner?.querySelector("button")?.getAttribute("type")).toBe("button");
     expect(banner?.querySelector("button svg[aria-hidden=true]")).not.toBeNull();
     expect(host.querySelector<HTMLTextAreaElement>(".composer textarea")?.disabled).toBe(false);
+    expect(host.querySelector(".composer-status")).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>(".send-button")?.disabled).toBe(false);
     await act(async () => banner?.querySelector<HTMLButtonElement>("button")?.click());
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
-  it("shows an access notice without a retry action while verification is pending", async () => {
-    await render({ ...bundle(), readOnlyNotice: "Verifying cached history" });
+  it("shows a refresh delay without a manual retry while background retries continue", async () => {
+    await render({ ...bundle(), accessRefreshNotice: "Agent status refresh is delayed" });
     const banner = host.querySelector(".conversation-sync-status .conversation-status-banner[role=status]");
-    expect(banner?.textContent).toBe("Verifying cached history");
+    expect(banner?.textContent).toBe("Agent status refresh is delayed");
     expect(banner?.querySelector("button")).toBeNull();
   });
 
@@ -200,7 +202,7 @@ describe("AgentPage reading-position lifecycle", () => {
     expect(host.textContent).not.toContain("Messages go directly to this subagent");
   });
 
-  it.each(["Verifying access", "Agent refresh is delayed", "Stopped by operator"])(
+  it.each(["Stopped by operator", "Input is disabled"])(
     "keeps drafts editable but blocks every send path while %s", async (sendDisabledReason) => {
       writeStoredComposerDraft("alpha", "My draft");
       await render(bundle(), { sendDisabledReason });

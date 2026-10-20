@@ -16,7 +16,7 @@ import "../../i18n";
 import { taskResultFailureReason, taskResultPreview } from "../../runtime/conversation-input";
 import taskResultInputs from "../../../../../tests/fixtures/client-wire/task-result-inputs.json";
 import { decodeTurnInputSummary } from "@holon/conversation-sdk";
-import { ConversationTimeline, TaskResultRow, executionProcessActivities, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
+import { ConversationSyncStatus, ConversationTimeline, TaskResultRow, executionProcessActivities, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
 
 function renderToStaticMarkup(node: ReactNode): string {
@@ -438,6 +438,19 @@ describe("conversation presentation boundaries", () => {
     const html = renderTimeline([turnSummary("cached", 1)], { status: { kind: "loading" } } as never);
     expect(html).toContain("Syncing");
     expect(html).not.toContain("Working");
+  });
+  it.each(["loading", "paused"] as const)("silences the %s banner during background access checks", (kind) => {
+    const model = buildConversationSessionModel({
+      status: { kind }, view: stateView([]), historyState: { kind: "idle" },
+      briefs: new Map(), briefLoadStates: new Map(), detailLoadStates: new Map(),
+    });
+    expect(renderToStaticMarkup(<ConversationSyncStatus model={model} onRetry={() => {}} />))
+      .toContain("conversation-status-banner");
+    expect(renderToStaticMarkup(<ConversationSyncStatus model={model} onRetry={() => {}} backgroundAccessCheck />))
+      .not.toContain("conversation-status-banner");
+    expect(renderToStaticMarkup(<ConversationSyncStatus model={{
+      ...model, status: { kind: "reconnecting", attempt: 1, delayMs: 500 },
+    }} onRetry={() => {}} backgroundAccessCheck />)).toContain("is-reconnecting");
   });
   it.each(["loading", "paused", "reconnecting"])("keeps active execution expanded during %s without an inline banner", (kind) => {
     const html = renderTimeline([turnSummary("active", 1)], { status: { kind, attempt: 1, delayMs: 500 } } as never);
