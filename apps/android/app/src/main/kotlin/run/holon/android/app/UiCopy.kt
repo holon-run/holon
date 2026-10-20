@@ -103,6 +103,36 @@ internal object UiCopy {
     private val english: Map<String, String> =
         """
         会话|Conversation
+        用户消息|Operator message
+        任务结果|Task result
+        外部消息|External message
+        定时检查|Scheduled check
+        后台续接|Background continuation
+        系统唤醒|System wake
+        运行时操作|Runtime action
+        未知来源|Unknown source
+        查看来源|Inspect source
+        耗时|Duration
+        已展开|Expanded
+        已折叠|Collapsed
+        收起执行详情|Collapse execution details
+        展开执行详情|Expand execution details
+        等待结果|Waiting for result
+        结果缺失|Result missing
+        部分输入未载入|Some inputs are not loaded
+        返回会话|Back to conversation
+        来源详情|Source details
+        消息正文|Message body
+        没有文本正文|No text body
+        来源与身份|Source and identity
+        隐藏结构化信息|Hide structured information
+        查看结构化信息|Show structured information
+        预览（非完整来源）|Preview (not the complete source)
+        登录已失效，请重新登录后查看来源|Sign in again to inspect this source
+        没有权限读取这条来源消息|You do not have permission to read this source message
+        来源消息不存在或已不可读取|The source message is missing or no longer readable
+        当前离线，无法读取完整来源|Offline. The complete source cannot be loaded
+        来源暂不可用，请重试|The source is unavailable. Try again
         在系统浏览器打开|Open in system browser
         不会传递 Holon 登录身份，可能需要另行登录。|Your Holon session will not be shared. You may need to sign in separately.
         复制链接|Copy link

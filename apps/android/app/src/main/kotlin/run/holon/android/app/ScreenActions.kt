@@ -61,6 +61,9 @@ internal interface ConversationActions : WorkActions, FilesActions {
     fun closeBrief(): Unit
     fun closePlanFile(): Unit
     fun closeTurn(): Unit
+    fun inspectSource(turn: HolonConversationTurn): Unit
+    fun closeSource(): Unit
+    fun retrySource(): Unit
     fun beginContentReport(target: ContentReportTarget): Unit
     fun dismissContentReport(): Unit
     fun selectReportCategory(category: HolonContentReportCategory): Unit
@@ -168,6 +171,9 @@ internal class AndroidScreenActions(private val delegate: HolonViewModel) {
         override fun closePlanFile(): Unit { delegate.closePlanFile() }
         override fun closeTask(): Unit { delegate.closeTask() }
         override fun closeTurn(): Unit { delegate.closeTurn() }
+        override fun inspectSource(turn: HolonConversationTurn): Unit { delegate.inspectSource(turn) }
+        override fun closeSource(): Unit { delegate.closeSource() }
+        override fun retrySource(): Unit { delegate.retrySource() }
         override fun closeWorkItem(): Unit { delegate.closeWorkItem() }
         override fun beginContentReport(target: ContentReportTarget): Unit { delegate.beginContentReport(target) }
         override fun dismissContentReport(): Unit { delegate.dismissContentReport() }

@@ -5,6 +5,15 @@ for source icons and turn-header interactions; Android adoption is tracked in #3
 
 This directory contains the native Android client implementation.
 
+Conversation boundaries identify each turn by its structured source, number,
+time and duration. Source inspection and execution disclosure are independent:
+the source opens a native full-screen canonical message reader, while task
+receipts and command output stay inside execution details. Source messages are
+read only on explicit inspection, with session, agent-incarnation and conversation
+epoch fences; an unavailable source preview is never presented as its full body.
+Active turns open by default, historical turns stay collapsed, and manual choices
+and ongoing detail reading take precedence over automatic collapse.
+
 Markdown links to this runtime's hosted Apps and exact GUI routes open in an
 authenticated in-app WebView; external sites require confirmation and open in
 the system browser without the native session. File/artifact links still use

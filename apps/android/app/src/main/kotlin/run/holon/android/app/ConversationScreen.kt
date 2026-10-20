@@ -105,15 +105,23 @@ import run.holon.android.sdk.HolonConversationTurn
 internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActions) {
     val agent = state.selectedAgent ?: return
     val planFile = state.planFile
-    val timelinePosition = rememberSaveable(agent.id, saver = ConversationTimelinePosition.Saver) { ConversationTimelinePosition() }
+    val timelinePosition = rememberSaveable(state.session?.scopeKey, agent.id, agent.incarnation, saver = ConversationTimelinePosition.Saver) { ConversationTimelinePosition() }
     val workListState = rememberLazyListState()
     val filePosition = remember(agent.id) { FileBrowserPosition() }
-    var autoExpandedTurn by rememberSaveable { mutableStateOf<String?>(null) }
-    val runningTurn = state.conversation?.turns?.lastOrNull()?.takeIf { it.isRunning() }
-    LaunchedEffect(runningTurn?.id) {
-        if (runningTurn != null && autoExpandedTurn != runningTurn.id) {
-            autoExpandedTurn = runningTurn.id
-            if (state.selectedTurn == null) viewModel.openTurn(runningTurn)
+    val expansionScope = listOf(state.session?.scopeKey, agent.id, agent.incarnation, state.conversation?.runtimeId, state.conversation?.eventLogEpoch)
+    var autoExpandedTurn by rememberSaveable(expansionScope) { mutableStateOf<String?>(null) }
+    var manuallyExpandedTurn by rememberSaveable(expansionScope) { mutableStateOf<String?>(null) }
+    var manuallyCollapsedTurns by rememberSaveable(expansionScope) { mutableStateOf(emptyList<String>()) }
+    val turns = run.holon.android.sdk.mergeConversationTurns(state.olderTurns, state.conversation?.turns.orEmpty())
+    LaunchedEffect(turns, state.selectedTurn, state.briefs.keys, timelinePosition.followLatest, state.fullScreenTurn,
+        state.selectedActivity, state.sourceInspection, manuallyExpandedTurn, manuallyCollapsedTurns) {
+        val desired = preferredExpandedTurn(turns, state.selectedTurn, manuallyExpandedTurn,
+            manuallyCollapsedTurns.toSet(), autoExpandedTurn, state.briefs.keys,
+            !timelinePosition.followLatest || state.fullScreenTurn || state.selectedActivity != null || state.sourceInspection != null)
+        if (desired != state.selectedTurn?.id && state.sourceInspection == null) {
+            autoExpandedTurn = desired
+            if (desired == null) viewModel.closeTurn()
+            else turns.firstOrNull { it.id == desired }?.let(viewModel::openTurn)
         }
     }
     LaunchedEffect(state.online) {
@@ -122,7 +130,7 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
     var agentChooser by remember { mutableStateOf(false) }
     var modelChooser by remember(agent.id) { mutableStateOf(false) }
     var agentSearch by remember { mutableStateOf("") }
-    val isDetail = state.planFile != null || state.preparedArtifact != null || state.selectedWorkItem != null || state.selectedTask != null || state.selectedBrief != null || state.fullScreenTurn
+    val isDetail = state.planFile != null || state.preparedArtifact != null || state.selectedWorkItem != null || state.selectedTask != null || state.selectedBrief != null || state.fullScreenTurn || state.sourceInspection != null
     val context = LocalContext.current
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
@@ -201,6 +209,7 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
                             }
                         }
                     }
+                    state.sourceInspection != null -> SourceInspectionScreen(state.sourceInspection!!, viewModel::closeSource, viewModel::retrySource)
                     state.selectedActivity != null && state.selectedTurn == null -> ActivityDetailScreen(state, viewModel)
                     state.selectedTurn != null && state.fullScreenTurn -> TurnDetailScreen(state, viewModel)
                     state.selectedWorkItem != null -> WorkItemDetailScreen(state, viewModel)
@@ -214,7 +223,18 @@ internal fun ConversationScreen(state: HolonUiState, viewModel: ConversationActi
                                     Text(work.objective ?: ui("当前工作"), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                 }
                             }
-                            ConversationTimeline(state, viewModel, Modifier.weight(1f), timelinePosition)
+                            ConversationTimeline(state, viewModel, Modifier.weight(1f), timelinePosition) { turn ->
+                                timelinePosition.followLatest = false
+                                if (state.selectedTurn?.id == turn.id) {
+                                    manuallyCollapsedTurns = (manuallyCollapsedTurns + turn.id).distinct()
+                                    manuallyExpandedTurn = null
+                                    viewModel.closeTurn()
+                                } else {
+                                    manuallyCollapsedTurns = manuallyCollapsedTurns - turn.id
+                                    manuallyExpandedTurn = turn.id
+                                    viewModel.openTurn(turn)
+                                }
+                            }
                             if (state.tasks.isNotEmpty()) TextButton(onClick = { viewModel.selectAgentSection(AgentSection.Work) }, modifier = Modifier.align(Alignment.Start)) {
                                 Text(ui("进行中的任务") + " · ${state.tasks.size}", style = MaterialTheme.typography.labelMedium)
                             }
@@ -507,13 +527,25 @@ internal fun ConversationTimeline(
     viewModel: ConversationActions,
     modifier: Modifier,
     position: ConversationTimelinePosition,
+    onToggleTurn: (HolonConversationTurn) -> Unit = { turn ->
+        if (state.selectedTurn?.id == turn.id) viewModel.closeTurn() else viewModel.openTurn(turn)
+    },
 ) {
     val snapshot = state.conversation
     val listState = position.listState
     val dragging by listState.interactionSource.collectIsDraggedAsState()
     val scope = rememberCoroutineScope()
     val turns = run.holon.android.sdk.mergeConversationTurns(state.olderTurns, snapshot?.turns.orEmpty())
-    val rows = conversationRows(turns, briefs = state.briefs)
+    val revealTurnIds = buildSet {
+        state.selectedTurn?.id?.let(::add)
+        state.sourceInspection?.turnId?.let(::add)
+        turns.filter { turn ->
+            val anchor = position.pendingAnchor ?: return@filter false
+            anchor == "process:${turn.id}" || anchor == "input:${turn.id}" ||
+                anchor == "boundary:${turn.id}" || turn.briefIds.any { anchor == "brief:${turn.id}:$it" }
+        }.forEach { add(it.id) }
+    }
+    val rows = conversationRows(turns, briefs = state.briefs, revealTurnIds = revealTurnIds, expandedTurnId = state.selectedTurn?.id)
     val latestBriefId = state.selectedAgent?.latestBrief?.briefId
     val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
     val agentId = state.selectedAgent?.id
@@ -594,6 +626,11 @@ internal fun ConversationTimeline(
             items(rows, key = ConversationRow::key) { row ->
                 when (row) {
                     is ConversationRow.Day -> Text(row.date, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    is ConversationRow.Boundary -> TurnBoundaryHeader(row.turn, state.selectedTurn?.id == row.turn.id,
+                        onSource = canonicalTriggerInput(row.turn)?.let {
+                            { position.followLatest = false; viewModel.inspectSource(row.turn) }
+                        },
+                        onToggle = { onToggleTurn(row.turn) })
                     is ConversationRow.Input -> OperatorInput(row.turn)
                     is ConversationRow.Process -> InlineTurnProcess(row.turn, state, viewModel) { position.followLatest = false }
                     is ConversationRow.Brief -> {
@@ -736,7 +773,6 @@ internal fun InlineTurnProcess(turn: HolonConversationTurn, state: HolonUiState,
     val activities = detail?.activities.orEmpty().filter { it.kind != "operator" && !(it.kind == "assistant" && it.summary.isBlank()) }
     val openResult: (run.holon.android.sdk.HolonTaskSnapshot) -> Unit = { task -> viewModel.openTask(task); viewModel.loadTaskOutput() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        TurnProcessHeader(turn, expanded) { onInteraction(); if (expanded) viewModel.closeTurn() else viewModel.openTurn(turn) }
         if (expanded) {
             if (detail == null && state.detailBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             if (detail == null && !state.detailBusy) TextButton(onClick = { viewModel.openTurn(turn) }) { Text(ui("重试")) }
@@ -786,22 +822,12 @@ internal fun HolonConversationTurn.isRunning(): Boolean =
     executionKind == "active" && completedAt == null
 
 internal fun HolonConversationTurn.compactStatusText(): String? =
-    when {
-        isRunning() -> ui("执行中")
-        terminalOutcome == "provider_failed_needs_recovery" ||
-            resultKind.contains("failure", true) -> ui("本轮失败")
-        terminalOutcome in setOf("aborted", "interrupted", "baseline_over_budget") -> ui("本轮未完成")
-        briefIds.isNotEmpty() || resultKind == "available" -> ui("结果载入中")
-        resultKind == "unavailable" -> ui("结果暂不可用")
-        taskResultHeader() != null -> taskLabel(taskResultHeader()!!.taskResult!!.status)
-        resultKind == "none" -> ui("没有结果摘要")
-        else -> null
-    }
+    turnNotices(this).firstOrNull()?.let(::turnNoticeText)
 
 internal fun HolonConversationTurn.exceptionStatus(): Pair<String, StatusTone>? =
     when {
+        TurnNotice.Failed in turnNotices(this) -> ui("本轮失败") to StatusTone.Danger
         attentionKind != null -> ui("需注意") to StatusTone.Warning
-        resultKind.contains("failure", true) || terminalOutcome == "failure" -> ui("失败") to StatusTone.Danger
         else -> null
     }
 
@@ -1354,20 +1380,5 @@ internal fun shareBrief(context: Context, text: String) {
 
 @Composable
 internal fun TurnProcessHeader(turn: HolonConversationTurn, expanded: Boolean, onToggle: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onToggle).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        val task = turn.taskResultHeader()?.taskResult
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(task?.summary ?: if (task?.responseMessageId != null) ui("收到 Agent 回复") else ui(if (task != null) "收到任务结果" else "本轮过程"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (task != null) {
-                Text(taskResultStatus(task), style = MaterialTheme.typography.labelSmall, color = if (task.status in setOf("failed", "interrupted")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-                if (task.status in setOf("failed", "interrupted") && task.responseMessageId == null && task.preview.isNotBlank())
-                    Text(taskResultFailureReason(task.preview), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        Spacer(Modifier.width(8.dp))
-        val status = turn.exceptionStatus()?.first ?: if (turn.isRunning()) ui("执行中") else if (turn.briefIds.isEmpty() && turn.taskResultHeader() == null) turn.compactStatusText() else null
-        status?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-    }
+    TurnBoundaryHeader(turn, expanded, onToggle = onToggle)
 }

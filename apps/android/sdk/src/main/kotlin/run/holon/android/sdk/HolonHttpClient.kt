@@ -498,6 +498,19 @@ public class HolonHttpClient internal constructor(
     ): HolonConversationSnapshot =
         HolonConversationSnapshot.from(conversation(agentId, limit, before))
 
+    /** Hydrates canonical messages. Authorization failures remain [HolonHttpException]s. */
+    public fun messageBatch(agentId: String, messageIds: List<String>): HolonMessageBatch {
+        if (messageIds.isEmpty()) return HolonMessageBatch(emptyList(), emptyList())
+        return HolonMessageBatch.from(
+            postJson(
+                path = "agents/${encodePathSegment(agentId.pathSegment())}/messages:batchGet",
+                body = buildJsonObject {
+                    put("message_ids", JsonArray(messageIds.map { JsonPrimitive(it) }))
+                },
+            ),
+        )
+    }
+
     public fun conversationActivities(
         agentId: String,
         turnId: String,

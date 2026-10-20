@@ -27,24 +27,99 @@ internal fun pendingConversationInputs(inputs: List<HolonPendingInput>): Pending
 internal sealed interface ConversationRow {
     val key: String
     data class Day(val date: String, val turnId: String) : ConversationRow { override val key = "day:$turnId:$date" }
+    data class Boundary(val turn: HolonConversationTurn) : ConversationRow { override val key = "boundary:${turn.id}" }
     data class Input(val turn: HolonConversationTurn) : ConversationRow { override val key = "input:${turn.id}" }
     data class Process(val turn: HolonConversationTurn) : ConversationRow { override val key = "process:${turn.id}" }
     data class Brief(val turn: HolonConversationTurn, val id: String) : ConversationRow { override val key = "brief:${turn.id}:$id" }
 }
 
-internal fun conversationRows(turns: List<HolonConversationTurn>, zone: ZoneId = ZoneId.systemDefault(), briefs: Map<String, run.holon.android.sdk.HolonBrief> = emptyMap()): List<ConversationRow> = buildList {
+internal fun conversationRows(
+    turns: List<HolonConversationTurn>,
+    zone: ZoneId = ZoneId.systemDefault(),
+    briefs: Map<String, run.holon.android.sdk.HolonBrief> = emptyMap(),
+    revealTurnIds: Set<String> = emptySet(),
+    expandedTurnId: String? = null,
+): List<ConversationRow> = buildList {
     var previousDay: String? = null
-    turns.forEach { turn ->
+    turns.filter { it.id in revealTurnIds || !it.isQuietReducerReceipt() }.forEach { turn ->
         val day = turn.startedAt?.let { localDate(it, zone) }
         if (day != null && day != previousDay) {
             // Include the turn in the date key: imported history can contain non-monotonic dates.
             add(ConversationRow.Day(day, turn.id))
             previousDay = day
         }
+        add(ConversationRow.Boundary(turn))
         if (turn.inputs.any { !it.interjected && (it.presentationClass == "operator" || (it.presentationClass == null && turn.presentationClass == "operator")) }) add(ConversationRow.Input(turn))
-        add(ConversationRow.Process(turn))
+        if (turn.id == expandedTurnId || turn.inputs.any { it.isReadableInterjection() }) {
+            add(ConversationRow.Process(turn))
+        }
         turn.briefIds.distinct().filter { id -> briefs[id]?.let { !turn.isRuntimeTaskBrief(it) } ?: true }
             .forEach { add(ConversationRow.Brief(turn, it)) }
+    }
+}
+
+/** Missing input metadata is not evidence that a receipt has nothing to show. */
+private fun HolonConversationTurn.isQuietReducerReceipt(): Boolean =
+    presentationClass == "task" && executionKind == "terminal" && terminalOutcome == "completed" &&
+        settled && attentionKind == null && briefIds.isEmpty() && !inputsTruncated &&
+        resultKind == "none" && resultReasonKind == "reducer_only" && inputs.isNotEmpty() &&
+        inputs.all { input ->
+            input.taskResult?.let {
+                it.status == "completed" && it.responseMessageId == null && it.runtimeOnly != false
+            } == true
+        }
+
+private fun HolonTurnInput.isReadableInterjection(): Boolean =
+    interjected && presentationClass != "internal" && taskResult == null
+
+internal enum class TurnNotice {
+    Running, Waiting, Syncing, Failed, Interrupted, MissingResult, ResultUnavailable, TruncatedInputs,
+}
+
+/** Turn state never inherits the status of a task whose receipt it consumes. */
+internal fun turnNotices(turn: HolonConversationTurn): List<TurnNotice> = buildList {
+    when (turn.executionKind) {
+        "active" -> if (turn.completedAt == null) add(TurnNotice.Running)
+        "terminal" -> when (turn.terminalOutcome) {
+            "completed" -> Unit
+            "aborted", "interrupted" -> add(TurnNotice.Interrupted)
+            "baseline_over_budget", "provider_failed_needs_recovery" -> add(TurnNotice.Failed)
+            "deferred_to_fallback" -> add(TurnNotice.Syncing)
+            else -> add(TurnNotice.Syncing)
+        }
+        else -> add(TurnNotice.Syncing)
+    }
+    when (turn.attentionKind) {
+        null -> Unit
+        "failed" -> add(TurnNotice.Failed)
+        "interrupted" -> add(TurnNotice.Interrupted)
+        "waiting" -> add(TurnNotice.Waiting)
+        else -> add(TurnNotice.Syncing)
+    }
+    when (turn.resultKind) {
+        "pending" -> if (turn.executionKind != "active") add(TurnNotice.Waiting)
+        "unavailable" -> add(TurnNotice.ResultUnavailable)
+        "none" -> Unit
+        "available" -> if (turn.briefIds.isEmpty() && turn.executionKind == "terminal" && turn.settled) {
+            add(TurnNotice.MissingResult)
+        }
+        else -> if (turn.briefIds.isEmpty() && turn.executionKind != "active") {
+            add(if (turn.executionKind == "terminal" && turn.settled) TurnNotice.MissingResult else TurnNotice.Syncing)
+        }
+    }
+    if (turn.executionKind == "terminal" && turn.terminalOutcome == "completed" &&
+        !turn.settled && turn.resultKind != "unavailable"
+    ) add(TurnNotice.Waiting)
+    if (turn.inputsTruncated) add(TurnNotice.TruncatedInputs)
+}.distinct()
+
+internal fun compactTurnDuration(durationMillis: Long?): String? {
+    if (durationMillis == null || durationMillis < 0) return null
+    val seconds = durationMillis / 1000
+    return when {
+        seconds < 60 -> "${seconds}s"
+        seconds < 3600 -> "${seconds / 60}m${seconds % 60}s"
+        else -> "${seconds / 3600}h${seconds / 60 % 60}m${seconds % 60}s"
     }
 }
 
@@ -78,7 +153,7 @@ internal sealed interface TurnProcessRow {
 internal fun turnProcessRows(turn: HolonConversationTurn, activities: List<HolonConversationActivity>): List<TurnProcessRow> =
     turn.inputs.filter { it.taskResult != null && !it.interjected }.map(TurnProcessRow::TaskResult) +
     (activities.filter { it.kind != "operator" }.map(TurnProcessRow::Activity) +
-        turn.inputs.filter { it.interjected && it.activityKey != null && it.presentationClass != "internal" && it.taskResult == null }
+        turn.inputs.filter { it.isReadableInterjection() }
             .map(TurnProcessRow::Interjection) + turn.inputs.filter { it.taskResult != null && it.interjected }.map(TurnProcessRow::TaskResult)).sortedWith(compareBy<TurnProcessRow> { it.seq }.thenBy { it.key })
 
 internal fun HolonConversationTurn.isRuntimeTaskBrief(brief: run.holon.android.sdk.HolonBrief): Boolean =

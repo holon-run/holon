@@ -21,6 +21,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.buildJsonObject
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -33,6 +34,73 @@ import run.holon.android.sdk.ProfileSessionCredentialStore
 /** Real Room + HTTP + ViewModel; preferences, credentials and files are fixture-owned. */
 @RunWith(AndroidJUnit4::class)
 class NetworkCacheFirstIntegrationTest {
+    @Test
+    fun canonicalSourceIsLazyDeduplicatedAndIndependentFromProcessLoading() {
+        Fixture().use { fixture ->
+            fixture.onMain { openAgent(state.value.agents.single()) }
+            fixture.awaitState { it.conversation != null && !it.busy }
+            assertEquals(0, fixture.b.sourceRequests.get())
+            fixture.b.blockSource()
+            val turn = fixture.b.sourceTurn()
+            fixture.onMain { inspectSource(turn); inspectSource(turn) }
+            assertTrue(fixture.b.sourceRequested.await(5, TimeUnit.SECONDS))
+            assertEquals(1, fixture.b.sourceRequests.get())
+            assertNull(fixture.awaitState { it.sourceInspection?.loading == true }.selectedTurn)
+            fixture.b.releaseSource()
+            val inspected = fixture.awaitState { it.sourceInspection?.message != null }
+            assertEquals("Canonical full source", inspected.sourceInspection!!.message!!.body.text)
+            assertEquals("external_evidence", inspected.sourceInspection!!.message!!.authorityClass)
+            assertEquals("channel", inspected.sourceInspection!!.message!!.origin.kind)
+            fixture.onMain { closeSource(); openTurn(turn) }
+            val expanded = fixture.awaitState { it.conversationDetail != null }
+            assertNull(expanded.sourceInspection)
+            assertEquals(turn.id, expanded.selectedTurn!!.id)
+            assertEquals(1, fixture.b.sourceRequests.get())
+            assertEquals(1, fixture.b.detailRequests.get())
+        }
+    }
+
+    @Test
+    fun delayedSourceCannotCrossNetworkSwitch() {
+        Fixture().use { fixture ->
+            fixture.onMain { openAgent(state.value.agents.single()) }
+            fixture.awaitState { it.conversation != null && !it.busy }
+            fixture.b.blockSource()
+            fixture.onMain { inspectSource(fixture.b.sourceTurn()) }
+            assertTrue(fixture.b.sourceRequested.await(5, TimeUnit.SECONDS))
+            fixture.onMain { switchNetwork(fixture.aProfile.networkId) }
+            fixture.awaitState { !it.busy && it.session?.networkId == fixture.aProfile.networkId }
+            fixture.b.releaseSource()
+            fixture.onMain {
+                assertNull(state.value.sourceInspection)
+                assertEquals(fixture.aProfile.networkId, state.value.session!!.networkId)
+            }
+        }
+    }
+
+    @Test
+    fun sourceHttpErrorsAndMissingHaveHonestRetryableStates() {
+        Fixture().use { fixture ->
+            fixture.onMain { openAgent(state.value.agents.single()) }
+            fixture.awaitState { it.conversation != null && !it.busy }
+            for ((status, expected) in listOf(401 to SourceFailure.Unauthorized, 403 to SourceFailure.Forbidden,
+                404 to SourceFailure.Missing, 503 to SourceFailure.Unavailable)) {
+                fixture.b.sourceStatus = status
+                fixture.onMain { inspectSource(fixture.b.sourceTurn()) }
+                val failed = fixture.awaitState { it.sourceInspection?.failure == expected }
+                assertNull(failed.sourceInspection!!.message)
+                assertNull(failed.selectedTurn)
+            }
+            fixture.b.sourceStatus = 200
+            fixture.b.sourceMissing = true
+            fixture.onMain { retrySource() }
+            fixture.awaitState { it.sourceInspection?.failure == SourceFailure.Missing }
+            fixture.b.sourceMissing = false
+            fixture.onMain { retrySource() }
+            fixture.awaitState { it.sourceInspection?.message != null }
+        }
+    }
+
     @Test
     fun targetCachePrecedesHttpAndNeverOverwritesFreshSnapshotAcrossRepeatedSwitches() {
         Fixture().use { fixture ->
@@ -207,6 +275,8 @@ class NetworkCacheFirstIntegrationTest {
         override fun close() {
             a.release()
             b.release()
+            a.releaseSource()
+            b.releaseSource()
             instrumentation.runOnMainSync { models.clear() }
             runBlocking { preferenceJob.cancelAndJoin() }
             database.close()
@@ -227,11 +297,28 @@ class NetworkCacheFirstIntegrationTest {
         @Volatile var emptyRoster = false
         @Volatile var visibility = "visibility-$name"
         @Volatile var agentName = "Cached $name"
+        val sourceRequests = AtomicInteger()
+        val detailRequests = AtomicInteger()
+        @Volatile var sourceStatus = 200
+        @Volatile var sourceMissing = false
+        @Volatile var sourceRequested = CountDownLatch(0)
+        @Volatile private var sourceGate = CountDownLatch(0)
 
         init {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.path.orEmpty().substringBefore('?')
+                    if (path.endsWith("/messages:batchGet")) {
+                        sourceRequests.incrementAndGet()
+                        sourceRequested.countDown()
+                        check(sourceGate.await(30, TimeUnit.SECONDS))
+                        if (sourceStatus != 200) return MockResponse().setResponseCode(sourceStatus).setBody("{}")
+                        val messages = if (sourceMissing) "" else
+                            """{"id":"source-$name","agent_id":"$agentId","created_at":"2026-10-20T12:00:00Z","kind":"channel_event","priority":"normal","origin":{"kind":"channel","channel_id":"fixture","sender_id":"external"},"authority_class":"external_evidence","body":{"type":"text","text":"Canonical full source"}}"""
+                        val missing = if (sourceMissing) "\"source-$name\"" else ""
+                        return MockResponse().setHeader("Content-Type", "application/json").setBody(
+                            """{"messages":[$messages],"missing_message_ids":[$missing],"runtime_id":"runtime-$name","visibility_scope_id":"$visibility"}""")
+                    }
                     if (path.endsWith("/auth/session/me")) {
                         userRequests.incrementAndGet()
                         userRequested.countDown()
@@ -251,6 +338,12 @@ class NetworkCacheFirstIntegrationTest {
                             """{"runtime_id":"runtime-$name","event_log_epoch":"epoch-$name","visibility_scope_id":"$visibility","agents":[$agents]}"""
                         }
                         path.endsWith("/brief-read-states") -> "[]"
+                        path.endsWith("/conversation") ->
+                            """{"schema_version":2,"query_version":2,"runtime_id":"runtime-$name","event_log_epoch":"epoch-$name","visibility_scope_id":"$visibility","agent_id":"$agentId","turns":[],"active_turns":[],"pending_inputs":[],"has_more":false}"""
+                        path.endsWith("/activities") -> {
+                            detailRequests.incrementAndGet()
+                            """{"schema_version":2,"query_version":2,"runtime_id":"runtime-$name","event_log_epoch":"epoch-$name","visibility_scope_id":"$visibility","activities":[],"coverage":{"kind":"complete"},"has_more":false}"""
+                        }
                         path.endsWith("/stream") -> return MockResponse().setHeader("Content-Type", "text/event-stream").setBody(": fixture\n\n")
                         else -> return MockResponse().setResponseCode(404).setBody("{}")
                     }
@@ -266,6 +359,16 @@ class NetworkCacheFirstIntegrationTest {
         }
 
         fun release() = userGate.countDown()
+        fun blockSource() {
+            sourceRequested = CountDownLatch(1)
+            sourceGate = CountDownLatch(1)
+        }
+        fun releaseSource() = sourceGate.countDown()
+        fun sourceTurn() = run.holon.android.sdk.HolonConversationTurn(
+            "turn-$name", "", "operator",
+            listOf(run.holon.android.sdk.HolonTurnInput("source-$name", "Truncated preview", null, "operator")),
+            "terminal", "completed", "none", null, emptyList(), null, null, true, buildJsonObject {},
+        )
     }
 
     private class FixtureApplication(context: Context, root: File) : Application() {

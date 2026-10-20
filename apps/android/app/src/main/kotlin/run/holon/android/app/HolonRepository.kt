@@ -847,6 +847,17 @@ internal class HolonRepository(
     suspend fun workItem(agentId: String, workItemId: String): HolonWorkItemSnapshot =
         work.item(agentId, workItemId)
 
+    suspend fun messageBatch(agentId: String, messageIds: List<String>): run.holon.android.sdk.HolonMessageBatch {
+        val lease = sessions.capture()
+        return sessions.read(lease) { it.messageBatch(agentId, messageIds) }.also { batch ->
+            validateReadScope(
+                batch.runtimeId,
+                batch.visibilityScopeId,
+                lease,
+            )
+        }
+    }
+
     suspend fun conversationDetail(agentId: String, turnId: String, before: String? = null): HolonConversationDetail {
         val lease = sessions.capture()
         return sessions.read(lease) { it.conversationDetail(agentId, turnId, limit = 100, before = before) }.also { detail ->

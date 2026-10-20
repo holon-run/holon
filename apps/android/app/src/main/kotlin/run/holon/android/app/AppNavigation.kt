@@ -55,7 +55,7 @@ internal data class NavigationBookmark(
     }
 }
 
-internal enum class BackTarget { Report, Share, Artifact, AddingNetwork, MessageFile, Plan, Activity, FullScreenTurn, Task, WorkItem, Brief, Folder, Conversation, Agents, Exit }
+internal enum class BackTarget { Report, Share, Artifact, AddingNetwork, MessageFile, Plan, Source, Activity, FullScreenTurn, Task, WorkItem, Brief, Folder, Conversation, Agents, Exit }
 
 internal fun HolonUiState.backTarget(artifactLoading: Boolean = false): BackTarget = when {
     reportTarget != null -> BackTarget.Report
@@ -65,6 +65,7 @@ internal fun HolonUiState.backTarget(artifactLoading: Boolean = false): BackTarg
     fileLinkOrigin != null -> BackTarget.MessageFile
     planFile != null -> BackTarget.Plan
     preparedArtifact != null -> BackTarget.Artifact
+    sourceInspection != null -> BackTarget.Source
     hasStandaloneActivity() -> BackTarget.Activity
     fullScreenTurn -> BackTarget.FullScreenTurn
     selectedTask != null -> BackTarget.Task
