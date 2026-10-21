@@ -8,8 +8,7 @@ struct SettingsView: View {
     @State private var reviewedURL: URL?
 
     private var policyURL: URL {
-        let effective = language == "system" ? Locale.current.language.languageCode?.identifier ?? "en" : language
-        return URL(string: effective.hasPrefix("zh") ? "https://holon.run/zh-CN/privacy" : "https://holon.run/privacy")!
+        PrivacyDisclosure.policyURL(language: language)
     }
 
     var body: some View {
@@ -42,7 +41,7 @@ struct SettingsView: View {
                     Link("privacy.policy", destination: policyURL)
                         .accessibilityIdentifier("privacy.policy")
                     Link("privacy.support", destination: URL(string: "mailto:hello@holon.run")!)
-                    Text("privacy.disclosure").font(.footnote)
+                    Text(verbatim: PrivacyDisclosure.text(for: connection.selectedProfile?.apiBaseURL)).font(.footnote)
                     if let url = connection.selectedProfile?.apiBaseURL {
                         Text(verbatim: url.absoluteString).font(.footnote)
                         if SharingConsent.shared.approved(url) {
@@ -74,7 +73,7 @@ struct SettingsView: View {
                 .accessibilityIdentifier("privacy.agree")
                 Button("privacy.cancel", role: .cancel) {}
             } message: {
-                Text("privacy.disclosure")
+                Text(verbatim: PrivacyDisclosure.text(for: reviewedURL))
             }
     }
 }
@@ -85,13 +84,12 @@ struct LoginSharingConsentSection: View {
     @AppStorage("ui.language") private var language = "system"
 
     private var policyURL: URL {
-        let effective = language == "system" ? Locale.current.language.languageCode?.identifier ?? "en" : language
-        return URL(string: effective.hasPrefix("zh") ? "https://holon.run/zh-CN/privacy" : "https://holon.run/privacy")!
+        PrivacyDisclosure.policyURL(language: language)
     }
 
     var body: some View {
         Section("privacy.title") {
-            Text("privacy.disclosure").font(.footnote)
+            Text(verbatim: PrivacyDisclosure.text(for: apiBaseURL)).font(.footnote)
             Text(verbatim: apiBaseURL.absoluteString).font(.footnote)
                 .accessibilityIdentifier("privacy.target")
             Link("privacy.policy", destination: policyURL)

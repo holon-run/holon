@@ -370,6 +370,9 @@
 "privacy.title" = "隐私与数据分享";
 "privacy.policy" = "隐私政策";
 "privacy.support" = "支持：hello@holon.run";
+"privacy.aiInfo" = "AI 数据分享说明";
+"privacy.disclosure.officialDemo" = "您连接的 demo.holon.run 是 holon.run 运营的官方演示 runtime（用于评估与 App 审核），其配置的第三方 AI 供应商仅为 DeepSeek。您发送的消息及所选文件或图片将送达该 runtime，并交给 DeepSeek 处理。";
+"privacy.disclosure.thirdPartyHost" = "消息及所选文件或图片将发送到您连接的 runtime（%@），并可能交给该 runtime 管理员配置的第三方 AI 供应商。请先向 runtime 管理员确认供应商及数据保留规则，再决定是否同意。";
 "privacy.disclosure" = "消息及所选文件或图片将发送到您连接的 runtime，并可能交给其管理员配置的第三方 AI 供应商。请先向 runtime 管理员确认供应商及数据保留规则，再决定是否同意。";
 "privacy.withdrawal" = "撤回同意将阻止后续上传及发送。本应用无法收回已发送的数据。仅保存到本地不会发送。";
 "privacy.review" = "查看数据分享同意说明";

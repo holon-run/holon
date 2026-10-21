@@ -64,6 +64,8 @@ final class DemoReviewUITests: XCTestCase {
         let consent = app.switches["privacy.accept"]
         XCTAssertTrue(consent.waitForExistence(timeout: 30),
                       "Sign-in must stop at the sharing gate before data")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "DeepSeek")).firstMatch.exists,
+                      "Demo consent copy must name the AI provider")
         reveal(consent, in: app)
         XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
         consent.switches.firstMatch.tap()
