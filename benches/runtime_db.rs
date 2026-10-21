@@ -14,6 +14,9 @@ use holon::{
 use serde::Serialize;
 use tempfile::TempDir;
 
+#[path = "support/reader_reuse.rs"]
+mod reader_reuse;
+
 const AGENT_ID: &str = "benchmark-agent";
 const DEFAULT_SAMPLES: usize = 10;
 const WARMUP_SAMPLES: usize = 1;
@@ -27,6 +30,8 @@ struct BenchmarkArtifact {
     environment: Environment,
     config: BenchmarkConfig,
     results: Vec<BenchmarkResult>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reader_reuse: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -88,14 +93,19 @@ fn main() -> Result<()> {
 
     let filter = benchmark_filter();
     let results = run_benchmarks(samples, &filter)?;
+    let reader_reuse = if benchmark_selected(&filter, "projection.agent_list.reader_reuse") {
+        reader_reuse::run(samples)?
+    } else {
+        Vec::new()
+    };
     anyhow::ensure!(
-        !results.is_empty(),
+        !results.is_empty() || !reader_reuse.is_empty(),
         "HOLON_BENCH_FILTER selected no workloads"
     );
     let artifact = BenchmarkArtifact {
         schema_version: "holon.performance.v0",
         benchmark_suite: "runtime_db",
-        workload_version: "v1",
+        workload_version: "v2",
         started_at: Utc::now().to_rfc3339(),
         environment: environment(),
         config: BenchmarkConfig {
@@ -107,6 +117,7 @@ fn main() -> Result<()> {
             concurrency: 1,
         },
         results,
+        reader_reuse,
     };
 
     println!("{}", serde_json::to_string_pretty(&artifact)?);

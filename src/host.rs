@@ -4721,9 +4721,12 @@ impl RuntimeHost {
             .iter()
             .map(|record| record.agent_id.clone())
             .collect::<Vec<_>>();
-        // One connection and one deferred read transaction cover every
-        // roster member's facts, replacing per-agent N+1 repository reads.
-        let rows = self.runtime_db().agent_list_posture_rows(&agent_ids)?;
+        // Admission happens before blocking work; one pooled connection and
+        // read transaction cover every roster member's committed facts.
+        let rows = self
+            .runtime_db()
+            .agent_list_posture_rows_async(agent_ids)
+            .await?;
         let mut rows_by_agent = rows
             .rows
             .into_iter()

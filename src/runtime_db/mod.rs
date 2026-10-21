@@ -23,6 +23,9 @@ pub mod destructive_operations;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
+mod reader_pool;
+#[cfg(test)]
+mod reader_pool_tests;
 pub(crate) mod reclamation;
 pub(crate) mod reclamation_reminders;
 pub mod repositories;
@@ -373,6 +376,8 @@ impl StdError for RuntimeStateTransitionConflict {}
 pub struct RuntimeDb {
     path: PathBuf,
     lock_path: PathBuf,
+    // Readers close before the append sender; physical readers also retain state.
+    readers: reader_pool::RuntimeDbReaderPool,
     writer: RuntimeDbWriter,
     /// Unix millis of the last observer-sync read-side self-heal attempt.
     /// Throttles the heal so a failing capability gate does not re-run the
@@ -418,6 +423,7 @@ impl RuntimeDb {
         let path = path.into();
         let writer = RuntimeDbWriter::open_starting(path.clone(), open_connection(&path)?)?;
         let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
             writer,
             path,
             lock_path: lock_path.into(),
@@ -450,6 +456,7 @@ impl RuntimeDb {
         configure_persistent_database(&connection)?;
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -492,6 +499,7 @@ impl RuntimeDb {
         configure_persistent_database(&connection)?;
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -546,6 +554,7 @@ impl RuntimeDb {
         }
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -600,6 +609,7 @@ impl RuntimeDb {
         }
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -621,6 +631,47 @@ impl RuntimeDb {
 
     pub fn connection(&self) -> Result<Connection> {
         self.writer.open_connection()
+    }
+
+    /// Call only at a synchronous/blocking boundary; never nest reader checkouts.
+    pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        self.readers.with_read(f)
+    }
+
+    pub(crate) async fn with_read_async<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.readers.with_read_async(f).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_reader_pool_for_tests(
+        &mut self,
+        capacity: u32,
+        budget: Duration,
+    ) -> Result<()> {
+        if capacity == 0 || budget.is_zero() {
+            bail!("reader pool test capacity and budget must be positive");
+        }
+        self.readers = reader_pool::RuntimeDbReaderPool::with_config(
+            std::sync::Arc::clone(&self.writer.state),
+            capacity,
+            budget,
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reader_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+        self.readers.stats()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reader_pool_writer_weak_for_tests(
+        &self,
+    ) -> std::sync::Weak<write_queue::RuntimeDbWriterState> {
+        self.readers.writer_weak()
     }
 
     pub fn record_provider_quota_failure(

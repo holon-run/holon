@@ -87,13 +87,35 @@ impl RuntimeDb {
             return Ok(AgentListPostureRows { rows: Vec::new() });
         }
         let started_at = std::time::Instant::now();
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let rows = collect_agent_list_posture_rows(&transaction, agent_ids)?;
-        transaction.commit()?;
+        let rows = self.with_read(|connection| read_posture_rows(connection, agent_ids))?;
         crate::diagnostics::record_agent_list_projection(started_at.elapsed());
         Ok(rows)
     }
+
+    pub(crate) async fn agent_list_posture_rows_async(
+        &self,
+        agent_ids: Vec<String>,
+    ) -> Result<AgentListPostureRows> {
+        if agent_ids.is_empty() {
+            return Ok(AgentListPostureRows { rows: Vec::new() });
+        }
+        let started_at = std::time::Instant::now();
+        let rows = self
+            .with_read_async(move |connection| read_posture_rows(connection, &agent_ids))
+            .await?;
+        crate::diagnostics::record_agent_list_projection(started_at.elapsed());
+        Ok(rows)
+    }
+}
+
+fn read_posture_rows(
+    connection: &mut Connection,
+    agent_ids: &[String],
+) -> Result<AgentListPostureRows> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let rows = collect_agent_list_posture_rows(&transaction, agent_ids)?;
+    transaction.commit()?;
+    Ok(rows)
 }
 
 fn collect_agent_list_posture_rows(
