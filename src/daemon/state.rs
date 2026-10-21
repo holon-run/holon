@@ -138,6 +138,8 @@ pub struct DaemonLogsView {
     pub startup_failure: Option<RuntimeFailureSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown_failure: Option<RuntimeFailureSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_health: Option<super::logging::DaemonLogHealth>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tail: Vec<String>,
     pub message: String,
@@ -398,46 +400,72 @@ fn read_daemon_log_tail(config: &AppConfig, tail_lines: usize) -> Result<Vec<Str
     if tail_lines == 0 {
         return Ok(Vec::new());
     }
-    let mut file = match fs::File::open(&log_path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => {
-            return Err(err).with_context(|| format!("failed to read {}", log_path.display()))
+    let mut files = Vec::new();
+    #[cfg(unix)]
+    let mut seen_files = std::collections::HashSet::new();
+    // Open newest first before reading so renames do not invalidate open segments.
+    for index in 0..=3 {
+        let path = if index == 0 {
+            log_path.clone()
+        } else {
+            log_path.with_file_name(format!("daemon.log.{index}"))
+        };
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to read {}", path.display()))
+            }
+        };
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("failed to stat {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            // A rotation between opens can expose the same file at two paths.
+            if !seen_files.insert((metadata.dev(), metadata.ino())) {
+                continue;
+            }
         }
-    };
-    let file_len = file
-        .metadata()
-        .with_context(|| format!("failed to stat {}", log_path.display()))?
-        .len();
-    let mut start_offset = file_len;
+        files.push((path, file, metadata.len()));
+    }
     let mut bytes_scanned = 0usize;
     let mut newline_count = 0usize;
-    let mut bytes = Vec::new();
-    while start_offset > 0
-        && bytes_scanned < DAEMON_LOG_TAIL_READ_BYTE_LIMIT
-        && newline_count <= tail_lines
-    {
-        let remaining_budget = DAEMON_LOG_TAIL_READ_BYTE_LIMIT - bytes_scanned;
-        let chunk_size = remaining_budget
-            .min(DAEMON_LOG_TAIL_READ_CHUNK_SIZE)
-            .min(start_offset as usize);
-        start_offset -= chunk_size as u64;
-        file.seek(SeekFrom::Start(start_offset))
-            .with_context(|| format!("failed to seek {}", log_path.display()))?;
-        let mut chunk = vec![0; chunk_size];
-        file.read_exact(&mut chunk)
-            .with_context(|| format!("failed to read {}", log_path.display()))?;
-        newline_count += chunk.iter().filter(|&&byte| byte == b'\n').count();
-        chunk.extend(bytes);
-        bytes = chunk;
-        bytes_scanned += chunk_size;
+    let mut chunks = Vec::new();
+    let mut prefix_omitted = false;
+    for (path, mut file, mut start_offset) in files {
+        while start_offset > 0
+            && bytes_scanned < DAEMON_LOG_TAIL_READ_BYTE_LIMIT
+            && newline_count <= tail_lines
+        {
+            let remaining_budget = DAEMON_LOG_TAIL_READ_BYTE_LIMIT - bytes_scanned;
+            let chunk_size = start_offset
+                .min(remaining_budget.min(DAEMON_LOG_TAIL_READ_CHUNK_SIZE) as u64)
+                as usize;
+            start_offset -= chunk_size as u64;
+            file.seek(SeekFrom::Start(start_offset))
+                .with_context(|| format!("failed to seek {}", path.display()))?;
+            let mut chunk = Vec::with_capacity(chunk_size);
+            // A concurrent truncation may leave fewer bytes than metadata promised.
+            (&mut file)
+                .take(chunk_size as u64)
+                .read_to_end(&mut chunk)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            newline_count += chunk.iter().filter(|&&byte| byte == b'\n').count();
+            chunks.push(chunk);
+            bytes_scanned += chunk_size;
+        }
+        prefix_omitted |= start_offset > 0;
     }
+    let bytes = chunks.into_iter().rev().flatten().collect::<Vec<_>>();
     let text = String::from_utf8_lossy(&bytes);
     let mut lines = text
         .lines()
         .map(|line| line.to_string())
         .collect::<Vec<_>>();
-    if start_offset > 0 && !text.starts_with('\n') && !lines.is_empty() {
+    if prefix_omitted && !text.starts_with('\n') && !lines.is_empty() {
         lines[0] = truncate_tail_line(&format!("...{}", lines[0]));
     }
     for line in &mut lines {
@@ -470,14 +498,21 @@ pub fn daemon_logs(config: &AppConfig, tail_lines: usize) -> Result<DaemonLogsVi
     let last_failure = latest_known_runtime_failure(config).ok().flatten();
     let startup_failure = load_startup_failure(config).ok().flatten();
     let shutdown_failure = load_shutdown_failure(config).ok().flatten();
+    let log_health = super::logging::read_log_health(&paths.log_path)?;
     let tail = read_daemon_log_tail(config, tail_lines)?;
-    let message = if tail_lines == 0 {
+    let mut message = if tail_lines == 0 {
         "daemon log tail omitted (--tail 0)".into()
     } else if tail.is_empty() {
         "no daemon log lines are currently available".into()
     } else {
         format!("showing the last {} daemon log lines", tail.len())
     };
+    if let Some(health) = log_health.as_ref().filter(|health| health.degraded) {
+        message.push_str(&format!(
+            "; daemon logging degraded (dropped_bytes={}, buffered_bytes={})",
+            health.dropped_bytes, health.buffered_bytes
+        ));
+    }
     Ok(DaemonLogsView {
         ok: true,
         log_path: paths.log_path,
@@ -489,6 +524,7 @@ pub fn daemon_logs(config: &AppConfig, tail_lines: usize) -> Result<DaemonLogsVi
         last_failure,
         startup_failure,
         shutdown_failure,
+        log_health,
         tail,
         message,
     })

@@ -456,7 +456,7 @@ jobs:
   macos-rust-check:
     name: Rust darwin check
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     needs: changes
     # PR-level darwin compile gate: `cargo check` both macOS targets so Rust
     # changes catch darwin-only breakage without paying for the full menu app
@@ -491,6 +491,13 @@ jobs:
         env:
           CARGO_TARGET_DIR: target/macos-x86_64
         run: cargo check --locked --target x86_64-apple-darwin
+
+      - name: Test standalone log ownership and bounded tails on macOS
+        env:
+          CARGO_TARGET_DIR: target/macos-aarch64
+        run: |
+          cargo test --locked --lib daemon::logging -- --test-threads=2
+          cargo test --locked --lib daemon_logs -- --test-threads=2
 
   macos-app:
     name: Build macOS menu app

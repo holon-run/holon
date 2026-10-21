@@ -523,6 +523,7 @@ async fn daemon_start_unlocked(
     command
         .arg("serve")
         .args(serve_args)
+        .env(super::logging::DAEMON_LOG_PATH_ENV, &log_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));

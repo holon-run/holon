@@ -5,6 +5,7 @@ use super::lifecycle::{
     validate_incompatible_runtime_identity_with_executable, wait_for_startup_stability_with_probe,
     web_url, ProbeRuntime,
 };
+use super::logging::DaemonLogHealth;
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
 };
@@ -717,10 +718,68 @@ fn daemon_logs_surface_paths_failures_and_tail() {
     assert_eq!(view.last_failure, Some(failure.clone()));
     assert_eq!(view.startup_failure, Some(failure));
     assert_eq!(view.shutdown_failure, None);
+    assert_eq!(view.log_health, None);
     assert_eq!(
         view.tail,
         vec!["third line".to_string(), "fourth line".to_string()]
     );
+    let json = serde_json::to_value(&view).unwrap();
+    assert!(json.get("log_health").is_none());
+    let decoded: super::DaemonLogsView = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded, view);
+}
+
+#[test]
+fn daemon_logs_surface_degraded_log_health_even_when_tail_is_omitted() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.log_path, "last line\n").unwrap();
+    let health = DaemonLogHealth {
+        degraded: true,
+        buffered_bytes: 4096,
+        dropped_bytes: 8192,
+        last_error: Some("no space left on device".into()),
+        ..DaemonLogHealth::default()
+    };
+    fs::write(
+        paths.log_path.with_file_name("daemon.log.status.json"),
+        serde_json::to_vec(&health).unwrap(),
+    )
+    .unwrap();
+
+    for tail_lines in [0, 1] {
+        let view = daemon_logs(&config, tail_lines).unwrap();
+        assert!(view.ok);
+        assert_eq!(view.log_health, Some(health.clone()));
+        assert!(view.message.contains("daemon logging degraded"));
+        assert!(view.message.contains("dropped_bytes=8192"));
+        assert!(view.message.contains("buffered_bytes=4096"));
+        assert_eq!(view.tail.len(), tail_lines);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["log_health"], serde_json::to_value(&health).unwrap());
+    }
+}
+
+#[test]
+fn daemon_logs_surface_healthy_log_health_without_degraded_message() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let health = DaemonLogHealth {
+        dropped_bytes: 512,
+        ..DaemonLogHealth::default()
+    };
+    fs::write(
+        paths.log_path.with_file_name("daemon.log.status.json"),
+        serde_json::to_vec(&health).unwrap(),
+    )
+    .unwrap();
+
+    let view = daemon_logs(&config, 0).unwrap();
+    assert!(view.ok);
+    assert_eq!(view.log_health, Some(health));
+    assert_eq!(view.message, "daemon log tail omitted (--tail 0)");
 }
 
 #[test]
@@ -729,6 +788,7 @@ fn daemon_logs_tail_zero_omits_log_tail() {
     let paths = daemon_paths(&config);
     fs::create_dir_all(config.run_dir()).unwrap();
     fs::write(&paths.log_path, "first line\nsecond line\n").unwrap();
+    fs::create_dir(paths.log_path.with_file_name("daemon.log.1")).unwrap();
 
     let view = daemon_logs(&config, 0).unwrap();
     assert!(view.tail.is_empty());
@@ -751,6 +811,181 @@ fn daemon_logs_tail_stays_bounded_for_large_log_lines() {
     assert!(view.tail[0].starts_with("..."));
     assert!(view.tail[0].ends_with("tail-marker"));
     assert!(view.tail[0].chars().count() <= DAEMON_LOG_TAIL_LINE_CHAR_LIMIT);
+}
+
+#[test]
+fn daemon_logs_tail_reads_rotated_segments_in_order() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    for (name, text) in [
+        ("daemon.log.4", "not retained\n"),
+        ("daemon.log.3", "first\nsecond\n"),
+        ("daemon.log.2", "third\nfourth\n"),
+        ("daemon.log.1", "fifth\nsixth\n"),
+        ("daemon.log", "seventh\neighth\n"),
+    ] {
+        fs::write(paths.log_path.with_file_name(name), text).unwrap();
+    }
+
+    assert_eq!(
+        daemon_logs(&config, 20).unwrap().tail,
+        ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth"]
+    );
+    assert_eq!(
+        daemon_logs(&config, 5).unwrap().tail,
+        ["fourth", "fifth", "sixth", "seventh", "eighth"]
+    );
+}
+
+#[test]
+fn daemon_logs_tail_joins_lines_and_crlf_across_segments() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    for (name, text) in [
+        ("daemon.log.3", "older\r"),
+        ("daemon.log.2", "\njoined"),
+        ("daemon.log.1", " across"),
+        ("daemon.log", " segments\nlast"),
+    ] {
+        fs::write(paths.log_path.with_file_name(name), text).unwrap();
+    }
+
+    assert_eq!(
+        daemon_logs(&config, 3).unwrap().tail,
+        ["older", "joined across segments", "last"]
+    );
+    assert_eq!(daemon_logs(&config, 1).unwrap().tail, ["last"]);
+}
+
+#[test]
+fn daemon_logs_tail_reads_old_segments_without_current_or_intermediate_files() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(paths.log_path.with_file_name("daemon.log.3"), "oldest\n").unwrap();
+    fs::write(paths.log_path.with_file_name("daemon.log.1"), "newest\n").unwrap();
+
+    assert_eq!(daemon_logs(&config, 10).unwrap().tail, ["oldest", "newest"]);
+    fs::write(&paths.log_path, "").unwrap();
+    fs::write(paths.log_path.with_file_name("daemon.log.2"), "").unwrap();
+    assert_eq!(daemon_logs(&config, 10).unwrap().tail, ["oldest", "newest"]);
+}
+
+#[test]
+fn daemon_logs_tail_shares_byte_budget_across_segments() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let quarter_budget = DAEMON_LOG_TAIL_READ_BYTE_LIMIT / 4;
+    let suffix = "tail-marker\n";
+    fs::write(
+        paths.log_path.with_file_name("daemon.log.3"),
+        "outside-budget-older\n",
+    )
+    .unwrap();
+    fs::write(
+        paths.log_path.with_file_name("daemon.log.2"),
+        format!("outside-budget\n{}", "x".repeat(quarter_budget * 2)),
+    )
+    .unwrap();
+    fs::write(
+        paths.log_path.with_file_name("daemon.log.1"),
+        "y".repeat(quarter_budget),
+    )
+    .unwrap();
+    fs::write(
+        &paths.log_path,
+        format!("{}{suffix}", "z".repeat(quarter_budget - suffix.len())),
+    )
+    .unwrap();
+
+    let view = daemon_logs(&config, 100).unwrap();
+    assert_eq!(view.tail.len(), 1);
+    assert_eq!(
+        view.tail[0].chars().count(),
+        DAEMON_LOG_TAIL_LINE_CHAR_LIMIT
+    );
+    assert!(view.tail[0].starts_with("..."));
+    assert!(view.tail[0].ends_with("tail-marker"));
+    assert!(!view.tail[0].contains("outside-budget"));
+}
+
+#[test]
+fn daemon_logs_tail_decodes_utf8_after_joining_segments() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    for (name, bytes) in [
+        ("daemon.log.3", &b"older\n\xe4"[..]),
+        ("daemon.log.2", &b"\xb8\xad\xe6"[..]),
+        ("daemon.log.1", &b"\x96\x87\xf0\x9f"[..]),
+        ("daemon.log", &b"\x98\x80 tail\nlast\n"[..]),
+    ] {
+        fs::write(paths.log_path.with_file_name(name), bytes).unwrap();
+    }
+
+    assert_eq!(
+        daemon_logs(&config, 3).unwrap().tail,
+        ["older", "中文😀 tail", "last"]
+    );
+}
+
+#[test]
+fn daemon_logs_tail_preserves_utf8_across_read_chunks() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let line = format!("{} tail", "界".repeat(5_000));
+    fs::write(&paths.log_path, format!("older\n{line}\n")).unwrap();
+
+    assert_eq!(daemon_logs(&config, 1).unwrap().tail, [line]);
+}
+
+#[test]
+fn daemon_logs_tail_truncates_multibyte_lines_at_character_boundaries() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(
+        paths.log_path.with_file_name("daemon.log.1"),
+        format!(
+            "outside-budget\n{}",
+            "界".repeat(DAEMON_LOG_TAIL_READ_BYTE_LIMIT)
+        ),
+    )
+    .unwrap();
+    fs::write(&paths.log_path, "😀 tail\n").unwrap();
+
+    let tail = daemon_logs(&config, 100).unwrap().tail;
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail[0].chars().count(), DAEMON_LOG_TAIL_LINE_CHAR_LIMIT);
+    assert!(!tail[0].contains('\u{fffd}'));
+    assert_eq!(
+        tail[0],
+        format!(
+            "...{}😀 tail",
+            "界".repeat(DAEMON_LOG_TAIL_LINE_CHAR_LIMIT - 9)
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_logs_tail_does_not_read_a_rotated_inode_twice() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.log_path, "newest\n").unwrap();
+    fs::hard_link(
+        &paths.log_path,
+        paths.log_path.with_file_name("daemon.log.1"),
+    )
+    .unwrap();
+    fs::write(paths.log_path.with_file_name("daemon.log.2"), "older\n").unwrap();
+
+    assert_eq!(daemon_logs(&config, 10).unwrap().tail, ["older", "newest"]);
 }
 
 #[tokio::test]

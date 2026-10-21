@@ -362,6 +362,38 @@ fn free_address() -> String {
         .to_string()
 }
 
+#[test]
+fn managed_daemon_logs_rotate_without_replacing_the_running_process() {
+    let _lock = server_lock();
+    let mut fixture = Fixture::new();
+    fs::create_dir_all(fixture.path("run")).unwrap();
+    let log_path = fixture.path("run/daemon.log");
+    let segment_bytes = 16 * 1024 * 1024;
+    File::create(&log_path)
+        .unwrap()
+        .set_len(segment_bytes)
+        .unwrap();
+    let started = fixture.start(&free_address());
+    let pid = started["pid"].clone();
+    let logs = fixture.success(&["daemon", "logs", "--tail", "20"]);
+    assert_eq!(logs["log_health"]["degraded"], false, "{logs}");
+    assert!(
+        fs::metadata(fixture.path("run/daemon.log.1"))
+            .unwrap()
+            .len()
+            <= segment_bytes
+    );
+    assert!(fs::metadata(&log_path).unwrap().len() <= segment_bytes);
+    assert!(!fs::read_to_string(&log_path).unwrap().contains('\u{1b}'));
+    let status = fixture.success(&["daemon", "status"]);
+    assert_eq!(status["pid"], pid, "rotation must not restart the daemon");
+    fixture.stop();
+    fixture.start(&free_address());
+    let logs = fixture.success(&["daemon", "logs", "--tail", "5"]);
+    assert_eq!(logs["log_health"]["degraded"], false, "{logs}");
+    fixture.stop();
+}
+
 fn port(address: &str) -> String {
     address.parse::<SocketAddr>().unwrap().port().to_string()
 }

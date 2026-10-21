@@ -89,10 +89,36 @@ fn allocator_label() -> &'static str {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    // Capture managed stdio before tracing, startup diagnostics or Tokio.
+    let logs = match holon::daemon::logging::ManagedDaemonLog::from_env() {
+        Ok(logs) => logs,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let result = run_main();
+    let code = match &result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            if let Some(error) = error.downcast_ref::<clap::Error>() {
+                let _ = error.print();
+                std::process::ExitCode::from(error.exit_code() as u8)
+            } else {
+                eprintln!("Error: {error:#}");
+                std::process::ExitCode::FAILURE
+            }
+        }
+    };
+    drop(logs);
+    code
+}
+
+fn run_main() -> Result<()> {
     init_tracing();
     let policy = apply_startup_policy(allocator_label());
-    let cli = Cli::parse();
+    let cli = Cli::try_parse()?;
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(policy.tokio_worker_threads)
         .enable_all()
@@ -7429,6 +7455,7 @@ fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .try_init();
 }

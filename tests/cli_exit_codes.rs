@@ -377,6 +377,46 @@ fn invalid_arguments_exit_with_clap_usage_code() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn managed_log_guard_drains_clap_help_and_errors_without_changing_exit_codes() {
+    for (argument, code, expected) in [
+        ("--help", 0, "Usage:"),
+        ("--definitely-not-a-holon-flag", 2, "unexpected argument"),
+    ] {
+        let (mut command, home) = isolated_holon_command();
+        let path = home.path().join("daemon.log");
+        let output = command
+            .env(holon::daemon::logging::DAEMON_LOG_PATH_ENV, &path)
+            .arg(argument)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert!(log.contains(expected), "{log}");
+        assert!(!log.contains('\u{1b}'), "{log}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_log_initialization_failure_is_visible_on_bootstrap_stderr() {
+    let (mut command, home) = isolated_holon_command();
+    let output = command
+        .env(
+            holon::daemon::logging::DAEMON_LOG_PATH_ENV,
+            home.path().join("missing/daemon.log"),
+        )
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to initialize bounded log"));
+}
+
 #[test]
 fn unreachable_control_plane_exits_nonzero_without_machine_stdout() {
     let (mut command, _home) = isolated_holon_command();
