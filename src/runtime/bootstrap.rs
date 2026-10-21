@@ -10,6 +10,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use arc_swap::ArcSwap;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
@@ -28,8 +29,7 @@ use crate::{
         build_candidate_from_model_route, build_provider_from_model_chain,
         build_provider_from_model_chain_with_override, resolved_model_availability, AgentProvider,
         ConversationMessage, ModelBlock, ModelRouteParameterOverride, ProviderGenerateImageRequest,
-        ProviderGenerateImageResponse, ProviderJsonSchemaResponseFormat,
-        ProviderResponseFormatRequest, ProviderTurnRequest,
+        ProviderJsonSchemaResponseFormat, ProviderResponseFormatRequest, ProviderTurnRequest,
     },
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
@@ -54,6 +54,47 @@ const VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON: &str = "model_advertises_image_inpu
 pub(super) struct ViewImageCandidateHealth {
     candidate_refs: Vec<ModelRouteRef>,
     failures: HashMap<ModelRouteRef, ViewImageCandidateFailure>,
+    explicit_failures: HashMap<ModelRouteRef, ViewImageCandidateFailure>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedViewImageObservation {
+    pub(crate) route_selection: ResolvedViewImageVisionSelection,
+    pub(crate) endpoint_config_identity: String,
+    provider: Arc<dyn AgentProvider>,
+}
+
+fn view_image_endpoint_config_identity(
+    route: &crate::config::ResolvedModelRoute,
+    home: &std::path::Path,
+) -> String {
+    // Hash the complete effective configuration, including credential identity.
+    // Never expose the unhashed configuration in diagnostics or tool results.
+    let mut hash = Sha256::new();
+    hash.update(format!("{route:?}"));
+    hash.update(home.as_os_str().as_encoded_bytes());
+    format!("{:x}", hash.finalize())
+}
+
+fn view_image_route_error(
+    kind: &str,
+    reason: &str,
+    selection: &crate::types::ViewImageVisionSelection,
+) -> anyhow::Error {
+    crate::tool::ToolError::new(kind, "ViewImage could not use the selected model route")
+        .with_details(serde_json::json!({
+            "reason": reason,
+            "selection": selection,
+            "selected_mode": selection.selected_mode,
+            "selection_reason": selection.selection_reason,
+            "primary_provider": selection.primary_provider,
+            "primary_model": selection.primary_model,
+            "candidates": selection.candidates,
+        }))
+        .with_recovery_hint(
+            "select an available image-input route with a supported observation transport and valid credentials",
+        )
+        .into()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -128,6 +169,7 @@ impl ViewImageCandidateHealth {
                     crate::types::ViewImageSelectedMode::Unavailable;
                 selection.selection.vision_provider = None;
                 selection.selection.vision_model = None;
+                selection.selection.resolved_model = None;
                 selection.selected_route = None;
                 selection.selection.selection_reason =
                     VIEW_IMAGE_ALL_CANDIDATES_COOLING_REASON.to_string();
@@ -160,6 +202,7 @@ impl ViewImageCandidateHealth {
         };
         selection.selection.vision_provider = Some(selected_provider);
         selection.selection.vision_model = Some(selected_model);
+        selection.selection.resolved_model = Some(selected_candidate.as_string());
         selection.selected_route = Some(selected_candidate.clone());
         selection.selection.selection_reason =
             VIEW_IMAGE_CANDIDATE_COOLDOWN_FALLBACK_REASON.to_string();
@@ -176,12 +219,20 @@ impl ViewImageCandidateHealth {
         selection: &ResolvedViewImageVisionSelection,
         now: Instant,
     ) -> Option<ViewImageCandidateFailureStatus> {
-        self.sync_candidate_pool(selection);
+        let explicit = selection.selection.selection_source.as_deref() == Some("explicit_call");
+        if !explicit {
+            self.sync_candidate_pool(selection);
+        }
         let model_ref = selection.selected_route.as_ref()?;
-        if !self.candidate_refs.contains(model_ref) {
+        if !explicit && !self.candidate_refs.contains(model_ref) {
             return None;
         }
-        let failure = self.failures.entry(model_ref.clone()).or_default();
+        let failures = if explicit {
+            &mut self.explicit_failures
+        } else {
+            &mut self.failures
+        };
+        let failure = failures.entry(model_ref.clone()).or_default();
         failure.consecutive_protocol_failures =
             failure.consecutive_protocol_failures.saturating_add(1);
         let circuit_open =
@@ -201,6 +252,12 @@ impl ViewImageCandidateHealth {
     }
 
     fn record_success(&mut self, selection: &ResolvedViewImageVisionSelection) -> bool {
+        if selection.selection.selection_source.as_deref() == Some("explicit_call") {
+            return selection
+                .selected_route
+                .as_ref()
+                .is_some_and(|route| self.explicit_failures.remove(route).is_some());
+        }
         self.sync_candidate_pool(selection);
         let Some(model_ref) = selection.selected_route.as_ref() else {
             return false;
@@ -225,6 +282,7 @@ impl ViewImageCandidateHealth {
     fn reset(&mut self) {
         self.candidate_refs.clear();
         self.failures.clear();
+        self.explicit_failures.clear();
     }
 }
 
@@ -1230,6 +1288,158 @@ impl RuntimeHandle {
         }
     }
 
+    pub(crate) async fn prepare_view_image_observation(
+        &self,
+        model: Option<&str>,
+    ) -> Result<PreparedViewImageObservation> {
+        let requested = model
+            .map(|model| {
+                ModelRouteRef::parse_compatible(model.trim()).map_err(|_| {
+                    crate::tool::ToolError::new(
+                        "invalid_tool_input",
+                        "ViewImage `model` must be provider@endpoint/model or provider/model",
+                    )
+                    .with_recovery_hint(
+                        "omit model to use the default route, or supply a valid model route",
+                    )
+                })
+            })
+            .transpose()?;
+        let automatic = if requested.is_none() {
+            Some(self.current_view_image_vision_route_selection().await?)
+        } else {
+            None
+        };
+        let state = self.agent_state().await?;
+        let fallback = self.inner.turn_fallback_model.read().await.clone();
+        let snap = self.inner.config_snapshot.load_full();
+        let selection = if let Some(requested) = requested.as_ref() {
+            snap.model_catalog.select_view_image_vision_model_for_call(
+                &snap.base_context_config,
+                state.model_override.as_ref(),
+                fallback.as_ref(),
+                requested,
+            )
+        } else {
+            // Discovery can publish a new snapshot. Resolve the default again
+            // from the snapshot used for all subsequent preflight checks.
+            let mut resolved = snap
+                .model_catalog
+                .select_view_image_vision_model_with_route(
+                    &snap.base_context_config,
+                    state.model_override.as_ref(),
+                    fallback.as_ref(),
+                );
+            if let Some(automatic) = automatic {
+                resolved.selection.candidates.extend(
+                    automatic
+                        .selection
+                        .candidates
+                        .into_iter()
+                        .filter(|candidate| candidate.model == "*"),
+                );
+            }
+            self.select_healthy_view_image_candidate(resolved).await
+        };
+        let explicit = requested.is_some();
+        let unavailable_kind = if explicit {
+            "model_route_unavailable"
+        } else {
+            "vision_adapter_unavailable"
+        };
+        let route_ref = requested
+            .as_ref()
+            .or(selection.selected_route.as_ref())
+            .ok_or_else(|| {
+                view_image_route_error(
+                    unavailable_kind,
+                    &selection.selection.selection_reason,
+                    &selection.selection,
+                )
+            })?;
+        let metadata = snap
+            .model_catalog
+            .resolve_explicit_model_metadata(&snap.base_context_config, route_ref)
+            .ok_or_else(|| {
+                view_image_route_error(
+                    unavailable_kind,
+                    "endpoint_unavailable",
+                    &selection.selection,
+                )
+            })?;
+        if !crate::config::provider_has_usable_auth(&metadata.endpoint.runtime_config) {
+            return Err(view_image_route_error(
+                unavailable_kind,
+                "credentials_unavailable",
+                &selection.selection,
+            ));
+        }
+        let route = snap
+            .model_catalog
+            .resolve_explicit_model_route(
+                &snap.base_context_config,
+                route_ref,
+                ModelRouteCapability::VisionObservation,
+            )
+            .ok_or_else(|| {
+                view_image_route_error(
+                    if explicit {
+                        "media_capability_mismatch"
+                    } else {
+                        unavailable_kind
+                    },
+                    "model_or_transport_lacks_view_image_observation",
+                    &selection.selection,
+                )
+            })?;
+        if explicit {
+            let health = self.inner.view_image_candidate_health.lock().await;
+            let cooling = [
+                health.failures.get(&route.route_ref),
+                health.explicit_failures.get(&route.route_ref),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|failure| {
+                failure
+                    .cooling_until
+                    .is_some_and(|until| until > Instant::now())
+            });
+            if cooling {
+                return Err(view_image_route_error(
+                    "model_route_unavailable",
+                    "selected_route_cooling",
+                    &selection.selection,
+                ));
+            }
+        }
+        let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
+            view_image_route_error(
+                unavailable_kind,
+                "host_provider_configuration_unavailable",
+                &selection.selection,
+            )
+        })?;
+        // Construct and validate the exact provider before looking at cached observations.
+        let provider = build_candidate_from_model_route(&reconfig.config.home_dir, &route)
+            .map_err(|_| {
+                view_image_route_error(
+                    unavailable_kind,
+                    "provider_initialization_failed",
+                    &selection.selection,
+                )
+            })?
+            .provider;
+        Ok(PreparedViewImageObservation {
+            endpoint_config_identity: view_image_endpoint_config_identity(
+                &route,
+                &reconfig.config.home_dir,
+            ),
+            route_selection: selection,
+            provider,
+        })
+    }
+
     pub(crate) async fn cached_view_image_observation(
         &self,
         key: &crate::runtime::ViewImageObservationCacheKey,
@@ -1256,46 +1466,15 @@ impl RuntimeHandle {
 
     pub(crate) async fn generate_view_image_observation(
         &self,
-        selection: &ResolvedViewImageVisionSelection,
+        prepared: &PreparedViewImageObservation,
         prompt: &str,
         media_type: &str,
         bytes: &[u8],
     ) -> Result<String> {
+        let selection = &prepared.route_selection;
         if selection.selection.selected_mode == crate::types::ViewImageSelectedMode::Unavailable {
             return Err(anyhow!("no configured model supports image_input"));
         }
-        let provider_name = selection
-            .selection
-            .vision_provider
-            .as_deref()
-            .ok_or_else(|| anyhow!("vision selection did not include a provider"))?;
-        let model_name = selection
-            .selection
-            .vision_model
-            .as_deref()
-            .ok_or_else(|| anyhow!("vision selection did not include a model"))?;
-        let snap = self.inner.config_snapshot.load();
-        let vision_model_ref = selection
-            .selected_route
-            .as_ref()
-            .ok_or_else(|| anyhow!("ViewImage selection did not include its exact model route"))?;
-        let vision_route = snap
-            .model_catalog
-            .resolve_explicit_model_route(
-                &snap.base_context_config,
-                &vision_model_ref,
-                ModelRouteCapability::VisionObservation,
-            )
-            .ok_or_else(|| {
-                anyhow!(
-                    "vision model {provider_name}/{model_name} is not supported by ViewImage observation generation yet"
-                )
-            })?;
-        let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
-            anyhow!("ViewImage observation generation requires host-managed provider configuration")
-        })?;
-        let provider =
-            build_candidate_from_model_route(&reconfig.config.home_dir, &vision_route)?.provider;
         let mut request = ProviderTurnRequest::plain(
             "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return exactly one JSON object and no markdown, prose, or implementation advice. The JSON object must match this shape: {\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"string\",\"ocr\":[],\"elements\":[],\"relations\":[],\"issues\":[],\"uncertainties\":[],\"external_sources\":[]}. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary, uncertainties. The uncertainties field must be an array of strings; use [] when there are no caveats. The ocr, elements, relations, issues, and external_sources fields must be arrays of objects; omit them or use [] when empty. Include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
             vec![ConversationMessage::UserImage {
@@ -1307,7 +1486,7 @@ impl RuntimeHandle {
             Vec::new(),
         );
         request.response_format = Some(visual_observation_response_format());
-        let response = provider.complete_turn(request).await?;
+        let response = prepared.provider.complete_turn(request).await?;
         let text = response
             .blocks
             .iter()
@@ -1328,25 +1507,117 @@ impl RuntimeHandle {
 
     pub(crate) async fn generate_image(
         &self,
+        requested_model: Option<&str>,
         request: ProviderGenerateImageRequest,
-    ) -> Result<ProviderGenerateImageResponse> {
+    ) -> Result<crate::provider::image_generation::GeneratedImageExecution> {
+        use crate::provider::image_generation::{
+            generate_image_with_shared_quota, resolve_image_generation_contract,
+            GeneratedImageExecution, ImageGenerationParameters,
+        };
+        use crate::tool::ToolError;
+        use serde_json::json;
+
         let state = self.agent_state().await?;
         let fallback_model = self.inner.turn_fallback_model.read().await.clone();
         let snap = self.inner.config_snapshot.load();
+        let requested_route = requested_model
+            .map(ModelRouteRef::parse_compatible)
+            .transpose()
+            .map_err(|_| {
+                ToolError::new(
+                    "model_route_unavailable",
+                    "invalid image generation model route",
+                )
+                .with_recovery_hint(
+                    "use a canonical provider@endpoint/model route from ListProviderModels",
+                )
+            })?;
         let route = snap
             .model_catalog
-            .select_generate_image_route(
+            .select_generate_image_route_for_call(
                 &snap.base_context_config,
+                requested_route.as_ref(),
                 state.model_override.as_ref(),
                 fallback_model.as_ref(),
             )
-            .ok_or_else(|| anyhow!("no configured model supports image_generation"))?;
+            .ok_or_else(|| ToolError::new(
+                "model_route_unavailable",
+                "selected image generation route is unavailable or lacks image_generation capability",
+            ).with_details(json!({"requested_model": requested_model}))
+             .with_recovery_hint("select an enabled image_output route with usable credentials; explicit choices do not fall back"))?;
+        let contract = resolve_image_generation_contract(
+            &route.route_ref,
+            route.provider_config(),
+            route.capabilities.image_output,
+        );
+        let parameters = contract
+            .resolve_parameters(&ImageGenerationParameters {
+                size: request.size,
+                aspect_ratio: request.aspect_ratio,
+                resolution: request.resolution,
+                background: request.background,
+                output_format: request.output_format,
+            })
+            .map_err(|error| {
+                ToolError::new(error.code, error.to_string())
+                    .with_details(serde_json::to_value(&error).unwrap_or_default())
+                    .with_recovery_hint(error.recovery_hint.clone())
+            })?;
+        let resolved = &parameters.provider_parameters;
+        let request = ProviderGenerateImageRequest {
+            prompt: request.prompt,
+            size: resolved.size.clone(),
+            aspect_ratio: resolved.aspect_ratio.clone(),
+            resolution: resolved.resolution.clone(),
+            background: resolved.background.clone(),
+            output_format: resolved.output_format.clone(),
+        };
         let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
             anyhow!("image generation requires host-managed provider configuration")
         })?;
         let provider =
             build_candidate_from_model_route(&reconfig.config.home_dir, &route)?.provider;
-        provider.generate_image(request).await
+        let response = generate_image_with_shared_quota(provider.as_ref(), request).await.map_err(|error| {
+            if let Some(tool_error) = error.downcast_ref::<ToolError>() {
+                let mut details = tool_error.details.clone().unwrap_or_else(|| json!({}));
+                details["route"] = json!(route.route_ref.as_string());
+                return tool_error.clone().with_details(details);
+            }
+            if let Some(parameter) = error.downcast_ref::<crate::provider::image_generation::ImageGenerationParameterError>() {
+                return ToolError::new(parameter.code, parameter.to_string())
+                    .with_details(json!({"route": route.route_ref.as_string(), "field": parameter.field}))
+                    .with_recovery_hint(parameter.recovery_hint.clone());
+            }
+            let transport = error.downcast_ref::<crate::provider::ProviderTransportError>();
+            let status = transport.and_then(|error| error.status);
+            let rejected = matches!(status, Some(400 | 422));
+            ToolError::new(
+                if rejected { "provider_image_parameter_rejected" } else { "image_generation_failed" },
+                if rejected { "provider rejected the selected image request; its parameter contract may have changed" }
+                    else { "selected image provider request failed" },
+            )
+                .with_details(json!({
+                    "route": route.route_ref.as_string(),
+                    "provider_failure": crate::provider::classify_provider_error(&error),
+                    "http_status": status,
+                    "provider_error_code": transport.and_then(|error| error.code.as_deref()),
+                }))
+                .with_recovery_hint("inspect the selected route's provider error; no alternate model was tried")
+        })?;
+        let selection = json!({
+            "requested_model": requested_route.as_ref().map(ModelRouteRef::as_string),
+            "resolved_model": route.route_ref.as_string(),
+            "selection_source": if requested_route.is_some() { "explicit" }
+                else if snap.model_catalog.image_generation_model.is_some() { "image_generation_default" }
+                else { "auto" },
+            "contract_version": contract.contract_version,
+        });
+        Ok(GeneratedImageExecution {
+            response,
+            selection,
+            contract,
+            parameters,
+        })
     }
 
     async fn model_config_with_fresh_discovery_cache(&self) -> Option<AppConfig> {
@@ -1480,11 +1751,20 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn model_availability(&self) -> Result<Vec<ResolvedModelAvailability>> {
-        if let Some(config) = self.model_config_with_fresh_discovery_cache().await {
-            return Ok(resolved_model_availability(&config));
+        let mut models = if let Some(config) = self.model_config_with_fresh_discovery_cache().await
+        {
+            resolved_model_availability(&config)
+        } else {
+            self.inner.config_snapshot.load().model_availability.clone()
+        };
+        if self.agent_capability_policy().await?.is_some_and(|policy| {
+            !policy.allows(crate::types::ToolCapabilityFamily::LocalEnvironment)
+        }) {
+            for model in &mut models {
+                model.media.deny_tool_access();
+            }
         }
-        let snap = self.inner.config_snapshot.load();
-        Ok(snap.model_availability.clone())
+        Ok(models)
     }
 
     pub(crate) async fn model_providers(&self) -> Result<Vec<crate::types::ModelProviderEntry>> {
@@ -1842,6 +2122,465 @@ fn visual_observation_response_format() -> ProviderResponseFormatRequest {
 }
 
 #[cfg(test)]
+mod view_image_route_tests {
+    use super::*;
+    use crate::{
+        config::{
+            CredentialKind, CredentialSource, ModelRef, ProviderEndpointId, ProviderId,
+            ProviderTransportKind,
+        },
+        host::RuntimeHost,
+        model_catalog::{ModelCapabilityOverride, ModelRuntimeOverride},
+        tool::{tools::view_image, ToolError},
+        types::{AuthorityClass, ViewImageResult},
+    };
+    use axum::{http::StatusCode, routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use std::sync::atomic::Ordering;
+    use tempfile::{tempdir, TempDir};
+
+    struct VisionServer {
+        url: String,
+        calls: Arc<AtomicUsize>,
+        models: Arc<StdMutex<Vec<String>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for VisionServer {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl VisionServer {
+        async fn new(label: &str, status: StatusCode) -> Self {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let models = Arc::new(StdMutex::new(Vec::new()));
+            let observed_calls = calls.clone();
+            let observed_models = models.clone();
+            let label = label.to_string();
+            let app = Router::new().route(
+                "/v1/chat/completions",
+                post(move |Json(request): Json<Value>| {
+                    let calls = observed_calls.clone();
+                    let models = observed_models.clone();
+                    let label = label.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        models.lock().unwrap().push(request["model"].as_str().unwrap().to_string());
+                        let body = if status.is_success() {
+                            json!({
+                                "id": "vision-test", "object": "chat.completion",
+                                "model": request["model"],
+                                "choices": [{
+                                    "index": 0, "finish_reason": "stop",
+                                    "message": {"role": "assistant", "content": json!({
+                                        "type": "visual_observation", "schema": "visual_observation.v1",
+                                        "summary": label, "uncertainties": [],
+                                    }).to_string()},
+                                }],
+                                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                            })
+                        } else {
+                            json!({"error": {"message": "unsupported image request", "type": "invalid_request_error", "code": "invalid_request_error"}})
+                        };
+                        (status, Json(body))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            Self {
+                url,
+                calls,
+                models,
+                task,
+            }
+        }
+
+        fn count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    async fn vision_runtime(server: &VisionServer) -> (TempDir, RuntimeHost, RuntimeHandle) {
+        let home = tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"ollama/vision-a"}}"#,
+        )
+        .unwrap();
+        let mut config = {
+            let _guard = crate::test_env::lock_env();
+            AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap()
+        };
+        config.default_model = ModelRouteRef::parse_compatible("ollama/vision-a").unwrap();
+        config.vision_model = Some(config.default_model.clone());
+        config.vision_candidate_models.clear();
+        config.fallback_models.clear();
+        config.default_agent_id = "default".to_string();
+        config.workspace_dir = home.path().join("workspace");
+        std::fs::create_dir_all(&config.workspace_dir).unwrap();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&1_u32.to_be_bytes());
+        png.extend_from_slice(&1_u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+        std::fs::write(config.workspace_dir.join("sample.png"), png).unwrap();
+        let provider_id = ProviderId::parse("ollama").unwrap();
+        config.providers.retain(|id, _| id == &provider_id);
+        let provider = config.providers.get_mut(&provider_id).unwrap();
+        provider.transport = ProviderTransportKind::OpenAiChatCompletions;
+        provider.base_url = server.url.clone();
+        provider.auth.source = CredentialSource::None;
+        provider.auth.kind = CredentialKind::None;
+        provider.credential = None;
+        for (model, image_input) in [("vision-a", true), ("vision-b", true), ("text-only", false)] {
+            config.validated_model_overrides.insert(
+                ModelRef::parse(&format!("ollama/{model}")).unwrap(),
+                ModelRuntimeOverride {
+                    capabilities: Some(ModelCapabilityOverride {
+                        agent_turn: Some(true),
+                        image_input: Some(image_input),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+        }
+        let host = RuntimeHost::new(config).unwrap();
+        let runtime = host.default_runtime().await.unwrap();
+        (home, host, runtime)
+    }
+
+    fn update_snapshot(runtime: &RuntimeHandle, update: impl FnOnce(&mut ConfigSnapshot)) {
+        let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+        update(&mut snapshot);
+        runtime.inner.config_snapshot.store(Arc::new(snapshot));
+    }
+
+    async fn observe(
+        runtime: &RuntimeHandle,
+        home: &TempDir,
+        model: Option<&str>,
+    ) -> Result<ViewImageResult> {
+        let mut input = json!({
+            "path": home.path().join("workspace/sample.png"),
+            "prompt": "Describe the image",
+        });
+        if let Some(model) = model {
+            input["model"] = json!(model);
+        }
+        let result = view_image::execute(
+            runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &input,
+        )
+        .await?;
+        Ok(serde_json::from_value(result.envelope.result.unwrap())?)
+    }
+
+    #[tokio::test]
+    async fn media_defaults_follow_current_fallback_without_changing_selection() {
+        let server = VisionServer::new("unused", StatusCode::OK).await;
+        let (_home, _host, runtime) = vision_runtime(&server).await;
+        update_snapshot(&runtime, |snapshot| {
+            let catalog = &mut snapshot.model_catalog;
+            catalog.vision_model = None;
+            for endpoint in &mut catalog.provider_endpoints {
+                endpoint.runtime_config.transport = ProviderTransportKind::OpenAiResponses;
+            }
+            for model in ["vision-a", "vision-b"] {
+                catalog
+                    .model_overrides
+                    .get_mut(&ModelRef::parse(&format!("ollama/{model}")).unwrap())
+                    .unwrap()
+                    .capabilities
+                    .as_mut()
+                    .unwrap()
+                    .image_generation = Some(true);
+            }
+        });
+        let primary = ModelRouteRef::parse_compatible("ollama/vision-a").unwrap();
+        let fallback = ModelRouteRef::parse_compatible("ollama/vision-b").unwrap();
+        let defaults = runtime.media_tool_defaults(None).await.unwrap();
+        assert_eq!(
+            defaults.view_image.as_deref(),
+            Some(primary.as_string().as_str())
+        );
+        assert_eq!(
+            defaults.generate_image.as_deref(),
+            Some(primary.as_string().as_str())
+        );
+        *runtime.inner.turn_fallback_model.write().await = Some(fallback.clone());
+        let defaults = runtime.media_tool_defaults(None).await.unwrap();
+        assert_eq!(
+            defaults.view_image.as_deref(),
+            Some(fallback.as_string().as_str())
+        );
+        assert_eq!(
+            defaults.generate_image.as_deref(),
+            Some(fallback.as_string().as_str())
+        );
+        let pending = runtime.media_tool_defaults(Some(&primary)).await.unwrap();
+        assert_eq!(
+            pending.view_image.as_deref(),
+            Some(primary.as_string().as_str())
+        );
+        assert_eq!(
+            pending.generate_image.as_deref(),
+            Some(primary.as_string().as_str())
+        );
+        assert_eq!(
+            *runtime.inner.turn_fallback_model.read().await,
+            Some(fallback)
+        );
+        assert_eq!(server.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn view_image_single_call_selection_is_concurrent_and_default_compatible() {
+        let server = VisionServer::new("visible sample", StatusCode::OK).await;
+        let (home, _host, runtime) = vision_runtime(&server).await;
+        let default = observe(&runtime, &home, None).await.unwrap();
+        assert!(!default.cache_hit);
+        assert_eq!(
+            default.vision_selection.selection_source.as_deref(),
+            Some("vision_default")
+        );
+        let (legacy, other) = tokio::join!(
+            observe(&runtime, &home, Some("ollama/vision-a")),
+            observe(&runtime, &home, Some("ollama@default/vision-b")),
+        );
+        let legacy = legacy.unwrap();
+        let other = other.unwrap();
+        assert!(legacy.cache_hit);
+        assert_eq!(
+            legacy.observation.generated_by,
+            default.observation.generated_by
+        );
+        assert_eq!(
+            legacy.vision_selection.requested_model.as_deref(),
+            Some("ollama@default/vision-a")
+        );
+        assert_eq!(
+            other.observation.generated_by.resolved_model.as_deref(),
+            Some("ollama@default/vision-b")
+        );
+        assert!(!other.cache_hit);
+        assert_eq!(server.count(), 2);
+        let selected = runtime
+            .current_view_image_vision_route_selection()
+            .await
+            .unwrap();
+        assert_eq!(
+            selected.selected_route.unwrap().as_string(),
+            "ollama@default/vision-a"
+        );
+        assert!(runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .model_override
+            .is_none());
+        assert!(runtime.inner.turn_fallback_model.read().await.is_none());
+        assert_eq!(*server.models.lock().unwrap(), vec!["vision-a", "vision-b"]);
+    }
+
+    #[tokio::test]
+    async fn view_image_cache_isolates_same_model_endpoints_and_base_url_changes() {
+        let first = VisionServer::new("first endpoint", StatusCode::OK).await;
+        let second = VisionServer::new("second endpoint", StatusCode::OK).await;
+        let (home, _host, runtime) = vision_runtime(&first).await;
+        let original = observe(&runtime, &home, None).await.unwrap();
+        update_snapshot(&runtime, |snapshot| {
+            let mut endpoint = snapshot.model_catalog.provider_endpoints[0].clone();
+            endpoint.endpoint = ProviderEndpointId::parse("secondary").unwrap();
+            endpoint.runtime_config.route_endpoint = endpoint.endpoint.clone();
+            snapshot.model_catalog.provider_endpoints.push(endpoint);
+        });
+        let secondary = observe(&runtime, &home, Some("ollama@secondary/vision-a"))
+            .await
+            .unwrap();
+        assert!(!secondary.cache_hit);
+        assert_eq!(
+            secondary.observation.generated_by.resolved_model.as_deref(),
+            Some("ollama@secondary/vision-a")
+        );
+        assert_eq!(
+            first.count(),
+            2,
+            "same URL is not a substitute for endpoint identity"
+        );
+        let pinned = runtime
+            .prepare_view_image_observation(Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        update_snapshot(&runtime, |snapshot| {
+            snapshot.model_catalog.provider_endpoints[0]
+                .runtime_config
+                .base_url = second.url.clone();
+        });
+        let changed = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        assert!(!changed.cache_hit);
+        assert_eq!(changed.observation.summary, "second endpoint");
+        assert_eq!(
+            changed.observation.generated_by.resolved_model,
+            original.observation.generated_by.resolved_model
+        );
+        assert_eq!(second.count(), 1);
+        let bytes = std::fs::read(home.path().join("workspace/sample.png")).unwrap();
+        let text = runtime
+            .generate_view_image_observation(&pinned, "Inspect", "image/png", &bytes)
+            .await
+            .unwrap();
+        assert!(
+            text.contains("first endpoint"),
+            "in-flight requests retain their validated provider"
+        );
+        assert_eq!(first.count(), 3);
+        assert_eq!(second.count(), 1);
+        assert!(
+            observe(&runtime, &home, Some("ollama/vision-a"))
+                .await
+                .unwrap()
+                .cache_hit
+        );
+    }
+
+    #[tokio::test]
+    async fn view_image_explicit_preflight_rejects_before_inference_and_before_cache() {
+        let server = VisionServer::new("cached sample", StatusCode::OK).await;
+        let (home, _host, runtime) = vision_runtime(&server).await;
+        observe(&runtime, &home, None).await.unwrap();
+        for (model, kind) in [
+            ("", "invalid_tool_input"),
+            ("bad-ref", "invalid_tool_input"),
+            ("ollama@missing/vision-a", "model_route_unavailable"),
+            (
+                "missing-provider@default/vision-a",
+                "model_route_unavailable",
+            ),
+            ("ollama@default/text-only", "media_capability_mismatch"),
+        ] {
+            let error = observe(&runtime, &home, Some(model)).await.unwrap_err();
+            assert_eq!(ToolError::from_anyhow(&error).kind, kind, "{model}");
+            assert_eq!(server.count(), 1);
+        }
+        update_snapshot(&runtime, |snapshot| {
+            snapshot.model_catalog.provider_endpoints[0]
+                .runtime_config
+                .transport = ProviderTransportKind::GeminiGenerateContent;
+        });
+        let error = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ToolError::from_anyhow(&error).kind,
+            "media_capability_mismatch"
+        );
+        update_snapshot(&runtime, |snapshot| {
+            let endpoint = &mut snapshot.model_catalog.provider_endpoints[0].runtime_config;
+            endpoint.transport = ProviderTransportKind::OpenAiChatCompletions;
+            endpoint.auth.source = CredentialSource::Env;
+            endpoint.auth.kind = CredentialKind::ApiKey;
+            endpoint.credential = None;
+        });
+        let error = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap_err();
+        let error = ToolError::from_anyhow(&error);
+        assert_eq!(error.kind, "model_route_unavailable");
+        assert_eq!(error.details.unwrap()["reason"], "credentials_unavailable");
+        assert_eq!(
+            server.count(),
+            1,
+            "a cached observation cannot bypass credential validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn view_image_explicit_provider_rejection_never_uses_default_route() {
+        let primary = VisionServer::new("default", StatusCode::OK).await;
+        let rejected = VisionServer::new("rejected", StatusCode::BAD_REQUEST).await;
+        let (home, _host, runtime) = vision_runtime(&primary).await;
+        update_snapshot(&runtime, |snapshot| {
+            let mut endpoint = snapshot.model_catalog.provider_endpoints[0].clone();
+            endpoint.endpoint = ProviderEndpointId::parse("rejected").unwrap();
+            endpoint.runtime_config.route_endpoint = endpoint.endpoint.clone();
+            endpoint.runtime_config.base_url = rejected.url.clone();
+            snapshot.model_catalog.provider_endpoints.push(endpoint);
+        });
+        let error = observe(&runtime, &home, Some("ollama@rejected/vision-b"))
+            .await
+            .unwrap_err();
+        let error = ToolError::from_anyhow(&error);
+        assert_eq!(error.kind, "vision_observation_failed");
+        let details = error.details.unwrap();
+        assert_eq!(
+            details["selection"]["resolved_model"],
+            "ollama@rejected/vision-b"
+        );
+        assert_eq!(details["provider_failure"]["kind"], "contract_error");
+        assert_eq!(rejected.count(), 1);
+        assert_eq!(primary.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn view_image_explicit_cooldown_cannot_be_bypassed_by_cached_observation() {
+        let server = VisionServer::new("cached sample", StatusCode::OK).await;
+        let (home, _host, runtime) = vision_runtime(&server).await;
+        observe(&runtime, &home, None).await.unwrap();
+        let prepared = runtime
+            .prepare_view_image_observation(Some("ollama/vision-a"))
+            .await
+            .unwrap();
+        runtime
+            .record_view_image_candidate_protocol_failure(&prepared.route_selection)
+            .await;
+        runtime
+            .record_view_image_candidate_protocol_failure(&prepared.route_selection)
+            .await;
+        let error = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap_err();
+        let error = ToolError::from_anyhow(&error);
+        assert_eq!(error.details.unwrap()["reason"], "selected_route_cooling");
+        assert_eq!(server.count(), 1);
+        assert!(observe(&runtime, &home, None).await.unwrap().cache_hit);
+        runtime
+            .inner
+            .view_image_candidate_health
+            .lock()
+            .await
+            .explicit_failures
+            .clear();
+        let automatic = runtime
+            .current_view_image_vision_route_selection()
+            .await
+            .unwrap();
+        runtime
+            .record_view_image_candidate_protocol_failure(&automatic)
+            .await;
+        runtime
+            .record_view_image_candidate_protocol_failure(&automatic)
+            .await;
+        let error = observe(&runtime, &home, Some("ollama/vision-a"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ToolError::from_anyhow(&error).details.unwrap()["reason"],
+            "selected_route_cooling",
+            "an explicit request cannot bypass an existing automatic-route cooldown",
+        );
+        assert_eq!(server.count(), 1);
+    }
+}
+
+#[cfg(test)]
 mod view_image_candidate_health_tests {
     use super::*;
 
@@ -1868,6 +2607,10 @@ mod view_image_candidate_health_tests {
     ) -> ResolvedViewImageVisionSelection {
         let selection = ViewImageVisionSelection {
             selected_mode: ViewImageSelectedMode::NativeImageWithObservation,
+            requested_model: None,
+            resolved_model: Some("openai@default/vision-a".to_string()),
+            selection_source: Some("automatic".to_string()),
+            contract_version: Some(crate::config::VIEW_IMAGE_CONTRACT_VERSION.to_string()),
             vision_provider: Some("openai".to_string()),
             vision_model: Some("vision-a".to_string()),
             selection_reason: "current_primary_model_supports_image_input".to_string(),
@@ -1899,6 +2642,40 @@ mod view_image_candidate_health_tests {
                 VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON,
             ),
         ])
+    }
+
+    #[test]
+    fn explicit_view_image_health_does_not_reset_or_advance_automatic_candidates() {
+        let now = Instant::now();
+        let mut health = ViewImageCandidateHealth::default();
+        let automatic = two_candidates();
+        health.record_protocol_failure(&automatic, now);
+        let mut explicit = automatic.clone();
+        explicit.selection.selection_source = Some("explicit_call".to_string());
+        explicit.selected_route =
+            Some(ModelRouteRef::parse_compatible("anthropic@default/vision-b").unwrap());
+        explicit.selection.candidates.truncate(1);
+        health.record_protocol_failure(&explicit, now);
+        health.record_protocol_failure(&explicit, now);
+        assert_eq!(health.candidate_refs.len(), 2);
+        assert_eq!(
+            health.failures[automatic.selected_route.as_ref().unwrap()]
+                .consecutive_protocol_failures,
+            1,
+        );
+        assert_eq!(
+            health
+                .select_candidate(automatic.clone(), now)
+                .selected_route,
+            automatic.selected_route,
+        );
+        health.record_success(&explicit);
+        assert!(health.explicit_failures.is_empty());
+        assert_eq!(
+            health.failures[automatic.selected_route.as_ref().unwrap()]
+                .consecutive_protocol_failures,
+            1,
+        );
     }
 
     #[test]

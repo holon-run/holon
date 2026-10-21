@@ -39,6 +39,8 @@ const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 pub(crate) struct ViewImageArgs {
     pub(crate) path: String,
     pub(crate) prompt: String,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -67,14 +69,29 @@ pub(crate) async fn execute(
     let image = read_visual_reference(&resolved_path)?;
     let mut visual_reference = image.visual_reference;
     visual_reference.workspace_uri = Some(resolved_path.to_string_lossy().into_owned());
-    let cache_key = observation_cache_key(&visual_reference, &prompt);
-    let resolved_selection = runtime.current_view_image_vision_route_selection().await?;
+    let prepared = runtime
+        .prepare_view_image_observation(args.model.as_deref())
+        .await?;
+    let resolved_selection = prepared.route_selection.clone();
     let vision_selection = resolved_selection.selection.clone();
+    if vision_selection.selected_mode == ViewImageSelectedMode::Unavailable {
+        return Err(vision_adapter_unavailable(vision_selection));
+    }
+    let cache_key = observation_cache_key(
+        &visual_reference,
+        &prompt,
+        vision_selection
+            .resolved_model
+            .as_deref()
+            .ok_or_else(|| anyhow!("ViewImage selection missing canonical route"))?,
+        &prepared.endpoint_config_identity,
+    );
     if let Some(observation) = runtime.cached_view_image_observation(&cache_key).await {
         let selected_mode = vision_selection.selected_mode.clone();
         return serialize_success(
             NAME,
             &ViewImageResult {
+                cache_hit: true,
                 visual_reference,
                 observation,
                 selected_mode,
@@ -83,11 +100,8 @@ pub(crate) async fn execute(
             },
         );
     }
-    if vision_selection.selected_mode == ViewImageSelectedMode::Unavailable {
-        return Err(vision_adapter_unavailable(vision_selection));
-    }
     let generation_runtime = runtime.clone();
-    let generation_selection = resolved_selection.clone();
+    let generation_selection = prepared;
     let generation_media_type = visual_reference.mime.clone();
     let generation_bytes = image.bytes;
     let generation_result = generate_and_parse_view_image_observation(
@@ -177,6 +191,7 @@ pub(crate) async fn execute(
     serialize_success(
         NAME,
         &ViewImageResult {
+            cache_hit: false,
             visual_reference,
             observation,
             selected_mode: vision_selection.selected_mode.clone(),
@@ -289,17 +304,21 @@ fn vision_observation_failed(
     selection: &ViewImageVisionSelection,
     error: anyhow::Error,
 ) -> anyhow::Error {
+    let failure = crate::provider::classify_provider_error(&error);
     ToolError::new(
         "vision_observation_failed",
-        format!("ViewImage could not generate a visual observation: {error}"),
+        "ViewImage provider could not generate a visual observation",
     )
+    .with_retryable(failure.disposition == crate::provider::RetryDisposition::Retryable)
     .with_details(json!({
+        "selection": selection,
+        "provider_failure": failure,
+        "provider_error_code": crate::provider::provider_error_code(&error),
         "failure_stage": "provider_generation",
         "selected_mode": selection.selected_mode,
         "selection_reason": selection.selection_reason,
         "vision_provider": selection.vision_provider,
         "vision_model": selection.vision_model,
-        "error": error.to_string(),
     }))
     .with_recovery_hint("configure an OpenAI-compatible vision model with valid credentials, or retry after provider failures are resolved")
     .into()
@@ -311,19 +330,21 @@ fn vision_observation_failed_after_validation_retry(
     initial_response_preview: &str,
     error: anyhow::Error,
 ) -> anyhow::Error {
+    let failure = crate::provider::classify_provider_error(&error);
     ToolError::new(
         "vision_observation_failed",
-        format!(
-            "ViewImage could not generate a visual observation after a response correction retry: {error}"
-        ),
+        "ViewImage provider failed after a response correction retry",
     )
+    .with_retryable(failure.disposition == crate::provider::RetryDisposition::Retryable)
     .with_details(json!({
+        "selection": selection,
+        "provider_failure": failure,
+        "provider_error_code": crate::provider::provider_error_code(&error),
         "failure_stage": "provider_generation",
         "selected_mode": selection.selected_mode,
         "selection_reason": selection.selection_reason,
         "vision_provider": selection.vision_provider,
         "vision_model": selection.vision_model,
-        "error": error.to_string(),
         "initial_validation_error": first_validation_error.to_string(),
         "initial_response_preview": initial_response_preview,
     }))
@@ -454,8 +475,13 @@ fn bounded_response_preview(raw: &str) -> String {
 fn observation_cache_key(
     visual_reference: &ViewImageVisualReference,
     prompt: &str,
+    canonical_route: &str,
+    endpoint_config_identity: &str,
 ) -> ViewImageObservationCacheKey {
     ViewImageObservationCacheKey {
+        canonical_route: canonical_route.to_string(),
+        endpoint_config_identity: endpoint_config_identity.to_string(),
+        contract_version: crate::config::VIEW_IMAGE_CONTRACT_VERSION.to_string(),
         visual_reference_id: visual_reference.id.clone(),
         prompt: prompt.to_string(),
         observation_schema: VISUAL_OBSERVATION_SCHEMA.to_string(),
@@ -491,6 +517,7 @@ fn parse_visual_observation(
         visual_reference_id: visual_reference.id.clone(),
         prompt: prompt.to_string(),
         generated_by: ViewImageGeneratedBy {
+            resolved_model: selection.resolved_model.clone(),
             mode: selection.selected_mode.clone(),
             provider: selection.vision_provider.clone(),
             model: selection.vision_model.clone(),
@@ -1242,7 +1269,12 @@ mod tests {
     fn observation_cache_key_includes_schema_and_generation_policy() {
         let reference = test_visual_reference();
 
-        let key = observation_cache_key(&reference, "What is visible?");
+        let key = observation_cache_key(
+            &reference,
+            "What is visible?",
+            "openai@default/gpt-5.4",
+            "config-a",
+        );
 
         assert_eq!(key.visual_reference_id, reference.id);
         assert_eq!(key.prompt, "What is visible?");
@@ -1251,11 +1283,117 @@ mod tests {
     }
 
     #[test]
+    fn observation_cache_key_is_route_config_and_contract_aware() {
+        let reference = test_visual_reference();
+        let key =
+            observation_cache_key(&reference, "Inspect", "openai@default/vision-a", "config-a");
+        assert_eq!(
+            key,
+            observation_cache_key(&reference, "Inspect", "openai@default/vision-a", "config-a")
+        );
+        assert_ne!(
+            key,
+            observation_cache_key(&reference, "Inspect", "openai@other/vision-a", "config-a")
+        );
+        assert_ne!(
+            key,
+            observation_cache_key(&reference, "Inspect", "openai@default/vision-b", "config-a")
+        );
+        assert_ne!(
+            key,
+            observation_cache_key(&reference, "Inspect", "openai@default/vision-a", "config-b")
+        );
+        let mut older = key.clone();
+        older.contract_version = "view_image.v1".to_string();
+        assert_ne!(key, older);
+    }
+
+    #[test]
+    fn view_image_model_is_optional_and_old_selection_deserializes() {
+        let args: ViewImageArgs =
+            serde_json::from_value(json!({"path": "image.png", "prompt": "Inspect"})).unwrap();
+        assert!(args.model.is_none());
+        let args: ViewImageArgs = serde_json::from_value(
+            json!({"path": "image.png", "prompt": "Inspect", "model": "openai/gpt-5.4"}),
+        )
+        .unwrap();
+        assert_eq!(args.model.as_deref(), Some("openai/gpt-5.4"));
+        let old: ViewImageVisionSelection = serde_json::from_value(json!({
+            "selected_mode": "vision_adapter",
+            "vision_provider": "openai",
+            "vision_model": "gpt-5.4",
+            "selection_reason": "old-result",
+        }))
+        .unwrap();
+        assert!(old.requested_model.is_none());
+        assert!(old.resolved_model.is_none());
+        assert!(old.contract_version.is_none());
+    }
+
+    #[test]
+    fn view_image_provider_failures_preserve_failure_classification() {
+        use crate::provider::{
+            provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
+            RetryDisposition,
+        };
+        for (kind, expected, disposition) in [
+            (
+                ProviderFailureKind::RateLimited,
+                "rate_limited",
+                RetryDisposition::Retryable,
+            ),
+            (
+                ProviderFailureKind::Connection,
+                "connection",
+                RetryDisposition::Retryable,
+            ),
+            (
+                ProviderFailureKind::AuthError,
+                "auth_error",
+                RetryDisposition::FailFast,
+            ),
+            (
+                ProviderFailureKind::ContractError,
+                "contract_error",
+                RetryDisposition::FailFast,
+            ),
+        ] {
+            for correction_retry in [false, true] {
+                let error = provider_transport_error_with_code(
+                    ProviderFailureClassification { kind, disposition },
+                    None, None, None, "provider rejected observation at https://private-endpoint.example/api?token=secret",
+                );
+                let error = if correction_retry {
+                    vision_observation_failed_after_validation_retry(
+                        &test_vision_selection(),
+                        &anyhow!("invalid JSON"),
+                        "invalid response",
+                        error,
+                    )
+                } else {
+                    vision_observation_failed(&test_vision_selection(), error)
+                };
+                let error = ToolError::from_anyhow(&error);
+                assert!(!error.render().contains("private-endpoint"));
+                assert!(!error.render().contains("token=secret"));
+                assert_eq!(error.retryable, disposition == RetryDisposition::Retryable);
+                let details = error.details.unwrap();
+                assert_eq!(details["provider_failure"]["kind"], expected);
+                assert_eq!(
+                    details["selection"]["resolved_model"],
+                    "openai@default/gpt-5.4"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn renders_visual_observation_for_text_only_replay() {
         let mut reference = test_visual_reference();
         reference.workspace_uri = Some("/tmp/image.png".to_string());
         let selection = test_vision_selection();
         let result = ViewImageResult {
+            cache_hit: false,
             visual_reference: reference.clone(),
             observation: ViewImageObservation {
                 kind: "visual_observation".to_string(),
@@ -1263,6 +1401,7 @@ mod tests {
                 visual_reference_id: reference.id.clone(),
                 prompt: "What is visible?".to_string(),
                 generated_by: ViewImageGeneratedBy {
+                    resolved_model: selection.resolved_model.clone(),
                     mode: selection.selected_mode.clone(),
                     provider: selection.vision_provider.clone(),
                     model: selection.vision_model.clone(),
@@ -1280,9 +1419,33 @@ mod tests {
             vision_selection: selection,
             summary_text: Some("generated observation".to_string()),
         };
-        let tool_result = ToolResult::success(NAME, serde_json::to_value(result).unwrap(), None);
-
+        let value = serde_json::to_value(result).unwrap();
+        let tool_result = ToolResult::success(NAME, value.clone(), None);
         let rendered = render_for_model(&tool_result).unwrap();
+        let mut legacy = value;
+        legacy.as_object_mut().unwrap().remove("cache_hit");
+        let selection = legacy["vision_selection"].as_object_mut().unwrap();
+        for field in [
+            "requested_model",
+            "resolved_model",
+            "selection_source",
+            "contract_version",
+        ] {
+            selection.remove(field);
+        }
+        legacy["observation"]["generated_by"]
+            .as_object_mut()
+            .unwrap()
+            .remove("resolved_model");
+        let legacy_result: ViewImageResult = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!legacy_result.cache_hit);
+        assert!(legacy_result
+            .observation
+            .generated_by
+            .resolved_model
+            .is_none());
+        let legacy_tool_result = ToolResult::success(NAME, legacy, None);
+        assert_eq!(render_for_model(&legacy_tool_result).unwrap(), rendered);
 
         assert!(rendered.starts_with("ViewImage visual observation"));
         assert!(rendered.contains("Reference: vis_test"));
@@ -1387,6 +1550,10 @@ mod tests {
 
     fn test_vision_selection() -> ViewImageVisionSelection {
         ViewImageVisionSelection {
+            requested_model: None,
+            resolved_model: Some("openai@default/gpt-5.4".to_string()),
+            selection_source: Some("automatic".to_string()),
+            contract_version: Some(crate::config::VIEW_IMAGE_CONTRACT_VERSION.to_string()),
             selected_mode: ViewImageSelectedMode::VisionAdapter,
             vision_provider: Some("openai".to_string()),
             vision_model: Some("gpt-5.4".to_string()),

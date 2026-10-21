@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::{
     model_discovery::ModelDiscoveryCacheStatus,
+    provider::media::MediaOperation,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
     types::{AuthorityClass, ModelProviderAvailability, ModelProviderEntry, ToolCapabilityFamily},
@@ -18,6 +19,8 @@ pub(crate) const NAME: &str = crate::tool::names::LIST_MODEL_PROVIDERS;
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ListModelProvidersArgs {
+    #[serde(default)]
+    pub(crate) operation: Option<MediaOperation>,
     #[schemars(
         description = "Diagnostic-only. Defaults to false so normal selection paths only see usable providers; set true only to inspect blocked provider options and unavailable reasons."
     )]
@@ -27,6 +30,10 @@ pub(crate) struct ListModelProvidersArgs {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ListModelProvidersResult {
+    #[serde(default)]
+    pub(crate) media_defaults: crate::provider::media::MediaToolDefaults,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation: Option<MediaOperation>,
     pub(crate) include_unavailable: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) model_discovery_cache: Vec<ModelDiscoveryCacheStatus>,
@@ -53,12 +60,16 @@ pub(crate) async fn execute(
     let mut providers = runtime.model_providers().await?;
     let model_discovery_cache = runtime.model_discovery_status().await?;
     if !args.include_unavailable {
-        providers
-            .retain(|provider| provider.availability != ModelProviderAvailability::Unavailable);
+        providers.retain(|provider| match args.operation {
+            Some(operation) => provider.media.selectable_models(operation) > 0,
+            None => provider.availability != ModelProviderAvailability::Unavailable,
+        });
     }
     serialize_success(
         NAME,
         &ListModelProvidersResult {
+            media_defaults: runtime.media_tool_defaults(None).await?,
+            operation: args.operation,
             include_unavailable: args.include_unavailable,
             model_discovery_cache,
             providers,

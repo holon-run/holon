@@ -111,6 +111,62 @@ pub(crate) enum HistoryReprojectionOutcome {
 }
 
 impl EffectivePrompt {
+    pub(crate) fn with_media_tool_defaults(
+        mut self,
+        defaults: &crate::provider::media::MediaToolDefaults,
+        available_tools: &[ToolSpec],
+    ) -> Self {
+        let view = available_tools
+            .iter()
+            .any(|tool| tool.name == crate::tool::names::VIEW_IMAGE);
+        let generate = available_tools
+            .iter()
+            .any(|tool| tool.name == crate::tool::names::GENERATE_IMAGE);
+        if !view && !generate {
+            return self;
+        }
+        let mut lines = vec![
+            "Media model overrides are optional and single-call only; omission preserves configured/default routing. Exact overrides do not silently fall back. Discover operation-specific candidates with ListModelProviders/ListProviderModels.".to_string(),
+        ];
+        if view {
+            lines.push(format!(
+                "ViewImage default candidate: {} (automatic health/availability checks still apply).",
+                defaults.view_image.as_deref().unwrap_or("unavailable; configure or discover a vision route"),
+            ));
+        }
+        if generate {
+            lines.push(format!(
+                "GenerateImage default candidate: {}. Final output_format defaults to PNG; runtime converts locally when needed. Omit size/background/aspect_ratio/resolution to use route-specific defaults; consult the selected model's generation contract before explicitly setting them.",
+                defaults.generate_image.as_deref().unwrap_or("unavailable; configure or select an image generation route"),
+            ));
+        }
+        self.system_sections
+            .retain(|section| section.name != "media_tool_defaults");
+        self.system_sections.push(section(
+            "media_tool_defaults",
+            PromptStability::AgentScoped,
+            lines.join("\n"),
+        ));
+        self.rendered_system_prompt = render_sections(&self.system_sections);
+        let scope = prompt_cache_scope_fingerprint_for_agent(
+            &self.cache_identity.agent_id,
+            &self.execution,
+            &self.system_sections,
+            &self.context_sections,
+            available_tools,
+        );
+        self.cache_identity.prompt_cache_key =
+            prompt_cache_key(&self.cache_identity.agent_id, &scope);
+        self.cache_identity.context_fingerprint = reprojected_context_fingerprint(
+            &self.cache_identity,
+            &self.execution,
+            &self.system_sections,
+            &self.context_sections,
+            available_tools,
+        );
+        self
+    }
+
     pub fn projection_manifest(&self) -> ProjectionManifest {
         manifest_from_effective_prompt(self)
     }
@@ -758,6 +814,22 @@ fn prompt_cache_scope_fingerprint(
     context_sections: &[PromptSection],
     available_tools: &[ToolSpec],
 ) -> String {
+    prompt_cache_scope_fingerprint_for_agent(
+        &session.id,
+        execution,
+        system_sections,
+        context_sections,
+        available_tools,
+    )
+}
+
+fn prompt_cache_scope_fingerprint_for_agent(
+    agent_id: &str,
+    execution: &ExecutionSnapshot,
+    system_sections: &[PromptSection],
+    context_sections: &[PromptSection],
+    available_tools: &[ToolSpec],
+) -> String {
     let stable_system_sections = system_sections
         .iter()
         .filter(|section| section.stability != PromptStability::TurnScoped)
@@ -767,7 +839,7 @@ fn prompt_cache_scope_fingerprint(
         .filter(|section| section.stability != PromptStability::TurnScoped)
         .collect::<Vec<_>>();
     let payload = json!({
-        "agent_id": session.id,
+        "agent_id": agent_id,
         "execution_semantics": execution_semantic_cache_payload(execution),
         "stable_system_sections": stable_system_sections,
         "stable_context_sections": stable_context_sections,
@@ -2861,6 +2933,76 @@ mod tests {
         ));
         assert!(dump.contains("[test_section][id: test-stable-id-123][Stable]"));
         assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped]"));
+    }
+
+    #[test]
+    fn media_defaults_are_tool_scoped_and_refresh_the_cache_prefix() {
+        let prompt = EffectivePrompt {
+            identity: sample_identity(),
+            agent_home: PathBuf::from("/tmp/agent-home"),
+            execution: sample_execution_snapshot(),
+            loaded_agents_md: LoadedAgentsMd::default(),
+            loaded_agent_memory: LoadedAgentMemory::default(),
+            cache_identity: sample_cache_identity(),
+            system_sections: Vec::new(),
+            context_sections: Vec::new(),
+            rendered_system_prompt: String::new(),
+            rendered_context_attachment: String::new(),
+            projection_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            projection_binding: None,
+            projection_turn_id: None,
+            projection_evidence: ProjectionEvidenceIndex::new(),
+            context_plan_evidence: ContextPlanEvidence::default(),
+            recent_turns_reprojection: None,
+        };
+        let mut defaults = crate::provider::media::MediaToolDefaults {
+            view_image: Some("test@default/vision-a".into()),
+            generate_image: Some("test@default/image".into()),
+            output_format: "png".into(),
+        };
+        assert!(prompt
+            .clone()
+            .with_media_tool_defaults(&defaults, &[])
+            .system_sections
+            .is_empty());
+        let tools = crate::tool::ToolRegistry::new(".".into())
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .filter(|tool| tool.name == crate::tool::names::VIEW_IMAGE)
+            .collect::<Vec<_>>();
+        let first = prompt.clone().with_media_tool_defaults(&defaults, &tools);
+        assert!(first
+            .rendered_system_prompt
+            .contains("test@default/vision-a"));
+        assert!(!first.rendered_system_prompt.contains("test@default/image"));
+        assert!(first.context_sections.is_empty());
+        defaults.view_image = Some("test@plan/vision-b".into());
+        let second = first.clone().with_media_tool_defaults(&defaults, &tools);
+        assert_eq!(second.system_sections.len(), 1);
+        assert!(second.rendered_system_prompt.contains("test@plan/vision-b"));
+        assert!(!second
+            .rendered_system_prompt
+            .contains("test@default/vision-a"));
+        assert_ne!(
+            first.cache_identity.prompt_cache_key,
+            second.cache_identity.prompt_cache_key
+        );
+        assert_ne!(
+            first.cache_identity.context_fingerprint,
+            second.cache_identity.context_fingerprint
+        );
+        let repeated = second.clone().with_media_tool_defaults(&defaults, &tools);
+        assert_eq!(
+            second.cache_identity.context_fingerprint,
+            repeated.cache_identity.context_fingerprint
+        );
+        assert_eq!(
+            second.cache_identity.prompt_cache_key,
+            repeated.cache_identity.prompt_cache_key
+        );
     }
 
     #[test]

@@ -241,6 +241,8 @@ async fn live_openai_codex_generates_image_with_responses_tool() -> Result<()> {
         .generate_image(ProviderGenerateImageRequest {
             prompt: "Create a simple flat icon of a blue circle on a white background.".into(),
             size: Some("1024x1024".into()),
+            aspect_ratio: None,
+            resolution: None,
             background: Some("opaque".into()),
             output_format: Some("png".into()),
         })

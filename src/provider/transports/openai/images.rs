@@ -11,36 +11,27 @@ pub(super) fn openai_images_generations_url(base_url: &str) -> String {
     }
 }
 
-/// Wire dialect for an OpenAI-compatible `POST /images/generations` endpoint.
-///
-/// OpenAI and xAI Grok Imagine share the endpoint path and the
-/// `data[].b64_json` response envelope, but their request fields differ: OpenAI
-/// accepts `size`, `background`, and `output_format`, while xAI accepts
-/// `aspect_ratio` and `resolution` and rejects `size`.
+/// The API dialect is an endpoint identity, not a shared OpenAI schema.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum OpenAiImagesDialect {
     OpenAi,
     Xai,
+    Volcengine,
+    Unknown,
 }
 
 pub(super) fn openai_images_dialect(provider_id: &str, base_url: &str) -> OpenAiImagesDialect {
-    if provider_id.eq_ignore_ascii_case("xai") || base_url_host(base_url) == Some("api.x.ai") {
-        OpenAiImagesDialect::Xai
-    } else {
-        OpenAiImagesDialect::OpenAi
+    use crate::provider::image_generation::{image_generation_api, ImageGenerationApi};
+    match image_generation_api(
+        provider_id,
+        crate::config::ProviderTransportKind::OpenAiResponses,
+        base_url,
+    ) {
+        ImageGenerationApi::OpenAiImages => OpenAiImagesDialect::OpenAi,
+        ImageGenerationApi::XaiImages => OpenAiImagesDialect::Xai,
+        ImageGenerationApi::VolcengineImages => OpenAiImagesDialect::Volcengine,
+        _ => OpenAiImagesDialect::Unknown,
     }
-}
-
-/// Extract the host from a base URL without pulling in a full URL parser.
-fn base_url_host(base_url: &str) -> Option<&str> {
-    let after_scheme = base_url.split_once("://").map(|(_, rest)| rest)?;
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    (!host.is_empty()).then_some(host)
 }
 
 pub(super) fn build_images_request(
@@ -48,87 +39,69 @@ pub(super) fn build_images_request(
     model: &str,
     request: &ProviderGenerateImageRequest,
 ) -> Result<Value> {
+    use crate::provider::image_generation::{
+        contract_for_api, ImageGenerationApi, ImageGenerationParameters,
+    };
+    let api = match dialect {
+        OpenAiImagesDialect::OpenAi => ImageGenerationApi::OpenAiImages,
+        OpenAiImagesDialect::Xai => ImageGenerationApi::XaiImages,
+        OpenAiImagesDialect::Volcengine => ImageGenerationApi::VolcengineImages,
+        OpenAiImagesDialect::Unknown => ImageGenerationApi::UnknownImages,
+    };
+    let contract = contract_for_api(api, model, true);
+    // Here output_format is already a native wire option. Delivery conversion
+    // belongs to the runtime, not to this network adapter.
+    if let Some(format) = &request.output_format {
+        if !contract.native_output_formats.contains(format) {
+            return Err(
+                crate::provider::image_generation::ImageGenerationParameterError {
+                    code: "unsupported_image_parameter",
+                    route: model.into(),
+                    field: "output_format".into(),
+                    message:
+                        "native output_format is not confirmed; use runtime delivery conversion"
+                            .into(),
+                    allowed_values: contract.native_output_formats.clone(),
+                    recovery_hint: "omit the native format parameter".into(),
+                }
+                .into(),
+            );
+        }
+    }
+    let parameters = contract.resolve_parameters(&ImageGenerationParameters {
+        size: request.size.clone(),
+        aspect_ratio: request.aspect_ratio.clone(),
+        resolution: request.resolution.clone(),
+        background: request.background.clone(),
+        output_format: request.output_format.clone(),
+    })?;
+    let p = parameters.provider_parameters;
+    let mut body = json!({"model": model, "prompt": request.prompt});
     match dialect {
-        OpenAiImagesDialect::OpenAi => Ok(build_openai_images_request(model, request)),
-        OpenAiImagesDialect::Xai => build_xai_images_request(model, request),
+        OpenAiImagesDialect::OpenAi => {
+            body["n"] = json!(1);
+        }
+        OpenAiImagesDialect::Xai => {
+            body["n"] = json!(1);
+            body["response_format"] = json!("b64_json");
+        }
+        OpenAiImagesDialect::Volcengine => {
+            body["response_format"] = json!("b64_json");
+        }
+        OpenAiImagesDialect::Unknown => {}
     }
-}
-
-/// xAI Grok Imagine image generation request.
-///
-/// xAI rejects OpenAI's `size` argument and exposes `aspect_ratio` plus
-/// `resolution` instead, so the tool's OpenAI-shaped `size` is mapped to the
-/// closest supported ratio at 1k. OpenAI-only options are rejected instead of
-/// being silently dropped, so the caller's intent is never ignored.
-fn build_xai_images_request(model: &str, request: &ProviderGenerateImageRequest) -> Result<Value> {
-    if let Some(background) = non_empty(request.background.as_deref()) {
-        anyhow::bail!(
-            "xAI image generation does not support `background` ({background:?}); omit `background`"
-        );
+    for (field, value) in [
+        ("size", p.size),
+        ("aspect_ratio", p.aspect_ratio),
+        ("resolution", p.resolution),
+        ("background", p.background),
+        ("output_format", p.output_format),
+    ] {
+        if let Some(value) = value {
+            body[field] = json!(value);
+        }
     }
-    if let Some(output_format) = non_empty(request.output_format.as_deref()) {
-        anyhow::bail!(
-            "xAI image generation chooses its own output format and does not support `output_format` ({output_format:?}); omit `output_format`"
-        );
-    }
-    let (aspect_ratio, resolution) = xai_image_size(request.size.as_deref())?;
-    Ok(json!({
-        "model": model,
-        "prompt": request.prompt,
-        "n": 1,
-        "response_format": "b64_json",
-        "aspect_ratio": aspect_ratio,
-        "resolution": resolution,
-    }))
-}
-
-fn xai_image_size(size: Option<&str>) -> Result<(&'static str, &'static str)> {
-    match non_empty(size) {
-        None | Some("1024x1024") => Ok(("1:1", "1k")),
-        Some("1536x1024") => Ok(("3:2", "1k")),
-        Some("1024x1536") => Ok(("2:3", "1k")),
-        Some(other) => anyhow::bail!(
-            "xAI image generation does not support size {other:?}; use 1024x1024, 1536x1024, or 1024x1536"
-        ),
-    }
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-pub(super) fn build_openai_images_request(
-    model: &str,
-    request: &ProviderGenerateImageRequest,
-) -> Value {
-    let mut body = json!({
-        "model": model,
-        "prompt": request.prompt,
-        "n": 1,
-        "response_format": "b64_json",
-    });
-    if let Some(size) = request
-        .size
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        body["size"] = Value::String(size.clone());
-    }
-    if let Some(background) = request
-        .background
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        body["background"] = Value::String(background.clone());
-    }
-    if let Some(output_format) = request
-        .output_format
-        .as_ref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        body["output_format"] = Value::String(output_format.clone());
-    }
-    body
+    Ok(body)
 }
 
 pub(super) fn build_openai_codex_image_generation_request(
@@ -205,7 +178,7 @@ pub(super) async fn send_openai_images_request(
     for (name, value) in headers {
         request = request.header(name, value);
     }
-    let response = send_openai_request(
+    let mut response = send_openai_request(
         request.json(&body),
         "Images request failed",
         "request_send",
@@ -237,10 +210,11 @@ pub(super) async fn send_openai_images_request(
             retry_after,
         ));
     }
-    let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-        Ok(Ok(text)) => text,
-        Ok(Err(error)) => {
-            return Err(classify_reqwest_transport_error_with_trace(
+    let read_body = async {
+        const MAX_RESPONSE_BYTES: usize = 46 * 1024 * 1024;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            classify_reqwest_transport_error_with_trace(
                 "Images response body failed",
                 "response_body",
                 provider_id,
@@ -248,8 +222,19 @@ pub(super) async fn send_openai_images_request(
                 Some(url.as_str()),
                 error,
                 request_trace.as_ref(),
-            ));
+            )
+        })? {
+            if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err(image_receipt_limit("image response exceeds 46 MiB"));
+            }
+            bytes.extend_from_slice(&chunk);
         }
+        String::from_utf8(bytes)
+            .map_err(|error| invalid_response_error("invalid image response encoding", error))
+    };
+    let body = match tokio::time::timeout(response_body_timeout(), read_body).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => return Err(error),
         Err(_elapsed) => {
             return Err(timeout_transport_error_with_trace(
                 "Images response body read timed out",
@@ -283,9 +268,7 @@ pub(super) fn parse_openai_images_response(value: Value) -> Result<Vec<ProviderG
                     "missing b64_json",
                 )
             })?;
-        let bytes = BASE64_STANDARD.decode(b64).map_err(|error| {
-            invalid_response_error("invalid OpenAI Images base64 payload", error)
-        })?;
+        let bytes = decode_generated_image(b64)?;
         // xAI Grok Imagine reports the real media type per item; OpenAI omits
         // it and lets the runtime detect the format from the decoded bytes.
         let mime = item
@@ -317,12 +300,7 @@ pub(super) fn parse_openai_codex_image_generation_response_items(
                 "missing result",
             )
         })?;
-        let bytes = BASE64_STANDARD.decode(b64).map_err(|error| {
-            invalid_response_error(
-                "invalid OpenAI Codex image_generation base64 payload",
-                error,
-            )
-        })?;
+        let bytes = decode_generated_image(b64)?;
         images.push(ProviderGeneratedImage {
             bytes,
             mime: Some("image/png".into()),
@@ -335,6 +313,33 @@ pub(super) fn parse_openai_codex_image_generation_response_items(
         ));
     }
     Ok(images)
+}
+
+fn decode_generated_image(encoded: &str) -> Result<Vec<u8>> {
+    use crate::provider::image_delivery::MAX_IMAGE_BYTES;
+    if encoded.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err(image_receipt_limit(
+            "encoded source exceeds the 32 MiB image limit",
+        ));
+    }
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|error| invalid_response_error("invalid generated image base64 payload", error))?;
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(image_receipt_limit("source exceeds the 32 MiB image limit"));
+    }
+    Ok(bytes)
+}
+
+pub(super) fn image_receipt_limit(message: &str) -> anyhow::Error {
+    crate::tool::ToolError::new("image_resource_limit", message)
+        .with_details(json!({
+            "generation_may_have_succeeded": true,
+            "original_retained": false,
+            "stage": "bounded_provider_response_receipt",
+        }))
+        .with_recovery_hint("do not automatically regenerate; recover the original through the provider if available")
+        .into()
 }
 
 pub(super) async fn send_openai_codex_image_generation_request(

@@ -201,11 +201,11 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     }
 
     let request_started_at = chrono::Utc::now();
-    let deadline = if body
+    let generates_image = body
         .get("tools")
         .and_then(Value::as_array)
-        .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "image_generation"))
-    {
+        .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "image_generation"));
+    let deadline = if generates_image {
         RequestDeadline::HeadersOnly
     } else {
         RequestDeadline::TextStream
@@ -253,8 +253,11 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         ));
     }
 
+    // Allow the bounded image payload in both output-item and terminal events.
+    let image_stream_limit = generates_image.then_some(96 * 1024 * 1024);
     let terminal_response =
-        read_openai_streaming_response(response, request_trace.as_ref()).await?;
+        read_openai_streaming_response(response, request_trace.as_ref(), image_stream_limit)
+            .await?;
     let response_body_completed_at = chrono::Utc::now();
     let parsed = parse_openai_response_with_transport_state(terminal_response)?;
     let parse_completed_at = chrono::Utc::now();

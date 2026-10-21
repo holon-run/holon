@@ -758,6 +758,8 @@ mod tests {
             .generate_image(ProviderGenerateImageRequest {
                 prompt: "holon".into(),
                 size: None,
+                aspect_ratio: None,
+                resolution: None,
                 background: None,
                 output_format: None,
             })

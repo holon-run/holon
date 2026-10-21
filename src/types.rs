@@ -4433,6 +4433,8 @@ pub struct ViewImageVisualReference {
 pub struct ViewImageGeneratedBy {
     pub mode: ViewImageSelectedMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -4465,6 +4467,8 @@ pub struct ViewImageObservation {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ViewImageResult {
     pub visual_reference: ViewImageVisualReference,
+    #[serde(default)]
+    pub cache_hit: bool,
     pub observation: ViewImageObservation,
     pub selected_mode: ViewImageSelectedMode,
     pub vision_selection: ViewImageVisionSelection,
@@ -4500,11 +4504,32 @@ pub struct GenerateImageParameters {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct GeneratedImageSourceReference {
+    pub uri: String,
+    pub sha256: String,
+    pub byte_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_reported_mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -4514,6 +4539,26 @@ pub struct GenerateImageResult {
     pub model: String,
     pub prompt: String,
     pub parameters: GenerateImageParameters,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_succeeded: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_parameters: Option<crate::provider::image_generation::ImageGenerationParameters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_parameters: Option<crate::provider::image_generation::ImageGenerationParameters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_effective_parameters: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_defaults: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_mapping: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<crate::provider::image_generation::ImageGenerationContract>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_images: Vec<GeneratedImageSourceReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversion: Vec<crate::provider::image_delivery::ImageConversionMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }
@@ -4530,6 +4575,14 @@ pub struct ViewImageVisionCandidate {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ViewImageVisionSelection {
     pub selected_mode: ViewImageSelectedMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5853,6 +5906,8 @@ pub struct ResolvedModelAvailability {
     pub policy: ResolvedRuntimeModelPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_capabilities: Option<crate::config::ResolvedModelCapabilities>,
+    #[serde(default)]
+    pub media: crate::provider::media::MediaModelCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5893,6 +5948,8 @@ pub struct ModelProviderEntry {
     pub default_model: Option<String>,
     pub model_count: usize,
     pub discovered_model_count: usize,
+    #[serde(default)]
+    pub media: crate::provider::media::MediaProviderCapabilities,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_notes: Vec<String>,
 }
@@ -5916,6 +5973,8 @@ pub struct ProviderModelEntry {
     pub parameter_contracts: Vec<crate::model_catalog::ModelParameterSupport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_parameters: Vec<String>,
+    #[serde(default)]
+    pub media: crate::provider::media::MediaModelCapabilities,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_notes: Vec<String>,
 }
