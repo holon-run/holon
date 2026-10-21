@@ -20,11 +20,20 @@ export function LoginPage() {
   const pairingStarted = useRef(false);
   const returnTo = useMemo(() => {
     const requested = new URLSearchParams(window.location.search).get("return_to");
-    return requested?.startsWith("/") && !requested.startsWith("//")
-      ? requested
-      : window.location.pathname === "/login"
-        ? "/"
-        : `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const fallback = new URL(
+      window.location.pathname === "/login" ? "/" : window.location.href,
+      window.location.origin,
+    );
+    try {
+      const destination = new URL(
+        requested?.startsWith("/") && !requested.startsWith("//") ? requested : fallback.href,
+        window.location.origin,
+      );
+      if (destination.origin === window.location.origin) return destination;
+    } catch {
+      // Invalid return targets use the same-origin fallback.
+    }
+    return fallback;
   }, []);
 
   useEffect(() => {
@@ -44,7 +53,7 @@ export function LoginPage() {
         if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
         await clearConversationCaches();
         clearStoredRuntimeConnectionToken();
-        window.location.replace(returnTo || "/");
+        window.location.replace(returnTo.href);
       })
       .catch((cause) => {
         setError(cause instanceof Error ? cause.message : t("auth.loginFailed"));
@@ -95,7 +104,7 @@ export function LoginPage() {
       if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
       await clearConversationCaches();
       clearStoredRuntimeConnectionToken();
-      const destination = new URL(returnTo || "/", window.location.origin);
+      const destination = returnTo;
       if (destination.pathname === window.location.pathname && destination.search === window.location.search) {
         // A same-document URL with a fragment does not reload after cookie exchange.
         window.history.replaceState(null, "", destination.href);
@@ -110,7 +119,7 @@ export function LoginPage() {
     }
   }
 
-  const oidcStart = `/api/auth/oidc/start?return_to=${encodeURIComponent(returnTo || "/")}`;
+  const oidcStart = `/api/auth/oidc/start?return_to=${encodeURIComponent(`${returnTo.pathname}${returnTo.search}${returnTo.hash}`)}`;
   const description =
     oidc === false
       ? t("auth.tokenDescription")
