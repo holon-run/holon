@@ -433,6 +433,7 @@ fn build_openai_input_for_contract(
                 prompt,
                 media_type,
                 data_base64,
+                ..
             } => items.push(json!({
                 "type": "message",
                 "role": "user",
