@@ -4746,6 +4746,223 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn agent_list_posture_rows_batches_every_family_per_agent() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+
+        // agent-a: stopped state, queued input, one open and one completed item.
+        let mut stopped = AgentState::new("agent-a");
+        stopped.status = crate::types::AgentStatus::Stopped;
+        db.agent_states().upsert(&stopped)?;
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: "message-1".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        })?;
+        db.work_items().insert_new(&WorkItemRecord::new(
+            "agent-a",
+            "open item",
+            WorkItemState::Open,
+        ))?;
+        let completed = WorkItemRecord::new("agent-a", "done item", WorkItemState::Completed);
+        db.work_items().insert_new(&completed)?;
+
+        // agent-b: active task wait on an open item, a delivered trigger, and
+        // one active continuation suspending a second open item.
+        db.agent_states().upsert(&AgentState::new("agent-b"))?;
+        let waiting_item = WorkItemRecord::new("agent-b", "waiting item", WorkItemState::Open);
+        let suspended_item = WorkItemRecord::new("agent-b", "suspended item", WorkItemState::Open);
+        db.work_items().insert_new(&waiting_item)?;
+        db.work_items().insert_new(&suspended_item)?;
+        db.wait_conditions().upsert(&WaitConditionRecord {
+            id: "wait-1".into(),
+            agent_id: "agent-b".into(),
+            work_item_id: Some(waiting_item.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: Some("task".into()),
+            subject_ref: Some("task-9".into()),
+            waiting_for: "task result".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })?;
+        db.external_triggers()
+            .upsert(&crate::types::ExternalTriggerRecord {
+                external_trigger_id: "trigger-1".into(),
+                target_agent_id: "agent-b".into(),
+                scope: crate::types::ExternalTriggerScope::Agent,
+                delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+                token: None,
+                token_hash: "hash".into(),
+                status: crate::types::ExternalTriggerStatus::Active,
+                created_at: now,
+                revoked_at: None,
+                last_delivered_at: Some(now),
+                delivery_count: 1,
+            })?;
+        db.work_item_continuations().upsert(
+            &crate::domain::work_item::WorkItemContinuationFrame::new_on_completed(
+                "agent-b",
+                &suspended_item.id,
+                &waiting_item.id,
+                None,
+            ),
+        )?;
+
+        // agent-c has no rows in any family; agent-d was never requested to
+        // exist at all.
+        let requested = ["agent-a", "agent-b", "agent-c", "agent-d"]
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        let rows = db.agent_list_posture_rows(&requested)?;
+        assert_eq!(
+            rows.rows
+                .iter()
+                .map(|row| row.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent-a", "agent-b", "agent-c", "agent-d"]
+        );
+
+        let agent_a = &rows.rows[0];
+        assert!(agent_a.has_queued_input);
+        assert!(agent_a.agent_state_json.is_some());
+        let facts_a = agent_a.facts.as_ref().ok().expect("agent-a facts decode");
+        assert_eq!(facts_a.open_work_items.len(), 1);
+        assert_eq!(facts_a.non_open_work_items.len(), 1);
+        assert!(facts_a.has_queued_input);
+
+        let agent_b = &rows.rows[1];
+        assert!(!agent_b.has_queued_input);
+        let facts_b = agent_b.facts.as_ref().ok().expect("agent-b facts decode");
+        assert_eq!(facts_b.open_work_items.len(), 2);
+        assert_eq!(facts_b.active_wait_conditions.len(), 1);
+        assert_eq!(
+            facts_b.active_wait_conditions[0].subject_ref.as_deref(),
+            Some("task-9")
+        );
+        assert_eq!(facts_b.external_triggers.len(), 1);
+        assert_eq!(facts_b.active_continuations.len(), 1);
+        assert_eq!(
+            facts_b.active_continuations[0].suspended_work_item_id,
+            suspended_item.id
+        );
+
+        let agent_c = &rows.rows[2];
+        assert!(!agent_c.has_queued_input);
+        assert!(agent_c.agent_state_json.is_none());
+        let facts_c = agent_c.facts.as_ref().ok().expect("agent-c empty facts");
+        assert!(facts_c.open_work_items.is_empty());
+        assert!(facts_c.non_open_work_items.is_empty());
+        assert!(facts_c.active_wait_conditions.is_empty());
+        assert!(facts_c.external_triggers.is_empty());
+        assert!(facts_c.active_continuations.is_empty());
+
+        assert!(rows.rows[3].facts.is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn agent_list_posture_rows_bounds_terminal_window_per_agent() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        let window = crate::storage::read_models::WORK_QUEUE_NON_OPEN_WINDOW;
+        for index in 0..(window + 3) {
+            let mut record =
+                WorkItemRecord::new("agent-a", "terminal item", WorkItemState::Completed);
+            record.created_at = Utc::now() + chrono::Duration::milliseconds(index as i64);
+            record.updated_at = record.created_at;
+            db.work_items().insert_new(&record)?;
+        }
+        let rows = db.agent_list_posture_rows(&["agent-a".into()])?;
+        let facts = rows.rows[0].facts.as_ref().ok().expect("facts decode");
+        assert_eq!(facts.non_open_work_items.len(), window);
+        assert_eq!(facts.open_work_items.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_list_posture_rows_degrades_only_the_agent_with_corrupt_facts() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        for agent_id in ["agent-a", "agent-b"] {
+            db.agent_states().upsert(&AgentState::new(agent_id))?;
+            db.work_items().insert_new(&WorkItemRecord::new(
+                agent_id,
+                "open item",
+                WorkItemState::Open,
+            ))?;
+        }
+        let connection = db.connection()?;
+        connection.execute(
+            "UPDATE work_items SET payload_json = '{not json' WHERE agent_id = 'agent-b'",
+            [],
+        )?;
+        drop(connection);
+
+        let rows = db.agent_list_posture_rows(&["agent-a".into(), "agent-b".into()])?;
+        assert!(rows.rows[0].facts.is_ok());
+        assert!(rows.rows[1].facts.is_err());
+        // The corrupt member keeps its committed state payload so assembly
+        // can still serve the stopped-placeholder semantics.
+        assert!(rows.rows[1].agent_state_json.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn agent_list_posture_rows_opens_one_connection_per_request() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let agent_ids = (0..12)
+            .map(|index| format!("agent-{index}"))
+            .collect::<Vec<_>>();
+        for agent_id in &agent_ids {
+            db.agent_states().upsert(&AgentState::new(agent_id))?;
+            db.work_items().insert_new(&WorkItemRecord::new(
+                agent_id,
+                "open item",
+                WorkItemState::Open,
+            ))?;
+        }
+
+        let connection_open_count = || {
+            crate::diagnostics::performance_snapshot()
+                .db
+                .iter()
+                .find(|metric| metric.name == "db.connection.open")
+                .map(|metric| metric.count)
+                .unwrap_or(0)
+        };
+        let before = connection_open_count();
+        let iterations = 20;
+        for _ in 0..iterations {
+            db.agent_list_posture_rows(&agent_ids)?;
+        }
+        let opened = connection_open_count().saturating_sub(before);
+        // The per-agent path opens ~7 connections per non-stopped agent
+        // (~1680 across the loop); the batch read must stay O(1) per
+        // request. The slack only absorbs unrelated parallel-test noise.
+        assert!(
+            opened <= iterations * 5,
+            "expected O(1) connection opens per batch read, got {opened}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn wait_terminal_state_rejects_late_updates_and_allows_identical_retries() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
