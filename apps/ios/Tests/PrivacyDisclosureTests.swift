@@ -25,10 +25,14 @@ final class PrivacyDisclosureTests: XCTestCase {
         let text = PrivacyDisclosure.text(for: url)
         XCTAssertTrue(text.contains("runtime.example.com"),
                       "Third-party disclosure must name the connected host")
+        XCTAssertTrue(text.contains("administrator") || text.contains("管理员"),
+                      "Third-party disclosure must keep the generic administrator wording")
     }
 
     func testMissingURLFallsBackToGenericDisclosure() {
-        XCTAssertFalse(PrivacyDisclosure.text(for: nil).isEmpty)
+        let fallback = PrivacyDisclosure.text(for: nil)
+        XCTAssertTrue(fallback.contains("administrator") || fallback.contains("管理员"),
+                      "Fallback must use the generic runtime-administrator disclosure")
         let invalid = URL(string: "/relative")!
         XCTAssertFalse(PrivacyDisclosure.text(for: invalid).isEmpty)
     }
