@@ -295,6 +295,36 @@ class HolonViewModelTest {
     }
 
     @Test
+    fun `first transient failure keeps online and the second consecutive one flips offline`() {
+        val tracker = TransientNetworkFailureTracker()
+
+        assertFalse(tracker.recordFailure())
+        assertTrue(tracker.recordFailure())
+    }
+
+    @Test
+    fun `any successful transport resets the transient failure streak`() {
+        val tracker = TransientNetworkFailureTracker()
+        assertFalse(tracker.recordFailure())
+        assertTrue(tracker.recordFailure())
+
+        tracker.reset()
+
+        assertFalse(tracker.recordFailure())
+    }
+
+    @Test
+    fun `resume from offline presets one failure so one new failure reconfirms offline`() {
+        val tracker = TransientNetworkFailureTracker()
+        tracker.markResumedOffline()
+
+        assertTrue(tracker.recordFailure())
+
+        tracker.reset()
+        assertFalse(tracker.recordFailure())
+    }
+
+    @Test
     fun `stale workspace browse request cannot update selected workspace`() {
         val oldRequest = WorkspaceBrowseRequest(1, workspace.workspaceId, workspace.executionRootId, "")
         val currentRequest = WorkspaceBrowseRequest(2, workspace.workspaceId, workspace.executionRootId, "apps")
