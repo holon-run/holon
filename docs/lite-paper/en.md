@@ -77,17 +77,17 @@ Self-hosting means Holon and your workspaces run entirely on your designated inf
 
 **Ideal for: solo developers and engineering teams dedicated to maintaining continuous code quality.**
 
-Create an assistant from the code review template, attach review skills and your repository workspace, and assign it an ongoing role. You can start by handing it a single PR manually, then connect GitHub Webhooks once the workflow is proven:
+Create an assistant from the code review template, attach review skills and your workspace, and assign it an ongoing role. Start with a single manual PR, then connect GitHub Webhooks once proven:
 
 > Review this repository's pull requests (PRs), focusing on compatibility and regressions. Follow up when code changes or automated checks (CI) finish. Ask me about disputed trade-offs. Keep a conclusion and supporting evidence for each PR.
 
-Each review delivery explicitly outlines: issues detected, underlying evidence, test commands run, and trade-offs requiring your decision. Once events are connected, CI completion notifies the assistant via Webhook. If tests fail, it investigates root causes; if CI passes, it verifies whether all outstanding review remarks have been resolved.
+Each review delivery outlines detected issues, evidence, commands run, and pending trade-offs. Once wired to Webhooks, CI completion triggers the assistant automatically: it investigates failing checks or verifies that outstanding remarks are resolved.
 
 ![A new PR, code changes, and CI results prompt successive reviews. Findings and progress stay in the same work item through waiting, re-review, and delivery.](assets/pr-review-en.png)
 
-**Every PR gets an independent, auditable WorkItem.** When new commits are pushed, the assistant re-checks previous remarks; while waiting for updates or CI runs, the item remains parked; once all conditions are satisfied, it submits a final brief.
+**Every PR gets an independent, auditable WorkItem.** When new commits land, the assistant re-checks previous remarks; while waiting for updates or CI runs, the item stays parked; once all conditions are satisfied, it submits a final brief.
 
-**Review conclusions inform decisions—they never bypass human judgment.** The assistant spots regressions, runs test suites, and collects evidence, while merge authority remains entirely in your hands. You can close your terminal at any time and inspect the overview from the browser later.
+**Review conclusions inform decisions—never bypass human judgment.** The assistant spots regressions and collects test evidence, while merge authority stays in your hands. Close your terminal anytime and check the overview from your browser later.
 
 *Workflow illustration. Automated GitHub integration requires tool setup, API credentials, and Webhook ingress. You can also supply PR events manually. Publishing reviews or merging code requires explicit authorization.*
 
@@ -113,29 +113,19 @@ You can also set up periodic patrol timers: which fixes are ready for testing, w
 
 Install Holon, configure a model provider, and launch the daemon. Successfully deliver one concrete task before layering on continuous responsibilities.
 
-**1. Instantiate from a template.** Choose a built-in Agent Template to inherit pre-configured roles and standard methodologies.
+**1. Instantiate from a template.** Select an Agent Template to inherit pre-configured roles and methods.
 
-**2. Establish scope and boundaries.** State what it owns, what artifacts it delivers, and when it must escalate. Attach necessary skills and restrict accessible workspaces.
+**2. Establish scope and boundaries.** State what it owns, deliverables, and escalation rules. Attach skills and restrict workspaces.
 
-**3. Assign the initial task.** Provide concrete objectives, reference inputs, and acceptance criteria. As it runs, monitor progress on the dashboard, supply extra clues, and decide edge cases.
+**3. Assign the initial task.** Provide objectives, inputs, and criteria. Track progress on the dashboard, supply clues, and decide edge cases.
 
-**4. Wire up event-driven triggers.** Connect Webhooks, platform adapters, or schedule recurring timers; define which external signals require action and when to notify you.
+**4. Wire up event triggers.** Connect Webhooks, platform adapters, or timers; define which external signals require action.
 
 ![The English Holon Web workbench: choose an agent, read updates and progress, inspect plans and waiting reasons, and add information.](assets/web-gui-review-en.png)
 
 *Workbench demonstration interface. Select agents on the left, follow real-time execution in the center, inspect plans and waiting states on the right, and supply input below. The terminal TUI connects to the same daemon.*
 
-### Choose how to connect
-
-**Web dashboard and terminal TUI.** The release binary bundles an embedded Web GUI. A lightweight TUI connects to the same daemon to monitor active agents; CLI and HTTP APIs provide programmatic access.
-
-**Mobile companion clients.** iOS and Android apps connect to a running Holon host as lightweight remote clients; they do not run the engine on your phone. Configure network access and authentication prior to connecting. Beta access:
-
-- [iOS · TestFlight](https://testflight.apple.com/join/XkTfN12S)
-- [Android · Join testing](https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0): Google Group testing instructions; access may require membership or permission.
-- [Android APK downloads](https://github.com/holon-run/holon/releases): choose an APK from a release; direct installation requires allowing that installation source.
-
-Configure models, tools, and workspaces before delegating tasks. For continuous follow-through, keep your host machine and Holon daemon running. Shared team hosting does not imply hard sandbox isolation between agents; define file and tool permissions explicitly.
+Holon includes an embedded Web GUI and lightweight TUI, plus CLI and HTTP APIs. iOS ([TestFlight beta](https://testflight.apple.com/join/XkTfN12S)) and Android ([testing guide](https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0) · [APK download](https://github.com/holon-run/holon/releases)) companion clients connect remotely to your running node. Configure models, tools, and workspaces before delegating tasks; keep your host machine and daemon running for ongoing work.
 
 **Get started:** [Installation and quick start](../website/getting-started/README.md) · [Source code](https://github.com/holon-run/holon) · [Documentation](https://holon.run)
 

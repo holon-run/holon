@@ -125,17 +125,7 @@ Holon 将助手的专业角色、工作方法与具体推进的任务清晰解�
 
 *工作台演示界面。左侧切换不同 Agent，中间查看消息往来与实时执行流，右侧查看目标规划、待办与等待状态，底部可随时补充指令。终端 TUI 同样支持连接该后台。*
 
-### 选择访问方式
-
-**网页与终端。** 二进制分发包内置 Web 界面，也能通过轻量 TUI 连入同一后台，查看已有助手与工作进展；脚本化自动化集成可通过 CLI 与 HTTP API 调用。
-
-**移动端连接。** iOS 与 Android 客户端作为轻量前端连接运行中的 Holon 节点，并非在手机上跑后端服务。远程访问需事先配置网络连接与认证，测试版入口如下：
-
-- [iOS · TestFlight](https://testflight.apple.com/join/XkTfN12S)
-- [Android · 加入测试](https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0)：Google Group 测试说明，访问可能需要加入群组或取得权限。
-- [Android APK 下载](https://github.com/holon-run/holon/releases)：在发布页选择 APK；直接安装需允许相应安装来源。
-
-使用前请配置好模型提供商、工具与工作区；持续推进工作期间，请保持宿主机器与后台进程运行。团队共享部署并不等同于助手间存在强沙箱隔离，仍建议按需清晰划分文件与系统权限。
+Holon 内置 Web 界面与轻量 TUI，支持 CLI 与 HTTP API 接入；iOS（[TestFlight 测试](https://testflight.apple.com/join/XkTfN12S)）与 Android（[加入测试说明](https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0) · [APK 下载](https://github.com/holon-run/holon/releases)）可作为远程前端连接运行中的节点。使用前请配置好模型服务、工具与工作区；持续跟进任务期间，请保持宿主机器与后台进程运行。
 
 **开始使用：** [安装与快速开始](../website/zh-CN/getting-started/README.md) · [项目源码](https://github.com/holon-run/holon) · [文档](https://holon.run)
 
