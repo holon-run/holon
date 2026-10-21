@@ -654,6 +654,33 @@ unchanged.
 
 ## Limits
 
+### Optional historical attachments at request preflight
+
+Markdown originals attached from the runtime-owned `recent_turns`,
+`relevant_episode_memory`, and `current_work_item_process_trace` sections are
+optional historical enhancements. This classification uses the section id,
+not text claiming to be historical or current. Current-input sections, unknown
+sections, and explicit `ViewImage` adapter requests remain required.
+
+When an Anthropic-compatible request exceeds its actual route/model context
+budget before HTTP send, the transport may omit all optional historical image
+attachments and rebuild the complete payload once. It recomputes both the output
+allowance and context preflight; a request that still exceeds the budget fails
+without sending. Required images are never removed by this downgrade.
+
+Omission preserves the original text, references, and any observations still
+present in the effective context. A short model-visible notice says the original
+images were not attached and existing observations may be used *if present*;
+it does not claim that an earlier observation exists or substitutes for a new
+inspection of image details. The model can explicitly request `ViewImage` when
+needed. This path neither calls `ViewImage` nor switches providers automatically.
+
+This downgrade does not change the existing byte-based token estimate, establish
+request-wide image/byte limits or deduplication, or promise model-specific visual
+token accounting. The limits proposed below are separate from this downgrade.
+
+### Proposed image-processing limits
+
 The first implementation should use conservative hard limits. Image input can
 inflate substantially when converted to provider-native payloads such as data
 URLs, where base64 adds roughly one third to the encoded byte size. Provider

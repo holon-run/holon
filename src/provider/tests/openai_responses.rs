@@ -771,6 +771,7 @@ async fn openai_responses_lowers_user_image_to_input_image() {
                 prompt: "What is visible?".to_string(),
                 media_type: "image/png".to_string(),
                 data_base64: "iVBORw0KGgo=".to_string(),
+                optional_history: false,
             }],
             Vec::new(),
         ))

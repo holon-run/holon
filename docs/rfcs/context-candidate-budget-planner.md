@@ -38,6 +38,13 @@ record why a considered section was kept, compacted, truncated, or omitted.
 - Record typed budget decisions for every considered candidate.
 - Preserve the existing total context hard cap and provider wire protocol.
 
+Image attachments added after section selection have a separate request-time
+boundary: known historical-section originals are optional enhancements, while
+the selected text and references remain intact. An Anthropic-compatible
+context-overflow preflight can omit those originals and rebuild/recheck once,
+without dropping current-input images or claiming missing observations. See
+[optional historical attachments](./visual-observation-and-image-view.md#optional-historical-attachments-at-request-preflight).
+
 ## 3. Non-Goals
 
 - Do not replace all context domain payloads with one large enum.

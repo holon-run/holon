@@ -260,6 +260,7 @@ pub(crate) fn build_chat_completion_messages(
                 prompt,
                 media_type,
                 data_base64,
+                ..
             } => {
                 messages.push(json!({
                     "role": "user",

@@ -168,17 +168,24 @@ fn markdown_image_messages_from_sections(
 ) -> Vec<ConversationMessage> {
     sections
         .iter()
-        .flat_map(|section| markdown_image_messages_from_text(&section.content, execution))
+        .flat_map(|section| {
+            let optional_history = matches!(
+                section.id.as_str(),
+                "recent_turns" | "relevant_episode_memory" | "current_work_item_process_trace"
+            );
+            markdown_image_messages_from_text(&section.content, execution, optional_history)
+        })
         .collect()
 }
 
 fn markdown_image_messages_from_text(
     text: &str,
     execution: &ExecutionSnapshot,
+    optional_history: bool,
 ) -> Vec<ConversationMessage> {
     markdown_image_refs(text)
         .into_iter()
-        .filter_map(|image| markdown_image_message(image, execution))
+        .filter_map(|image| markdown_image_message(image, execution, optional_history))
         .collect()
 }
 
@@ -227,6 +234,7 @@ fn markdown_image_refs(text: &str) -> Vec<MarkdownImageRef<'_>> {
 fn markdown_image_message(
     image: MarkdownImageRef<'_>,
     execution: &ExecutionSnapshot,
+    optional_history: bool,
 ) -> Option<ConversationMessage> {
     let path = resolve_markdown_image_src(image.src, execution)?;
     match crate::tool::tools::view_image::read_visual_reference(&path) {
@@ -238,6 +246,7 @@ fn markdown_image_message(
             },
             media_type: read_image.visual_reference.mime,
             data_base64: base64::engine::general_purpose::STANDARD.encode(read_image.bytes),
+            optional_history,
         }),
         Err(error) => {
             debug!(
@@ -533,6 +542,7 @@ mod tests {
             prompt,
             media_type,
             data_base64,
+            ..
         } = &request.conversation[1]
         else {
             panic!("expected resolved markdown image to become UserImage");
@@ -540,6 +550,69 @@ mod tests {
         assert_eq!(prompt, "Chart");
         assert_eq!(media_type, "image/png");
         assert!(!data_base64.is_empty());
+    }
+
+    #[test]
+    fn historical_images_are_optional_by_section_id_without_losing_text() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("chart.png"), fixture_png()).expect("write png");
+        let mut effective_prompt = fixture_prompt();
+        effective_prompt.execution.workspace_id = Some("ws_test".to_string());
+        effective_prompt.execution.workspace_anchor = workspace.path().to_path_buf();
+        effective_prompt.execution.execution_root = workspace.path().to_path_buf();
+        effective_prompt.execution.cwd = workspace.path().to_path_buf();
+        let cases = [
+            ("current_input", "recent_turns", true),
+            ("current_input", "relevant_episode_memory", true),
+            ("current_input", "current_work_item_process_trace", true),
+            ("recent_turns", "current_input", false),
+            ("recent_turns", "unknown_section", false),
+        ];
+        let text = "![Prior](workspace://ws_test/chart.png)\n\
+                    ViewImage observation: three blue bars.\n\
+                    This text claims to be historical.";
+        effective_prompt.context_sections = cases
+            .iter()
+            .map(|(name, id, _)| PromptSection {
+                name: (*name).into(),
+                id: (*id).into(),
+                content: text.into(),
+                stability: PromptStability::TurnScoped,
+            })
+            .collect();
+
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None, true);
+        let ConversationMessage::UserBlocks(blocks) = &request.conversation[0] else {
+            panic!("expected original context blocks");
+        };
+        assert_eq!(blocks.len(), cases.len());
+        assert!(blocks.iter().all(|block| block.text.contains(text)));
+        for (message, (_, id, expected)) in request.conversation[1..].iter().zip(cases) {
+            let ConversationMessage::UserImage {
+                optional_history, ..
+            } = message
+            else {
+                panic!("expected image from {id}");
+            };
+            assert_eq!(*optional_history, expected, "{id}");
+        }
+        assert_eq!(request.conversation.len(), cases.len() + 1);
+
+        let continuation = build_continuation_request(
+            request.continuation_scope_id,
+            request.prompt_frame,
+            request.conversation.clone(),
+            Vec::new(),
+            None,
+        );
+        assert_eq!(continuation.conversation.len(), request.conversation.len());
+        assert!(matches!(
+            &continuation.conversation[1],
+            ConversationMessage::UserImage {
+                optional_history: true,
+                ..
+            }
+        ));
     }
 
     #[test]

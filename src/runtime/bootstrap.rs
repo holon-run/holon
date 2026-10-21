@@ -1290,6 +1290,7 @@ impl RuntimeHandle {
                 prompt: prompt.to_string(),
                 media_type: media_type.to_string(),
                 data_base64: BASE64_STANDARD.encode(bytes),
+                optional_history: false,
             }],
             Vec::new(),
         );

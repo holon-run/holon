@@ -380,14 +380,23 @@ fn context_budget_overflow_error(
     )
 }
 
-#[async_trait]
-impl AgentProvider for AnthropicProvider {
-    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+struct PreparedAnthropicRequest {
+    payload: Value,
+    effective_output_tokens: u32,
+    wire_conversation: Vec<ConversationMessage>,
+    rolling_cache_marker: Option<(usize, usize)>,
+}
+
+impl AnthropicProvider {
+    fn prepare_request_payload(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> Result<PreparedAnthropicRequest> {
         let cache_strategy = self.context_management.cache_strategy;
         let cache_control = self.context_management.cache_capabilities.cache_control;
-        let system = build_anthropic_system(&request, cache_strategy, cache_control);
+        let system = build_anthropic_system(request, cache_strategy, cache_control);
         let mark_context = can_mark_turn_scoped_context(&system, cache_control);
-        let wire_conversation = build_anthropic_wire_conversation(&request, mark_context);
+        let wire_conversation = build_anthropic_wire_conversation(request, mark_context);
         let rolling_cache_marker =
             rolling_conversation_cache_marker(&wire_conversation, cache_strategy, cache_control);
         let mut messages =
@@ -395,7 +404,7 @@ impl AgentProvider for AnthropicProvider {
         if needs_placeholder_user_text(&self.route_provider) {
             ensure_placeholder_user_text(&mut messages);
         }
-        let response_format_tool_choice = anthropic_response_format_tool_choice(&request);
+        let response_format_tool_choice = anthropic_response_format_tool_choice(request);
         let (thinking, output_config) = anthropic_reasoning_controls(
             &self.route_provider,
             &self.model,
@@ -411,10 +420,10 @@ impl AgentProvider for AnthropicProvider {
             stream: true,
             system,
             messages,
-            tools: build_anthropic_tools(&request),
+            tools: build_anthropic_tools(request),
             tool_choice: response_format_tool_choice,
             betas: self.context_management.betas.clone(),
-            metadata: build_anthropic_metadata(&request, cache_strategy, cache_control),
+            metadata: build_anthropic_metadata(request, cache_strategy, cache_control),
             temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache
                 && cache_control)
                 .then_some(1.0),
@@ -441,19 +450,78 @@ impl AgentProvider for AnthropicProvider {
             );
         }
 
+        Ok(PreparedAnthropicRequest {
+            payload: request_payload,
+            effective_output_tokens: effective_output,
+            wire_conversation,
+            rolling_cache_marker,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for AnthropicProvider {
+    async fn complete_turn(
+        &self,
+        mut request: ProviderTurnRequest,
+    ) -> Result<ProviderTurnResponse> {
+        let mut prepared = self.prepare_request_payload(&request)?;
+        let mut overflow = estimate_context_budget(
+            self.context_window_tokens,
+            prepared.effective_output_tokens,
+            &prepared.payload,
+            &["max_tokens"],
+        )
+        .filter(|budget| budget.overflow_tokens() > 0);
+        if overflow.is_some() {
+            let first_optional_image = request.conversation.iter().position(|message| {
+                matches!(
+                    message,
+                    ConversationMessage::UserImage {
+                        optional_history: true,
+                        ..
+                    }
+                )
+            });
+            if let Some(index) = first_optional_image {
+                request.conversation.retain(|message| {
+                    !matches!(
+                        message,
+                        ConversationMessage::UserImage {
+                            optional_history: true,
+                            ..
+                        }
+                    )
+                });
+                // Replace the first omitted image without moving the dynamic time
+                // tail or introducing a new rolling cache breakpoint.
+                request.conversation.insert(
+                    index,
+                    ConversationMessage::UserBlocks(vec![PromptContentBlock {
+                        text: "Historical original images were omitted to fit the context budget. \
+                               Use prior textual observations only if present in this context; \
+                               request ViewImage explicitly if image details need inspection."
+                            .to_string(),
+                        stability: PromptStability::TurnScoped,
+                        cache_breakpoint: false,
+                    }]),
+                );
+                prepared = self.prepare_request_payload(&request)?;
+                overflow = estimate_context_budget(
+                    self.context_window_tokens,
+                    prepared.effective_output_tokens,
+                    &prepared.payload,
+                    &["max_tokens"],
+                )
+                .filter(|budget| budget.overflow_tokens() > 0);
+            }
+        }
         let url = format!("{}/v1/messages", self.base_url);
         let model_ref = format!(
             "{}@{}/{}",
             self.route_provider, self.route_endpoint, self.model
         );
-        if let Some(budget) = estimate_context_budget(
-            self.context_window_tokens,
-            effective_output,
-            &request_payload,
-            &["max_tokens"],
-        )
-        .filter(|budget| budget.overflow_tokens() > 0)
-        {
+        if let Some(budget) = overflow {
             return Err(context_budget_overflow_error(
                 &self.route_provider,
                 &model_ref,
@@ -461,6 +529,13 @@ impl AgentProvider for AnthropicProvider {
                 budget,
             ));
         }
+        let PreparedAnthropicRequest {
+            payload: request_payload,
+            wire_conversation,
+            rolling_cache_marker,
+            ..
+        } = prepared;
+        let cache_strategy = self.context_management.cache_strategy;
         let mut headers = vec![
             ("content-type", "application/json".to_string()),
             ("anthropic-version", "2023-06-01".to_string()),
@@ -2020,6 +2095,7 @@ fn conversation_message_to_api(
             prompt,
             media_type,
             data_base64,
+            ..
         } => ApiMessage {
             role: "user",
             content: Value::Array(
@@ -3980,6 +4056,7 @@ mod tests {
             prompt: "Describe the visible error dialog.".to_string(),
             media_type: "image/png".to_string(),
             data_base64: "iVBORw0KGgo=".to_string(),
+            optional_history: false,
         }];
 
         let messages = build_anthropic_messages(

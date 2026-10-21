@@ -1433,3 +1433,178 @@ async fn anthropic_context_budget_overflow_fails_before_http_send() {
     assert!(!serialized.contains("anthropic-token"));
     assert!(!serialized.contains("query-secret"));
 }
+
+async fn history_image_preflight(
+    optional_history: bool,
+    image_chars: usize,
+    context: &str,
+    cache_strategy: Option<AnthropicCacheStrategy>,
+) -> (anyhow::Result<ProviderTurnResponse>, Vec<Value>) {
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let captured = bodies.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/qwen3.8:latest",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    let config = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap();
+    config.base_url = base_url;
+    if let Some(strategy) = cache_strategy {
+        config.context_management.cache_strategy = strategy;
+        config.context_management.cache_capabilities.cache_control = true;
+    }
+    let provider = AnthropicProvider::from_runtime_config_with_context_window(
+        config,
+        "qwen3.8:latest",
+        8192,
+        Some(8192),
+        &fixture.config.home_dir,
+        false,
+    )
+    .unwrap();
+    let mut request = ProviderTurnRequest::plain(
+        "Inspect the current image; use prior observations when relevant.",
+        vec![
+            ConversationMessage::UserText(context.into()),
+            ConversationMessage::UserImage {
+                prompt: "historical image".into(),
+                media_type: "image/png".into(),
+                data_base64: "A".repeat(image_chars),
+                optional_history,
+            },
+            ConversationMessage::UserImage {
+                prompt: "current image".into(),
+                media_type: "image/png".into(),
+                data_base64: "Y3VycmVudA==".into(),
+                optional_history: false,
+            },
+        ],
+        Vec::new(),
+    );
+    request
+        .conversation
+        .push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
+            text: "current_time: 2026-10-21T04:30:00+00:00\ntimezone: UTC".into(),
+            stability: crate::prompt::PromptStability::TurnScoped,
+            cache_breakpoint: false,
+        }]));
+    let result = provider.complete_turn(request).await;
+    let captured = bodies.lock().unwrap().clone();
+    (result, captured)
+}
+
+#[tokio::test]
+async fn anthropic_optional_history_image_overflow_preserves_observation_and_current_image() {
+    let context = "Reference: ![prior](workspace://ws_test/prior.png)\n\
+        ViewImage observation: the prior chart has three blue bars.";
+    let (result, bodies) = history_image_preflight(true, 40_000, context, None).await;
+    result.expect("optional historical images should not cause a context rejection");
+    assert_eq!(bodies.len(), 1, "only the checked, reduced request is sent");
+    let messages = bodies[0]["messages"].to_string();
+    assert!(messages.contains(context.split('\n').next().unwrap()));
+    assert!(messages.contains("the prior chart has three blue bars"));
+    assert!(messages.contains("Historical original images were omitted"));
+    assert!(messages.contains("current image"));
+    assert!(messages.contains("Y3VycmVudA=="));
+    assert!(!messages.contains(&"A".repeat(100)));
+    assert_eq!(messages.matches("\"type\":\"image\"").count(), 1);
+    assert!(
+        bodies[0]["max_tokens"].as_u64().unwrap() > 1,
+        "output allowance must also be recomputed after omitting history images"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_required_image_overflow_still_fails_before_http_send() {
+    let (result, bodies) =
+        history_image_preflight(false, 40_000, "Inspect both images.", None).await;
+    let error = result.expect_err("required images must not be silently omitted");
+    assert_eq!(provider_error_code(&error), Some("context_length_exceeded"));
+    assert!(bodies.is_empty());
+}
+
+#[tokio::test]
+async fn anthropic_optional_history_image_omission_rechecks_text_budget() {
+    let (result, bodies) = history_image_preflight(true, 40_000, &"text ".repeat(8000), None).await;
+    let error = result.expect_err("removing images must not bypass the text budget");
+    assert_eq!(provider_error_code(&error), Some("context_length_exceeded"));
+    assert!(bodies.is_empty());
+}
+
+#[tokio::test]
+async fn anthropic_optional_history_image_under_budget_is_unchanged() {
+    let (result, bodies) = history_image_preflight(true, 32, "Original reference.", None).await;
+    result.unwrap();
+    assert_eq!(bodies.len(), 1);
+    let messages = bodies[0]["messages"].to_string();
+    assert_eq!(messages.matches("\"type\":\"image\"").count(), 2);
+    assert!(!messages.contains("Historical original images were omitted"));
+}
+
+#[tokio::test]
+async fn anthropic_optional_history_image_omission_does_not_claim_an_observation() {
+    let (result, bodies) =
+        history_image_preflight(true, 40_000, "Only an old reference.", None).await;
+    result.unwrap();
+    let messages = bodies[0]["messages"].to_string();
+    assert!(messages.contains("Only an old reference."));
+    assert!(messages.contains("if present in this context"));
+}
+
+#[tokio::test]
+async fn anthropic_optional_history_image_omission_preserves_time_cache_boundary() {
+    for strategy in [
+        AnthropicCacheStrategy::MessagesNative,
+        AnthropicCacheStrategy::ClaudeCodePromptCache,
+    ] {
+        let (result, bodies) =
+            history_image_preflight(true, 40_000, "Prior reference.", Some(strategy)).await;
+        result.unwrap();
+        assert_eq!(bodies.len(), 1);
+        let blocks: Vec<_> = bodies[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["content"].as_array().unwrap())
+            .collect();
+        let time_index = blocks
+            .iter()
+            .position(|block| {
+                block["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("current_time:"))
+            })
+            .unwrap();
+        let marker_index = blocks
+            .iter()
+            .rposition(|block| block.get("cache_control").is_some())
+            .expect("cache-enabled request should mark history");
+        assert!(
+            marker_index < time_index,
+            "{strategy:?}: time must not be cached"
+        );
+        assert_eq!(time_index, blocks.len() - 1, "time remains the final block");
+        assert!(!bodies[0]["system"].to_string().contains("current_time"));
+    }
+}

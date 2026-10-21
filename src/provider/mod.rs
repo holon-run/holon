@@ -483,6 +483,8 @@ pub enum ConversationMessage {
         prompt: String,
         media_type: String,
         data_base64: String,
+        /// Only runtime-classified historical attachments may be omitted on overflow.
+        optional_history: bool,
     },
     AssistantBlocks(Vec<ModelBlock>),
     UserToolResults(Vec<ToolResultBlock>),
