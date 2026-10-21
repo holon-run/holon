@@ -16,6 +16,14 @@ struct ReplacedWaitConditions {
     resolved_after_trigger_ids: Vec<String>,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct TimerCancellationOutcome {
+    #[serde(flatten)]
+    pub timer: TimerRecord,
+    pub cancelled_wait_condition_ids: Vec<String>,
+    pub blocked_work_item_ids: Vec<String>,
+}
+
 /// Preserve independent business blockers in both task-wait registration
 /// paths. Replaced task waits only own a scheduling blocker. This bookkeeping
 /// does not decide whether an exact wait continuation may enter the model.
@@ -1711,6 +1719,13 @@ impl RuntimeHandle {
     }
 
     pub async fn cancel_timer(&self, timer_id: &str) -> Result<TimerRecord> {
+        Ok(self.cancel_timer_with_evidence(timer_id).await?.timer)
+    }
+
+    pub(crate) async fn cancel_timer_with_evidence(
+        &self,
+        timer_id: &str,
+    ) -> Result<TimerCancellationOutcome> {
         let agent_id = self.agent_id().await?;
         for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             let expected = self
@@ -1733,7 +1748,7 @@ impl RuntimeHandle {
                 .into());
             }
             match expected.status {
-                TimerStatus::Cancelled => return Ok(expected),
+                TimerStatus::Cancelled => {}
                 TimerStatus::Completed => {
                     return Err(RuntimeError::validation(
                         "timer_completed",
@@ -1766,12 +1781,15 @@ impl RuntimeHandle {
             let command = crate::runtime_db::TimerCancel {
                 expected,
                 record: timer.clone(),
+                cancelled_at: self.now(),
                 agent_state: pending_wake
                     .as_ref()
                     .map(|_| (expected_state, committed_state.clone())),
             };
             match self.inner.runtime_db.timers().cancel(&command) {
-                Ok(result) if result.cancelled => {
+                Ok(result)
+                    if result.cancelled || command.expected.status == TimerStatus::Cancelled =>
+                {
                     if let Some(message_id) = result.dropped_message_id.as_deref() {
                         guard
                             .queue
@@ -1787,17 +1805,23 @@ impl RuntimeHandle {
                         .lock()
                         .await
                         .upsert_timer(timer.clone());
-                    self.inner.storage.append_event(&AuditEvent::legacy(
-                        "timer_cancelled",
-                        serde_json::json!({
-                            "timer_id": timer.id,
-                            "status": timer.status,
-                            "fire_count": timer.fire_count,
-                            "dropped_message_id": result.dropped_message_id,
-                        }),
-                    ))?;
-                    self.inner.notify.notify_waiters();
-                    return Ok(timer);
+                    let blocked_work_item_ids = result
+                        .effects
+                        .work_items
+                        .iter()
+                        .map(|work| work.id.clone())
+                        .collect();
+                    self.apply_transition_commit(TransitionCommit {
+                        applied: true,
+                        effects: result.effects,
+                        ..Default::default()
+                    })
+                    .await;
+                    return Ok(TimerCancellationOutcome {
+                        timer,
+                        cancelled_wait_condition_ids: result.cancelled_wait_condition_ids,
+                        blocked_work_item_ids,
+                    });
                 }
                 Ok(_) => {
                     drop(guard);

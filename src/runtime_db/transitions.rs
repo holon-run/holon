@@ -3921,6 +3921,31 @@ pub(super) fn validate_wait_condition_tx(
     if let Some(existing) = existing.as_ref() {
         wait_condition_transition(existing, incoming)?;
     }
+    if incoming.kind == crate::types::WaitConditionKind::Timer
+        && matches!(
+            incoming.status,
+            WaitConditionStatus::Active | WaitConditionStatus::Triggered
+        )
+    {
+        let valid = tx.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM timers t
+               WHERE t.timer_id = ?1 AND t.agent_id = ?2
+                 AND ((t.status = 'active' AND t.next_fire_at IS NOT NULL)
+                   OR (t.status = 'completed' AND EXISTS(
+                     SELECT 1 FROM timer_wakes w
+                     WHERE w.timer_id = t.timer_id AND w.status = 'pending'))))",
+            params![incoming.subject_ref, incoming.agent_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !valid {
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "timer_wait",
+                incoming.subject_ref.as_deref().unwrap_or(&incoming.id),
+            )
+            .into());
+        }
+    }
     Ok(())
 }
 

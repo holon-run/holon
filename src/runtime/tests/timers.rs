@@ -8,6 +8,709 @@ async fn yield_timer_loop() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_settles_registered_wait_without_resuming_work() {
+    for work_item_scope in [false, true] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let clock = controlled_clock();
+        let runtime = RuntimeHandle::new_with_clock(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("must not run")),
+            "default".into(),
+            context_config(),
+            clock.clone(),
+        )
+        .unwrap();
+        let work_id = if work_item_scope {
+            Some(
+                runtime
+                    .create_work_item("timer wait".into(), None, None, Vec::new())
+                    .await
+                    .unwrap()
+                    .id,
+            )
+        } else {
+            None
+        };
+        let timer = runtime.schedule_timer(60_000, None, None).await.unwrap();
+        let registration = runtime
+            .register_wait_for(
+                "default",
+                work_id.clone(),
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "timer dependency".into(),
+                Some(120_000),
+            )
+            .await
+            .unwrap();
+        clock.rewind(std::time::Duration::from_secs(1));
+        let cancellation =
+            crate::tool::tools::timer::cancel(&runtime, &serde_json::json!({"timer_id": timer.id}))
+                .await
+                .unwrap();
+        let evidence = cancellation.envelope.result.as_ref().unwrap();
+        assert_eq!(evidence["id"], timer.id);
+        assert_eq!(
+            evidence["cancelled_wait_condition_ids"],
+            serde_json::json!([registration.condition.id])
+        );
+        let wait = runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registration.condition.id)
+            .unwrap();
+        assert_eq!(wait.status, WaitConditionStatus::Cancelled);
+        assert_eq!(wait.cancelled_at, Some(clock.now()));
+        assert_eq!(wait.updated_at, registration.condition.updated_at);
+        assert_eq!(
+            wait.continuation.as_ref().unwrap()["terminal_reason"],
+            "timer_cancelled"
+        );
+        assert!(runtime
+            .storage()
+            .raw_unresolved_wait_conditions_for_agent("default")
+            .unwrap()
+            .is_empty());
+        if let Some(work_id) = work_id {
+            let work = runtime
+                .storage()
+                .latest_work_item(&work_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(work.state, WorkItemState::Open);
+            assert!(work
+                .blocked_by
+                .as_deref()
+                .unwrap()
+                .contains("timer_cancelled"));
+            assert!(work.blocked_by_wait_id.is_none());
+            assert!(work.recheck_at.is_none());
+        }
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+        let before = runtime.storage().latest_wait_conditions().unwrap();
+        runtime.cancel_timer(&timer.id).await.unwrap();
+        assert_eq!(runtime.storage().latest_wait_conditions().unwrap(), before);
+        clock.advance(std::time::Duration::from_secs(180));
+        tokio::time::advance(std::time::Duration::from_secs(180)).await;
+        yield_timer_loop().await;
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+        assert!(!runtime
+            .storage()
+            .read_recent_messages(100)
+            .unwrap()
+            .iter()
+            .any(|message| message.kind == MessageKind::TimerTick));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_fences_prepared_wait_commit() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("must not run")),
+        "default".into(),
+        context_config(),
+        controlled_clock(),
+    )
+    .unwrap();
+    let timer = runtime.schedule_timer(60_000, None, None).await.unwrap();
+    let PrepareWaitForOutcome::Prepared(prepared) = runtime
+        .prepare_wait_for_outcome(
+            "default",
+            None,
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "prepared timer wait".into(),
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("timer wait must be prepared");
+    };
+    runtime.cancel_timer(&timer.id).await.unwrap();
+    let error = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_wait(&prepared.command)
+        .unwrap_err();
+    assert!(error
+        .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+        .is_some());
+    assert!(runtime
+        .storage()
+        .raw_unresolved_wait_conditions_for_agent("default")
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_fences_waiting_report_transaction() {
+    use crate::runtime_db::transitions::{
+        ExecutionProtocolTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+    };
+    for cancel in [false, true] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new_with_clock(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("must not run")),
+            "default".into(),
+            context_config(),
+            controlled_clock(),
+        )
+        .unwrap();
+        let timer = runtime.schedule_timer(60_000, None, None).await.unwrap();
+        let PrepareWaitForOutcome::Prepared(prepared) = runtime
+            .prepare_wait_for_outcome(
+                "default",
+                None,
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "waiting report settlement".into(),
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("timer wait must be prepared");
+        };
+        let source = MessageEnvelope::new(
+            "default",
+            MessageKind::TimerTick,
+            MessageOrigin::Timer {
+                timer_id: timer.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "source turn".into(),
+            },
+        );
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "waiting for timer",
+            Some(source.id.clone()),
+            None,
+        );
+        let command = QueueTransitionCommand {
+            agent_id: "default".into(),
+            operation: QueueOperation::Settle,
+            mutation: QueueMutation::Upsert(QueueEntryRecord {
+                message_id: source.id.clone(),
+                agent_id: "default".into(),
+                priority: Priority::Next,
+                status: QueueEntryStatus::Processed,
+                created_at: source.created_at,
+                updated_at: source.created_at,
+            }),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: vec![source.clone()],
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: vec![brief.clone()],
+        };
+        if cancel {
+            runtime.cancel_timer(&timer.id).await.unwrap();
+        }
+        let result = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue_terminal_with_wait(
+                &command,
+                &ExecutionProtocolTransition::default(),
+                &prepared.command,
+                None,
+                &[],
+                None,
+            );
+        if cancel {
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("timer_wait"), "{error:#}");
+            assert!(runtime
+                .storage()
+                .read_brief_by_id(&brief.id)
+                .unwrap()
+                .is_none());
+            assert!(runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&source.id)
+                .unwrap()
+                .is_none());
+            assert!(runtime
+                .storage()
+                .raw_unresolved_wait_conditions_for_agent("default")
+                .unwrap()
+                .is_empty());
+        } else {
+            assert!(result.unwrap().applied);
+            assert!(runtime
+                .storage()
+                .read_brief_by_id(&brief.id)
+                .unwrap()
+                .is_some());
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_settles_only_matching_waits_and_owned_blockers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("must not run")),
+        "default".into(),
+        context_config(),
+        controlled_clock(),
+    )
+    .unwrap();
+    let timer = runtime.schedule_timer(60_000, None, None).await.unwrap();
+    let unrelated_timer = runtime.schedule_timer(60_000, None, None).await.unwrap();
+    let mut matching = Vec::new();
+    let mut manual_blocker = None;
+    for index in 0..2 {
+        let work = runtime
+            .create_work_item(format!("wait {index}"), None, None, Vec::new())
+            .await
+            .unwrap();
+        let registration = runtime
+            .register_wait_for(
+                "default",
+                Some(work.id.clone()),
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "matching dependency".into(),
+                Some(120_000),
+            )
+            .await
+            .unwrap();
+        matching.push(registration.condition);
+        if index == 1 {
+            let mut work = runtime
+                .storage()
+                .latest_work_item(&work.id)
+                .unwrap()
+                .unwrap();
+            work.blocked_by = Some("independent manual blocker".into());
+            work.blocked_by_wait_id = None;
+            work.revision += 1;
+            runtime.storage().append_work_item(&work).unwrap();
+            manual_blocker = Some(work);
+        }
+    }
+    let unrelated = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::Timer,
+            Some(unrelated_timer.id.clone()),
+            "unrelated timer".into(),
+            None,
+        )
+        .await
+        .unwrap()
+        .condition;
+    // A malformed legacy foreign-agent reference must not expand cancellation scope.
+    let mut foreign = matching[0].clone();
+    foreign.id = "foreign-timer-wait".into();
+    foreign.agent_id = "another-agent".into();
+    foreign.work_item_id = None;
+    runtime.storage().append_wait_condition(&foreign).unwrap();
+    runtime.cancel_timer(&timer.id).await.unwrap();
+    let waits = runtime.storage().latest_wait_conditions().unwrap();
+    for expected in &matching {
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == expected.id)
+                .unwrap()
+                .status,
+            WaitConditionStatus::Cancelled
+        );
+    }
+    assert_eq!(
+        waits.iter().find(|wait| wait.id == foreign.id).unwrap(),
+        &foreign
+    );
+    assert_eq!(
+        waits.iter().find(|wait| wait.id == unrelated.id).unwrap(),
+        &unrelated
+    );
+    let manual_blocker = manual_blocker.unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_work_item(&manual_blocker.id)
+            .unwrap()
+            .unwrap(),
+        manual_blocker
+    );
+    let projected = runtime
+        .latest_work_item(matching[0].work_item_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(projected
+        .blocked_by
+        .as_deref()
+        .unwrap()
+        .contains("timer_cancelled"));
+    assert!(projected.blocked_by_wait_id.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn timer_fire_between_prepare_and_commit_remains_waitable() {
+    for repeat in [false, true] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new_with_clock(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("must not run")),
+            "default".into(),
+            context_config(),
+            controlled_clock(),
+        )
+        .unwrap();
+        let mut timer = runtime
+            .schedule_timer(60_000, repeat.then_some(60_000), None)
+            .await
+            .unwrap();
+        let PrepareWaitForOutcome::Prepared(prepared) = runtime
+            .prepare_wait_for_outcome(
+                "default",
+                None,
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "timer may fire during preparation".into(),
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("timer wait must be prepared");
+        };
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_wait(&prepared.command)
+            .unwrap();
+        assert!(runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_some());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_respects_wake_admission_boundary() {
+    for admitted in [false, true] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new_with_clock(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("must not run")),
+            "default".into(),
+            context_config(),
+            controlled_clock(),
+        )
+        .unwrap();
+        let mut timer = runtime
+            .schedule_timer(60_000, Some(60_000), None)
+            .await
+            .unwrap();
+        let registered = runtime
+            .register_wait_for(
+                "default",
+                None,
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "timer admission race".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let wake = runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap();
+        if admitted {
+            assert!(matches!(
+                scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                    .poll()
+                    .await
+                    .unwrap(),
+                scheduler_executor::RunLoopPoll::Message(_)
+            ));
+        }
+        let before = runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == registered.condition.id)
+            .unwrap();
+        runtime.cancel_timer(&timer.id).await.unwrap();
+        let after = runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|wait| wait.id == before.id)
+            .unwrap();
+        let queue = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&wake.message_id)
+            .unwrap()
+            .unwrap();
+        if admitted {
+            assert_eq!(after, before, "cancellation must not retract admitted work");
+            assert_eq!(queue.status, QueueEntryStatus::Dequeued);
+        } else {
+            assert_eq!(before.status, WaitConditionStatus::Triggered);
+            assert_eq!(after.status, WaitConditionStatus::Cancelled);
+            assert_eq!(after.trigger_message_id, before.trigger_message_id);
+            assert_eq!(after.triggered_at, before.triggered_at);
+            assert_eq!(queue.status, QueueEntryStatus::Dropped);
+            assert!(matches!(
+                scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                    .poll()
+                    .await
+                    .unwrap(),
+                scheduler_executor::RunLoopPoll::Idle
+            ));
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_wait_write_failure_rolls_back_every_domain() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("must not run")),
+        "default".into(),
+        context_config(),
+        controlled_clock(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("atomic cancel".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut timer = runtime
+        .schedule_timer(60_000, Some(60_000), None)
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "cancel rollback".into(),
+            Some(120_000),
+        )
+        .await
+        .unwrap();
+    runtime.fire_timer_record(&mut timer).await.unwrap();
+    let before_waits = runtime.storage().latest_wait_conditions().unwrap();
+    let before_work = runtime.storage().latest_work_item(&work.id).unwrap();
+    let before_state = runtime.agent_state().await.unwrap();
+    let before_events = runtime.storage().read_recent_events(100).unwrap();
+    let wake = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_timer_wait_cancel BEFORE UPDATE ON wait_conditions
+         WHEN NEW.status = 'cancelled'
+         BEGIN SELECT RAISE(ABORT, 'injected wait cancellation failure'); END;",
+        )
+        .unwrap();
+    assert!(runtime
+        .cancel_timer(&timer.id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("injected wait cancellation failure"));
+    assert_eq!(
+        runtime.latest_timer(&timer.id).await.unwrap().unwrap(),
+        timer
+    );
+    assert_eq!(
+        runtime.storage().latest_wait_conditions().unwrap(),
+        before_waits
+    );
+    assert_eq!(
+        runtime.storage().latest_work_item(&work.id).unwrap(),
+        before_work
+    );
+    assert_eq!(runtime.agent_state().await.unwrap(), before_state);
+    assert_eq!(
+        runtime.storage().read_recent_events(100).unwrap(),
+        before_events
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap(),
+        Some(wake.clone())
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&wake.message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_timer_wait_cancel;")
+        .unwrap();
+    runtime.cancel_timer(&timer.id).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_timer_legacy_orphan_recovery_and_repeat_cancel_are_idempotent() {
+    for restart in [false, true] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let clock = controlled_clock();
+        let make_runtime = || {
+            RuntimeHandle::new_with_clock(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(StubProvider::new("must not run")),
+                "default".into(),
+                context_config(),
+                clock.clone(),
+            )
+            .unwrap()
+        };
+        let runtime = make_runtime();
+        let work = runtime
+            .create_work_item("legacy orphan".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let mut timer = runtime.schedule_timer(60_000, None, None).await.unwrap();
+        let registered = runtime
+            .register_wait_for(
+                "default",
+                Some(work.id.clone()),
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "legacy cancelled dependency".into(),
+                Some(120_000),
+            )
+            .await
+            .unwrap();
+        // Reproduce the pre-fix durable shape, bypassing the repaired command.
+        timer.status = TimerStatus::Cancelled;
+        timer.next_fire_at = None;
+        runtime.storage().append_timer(&timer).unwrap();
+        clock.rewind(std::time::Duration::from_secs(1));
+        let runtime = if restart { make_runtime() } else { runtime };
+        runtime.cancel_timer(&timer.id).await.unwrap();
+        let waits = runtime.storage().latest_wait_conditions().unwrap();
+        let wait = waits
+            .iter()
+            .find(|wait| wait.id == registered.condition.id)
+            .unwrap();
+        assert_eq!(wait.status, WaitConditionStatus::Cancelled);
+        assert_eq!(wait.cancelled_at, Some(clock.now()));
+        assert_eq!(wait.updated_at, registered.condition.updated_at);
+        let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+        assert!(work
+            .blocked_by
+            .as_deref()
+            .unwrap()
+            .contains("timer_cancelled"));
+        assert!(work.blocked_by_wait_id.is_none());
+        assert!(work.recheck_at.is_none());
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        runtime.cancel_timer(&timer.id).await.unwrap();
+        let recovered_again = make_runtime();
+        assert_eq!(
+            recovered_again.storage().latest_wait_conditions().unwrap(),
+            waits
+        );
+        assert_eq!(
+            recovered_again.storage().read_recent_events(100).unwrap(),
+            events
+        );
+        assert_eq!(recovered_again.agent_state().await.unwrap().pending, 0);
+    }
+}
+
 async fn assert_timer_fire_count(
     runtime: &RuntimeHandle,
     timer_id: &str,

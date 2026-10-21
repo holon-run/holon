@@ -17,7 +17,9 @@ use crate::runtime_db::conversation::{
 };
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
-use crate::runtime_db::transitions::{inject_fault, trigger_wait_and_enqueue_tx};
+use crate::runtime_db::transitions::{
+    inject_fault, trigger_wait_and_enqueue_tx, PostCommitEffects,
+};
 use crate::runtime_db::types::*;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
@@ -3025,7 +3027,11 @@ impl TimerRepository<'_> {
             .map_err(Into::into)
     }
 
-    pub fn normalize_wakes_for_recovery(&self, agent_id: &str) -> Result<TimerWakeRecoveryResult> {
+    pub fn normalize_wakes_for_recovery(
+        &self,
+        agent_id: &str,
+        recovered_at: DateTime<Utc>,
+    ) -> Result<TimerWakeRecoveryResult> {
         self.db.transaction(|tx| {
             let live_messages = {
                 let mut statement = tx.prepare(
@@ -3105,7 +3111,7 @@ impl TimerRepository<'_> {
                         continue;
                     }
                     entry.status = QueueEntryStatus::Dropped;
-                    entry.updated_at = Utc::now();
+                    entry.updated_at = recovered_at.max(entry.updated_at);
                     upsert_queue_entry_tx(tx, &entry)?;
                     result.dropped_message_ids.push(entry.message_id);
                 }
@@ -3125,7 +3131,7 @@ impl TimerRepository<'_> {
                                 "UPDATE timer_wakes
                                  SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
                                  WHERE timer_id = ?1 AND status = 'pending'",
-                                params![timer_id, timestamp(Utc::now())],
+                                params![timer_id, timestamp(recovered_at)],
                             )?;
                         }
                         let fire_count = message
@@ -3139,7 +3145,7 @@ impl TimerRepository<'_> {
                         // A wake row for this exact pair may already exist when a claimed
                         // message was restored to the queue after a restart. Reactivate it
                         // instead of inserting a duplicate row for the composite primary key.
-                        let now = timestamp(Utc::now());
+                        let now = timestamp(recovered_at);
                         let reactivated = tx.execute(
                             "UPDATE timer_wakes
                              SET status = 'pending', fire_count = ?3, updated_at = ?4,
@@ -3166,7 +3172,7 @@ impl TimerRepository<'_> {
                                 "UPDATE timer_wakes
                                  SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
                                  WHERE timer_id = ?1 AND status = 'pending'",
-                                params![timer_id, timestamp(Utc::now())],
+                                params![timer_id, timestamp(recovered_at)],
                             )?;
                         }
                     }
@@ -3178,8 +3184,32 @@ impl TimerRepository<'_> {
                     "UPDATE timer_wakes
                      SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
                      WHERE timer_id = ?1 AND status = 'pending'",
-                    params![timer_id, timestamp(Utc::now())],
+                    params![timer_id, timestamp(recovered_at)],
                 )?;
+            }
+            let cancelled_timers = {
+                let mut statement = tx.prepare(
+                    "SELECT t.payload_json FROM timers t
+                     WHERE t.agent_id = ?1 AND t.status = 'cancelled'
+                       AND EXISTS(
+                         SELECT 1 FROM wait_conditions w
+                         WHERE w.agent_id = t.agent_id AND w.subject_ref = t.timer_id
+                           AND w.kind = 'timer' AND w.status IN ('active', 'triggered'))
+                     ORDER BY t.timer_id",
+                )?;
+                let records = statement
+                    .query_map([agent_id], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_timer_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?;
+                records
+            };
+            for timer in cancelled_timers {
+                let settlement = settle_cancelled_timer_waits_tx(tx, &timer, recovered_at)?;
+                result
+                    .settled_wait_conditions
+                    .extend(settlement.wait_conditions);
+                result.work_items.extend(settlement.work_items);
+                result.audit_events.extend(settlement.audit_events);
             }
             Ok(result)
         })
@@ -3283,6 +3313,15 @@ impl TimerRepository<'_> {
                 fault,
                 crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
             )?;
+            // Stage the resource before triggering a wait: a final one-shot fire
+            // has already completed the timer, so its pending wake is the fence.
+            let now = timestamp(command.queue_entry.updated_at);
+            tx.execute(
+                "INSERT INTO timer_wakes
+                 (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+                params![command.record.id, command.message.id, command.record.fire_count as i64, now],
+            )?;
             let wake =
                 trigger_wait_and_enqueue_tx(tx, &command.message, &command.queue_entry)?;
             if wake.message_inserted {
@@ -3291,13 +3330,6 @@ impl TimerRepository<'_> {
                     &[RuntimeIndexChange::for_message(&wake.message)],
                 )?;
             }
-            let now = timestamp(command.queue_entry.updated_at);
-            tx.execute(
-                "INSERT INTO timer_wakes
-                 (timer_id, message_id, fire_count, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
-                params![command.record.id, command.message.id, command.record.fire_count as i64, now],
-            )?;
             upsert_agent_state_tx(tx, &command.agent_state.1)?;
             inject_fault(
                 fault,
@@ -3314,17 +3346,23 @@ impl TimerRepository<'_> {
     pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
         self.db.transaction(|tx| {
             if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
-                || command.expected.status != TimerStatus::Active
+                || !matches!(
+                    command.expected.status,
+                    TimerStatus::Active | TimerStatus::Cancelled
+                )
             {
                 return Ok(TimerCancelResult {
                     cancelled: false,
                     dropped_message_id: None,
+                    cancelled_wait_condition_ids: Vec::new(),
+                    effects: PostCommitEffects::default(),
                 });
             }
             if command.record.id != command.expected.id
                 || command.record.agent_id != command.expected.agent_id
                 || command.record.status != TimerStatus::Cancelled
                 || command.record.fire_count != command.expected.fire_count
+                || command.record.next_fire_at.is_some()
             {
                 return Err(anyhow!("invalid timer cancellation transition"));
             }
@@ -3346,8 +3384,10 @@ impl TimerRepository<'_> {
                     .into());
                 }
             }
-            upsert_timer_tx(tx, &command.record)?;
-            let now = timestamp(timer_updated_at(&command.record));
+            if command.expected.status == TimerStatus::Active {
+                upsert_timer_updated_at_tx(tx, &command.record, command.cancelled_at)?;
+            }
+            let now = timestamp(command.cancelled_at);
             let message_id = tx
                 .query_row(
                     "SELECT message_id FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending'",
@@ -3372,16 +3412,47 @@ impl TimerRepository<'_> {
                 if let Some(payload) = payload {
                     let mut entry = decode_queue_entry_payload(&payload)?;
                     entry.status = QueueEntryStatus::Dropped;
-                    entry.updated_at = timer_updated_at(&command.record);
+                    entry.updated_at = command.cancelled_at.max(entry.updated_at);
                     upsert_queue_entry_tx(tx, &entry)?;
                 }
             }
             if let Some((_, record)) = command.agent_state.as_ref() {
                 upsert_agent_state_tx(tx, record)?;
             }
+            let mut settlement =
+                settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at)?;
+            if command.expected.status == TimerStatus::Active {
+                let mut event = AuditEvent::legacy(
+                    "timer_cancelled",
+                    serde_json::json!({
+                        "agent_id": command.record.agent_id,
+                        "timer_id": command.record.id,
+                    }),
+                );
+                event.id = format!("audit:timer-cancelled:{}", command.record.id);
+                event.created_at = command.cancelled_at;
+                settlement
+                    .audit_events
+                    .push(append_audit_event_tx(tx, Some(&command.record.agent_id), &event)?.0);
+            }
+            let notify_memory_index =
+                !settlement.audit_events.is_empty() || !settlement.work_items.is_empty();
+            let notify_scheduler = !settlement.wait_conditions.is_empty() || message_id.is_some();
             Ok(TimerCancelResult {
                 cancelled: true,
                 dropped_message_id: message_id,
+                cancelled_wait_condition_ids: settlement
+                    .wait_conditions
+                    .into_iter()
+                    .map(|condition| condition.id)
+                    .collect(),
+                effects: PostCommitEffects {
+                    work_items: settlement.work_items,
+                    audit_events: settlement.audit_events,
+                    notify_memory_index,
+                    notify_scheduler,
+                    ..Default::default()
+                },
             })
         })
     }
@@ -3479,6 +3550,135 @@ impl TimerRepository<'_> {
         records.reverse();
         Ok(records)
     }
+}
+
+#[derive(Default)]
+struct TimerWaitCancellationSettlement {
+    wait_conditions: Vec<WaitConditionRecord>,
+    work_items: Vec<WorkItemRecord>,
+    audit_events: Vec<AuditEvent>,
+}
+
+fn settle_cancelled_timer_waits_tx(
+    tx: &Transaction<'_>,
+    timer: &TimerRecord,
+    cancelled_at: DateTime<Utc>,
+) -> Result<TimerWaitCancellationSettlement> {
+    let conditions = {
+        let mut statement = tx.prepare(
+            "SELECT w.payload_json FROM wait_conditions w
+             WHERE w.agent_id = ?1 AND w.kind = 'timer' AND w.subject_ref = ?2
+               AND w.status IN ('active', 'triggered')
+               AND (w.status = 'active' OR (
+                 NOT EXISTS(
+                   SELECT 1 FROM queue_entries q
+                   WHERE q.agent_id = w.agent_id AND q.message_id = w.trigger_message_id
+                     AND q.status NOT IN ('queued', 'interrupted', 'dropped'))
+                 AND NOT EXISTS(
+                   SELECT 1 FROM turn_records t
+                   WHERE t.agent_id = w.agent_id AND t.trigger_message_id = w.trigger_message_id)
+                 AND NOT EXISTS(
+                   SELECT 1 FROM execution_protocol_attempts a
+                   WHERE a.agent_id = w.agent_id
+                     AND (a.attempt_id = 'activation:message:' || w.trigger_message_id
+                       OR json_extract(a.payload_json, '$.source_message_id') = w.trigger_message_id))))
+             ORDER BY w.wait_condition_id",
+        )?;
+        let records = statement
+            .query_map(params![timer.agent_id, timer.id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| decode_wait_condition_payload(&row?))
+            .collect::<Result<Vec<_>>>()?;
+        records
+    };
+    let mut result = TimerWaitCancellationSettlement::default();
+    for mut condition in conditions {
+        let previous_status = condition.status.clone();
+        condition.status = WaitConditionStatus::Cancelled;
+        condition.updated_at = condition.updated_at.max(cancelled_at);
+        condition.cancelled_at = Some(cancelled_at);
+        let mut continuation = match condition.continuation.take() {
+            Some(serde_json::Value::Object(fields)) => fields,
+            Some(value) => {
+                let mut fields = serde_json::Map::new();
+                fields.insert("prior_continuation".into(), value);
+                fields
+            }
+            None => serde_json::Map::new(),
+        };
+        continuation.insert("terminal_reason".into(), "timer_cancelled".into());
+        continuation.remove("recheck_at");
+        condition.continuation = Some(serde_json::Value::Object(continuation));
+        if !upsert_wait_condition_tx(tx, &condition)? {
+            return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                "timer_wait",
+                &condition.id,
+            )
+            .into());
+        }
+
+        if let Some(work_item_id) = condition.work_item_id.as_deref() {
+            let work_item = tx
+                .query_row(
+                    "SELECT payload_json FROM work_items
+                     WHERE work_item_id = ?1 AND agent_id = ?2 AND state = 'open'",
+                    params![work_item_id, timer.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| serde_json::from_str::<WorkItemRecord>(&payload))
+                .transpose()?;
+            if let Some(mut work_item) = work_item
+                .filter(|work| work.blocked_by_wait_id.as_deref() == Some(condition.id.as_str()))
+            {
+                let revision = work_item.revision;
+                work_item.revision = revision
+                    .checked_add(1)
+                    .context("work item revision overflow")?;
+                work_item.blocked_by = Some(format!("timer_cancelled: {}", timer.id));
+                work_item.blocked_by_wait_id = None;
+                work_item.recheck_at = None;
+                work_item.recheck_consumed_at = None;
+                work_item.updated_at = work_item.updated_at.max(cancelled_at);
+                update_expected_work_item_tx(tx, &work_item, revision)?;
+                insert_runtime_index_changes_tx(
+                    tx,
+                    &[RuntimeIndexChange {
+                        agent_id: work_item.agent_id.clone(),
+                        source_kind: "work_item".into(),
+                        source_id: work_item.id.clone(),
+                        source_ref: format!("work_item:{}", work_item.id),
+                        operation: crate::runtime_db::RuntimeIndexOperation::Upsert,
+                        source_updated_at: Some(cancelled_at),
+                        reason: "timer_cancelled".into(),
+                    }],
+                )?;
+                result.work_items.push(work_item);
+            }
+        }
+        let mut event = AuditEvent::legacy(
+            "wait_condition_cancelled",
+            serde_json::json!({
+                "agent_id": timer.agent_id,
+                "timer_id": timer.id,
+                "wait_condition_id": condition.id,
+                "work_item_id": condition.work_item_id,
+                "reason": "timer_cancelled",
+                "previous_status": previous_status,
+                "trigger_message_id": condition.trigger_message_id,
+                "triggered_at": condition.triggered_at,
+                "admitted": false,
+            }),
+        );
+        event.id = format!("audit:timer-wait-cancelled:{}", condition.id);
+        event.created_at = cancelled_at;
+        result
+            .audit_events
+            .push(append_audit_event_tx(tx, Some(&timer.agent_id), &event)?.0);
+        result.wait_conditions.push(condition);
+    }
+    Ok(result)
 }
 
 impl TurnRecordRepository<'_> {
@@ -6039,12 +6239,19 @@ fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>>
 }
 
 fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
+    upsert_timer_updated_at_tx(tx, record, timer_updated_at(record))
+}
+
+fn upsert_timer_updated_at_tx(
+    tx: &Transaction<'_>,
+    record: &TimerRecord,
+    updated_at: DateTime<Utc>,
+) -> Result<()> {
     if record.status == TimerStatus::Active {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
     }
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
-    let updated_at = timer_updated_at(record);
     tx.execute(
         "INSERT INTO timers (
             timer_id, agent_id, status, summary, created_at, duration_ms,

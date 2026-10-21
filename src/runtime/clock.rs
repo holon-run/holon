@@ -63,6 +63,15 @@ impl TestClock {
     pub(crate) fn now(&self) -> DateTime<Utc> {
         *self.now.lock().expect("test clock lock poisoned")
     }
+
+    pub(crate) fn rewind(&self, duration: std::time::Duration) {
+        let duration = chrono::Duration::from_std(duration)
+            .expect("test clock duration must fit chrono::Duration");
+        let mut now = self.now.lock().expect("test clock lock poisoned");
+        *now = now
+            .checked_sub_signed(duration)
+            .expect("test clock rewind must remain representable");
+    }
 }
 
 #[cfg(test)]

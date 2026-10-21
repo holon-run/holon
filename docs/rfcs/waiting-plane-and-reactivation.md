@@ -209,6 +209,21 @@ fence. If cancellation wins, pending wakes for that timer become invalid and
 cannot start a new turn. If execution admission wins, cancellation does not
 interrupt the turn that has already started.
 
+Cancellation also settles dependent waits in the same transaction. An active
+timer wait becomes `cancelled` with terminal reason `timer_cancelled`, including
+any fallback deadline. A triggered wait is cancelled only if its source wake has
+not been admitted; its trigger message and timestamp remain historical evidence.
+Cancellation is not a timer fire: it emits no replacement tick or continuation.
+An open WorkItem whose scheduling blocker belongs to that wait retains an
+explicit `timer_cancelled` blocker requiring a new wait or operator action, with
+the terminal wait dependency and recheck removed. Independent business blockers
+and already-admitted execution are not changed.
+
+Timer resource validity is checked again in the wait commit transaction,
+including final-report settlement. If cancellation wins before registration
+commits, neither the wait nor its waiting report may commit. Recovery and
+idempotent cancellation apply the same settlement to legacy orphan waits.
+
 A completed one-shot timer can still own one valid pending wake. A later
 `WaitFor(wake=timer)` registration may consume that wake immediately. A
 cancelled timer, or a completed timer whose wake was already consumed, must

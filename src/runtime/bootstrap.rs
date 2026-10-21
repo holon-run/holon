@@ -402,7 +402,13 @@ impl RuntimeHandle {
         initial_workspace: impl Into<InitialWorkspaceBinding>,
         runtime_db: RuntimeDb,
     ) -> Result<()> {
-        let _ = prepare_runtime_storage(agent_id, data_dir, initial_workspace, Some(runtime_db))?;
+        let _ = prepare_runtime_storage(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            Some(runtime_db),
+            chrono::Utc::now(),
+        )?;
         Ok(())
     }
 
@@ -691,7 +697,13 @@ impl RuntimeHandle {
             active_tasks,
             active_timers,
             projection_cache,
-        } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, runtime_db)?;
+        } = prepare_runtime_storage(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            runtime_db,
+            clock.now(),
+        )?;
         if let Some(event_bus) = event_bus {
             storage.enable_event_bus(event_bus)?;
         }
@@ -1517,6 +1529,7 @@ fn prepare_runtime_storage(
     data_dir: PathBuf,
     initial_workspace: impl Into<InitialWorkspaceBinding>,
     runtime_db: Option<RuntimeDb>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PreparedRuntimeStorage> {
     let agent_id = agent_id.into();
     let runtime_dir = data_dir.join(".holon");
@@ -1581,12 +1594,13 @@ fn prepare_runtime_storage(
     storage.legacy_importer().import_runtime_domains()?;
     let timer_wake_recovery = runtime_db
         .timers()
-        .normalize_wakes_for_recovery(&agent_id)?;
+        .normalize_wakes_for_recovery(&agent_id, now)?;
     if timer_wake_recovery.retained_wakes > 0
         || timer_wake_recovery.created_wakes > 0
         || timer_wake_recovery.reactivated_wakes > 0
         || timer_wake_recovery.invalidated_wakes > 0
         || !timer_wake_recovery.dropped_message_ids.is_empty()
+        || !timer_wake_recovery.settled_wait_conditions.is_empty()
     {
         storage.append_event(&AuditEvent::legacy(
             "timer_wakes_recovered",
@@ -1597,6 +1611,12 @@ fn prepare_runtime_storage(
                 "reactivated_wakes": timer_wake_recovery.reactivated_wakes,
                 "invalidated_wakes": timer_wake_recovery.invalidated_wakes,
                 "dropped_message_ids": timer_wake_recovery.dropped_message_ids,
+                "cancelled_wait_condition_ids": timer_wake_recovery.settled_wait_conditions
+                    .iter().map(|condition| &condition.id).collect::<Vec<_>>(),
+                "blocked_work_item_ids": timer_wake_recovery.work_items
+                    .iter().map(|work| &work.id).collect::<Vec<_>>(),
+                "audit_event_ids": timer_wake_recovery.audit_events
+                    .iter().map(|event| &event.id).collect::<Vec<_>>(),
             }),
         ))?;
     }
