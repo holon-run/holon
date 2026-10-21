@@ -188,6 +188,15 @@ holon daemon start
 ```
 
 </div>
+<div class="home-mobile">
+<h3>移动客户端 · 测试版</h3>
+<p>用手机连接电脑或服务器上已运行的 Holon。Android 测试说明帖需 Google Group 访问权限，也可直接下载 APK 安装。</p>
+<div class="home-actions">
+<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
+<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · 加入测试 ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">下载 Android APK ↗</a>
+</div>
+</div>
 </section>
 
 <section class="home-final">

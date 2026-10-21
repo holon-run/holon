@@ -188,6 +188,15 @@ holon daemon start
 ```
 
 </div>
+<div class="home-mobile">
+<h3>Mobile clients · Beta</h3>
+<p>Connect your phone to Holon running on your computer or server. Android testing instructions require Google Group access. You can also install the APK directly.</p>
+<div class="home-actions">
+<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
+<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · Join testing ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">Download Android APK ↗</a>
+</div>
+</div>
 </section>
 
 <section class="home-final">
