@@ -958,6 +958,8 @@ fn openai_codex_image_generation_request_uses_hosted_tool() {
     let request = ProviderGenerateImageRequest {
         prompt: "draw a small holon".into(),
         size: Some("1024x1024".into()),
+        aspect_ratio: None,
+        resolution: None,
         background: Some("transparent".into()),
         output_format: Some("png".into()),
     };
@@ -1029,7 +1031,7 @@ fn openai_images_dialect_detects_xai_by_provider_and_host() {
     );
     assert_eq!(
         openai_images_dialect("custom-xai", "https://api.x.ai/v1"),
-        OpenAiImagesDialect::Xai
+        OpenAiImagesDialect::Unknown
     );
     assert_eq!(
         openai_images_dialect("openai", "https://api.openai.com/v1"),
@@ -1038,10 +1040,65 @@ fn openai_images_dialect_detects_xai_by_provider_and_host() {
 }
 
 #[test]
+fn image_dialect_uses_canonical_provider_not_endpoint_display_id() {
+    let mut runtime = test_xai_oauth_config("not-used".into());
+    runtime.id = ProviderId::parse("xai-alternate").unwrap();
+    runtime.route_endpoint = ProviderEndpointId::parse("alternate").unwrap();
+    runtime.auth = ProviderAuthConfig {
+        source: CredentialSource::None,
+        kind: CredentialKind::None,
+        ..Default::default()
+    };
+    let home = std::path::Path::new(".");
+    let responses =
+        OpenAiProvider::from_runtime_config(&runtime, "grok-imagine-image", 1024, home).unwrap();
+    assert_eq!(responses.provider_id, "xai-alternate");
+    assert_eq!(
+        openai_images_dialect(&responses.route_provider, &responses.base_url),
+        OpenAiImagesDialect::Xai
+    );
+    runtime.transport = ProviderTransportKind::OpenAiChatCompletions;
+    let chat = OpenAiChatCompletionsProvider::from_runtime_config(
+        &runtime,
+        "grok-imagine-image",
+        1024,
+        home,
+    )
+    .unwrap();
+    assert_eq!(chat.provider_id, "xai-alternate");
+    assert_eq!(
+        openai_images_dialect(&chat.route_provider, &chat.base_url),
+        OpenAiImagesDialect::Xai
+    );
+}
+
+#[test]
+fn openai_images_request_uses_contract_not_a_compatible_superset() {
+    let request = ProviderGenerateImageRequest {
+        prompt: "draw".into(),
+        size: Some("1536x864".into()),
+        aspect_ratio: None,
+        resolution: None,
+        background: Some("transparent".into()),
+        output_format: Some("png".into()),
+    };
+    let body = build_images_request(OpenAiImagesDialect::OpenAi, "gpt-image-2", &request).unwrap();
+    assert!(body.get("response_format").is_none());
+    assert_eq!(body["size"], "1536x864");
+    assert_eq!(body["output_format"], "png");
+    assert!(build_images_request(OpenAiImagesDialect::Unknown, "gpt-image-2", &request).is_err());
+    assert!(
+        build_images_request(OpenAiImagesDialect::OpenAi, "unreviewed-model", &request).is_err()
+    );
+}
+
+#[test]
 fn xai_images_request_maps_size_and_omits_openai_fields() {
     let request = ProviderGenerateImageRequest {
         prompt: "draw a small holon".into(),
         size: Some("1536x1024".into()),
+        aspect_ratio: None,
+        resolution: None,
         background: None,
         output_format: None,
     };
@@ -1064,17 +1121,19 @@ fn xai_images_request_maps_size_and_omits_openai_fields() {
 }
 
 #[test]
-fn xai_images_request_defaults_to_square_without_size() {
+fn xai_images_request_uses_provider_defaults_without_size() {
     let request = ProviderGenerateImageRequest {
         prompt: "draw".into(),
         size: None,
+        aspect_ratio: None,
+        resolution: None,
         background: None,
         output_format: None,
     };
     let body = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image", &request)
         .expect("xai request should build");
-    assert_eq!(body["aspect_ratio"], json!("1:1"));
-    assert_eq!(body["resolution"], json!("1k"));
+    assert!(body.get("aspect_ratio").is_none());
+    assert!(body.get("resolution").is_none());
 }
 
 #[test]
@@ -1082,6 +1141,8 @@ fn xai_images_request_rejects_unsupported_openai_options() {
     let background = ProviderGenerateImageRequest {
         prompt: "draw".into(),
         size: None,
+        aspect_ratio: None,
+        resolution: None,
         background: Some("transparent".into()),
         output_format: None,
     };
@@ -1091,6 +1152,8 @@ fn xai_images_request_rejects_unsupported_openai_options() {
     let output_format = ProviderGenerateImageRequest {
         prompt: "draw".into(),
         size: None,
+        aspect_ratio: None,
+        resolution: None,
         background: None,
         output_format: Some("webp".into()),
     };

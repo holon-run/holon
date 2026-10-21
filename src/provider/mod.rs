@@ -18,6 +18,9 @@ mod catalog;
 mod diagnostics;
 mod fallback;
 mod http_trace;
+pub mod image_delivery;
+pub mod image_generation;
+pub mod media;
 mod quota;
 mod registry;
 mod retry;
@@ -113,6 +116,8 @@ pub struct ProviderTurnResponse {
 pub struct ProviderGenerateImageRequest {
     pub prompt: String,
     pub size: Option<String>,
+    pub aspect_ratio: Option<String>,
+    pub resolution: Option<String>,
     pub background: Option<String>,
     pub output_format: Option<String>,
 }
@@ -1000,13 +1005,13 @@ pub(crate) use catalog::build_candidate;
 #[cfg(test)]
 pub(crate) use retry::provider_max_attempts;
 pub(crate) use retry::{
-    classify_provider_error, ProviderTransportError, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
-    PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
+    classify_provider_error, ProviderTransportError, RetryDisposition,
+    PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
+    PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 #[cfg(test)]
 pub(crate) use retry::{
     provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
-    RetryDisposition,
 };
 #[cfg(test)]
 pub(crate) use tool_schema::validate_emitted_tool_schema;

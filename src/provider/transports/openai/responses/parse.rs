@@ -7,15 +7,17 @@ use url::Url;
 pub(super) async fn read_openai_streaming_response(
     response: Response,
     trace: Option<&ProviderHttpTraceRequest>,
+    max_bytes: Option<usize>,
 ) -> Result<Value> {
     let idle_timeout = stream_idle_timeout();
-    read_openai_streaming_response_with_timeout(response, idle_timeout, trace).await
+    read_openai_streaming_response_with_timeout(response, idle_timeout, trace, max_bytes).await
 }
 
 async fn read_openai_streaming_response_with_timeout(
     response: Response,
     idle_timeout: Duration,
     trace: Option<&ProviderHttpTraceRequest>,
+    max_bytes: Option<usize>,
 ) -> Result<Value> {
     const MAX_STREAMED_OUTPUT_ITEMS: usize = 128;
 
@@ -24,6 +26,7 @@ async fn read_openai_streaming_response_with_timeout(
     let mut data_lines = Vec::new();
     let mut streamed_output_items = Vec::new();
     let mut text_decoder = crate::utf8::IncrementalUtf8LossyDecoder::new();
+    let mut received_bytes = 0usize;
 
     while let Some(chunk) = tokio::time::timeout(idle_timeout, response.chunk())
         .await
@@ -53,6 +56,12 @@ async fn read_openai_streaming_response_with_timeout(
             )
         })?
     {
+        received_bytes = received_bytes.saturating_add(chunk.len());
+        if max_bytes.is_some_and(|limit| received_bytes > limit) {
+            return Err(super::super::images::image_receipt_limit(
+                "image generation stream exceeds the response byte limit",
+            ));
+        }
         trace_stream_chunk(trace, &chunk);
         pending.push_str(&text_decoder.push(&chunk));
         while let Some(newline_idx) = pending.find('\n') {

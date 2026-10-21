@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::{
     model_discovery::ModelDiscoveryCacheStatus,
+    provider::media::MediaOperation,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
     types::{AuthorityClass, ModelAvailability, ProviderModelEntry, ToolCapabilityFamily},
@@ -22,6 +23,8 @@ const MAX_LIMIT: usize = 500;
 pub(crate) struct ListProviderModelsArgs {
     pub(crate) provider: String,
     #[serde(default)]
+    pub(crate) operation: Option<MediaOperation>,
+    #[serde(default)]
     pub(crate) cursor: Option<String>,
     #[serde(default)]
     pub(crate) limit: Option<usize>,
@@ -34,7 +37,11 @@ pub(crate) struct ListProviderModelsArgs {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ListProviderModelsResult {
+    #[serde(default)]
+    pub(crate) media_defaults: crate::provider::media::MediaToolDefaults,
     pub(crate) provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation: Option<MediaOperation>,
     pub(crate) include_unavailable: bool,
     pub(crate) limit: usize,
     pub(crate) returned: usize,
@@ -80,15 +87,15 @@ pub(crate) async fn execute(
         .await?
         .into_iter()
         .find(|status| status.provider.as_str() == provider);
-    if !args.include_unavailable {
-        models.retain(|model| model.availability != ModelAvailability::Unavailable);
-    }
+    models.retain(|model| model_matches_operation(model, args.operation, args.include_unavailable));
     let (page, next_cursor) = page_provider_models(models, cursor.as_deref(), limit);
     let returned = page.len();
     serialize_success(
         NAME,
         &ListProviderModelsResult {
+            media_defaults: runtime.media_tool_defaults(None).await?,
             provider,
+            operation: args.operation,
             include_unavailable: args.include_unavailable,
             limit,
             returned,
@@ -97,6 +104,18 @@ pub(crate) async fn execute(
             models: page,
         },
     )
+}
+
+fn model_matches_operation(
+    model: &ProviderModelEntry,
+    operation: Option<MediaOperation>,
+    include_unavailable: bool,
+) -> bool {
+    include_unavailable
+        || match operation {
+            Some(operation) => model.media.operation(operation).call_selectable,
+            None => model.availability != ModelAvailability::Unavailable,
+        }
 }
 
 fn page_provider_models(
@@ -131,7 +150,46 @@ mod tests {
     use crate::config::ModelRef;
     use crate::types::{ModelAvailability, ProviderModelEntry};
 
-    use super::page_provider_models;
+    use super::{model_matches_operation, page_provider_models, MediaOperation};
+
+    #[test]
+    fn operation_filter_is_independent_of_text_turn_availability() {
+        let mut image_only = model("test/image");
+        image_only.availability = ModelAvailability::Unavailable;
+        image_only.selectable = false;
+        image_only.media.generate_image.call_selectable = true;
+        assert!(model_matches_operation(
+            &image_only,
+            Some(MediaOperation::GenerateImage),
+            false
+        ));
+        assert!(!model_matches_operation(&image_only, None, false));
+        assert!(!model_matches_operation(
+            &image_only,
+            Some(MediaOperation::ViewImage),
+            false
+        ));
+        image_only.media.deny_tool_access();
+        assert!(!model_matches_operation(
+            &image_only,
+            Some(MediaOperation::GenerateImage),
+            false
+        ));
+        assert!(model_matches_operation(
+            &image_only,
+            Some(MediaOperation::GenerateImage),
+            true
+        ));
+        assert!(!image_only.media.generate_image.call_selectable);
+    }
+
+    #[test]
+    fn old_model_result_deserializes_without_media_projection() {
+        let mut value = serde_json::to_value(model("test/image")).unwrap();
+        value.as_object_mut().unwrap().remove("media");
+        let old: ProviderModelEntry = serde_json::from_value(value).unwrap();
+        assert_eq!(old.media, Default::default());
+    }
 
     fn model(model_ref: &str) -> ProviderModelEntry {
         let policy = crate::model_catalog::ResolvedRuntimeModelPolicy {
@@ -153,6 +211,7 @@ mod tests {
             policy,
             parameter_contracts: Vec::new(),
             supported_parameters: Vec::new(),
+            media: Default::default(),
             policy_notes: Vec::new(),
         }
     }

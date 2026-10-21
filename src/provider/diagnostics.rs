@@ -243,6 +243,9 @@ pub(crate) fn resolved_model_providers_from_availability_for_runtime(
                     .iter()
                     .filter(|model| model.metadata_source == "remote_discovered")
                     .count(),
+                media: super::media::MediaProviderCapabilities::aggregate(
+                    models.iter().map(|model| &model.media),
+                ),
                 policy_notes: Vec::new(),
             }
         })
@@ -278,6 +281,7 @@ pub(crate) fn provider_models_from_availability_for_runtime(
         .into_iter()
         .map(|model| {
             let model_id = model.policy.model_ref.model.clone();
+            let model_ref = format!("{}@{}/{}", model.provider_family, model.endpoint, model_id);
             let supported_parameters = supported_model_parameters(&model);
             ProviderModelEntry {
                 provider: model.provider,
@@ -285,7 +289,7 @@ pub(crate) fn provider_models_from_availability_for_runtime(
                 endpoint: model.endpoint,
                 route_provider: model.route_provider,
                 id: model_id,
-                model_ref: model.model,
+                model_ref,
                 display_name: model.display_name,
                 availability: if model.available {
                     ModelAvailability::Available
@@ -301,6 +305,7 @@ pub(crate) fn provider_models_from_availability_for_runtime(
                     .map(|capabilities| capabilities.endpoint.accepted_parameters.clone())
                     .unwrap_or_default(),
                 supported_parameters,
+                media: model.media,
                 policy: model.policy,
                 policy_notes: Vec::new(),
             }
@@ -387,6 +392,43 @@ fn resolved_model_availability_entry(
     };
 
     let resolved_capabilities = route.as_ref().map(|route| route.capabilities.clone());
+    let mut media = super::media::resolved_media_capabilities(
+        route.as_ref().map(|route| &route.endpoint),
+        &policy,
+        resolved_capabilities.as_ref(),
+        available,
+        unavailable_reason.as_deref(),
+    );
+    for (capability, status) in [
+        (
+            crate::config::ModelRouteCapability::VisionObservation,
+            &mut media.view_image,
+        ),
+        (
+            crate::config::ModelRouteCapability::ImageGeneration,
+            &mut media.generate_image,
+        ),
+    ] {
+        if status.support != super::media::MediaSupport::Supported {
+            continue;
+        }
+        // Auxiliary operations do not require agent_turn. Resolve/build exactly
+        // their own route instead of borrowing the text-turn availability bit.
+        let candidate = catalog
+            .resolve_explicit_model_route(&base_context, route_ref, capability)
+            .ok_or_else(|| anyhow::anyhow!("media route unavailable"))
+            .and_then(|route| super::build_provider_for_route(&config.home_dir, &route));
+        status.call_selectable = candidate.is_ok();
+        status.unavailable_reason = candidate.err().map(|error| {
+            if !credential_configured
+                && provider.is_some_and(credential_missing_should_be_static_reason)
+            {
+                "credential_missing".to_string()
+            } else {
+                classify_provider_error(&error).kind.as_str().to_string()
+            }
+        });
+    }
     ResolvedModelAvailability {
         model: model_ref.as_string(),
         provider: model_ref.provider.as_str().to_string(),
@@ -415,6 +457,7 @@ fn resolved_model_availability_entry(
         failure_disposition,
         policy,
         resolved_capabilities,
+        media,
     }
 }
 
@@ -798,7 +841,7 @@ mod tests {
         let models = resolved_provider_models(&fixture.config, "openai");
         let openai = models
             .iter()
-            .find(|entry| entry.model_ref == "openai/gpt-5.4")
+            .find(|entry| entry.model_ref == "openai@default/gpt-5.4")
             .expect("openai model entry");
 
         assert_eq!(openai.provider, "openai");
@@ -828,12 +871,68 @@ mod tests {
     }
 
     #[test]
+    fn media_discovery_builds_the_operation_not_an_agent_turn() {
+        let mut fixture = test_config(Some("openai-key"));
+        fixture.config.validated_model_overrides.insert(
+            ModelRef::parse("openai/gpt-image-2").unwrap(),
+            ModelRuntimeOverride {
+                capabilities: Some(crate::model_catalog::ModelCapabilityOverride {
+                    agent_turn: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let models = resolved_provider_models(&fixture.config, "openai");
+        let image = models
+            .iter()
+            .find(|entry| entry.id == "gpt-image-2")
+            .unwrap();
+        assert!(!image.selectable);
+        assert_eq!(
+            image.media.image_output,
+            super::super::media::MediaSupport::Supported
+        );
+        assert!(image.media.generate_image.call_selectable);
+        assert_eq!(image.model_ref, "openai@default/gpt-image-2");
+        let contract = image.media.image_generation_contract.as_ref().unwrap();
+        assert_eq!(contract.route, image.model_ref);
+        let providers = resolved_model_providers(&fixture.config);
+        let openai = providers.iter().find(|entry| entry.id == "openai").unwrap();
+        assert!(openai.media.generate_image_selectable_models > 0);
+        assert_eq!(
+            openai.media.image_output,
+            super::super::media::MediaSupport::Supported
+        );
+    }
+
+    #[test]
+    fn media_discovery_keeps_capability_when_credentials_are_missing() {
+        let fixture = test_config(None);
+        let models = resolved_provider_models(&fixture.config, "openai");
+        let image = models
+            .iter()
+            .find(|entry| entry.id == "gpt-image-2")
+            .unwrap();
+        assert_eq!(
+            image.media.image_output,
+            super::super::media::MediaSupport::Supported
+        );
+        assert!(!image.media.generate_image.call_selectable);
+        assert_eq!(
+            image.media.generate_image.unavailable_reason.as_deref(),
+            Some("credential_missing")
+        );
+        assert!(image.media.image_generation_contract.is_some());
+    }
+
+    #[test]
     fn resolved_provider_models_includes_codex_astra_contract() {
         let fixture = test_config(Some("openai-key"));
         let models = resolved_provider_models(&fixture.config, "openai-codex");
         let astra = models
             .iter()
-            .find(|entry| entry.model_ref == "openai-codex/gpt-6-astra")
+            .find(|entry| entry.model_ref == "openai-codex@default/gpt-6-astra")
             .expect("Codex Astra model entry");
 
         assert_eq!(astra.provider, "openai-codex");
@@ -866,7 +965,7 @@ mod tests {
         let models = resolved_provider_models(&fixture.config, "openai-codex");
         let sol = models
             .iter()
-            .find(|entry| entry.model_ref == "openai-codex/gpt-6-sol")
+            .find(|entry| entry.model_ref == "openai-codex@default/gpt-6-sol")
             .expect("Codex Sol model entry");
 
         assert_eq!(sol.provider, "openai-codex");
@@ -934,7 +1033,7 @@ mod tests {
 
         let models = resolved_provider_models(&fixture.config, "volcengine");
         assert!(models.iter().any(|entry| {
-            entry.model_ref == "volcengine/doubao-seedream-5.0-lite"
+            entry.model_ref == "volcengine@default/doubao-seedream-5.0-lite"
                 && entry.provider_family == "volcengine"
                 && entry.endpoint == "default"
                 && entry.route_provider == "volcengine"

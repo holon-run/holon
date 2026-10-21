@@ -29,6 +29,8 @@ async fn live_volcengine_ark_seedream_generates_image_with_openai_images_api() -
         .generate_image(ProviderGenerateImageRequest {
             prompt: "Create a simple flat icon of a red kite on a white background.".into(),
             size: Some("1920x1920".into()),
+            aspect_ratio: None,
+            resolution: None,
             background: None,
             output_format: None,
         })

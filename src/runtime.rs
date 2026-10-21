@@ -15,6 +15,7 @@ mod first_run_intro;
 pub(crate) mod input_consumption;
 mod lifecycle;
 pub(crate) mod live_input_consumption;
+mod media;
 mod message_dispatch;
 mod operator;
 mod operator_dispatch;
@@ -2910,6 +2911,9 @@ fn take_limit<T>(mut records: Vec<T>, limit: usize) -> Vec<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ViewImageObservationCacheKey {
     pub(crate) visual_reference_id: String,
+    pub(crate) canonical_route: String,
+    pub(crate) endpoint_config_identity: String,
+    pub(crate) contract_version: String,
     pub(crate) prompt: String,
     pub(crate) observation_schema: String,
     pub(crate) generation_policy: String,

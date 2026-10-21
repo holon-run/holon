@@ -297,6 +297,7 @@ mod tests {
             failure_disposition: None,
             policy: policy(model, display_name, reasoning),
             resolved_capabilities: None,
+            media: Default::default(),
         }
     }
 

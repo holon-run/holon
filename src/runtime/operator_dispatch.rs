@@ -244,7 +244,13 @@ impl RuntimeHandle {
                     apply_patch_surface,
                     continuation_resolution,
                     default_external_ingress.as_ref(),
-                )?;
+                )?
+                .with_media_tool_defaults(
+                    &self
+                        .media_tool_defaults(model_selection.fallback_model())
+                        .await?,
+                    &prompt_tools,
+                );
             if !idle_results_checked || !idle_batch_checked {
                 // Reserve the already planned non-input context before claiming
                 // followers. Rebuild once from the durable input evidence.
@@ -546,6 +552,7 @@ impl RuntimeHandle {
             .skills_runtime_view_for_state(&agent, &identity)
             .await?;
         let context_config = self.current_context_config().await;
+        let media_defaults = self.media_tool_defaults(None).await?;
         build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
             &self.inner.storage,
             &agent,
@@ -563,6 +570,7 @@ impl RuntimeHandle {
             continuation.as_ref(),
             default_external_ingress.as_ref(),
         )
+        .map(|prompt| prompt.with_media_tool_defaults(&media_defaults, &prompt_tools))
     }
 
     pub(super) async fn build_subagent_prompt_for_workspace(

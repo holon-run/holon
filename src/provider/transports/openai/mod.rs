@@ -183,6 +183,7 @@ pub struct OpenAiCodexProvider {
 pub struct OpenAiChatCompletionsProvider {
     client: Client,
     provider_id: String,
+    route_provider: String,
     base_url: String,
     api_key: Option<String>,
     model: String,
@@ -512,6 +513,7 @@ impl OpenAiChatCompletionsProvider {
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),
+            route_provider: provider_config.route_provider.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
             model: model.to_string(),
@@ -721,7 +723,7 @@ impl AgentProvider for OpenAiProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
-        let dialect = openai_images_dialect(&self.provider_id, &self.base_url);
+        let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
         let body = build_images_request(dialect, &self.model, &request)?;
         let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
@@ -1291,7 +1293,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
-        let dialect = openai_images_dialect(&self.provider_id, &self.base_url);
+        let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
         let body = build_images_request(dialect, &self.model, &request)?;
         let headers = self
             .api_key

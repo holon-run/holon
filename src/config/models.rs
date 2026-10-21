@@ -5,6 +5,8 @@ use crate::model_catalog::{
 };
 use std::collections::HashSet;
 
+pub(crate) const VIEW_IMAGE_CONTRACT_VERSION: &str = "view_image.v2";
+
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedViewImageVisionSelection {
     pub(crate) selection: crate::types::ViewImageVisionSelection,
@@ -827,6 +829,31 @@ impl RuntimeModelCatalog {
         )
     }
 
+    pub(crate) fn select_view_image_vision_model_for_call(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
+        requested: &ModelRouteRef,
+    ) -> ResolvedViewImageVisionSelection {
+        let primary = self
+            .provider_chain_for_turn(model_override, pending_fallback_model)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.effective_model(model_override));
+        let mut resolved = self.select_view_image_vision_model_from_candidates_with_route(
+            base_context_config,
+            primary,
+            vec![requested.clone()],
+            "requested_vision_model_supports_image_input",
+            "requested_vision_model_unavailable",
+        );
+        resolved.selection.requested_model =
+            Some(self.canonicalize_model_route_ref(requested).as_string());
+        resolved.selection.selection_source = Some("explicit_call".to_string());
+        resolved
+    }
+
     pub(crate) fn select_view_image_vision_model_from_candidates_with_route(
         &self,
         base_context_config: &ContextConfig,
@@ -883,6 +910,17 @@ impl RuntimeModelCatalog {
             return ResolvedViewImageVisionSelection {
                 selection: ViewImageVisionSelection {
                     selected_mode: ViewImageSelectedMode::Unavailable,
+                    requested_model: None,
+                    resolved_model: None,
+                    selection_source: Some(
+                        if self.vision_model.is_some() {
+                            "vision_default"
+                        } else {
+                            "automatic"
+                        }
+                        .to_string(),
+                    ),
+                    contract_version: Some(VIEW_IMAGE_CONTRACT_VERSION.to_string()),
                     vision_provider: None,
                     vision_model: None,
                     selection_reason: unavailable_reason.to_string(),
@@ -898,6 +936,17 @@ impl RuntimeModelCatalog {
         let primary_supports_image = selected == primary;
         ResolvedViewImageVisionSelection {
             selection: ViewImageVisionSelection {
+                requested_model: None,
+                resolved_model: Some(selected.as_string()),
+                selection_source: Some(
+                    if self.vision_model.is_some() {
+                        "vision_default"
+                    } else {
+                        "automatic"
+                    }
+                    .to_string(),
+                ),
+                contract_version: Some(VIEW_IMAGE_CONTRACT_VERSION.to_string()),
                 selected_mode: if primary_supports_image {
                     ViewImageSelectedMode::NativeImageWithObservation
                 } else {
@@ -940,6 +989,28 @@ impl RuntimeModelCatalog {
                 ModelRouteCapability::ImageGeneration,
             )
         })
+    }
+
+    /// An explicit per-call route never joins the default/fallback candidate chain.
+    pub fn select_generate_image_route_for_call(
+        &self,
+        base_context_config: &ContextConfig,
+        requested_route: Option<&ModelRouteRef>,
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
+    ) -> Option<ResolvedModelRoute> {
+        if let Some(route) = requested_route {
+            return self.resolve_explicit_model_route(
+                base_context_config,
+                route,
+                ModelRouteCapability::ImageGeneration,
+            );
+        }
+        self.select_generate_image_route(
+            base_context_config,
+            model_override,
+            pending_fallback_model,
+        )
     }
 
     pub fn select_generate_image_model(

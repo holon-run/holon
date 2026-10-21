@@ -8,21 +8,24 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    provider::ProviderGenerateImageRequest,
+    provider::{
+        image_delivery::{deliver_image, source_format},
+        ProviderGenerateImageRequest,
+    },
     runtime::RuntimeHandle,
     tool::{helpers::invalid_tool_input, spec::typed_spec, ToolError, ToolResult},
     types::{
         agent_home_workspace_id, AuthorityClass, GenerateImageParameters, GenerateImageResult,
-        GenerateImageSize, GeneratedImageReference, ToolCapabilityFamily,
+        GenerateImageSize, GeneratedImageReference, GeneratedImageSourceReference,
+        ToolCapabilityFamily,
     },
 };
 
-use super::{serialize_success, view_image::read_visual_reference, BuiltinToolDefinition};
+use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
 pub(crate) const NAME: &str = crate::tool::names::GENERATE_IMAGE;
 
-const VALID_SIZES: &[&str] = &["1024x1024", "1536x1024", "1024x1536"];
 const VALID_BACKGROUNDS: &[&str] = &["auto", "transparent", "opaque"];
 const VALID_OUTPUT_FORMATS: &[&str] = &["png", "jpeg", "webp"];
 
@@ -31,7 +34,13 @@ const VALID_OUTPUT_FORMATS: &[&str] = &["png", "jpeg", "webp"];
 pub(crate) struct GenerateImageArgs {
     pub(crate) prompt: String,
     #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(default)]
     pub(crate) size: Option<String>,
+    #[serde(default)]
+    pub(crate) aspect_ratio: Option<String>,
+    #[serde(default)]
+    pub(crate) resolution: Option<String>,
     #[serde(default)]
     pub(crate) background: Option<String>,
     #[serde(default)]
@@ -58,7 +67,7 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: GenerateImageArgs = parse_tool_args(NAME, input)?;
     let prompt = validate_non_empty(args.prompt, NAME, "prompt")?;
-    let size = optional_enum(args.size, "size", VALID_SIZES)?;
+    let size = args.size;
     let background = optional_enum(args.background, "background", VALID_BACKGROUNDS)?;
     let output_format = optional_enum(args.output_format, "output_format", VALID_OUTPUT_FORMATS)?;
     let name = args
@@ -66,107 +75,152 @@ pub(crate) async fn execute(
         .map(|value| validate_filename_stem(&value))
         .transpose()?;
 
-    let provider_result = runtime
-        .generate_image(ProviderGenerateImageRequest {
-            prompt: prompt.clone(),
-            size: size.clone(),
-            background: background.clone(),
-            output_format: output_format.clone(),
-        })
+    let execution = runtime
+        .generate_image(
+            args.model.as_deref(),
+            ProviderGenerateImageRequest {
+                prompt: prompt.clone(),
+                size: size.clone(),
+                aspect_ratio: args.aspect_ratio.clone(),
+                resolution: args.resolution.clone(),
+                background: background.clone(),
+                output_format: output_format.clone(),
+            },
+        )
         .await
         .map_err(generate_image_failed)?;
-
     let generated_dir = runtime.agent_home().join("media").join("generated");
     fs::create_dir_all(&generated_dir).map_err(|error| {
         ToolError::new(
             "generated_media_write_failed",
-            format!("failed to create generated media directory: {error}"),
+            format!("generation succeeded but media directory creation failed: {error}"),
         )
-        .with_details(json!({
-            "path": generated_dir,
-            "io_error": error.to_string(),
-        }))
-        .with_recovery_hint("ensure the agent_home media directory is writable")
+        .with_details(json!({"generation_succeeded": true, "selection": execution.selection}))
+        .with_recovery_hint(
+            "repair local storage; do not regenerate to fix a local delivery failure",
+        )
     })?;
-
     let workspace_id = agent_home_workspace_id(agent_id);
     let mut images = Vec::new();
-    for (index, image) in provider_result.images.into_iter().enumerate() {
-        let sha256 = format!("{:x}", Sha256::digest(&image.bytes));
-        let extension =
-            extension_for_mime_or_format(image.mime.as_deref(), output_format.as_deref());
-        let stem = name
-            .clone()
-            .unwrap_or_else(|| format!("generated_{}", Utc::now().format("%Y%m%dT%H%M%S%.3fZ")));
-        let filename = if index == 0 {
-            format!("{stem}.{extension}")
-        } else {
-            format!("{stem}-{}.{}", index + 1, extension)
-        };
-        let path = generated_dir.join(filename);
-        fs::write(&path, &image.bytes).map_err(|error| {
+    let mut conversions = Vec::new();
+    let mut sources = Vec::new();
+    for image in execution.response.images {
+        let source_sha256 = format!("{:x}", Sha256::digest(&image.bytes));
+        let source_format = source_format(&image.bytes);
+        let stem = name.clone().unwrap_or_else(|| "generated".into());
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let source_path = generated_dir.join(format!(
+            "{stem}-{token}.source.{}",
+            source_format.unwrap_or("bin")
+        ));
+        write_generated_file(&source_path, &image.bytes).map_err(|error| {
             ToolError::new(
                 "generated_media_write_failed",
-                format!("failed to write generated image: {error}"),
+                format!("image generation succeeded; original image could not be saved: {error}"),
             )
-            .with_details(json!({
-                "path": path,
-                "io_error": error.to_string(),
-            }))
-            .with_recovery_hint("ensure the agent_home media directory is writable")
-        })?;
-
-        let read_image = read_visual_reference(&path).map_err(|error| {
-            ToolError::new(
-                "generated_image_invalid",
-                format!("provider returned image bytes that could not be validated: {error}"),
+            .with_details(json!({"generation_succeeded": true, "selection": execution.selection}))
+            .with_recovery_hint(
+                "repair local storage; do not regenerate to fix a local write failure",
             )
-            .with_details(json!({
-                "path": path,
-                "sha256": sha256,
-                "error": error.to_string(),
-            }))
-            .with_recovery_hint("retry generation or choose a different image-generation model")
         })?;
-        let reference = read_image.visual_reference;
+        let mut source = GeneratedImageSourceReference {
+            uri: source_path.to_string_lossy().into_owned(),
+            sha256: source_sha256,
+            byte_count: image.bytes.len() as u64,
+            format: source_format.map(str::to_owned),
+            provider_reported_mime: image.mime,
+            mime: None,
+            width: None,
+            height: None,
+        };
+        let target = execution.parameters.delivery_format.clone();
+        let delivered = tokio::task::spawn_blocking(move || deliver_image(&image.bytes, &target))
+            .await
+            .map_err(|error| ToolError::new("image_conversion_failed", format!("local delivery worker failed: {error}"))
+                .with_details(json!({"generation_succeeded": true, "source": source, "selection": execution.selection}))
+                .with_recovery_hint("recover the saved original locally; do not regenerate"))?
+            .map_err(|error| ToolError::new(error.code, format!("image generation succeeded; local delivery failed: {error}"))
+                .with_details(json!({"generation_succeeded": true, "source": source, "selection": execution.selection,
+                    "requested_parameters": execution.parameters.requested, "delivery_format": execution.parameters.delivery_format,
+                    "conversion": {"status": "failed", "code": error.code, "message": error.message}}))
+                .with_recovery_hint("use the saved original or convert it locally with safe settings; do not regenerate"))?;
+        let path = if delivered.conversion.converted {
+            let path = generated_dir.join(format!("{stem}-{token}.{}", delivered.extension));
+            write_generated_file(&path, &delivered.bytes).map_err(|error| {
+                ToolError::new(
+                    "generated_media_write_failed",
+                    format!("image generation succeeded; final file write failed: {error}"),
+                )
+                .with_details(json!({"generation_succeeded": true, "source": source}))
+                .with_recovery_hint("recover the saved original locally; do not regenerate")
+            })?;
+            path
+        } else {
+            source_path
+        };
+        let sha256 = format!("{:x}", Sha256::digest(&delivered.bytes));
         let relative_path = PathBuf::from("media").join("generated").join(
             path.file_name()
                 .ok_or_else(|| anyhow!("generated image path has no filename"))?,
         );
-        let uri = path.to_string_lossy().into_owned();
         images.push(GeneratedImageReference {
-            kind: "generated_image".to_string(),
-            id: format!("img_{}", &reference.sha256[..16]),
+            kind: "generated_image".into(),
+            id: format!("img_{}", &sha256[..16]),
             workspace_id: workspace_id.clone(),
             path: relative_path,
-            uri,
-            sha256: reference.sha256,
-            mime: reference.mime,
-            byte_count: reference.byte_count,
+            uri: path.to_string_lossy().into_owned(),
+            sha256,
+            mime: delivered.mime.into(),
+            byte_count: delivered.bytes.len() as u64,
             size: GenerateImageSize {
-                width: reference.size.width,
-                height: reference.size.height,
+                width: Some(delivered.conversion.width),
+                height: Some(delivered.conversion.height),
             },
-            created_at: reference.created_at,
+            created_at: Utc::now(),
         });
+        source.mime = Some(delivered.conversion.source_mime.clone());
+        source.width = Some(delivered.conversion.source_width);
+        source.height = Some(delivered.conversion.source_height);
+        conversions.push(delivered.conversion);
+        sources.push(source);
     }
-
-    serialize_success(
-        NAME,
-        &GenerateImageResult {
-            images,
-            provider: provider_result.provider,
-            model: provider_result.model,
-            prompt,
-            parameters: GenerateImageParameters {
-                size,
-                background,
-                output_format,
-                name,
-            },
-            summary_text: Some("GenerateImage created one image".to_string()),
+    let payload = GenerateImageResult {
+        images,
+        provider: execution.response.provider,
+        model: execution.response.model,
+        prompt,
+        parameters: GenerateImageParameters {
+            size,
+            aspect_ratio: args.aspect_ratio,
+            resolution: args.resolution,
+            background,
+            output_format,
+            name,
         },
-    )
+        selection: Some(execution.selection),
+        generation_succeeded: Some(true),
+        requested_parameters: Some(execution.parameters.requested),
+        provider_parameters: Some(execution.parameters.provider_parameters),
+        provider_effective_parameters: Some(execution.parameters.effective_parameters),
+        parameter_defaults: Some(execution.parameters.defaults),
+        parameter_mapping: (!execution.parameters.mapping.is_null())
+            .then_some(execution.parameters.mapping),
+        contract: Some(execution.contract),
+        source_images: sources,
+        conversion: conversions,
+        summary_text: Some("GenerateImage created one image; original retained".into()),
+    };
+    serialize_success(NAME, &payload)
+}
+
+fn write_generated_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    Ok(())
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
@@ -194,6 +248,23 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
                 (None, Some(height)) => format!("unknownx{height}"),
                 (None, None) => "unknown".to_string(),
             }
+        ));
+    }
+    if let Some(selection) = value.get("selection") {
+        lines.push(format!("Selection: {selection}"));
+    }
+    if let Some(conversion) = value.get("conversion") {
+        lines.push(format!("Delivery: {conversion}"));
+    }
+    if let Some(sources) = value.get("source_images") {
+        lines.push(format!("Retained originals: {sources}"));
+    }
+    if let Some(mapping) = value
+        .get("parameter_mapping")
+        .filter(|mapping| !mapping.is_null())
+    {
+        lines.push(format!(
+            "Size compatibility mapping (not exact pixels): {mapping}"
         ));
     }
     Ok(lines.join("\n"))
@@ -251,21 +322,10 @@ fn validate_filename_stem(value: &str) -> Result<String> {
     Ok(sanitized)
 }
 
-fn extension_for_mime_or_format(mime: Option<&str>, output_format: Option<&str>) -> &'static str {
-    match mime {
-        Some("image/png") => "png",
-        Some("image/jpeg") => "jpg",
-        Some("image/webp") => "webp",
-        Some("image/gif") => "gif",
-        _ => match output_format {
-            Some("jpeg") => "jpg",
-            Some("webp") => "webp",
-            _ => "png",
-        },
-    }
-}
-
 fn generate_image_failed(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<ToolError>().is_some() {
+        return error;
+    }
     ToolError::new(
         "image_generation_failed",
         format!("GenerateImage could not create an image: {error}"),
@@ -277,4 +337,153 @@ fn generate_image_failed(error: anyhow::Error) -> anyhow::Error {
         "configure an OpenAI image-generation model with valid credentials, or retry after provider failures are resolved",
     )
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn historical_result() -> Value {
+        json!({
+            "images": [{
+                "type": "generated_image",
+                "id": "img_historical",
+                "workspace_id": "agent_home:historical",
+                "path": "media/generated/historical.png",
+                "uri": "/historical/media/generated/historical.png",
+                "sha256": "historical-sha256",
+                "mime": "image/png",
+                "byte_count": 123,
+                "size": {"width": 4, "height": 3},
+                "created_at": "2026-10-01T00:00:00Z"
+            }],
+            "provider": "historical-provider",
+            "model": "historical-model",
+            "prompt": "draw",
+            "parameters": {"output_format": "png"}
+        })
+    }
+
+    #[test]
+    fn generate_image_historical_result_replays_without_new_metadata() {
+        let historical = historical_result();
+        let result: GenerateImageResult = serde_json::from_value(historical.clone()).unwrap();
+        assert!(result.selection.is_none());
+        assert!(result.generation_succeeded.is_none());
+        assert!(result.source_images.is_empty());
+        assert!(result.conversion.is_empty());
+        assert_eq!(serde_json::to_value(&result).unwrap(), historical);
+        let replay = serialize_success(NAME, &result).unwrap();
+        let rendered = render_for_model(&replay).unwrap();
+        assert!(rendered.contains("historical-provider/historical-model"));
+        assert!(!rendered.contains("Selection:"));
+        assert!(!rendered.contains("Delivery:"));
+    }
+
+    #[test]
+    fn generate_image_result_round_trip_preserves_delivery_metadata() {
+        use crate::provider::{
+            image_delivery::ImageConversionMetadata, image_generation::ImageGenerationParameters,
+        };
+
+        let mut result: GenerateImageResult = serde_json::from_value(historical_result()).unwrap();
+        result.parameters.aspect_ratio = Some("4:3".into());
+        result.parameters.resolution = Some("1k".into());
+        result.selection = Some(json!({
+            "requested_model": "xai@default/grok-imagine-image",
+            "resolved_model": "xai@default/grok-imagine-image",
+            "selection_source": "explicit",
+            "contract_version": "image-generation-v1"
+        }));
+        result.generation_succeeded = Some(true);
+        result.requested_parameters = Some(ImageGenerationParameters {
+            aspect_ratio: Some("4:3".into()),
+            resolution: Some("1k".into()),
+            output_format: Some("png".into()),
+            ..Default::default()
+        });
+        result.provider_parameters = Some(ImageGenerationParameters {
+            aspect_ratio: Some("4:3".into()),
+            resolution: Some("1k".into()),
+            ..Default::default()
+        });
+        result.provider_effective_parameters = Some(json!({
+            "aspect_ratio": {"value": "4:3", "source": "caller", "sent": true}
+        }));
+        result.parameter_defaults = Some(json!({
+            "delivery_format": {"value": "png", "source": "caller"}
+        }));
+        result.source_images = vec![GeneratedImageSourceReference {
+            uri: "/historical/media/generated/original.source.jpg".into(),
+            sha256: "source-sha256".into(),
+            byte_count: 100,
+            format: Some("jpeg".into()),
+            provider_reported_mime: Some("image/png".into()),
+            mime: Some("image/jpeg".into()),
+            width: Some(4),
+            height: Some(3),
+        }];
+        result.conversion = vec![ImageConversionMetadata {
+            source_format: "jpeg".into(),
+            source_mime: "image/jpeg".into(),
+            source_width: 4,
+            source_height: 3,
+            delivered_format: "png".into(),
+            delivered_mime: "image/png".into(),
+            converted: true,
+            orientation_applied: false,
+            encoding_policy: "png_lossless".into(),
+            width: 4,
+            height: 3,
+        }];
+        let encoded = serde_json::to_value(&result).unwrap();
+        let decoded: GenerateImageResult = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, result);
+        let replay = serialize_success(NAME, &decoded).unwrap();
+        let rendered = render_for_model(&replay).unwrap();
+        assert!(rendered.contains("xai@default/grok-imagine-image"));
+        assert!(rendered.contains("png_lossless"));
+        assert!(rendered.contains("original.source.jpg"));
+        let schema = serde_json::to_value(schemars::schema_for!(GenerateImageResult)).unwrap();
+        assert!(schema["properties"]["conversion"].is_object());
+        assert!(schema["properties"]["contract"].is_object());
+    }
+
+    #[test]
+    fn generate_image_args_preserve_omission_and_route_specific_sizes() {
+        let args: GenerateImageArgs = serde_json::from_value(json!({"prompt": "draw"})).unwrap();
+        assert!(args.model.is_none());
+        assert!(args.size.is_none());
+        assert!(args.output_format.is_none());
+        let args: GenerateImageArgs = serde_json::from_value(json!({
+            "prompt": "draw", "model": "openai@default/gpt-image-2", "size": "1536x864",
+        }))
+        .unwrap();
+        assert_eq!(args.size.as_deref(), Some("1536x864"));
+        assert_eq!(args.model.as_deref(), Some("openai@default/gpt-image-2"));
+    }
+
+    #[test]
+    fn generate_image_original_survives_failed_local_delivery_without_overwrite() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("retained.source.bin");
+        let bytes = b"unknown or damaged provider output";
+        write_generated_file(&original, bytes).unwrap();
+        let failure = deliver_image(bytes, "png").unwrap_err();
+        assert_eq!(failure.code, "unsupported_source_image_format");
+        assert_eq!(fs::read(&original).unwrap(), bytes);
+        assert!(write_generated_file(&original, b"must not replace").is_err());
+        assert_eq!(fs::read(&original).unwrap(), bytes);
+    }
+
+    #[test]
+    fn generate_image_preserves_structured_preflight_errors() {
+        let error: anyhow::Error =
+            ToolError::new("unsupported_image_parameter", "unsupported background").into();
+        let error = generate_image_failed(error);
+        assert_eq!(
+            error.downcast_ref::<ToolError>().unwrap().kind,
+            "unsupported_image_parameter"
+        );
+    }
 }

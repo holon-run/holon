@@ -350,6 +350,7 @@ fn sample_model_availability(
             evidence: Default::default(),
         },
         resolved_capabilities: None,
+        media: Default::default(),
     }
 }
 
