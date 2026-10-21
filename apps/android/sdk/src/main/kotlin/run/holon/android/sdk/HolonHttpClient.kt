@@ -1446,9 +1446,12 @@ public class HolonHttpClient internal constructor(
             .last()
 
     public companion object {
+        // Connect fails fast so a dead network is recognized quickly; the whole-call bound stays
+        // generous because a slow server is not an offline client.
         internal fun defaultHttpClient(): OkHttpClient =
             OkHttpClient.Builder()
-                .callTimeout(30, TimeUnit.SECONDS)
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .callTimeout(90, TimeUnit.SECONDS)
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .build()

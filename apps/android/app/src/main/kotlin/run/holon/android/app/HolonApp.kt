@@ -101,13 +101,3 @@ internal fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
     }
     }
 }
-
-internal enum class AgentFilter(private val sourceLabel: String) {
-    All("全部"),
-    Attention("需回应"),
-    NewResults("新结果"),
-    Active("工作中"),
-    ;
-
-    val label: String get() = ui(sourceLabel)
-}

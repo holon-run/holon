@@ -445,6 +445,9 @@ internal object UiCopy {
         目标、进度、结果与关联产物将在这里打开。|Objectives, progress, results and related artifacts will appear here.
         相关工作|Related work
         离线缓存|Offline cache
+        网络波动，正在自动重试|Network hiccup; retrying automatically
+        网络暂时不可用，已保留当前内容；恢复后可重试|Network unavailable; current content is kept and you can retry after recovery
+        连接异常|Connection issue
         空闲|Idle
         等任务结果|Waiting for task results
         等你回应|Waiting for your reply
@@ -615,7 +618,7 @@ internal object UiCopy {
 
         match("页面返回错误（(\\d+)），可手动重试。")?.let { return "Page returned an error (${it[1]}). Retry manually." }
         match("(\\d+|—) 个 Agent")?.let { return count(it[1], "Agent") }
-        match("(\\d+) 个 Agent · (已同步|已连接|离线缓存)(.*)")?.let { (_, value, status, clock) ->
+        match("(\\d+) 个 Agent · (已同步|已连接|离线缓存|连接异常)(.*)")?.let { (_, value, status, clock) ->
             return "${count(value, "Agent")} · ${translate(status, "en")}$clock"
         }
         match("(\\d+) 条输入正在排队")?.let { return "${count(it[1], "input")} queued" }
