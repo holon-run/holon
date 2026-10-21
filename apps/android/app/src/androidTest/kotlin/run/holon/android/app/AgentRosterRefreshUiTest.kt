@@ -32,23 +32,25 @@ class AgentRosterRefreshUiTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
 
     @Test
-    fun offlineRetryAndToolbarRefreshIgnoreUnrelatedBusyState() {
-        withScreen(HolonUiState(online = false, busy = true)) { actions ->
-            compose.onNodeWithText(ui("重试")).assertIsEnabled().performClick()
+    fun offlineToolbarRefreshAndPullRefreshIgnoreUnrelatedBusyState() {
+        withScreen(HolonUiState(online = false, busy = true, rosterState = AgentRosterState.Cached)) { actions ->
+            compose.onNodeWithText(ui("0 个 Agent") + " · " + ui("离线缓存")).assertExists()
+
+            compose.onNodeWithContentDescription(ui("刷新")).assertIsEnabled().performClick()
             compose.waitForIdle()
             assertEquals(listOf(true), actions.refreshRequests.toList())
 
-            compose.onNodeWithContentDescription(ui("刷新")).performClick()
-            compose.waitForIdle()
+            pullToRefresh()
             assertEquals(listOf(true, true), actions.refreshRequests.toList())
         }
     }
 
     @Test
-    fun errorProvidesExplicitRetry() {
+    fun errorStaysVisibleAsQuietLineWhileToolbarRefreshRetries() {
         withScreen(HolonUiState(online = true, error = "Roster unavailable")) { actions ->
             compose.onNodeWithText("Roster unavailable").assertExists()
-            compose.onNodeWithText(ui("重试")).performClick()
+            compose.onNodeWithText(ui("0 个 Agent") + " · " + ui("连接异常")).assertExists()
+            compose.onNodeWithContentDescription(ui("刷新")).performClick()
             compose.waitForIdle()
             assertEquals(listOf(true), actions.refreshRequests.toList())
         }
@@ -109,11 +111,10 @@ class AgentRosterRefreshUiTest {
     }
 
     @Test
-    fun refreshingIgnoresRetryToolbarAndRepeatedPull() {
+    fun refreshingIgnoresToolbarAndRepeatedPull() {
         withScreen(
             HolonUiState(online = false, error = "Roster unavailable", rosterRefreshing = true),
         ) { actions ->
-            compose.onNodeWithText(ui("重试")).assertIsNotEnabled().performClick()
             compose.onNodeWithContentDescription(ui("刷新")).assertIsNotEnabled().performClick()
             pullToRefresh()
             assertTrue(actions.refreshRequests.isEmpty())

@@ -125,6 +125,8 @@ internal class HolonViewModel(
     private var workspaceBrowseGeneration = 0L
     private var workspaceBrowseRequest: WorkspaceBrowseRequest? = null
     private var refreshConversationOnRoster = false
+    // Consecutive transient network failures; only 2+ in a row flip the UI offline.
+    private var transientNetworkFailures = 0
     private val sessionResetBarrier = SessionResetBarrier(viewModelScope)
     private var sessionTransitionGeneration = 0L
     private var briefReadStateScope: String? = null
@@ -244,6 +246,7 @@ internal class HolonViewModel(
                 ResumeResult.NoSession ->
                     mutableState.update { it.copy(phase = AppPhase.SignedOut, networkProfiles = profiles) }
                 is ResumeResult.Ready -> {
+                    transientNetworkFailures = 0
                     mutableState.update {
                         it.copy(
                             phase = AppPhase.Ready,
@@ -273,6 +276,7 @@ internal class HolonViewModel(
                             statusMessage = if (result.cached.isEmpty()) "当前离线，暂无本地缓存" else "当前离线，显示上次同步内容",
                         )
                     }
+                    transientNetworkFailures = 1
                     loadBriefReadStates()
                     refresh(showProgress = false)
                 }
@@ -418,6 +422,7 @@ internal class HolonViewModel(
                             )
                         }
                     is ResumeResult.Ready -> {
+                    transientNetworkFailures = 0
                         mutableState.update {
                             it.copy(
                                 phase = AppPhase.Ready,
@@ -741,6 +746,7 @@ internal class HolonViewModel(
                     Triple(session, roster, repository.networkProfiles())
                 }
             }.onSuccess { (session, roster, profiles) ->
+                transientNetworkFailures = 0
                 mutableState.value =
                     HolonUiState(
                         phase = AppPhase.Ready,
@@ -846,6 +852,7 @@ internal class HolonViewModel(
     }
 
     private fun acceptRoster(session: ActiveSession, roster: HolonRosterSnapshot) {
+        transientNetworkFailures = 0
         val generation = liveSyncGeneration
         val refreshConversation = refreshConversationOnRoster || !state.value.online || state.value.session?.isOffline == true
         refreshConversationOnRoster = false
@@ -2635,12 +2642,16 @@ internal class HolonViewModel(
             return
         }
         if (error.isTransientNetworkFailure()) {
+            transientNetworkFailures += 1
+            // A single transport failure (slow server, brief hiccup) is not offline:
+            // keep the current content and let the roster refresh retry with backoff.
+            val offline = transientNetworkFailures >= 2
             mutableState.update {
                 it.copy(
                     busy = false,
-                    online = false,
+                    online = if (offline) false else it.online,
                     error = null,
-                    statusMessage = TRANSIENT_NETWORK_STATUS_MESSAGE,
+                    statusMessage = if (offline) TRANSIENT_NETWORK_STATUS_MESSAGE else TRANSIENT_NETWORK_RETRY_MESSAGE,
                 )
             }
             if (foreground && state.value.phase == AppPhase.Ready) rosterRefresh.request()

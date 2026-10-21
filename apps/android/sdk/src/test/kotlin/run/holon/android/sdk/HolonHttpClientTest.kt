@@ -257,7 +257,9 @@ class HolonHttpClientTest {
 
     @Test
     fun `default client uses the bounded total call timeout`() {
-        assertEquals(30_000, HolonHttpClient.defaultHttpClient().callTimeoutMillis)
+        val client = HolonHttpClient.defaultHttpClient()
+        assertEquals(90_000, client.callTimeoutMillis)
+        assertEquals(10_000, client.connectTimeoutMillis)
     }
 
     @Test

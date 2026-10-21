@@ -1247,6 +1247,9 @@ internal fun Throwable.isTransientNetworkFailure(): Boolean =
 internal const val TRANSIENT_NETWORK_STATUS_MESSAGE: String =
     "网络暂时不可用，已保留当前内容；恢复后可重试"
 
+internal const val TRANSIENT_NETWORK_RETRY_MESSAGE: String =
+    "网络波动，正在自动重试"
+
 internal fun safeFileName(value: String): String =
     value.map { if (it.isLetterOrDigit() || it in ".-_ ") it else '_' }.joinToString("").take(120)
 

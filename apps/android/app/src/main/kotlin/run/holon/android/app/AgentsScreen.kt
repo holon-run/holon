@@ -15,7 +15,6 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,9 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,7 +51,6 @@ import run.holon.android.sdk.AgentSummary
 
 @Composable
 internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
-    var filter by rememberSaveable { mutableStateOf(AgentFilter.All) }
     var searchOpen by rememberSaveable { mutableStateOf(state.search.isNotBlank()) }
     var networkChooser by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -68,24 +63,10 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
         !rosterKnown -> if (rosterLoading) "加载中" else "未加载"
         rosterLoading -> if (state.rosterState == AgentRosterState.Cached || !state.online) "上次同步内容 · 更新中" else "更新中"
         state.online && state.error == null && state.rosterState == AgentRosterState.Synced -> "已同步"
-        else -> "离线缓存"
+        !state.online -> "离线缓存"
+        else -> "连接异常"
     }
-    val attentionCount = state.agents.count { it.needsReply() }
-    val unreadCount =
-        if (state.briefReadStatesLoaded) state.agents.count { it.unreadCount(state.briefReadStates) > 0 }
-        else if (state.readBriefsLoaded) state.agents.count { it.hasUnreadBrief(state.readBriefIds) }
-        else 0
-    val activeCount = state.agents.count { it.isActive() }
-    val filtered = state.filteredAgents.filter { agent ->
-        when (filter) {
-            AgentFilter.All -> true
-            AgentFilter.Attention -> agent.needsReply()
-            AgentFilter.NewResults ->
-                (state.briefReadStatesLoaded && agent.unreadCount(state.briefReadStates) > 0) ||
-                    (!state.briefReadStatesLoaded && state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds))
-            AgentFilter.Active -> agent.isActive()
-        }
-    }
+    val filtered = state.filteredAgents
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -124,18 +105,15 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.statusMessage?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
-            if (!switchingNetwork && (state.error != null || !state.online)) {
-                Surface(
-                    color = if (state.error != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = if (state.error != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
-                    shape = RoundedCornerShape(9.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(ui(state.error ?: "离线缓存"), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        TextButton(onClick = refresh, enabled = canRefresh) { Text(ui("重试")) }
-                    }
-                }
+            // Errors stay visible as one quiet line; refresh lives in the toolbar and pull-to-refresh.
+            val errorNotice = state.error
+            if (!switchingNetwork && errorNotice != null) {
+                Text(
+                    ui(errorNotice),
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             AnimatedVisibility(searchOpen) {
                 OutlinedTextField(
@@ -151,24 +129,6 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                AgentFilter.entries.forEach { option ->
-                    val count = when (option) {
-                        AgentFilter.All -> state.agents.size
-                        AgentFilter.Attention -> attentionCount
-                        AgentFilter.NewResults -> unreadCount
-                        AgentFilter.Active -> activeCount
-                    }
-                    FilterChip(
-                        selected = filter == option,
-                        onClick = { filter = option },
-                        label = { Text("${option.label} ${if (rosterKnown) count else "—"}") },
-                    )
-                }
             }
             PullToRefreshBox(
                 isRefreshing = rosterLoading,
@@ -195,15 +155,8 @@ internal fun AgentsScreen(state: HolonUiState, viewModel: AgentsActions) {
                             !rosterKnown ->
                                 EmptyPage(ui("暂时无法加载 Agent"), ui("没有可用缓存，请连接网络后重试。"))
                             state.agents.isEmpty() -> EmptyPage(ui("还没有 Agent"), ui("连接成功后，Agent 会显示在这里。"))
-                            filter == AgentFilter.Attention && attentionCount == 0 ->
-                                EmptyPage(ui("目前没有需要回应的 Agent"), ui("选择“全部”查看其他 Agent。"))
-                            filter == AgentFilter.NewResults && unreadCount == 0 ->
-                                EmptyPage(ui("目前没有未读结果"), ui("选择“全部”查看其他 Agent。"))
-                            filter == AgentFilter.Active && activeCount == 0 ->
-                                EmptyPage(ui("目前没有工作中的 Agent"), ui("选择“全部”查看其他 Agent。"))
                             state.search.isNotBlank() ->
-                                EmptyPage(ui("没有匹配的 Agent"), ui("调整搜索词或筛选条件后再试。"))
-                            else -> EmptyPage(ui("这个筛选暂无 Agent"), ui("选择“全部”查看所有 Agent。"))
+                                EmptyPage(ui("没有匹配的 Agent"), ui("调整搜索词后再试。"))
                         }
                     }
                     item { Spacer(Modifier.height(20.dp)) }
