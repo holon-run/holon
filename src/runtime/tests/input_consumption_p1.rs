@@ -6,6 +6,7 @@ use crate::types::{
     QueueEntryRecord, TurnOwner, WorkItemPlanStatus,
 };
 
+mod recovery_batching;
 mod recovery_diagnostics;
 
 #[derive(Default)]

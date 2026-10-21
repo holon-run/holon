@@ -16,6 +16,9 @@ mod terminal_anchor_tests;
 #[cfg(test)]
 mod repeated_failure_tests;
 
+#[cfg(test)]
+pub(super) mod stale_source_tests;
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

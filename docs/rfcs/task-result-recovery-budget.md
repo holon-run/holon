@@ -10,6 +10,25 @@ Automatic recovery must be durable and finite without treating an undelivered
 result as successfully settled. Provider fallback transfers an existing
 admission; it is not another recovery root.
 
+## Already-settled owner wake consumption
+
+A queued recovery owner wake can outlive delivery by another legitimate path.
+Before creating a turn, the scheduler may consume that source as system-only
+work when its durable runtime provenance, original result identity, captured
+owner and task generation still match, all results for that owner are settled,
+and no unresolved owner or exact task-result wait remains. Exact-wait recovery
+continuations and uncertain, pending or in-flight evidence retain the existing
+reducer/admission path; absence of model reentry alone is not proof of no work.
+
+The no-work predicate is revalidated in the same transaction as the expected
+queued/interrupted source CAS to processed, the agent pending projection, and a
+metadata-only `task_result_recovery_source_consumed` audit event. A concurrent
+result or changed source prevents consumption and causes replanning. No turn,
+execution attempt, result settlement, recovery budget charge or business
+completion is manufactured. Pre-commit faults leave the source retryable;
+post-commit replay cannot consume it twice. Existing reducer visibility and
+historical turns are unchanged.
+
 ## Durable admission budget
 
 Each settlement obligation retains its result identity, task and owner fences.

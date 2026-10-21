@@ -99,6 +99,12 @@ For a queue follower, source claim/consumption and durable turn attachment must
 commit atomically. Persist each original input ID, its grouping evidence, reply
 route, and presentation/source reference before the provider request.
 
+A fully settled, fenced recovery owner wake can instead be consumed before any
+turn or activation exists, with atomic queue/audit evidence as specified in
+[task-result recovery](task-result-recovery-budget.md#already-settled-owner-wake-consumption).
+This is not input admission or delivery, and does not generalize to other
+reducer-only sources.
+
 Anchor claim and task-result admission already have separate commits. Preserve
 their defined recovery sequence rather than claim a nonexistent cross-source
 transaction. Queue consumption at durable attachment and result settlement at
