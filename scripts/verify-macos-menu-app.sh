@@ -31,18 +31,34 @@ require_universal() {
 require_universal "$menu_binary"
 require_universal "$holon_binary"
 
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")" == "run.holon.menu" ]]
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist")" == "$expected_version" ]]
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$info_plist")" == "13.0" ]]
+# macOS stock bash 3.2 does not trigger errexit on a failing bare `[[ ]]`
+# compound command, so plist assertions must exit explicitly.
+assert_plist_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "$label mismatch: expected '$expected', got '${actual:-<missing>}'" >&2
+    exit 1
+  fi
+}
+
+assert_plist_eq "CFBundleIdentifier" "run.holon.menu" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")"
+assert_plist_eq "CFBundleShortVersionString" "$expected_version" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist")"
+assert_plist_eq "LSMinimumSystemVersion" "13.0" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$info_plist")"
 
 icon_file="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$info_plist")"
 [[ "$icon_file" == "Holon.icns" && -s "$app_dir/Contents/Resources/$icon_file" ]] || {
   echo "Holon.app is missing its brand icon" >&2
   exit 1
 }
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDevelopmentRegion' "$info_plist")" == "en" ]]
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:0' "$info_plist")" == "en" ]]
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:1' "$info_plist")" == "zh-Hans" ]]
+assert_plist_eq "CFBundleDevelopmentRegion" "en" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDevelopmentRegion' "$info_plist")"
+assert_plist_eq "CFBundleLocalizations[0]" "en" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:0' "$info_plist")"
+assert_plist_eq "CFBundleLocalizations[1]" "zh-Hans" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleLocalizations:1' "$info_plist")"
 
 # SwiftPM resources must survive app packaging, not just swift test. Resource
 # directory names are lowercased by SwiftPM on some toolchain versions.
