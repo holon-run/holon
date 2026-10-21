@@ -51,6 +51,8 @@ static HTTP_OTHER: MetricAccumulator = MetricAccumulator::new("http.json.other")
 
 static PROJECTION_AGENT_SUMMARY: MetricAccumulator =
     MetricAccumulator::new("projection.agent_summary");
+static AGENT_LIST_PROJECTION: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_list.batch_read");
 static PROJECTION_RUNTIME_CACHE_REBUILD: MetricAccumulator =
     MetricAccumulator::new("projection.runtime_current_cache.rebuild");
 static PROJECTION_RUNTIME_CACHE_READ: MetricAccumulator =
@@ -610,6 +612,13 @@ pub fn record_agent_summary_projection(elapsed: Duration) {
     PROJECTION_AGENT_SUMMARY.record(elapsed, None);
 }
 
+/// Records one batched `/agents/list` posture read through its single
+/// committed read view.
+pub fn record_agent_list_projection(elapsed: Duration) {
+    process_started_at();
+    AGENT_LIST_PROJECTION.record(elapsed, None);
+}
+
 pub fn record_runtime_projection_cache_rebuild() {
     process_started_at();
     PROJECTION_RUNTIME_CACHE_REBUILD.record(Duration::ZERO, None);
@@ -931,6 +940,7 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
         ],
         projections: vec![
             PROJECTION_AGENT_SUMMARY.snapshot(false),
+            AGENT_LIST_PROJECTION.snapshot(false),
             PROJECTION_RUNTIME_CACHE_REBUILD.snapshot(false),
             PROJECTION_RUNTIME_CACHE_READ.snapshot(false),
             OBJECT_QUERY_CACHE_HIT.snapshot(false),

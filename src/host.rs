@@ -44,6 +44,7 @@ use crate::{
         SchedulerRepairInspection,
     },
     runtime_db::{
+        agent_list::AgentListPostureRow,
         agent_relations::{independent_creation_records, supervised_creation_records},
         destructive_operations::DestructiveOperationPhase,
         RuntimeDb,
@@ -4698,35 +4699,109 @@ impl RuntimeHost {
         &self,
         parent_agent_id: Option<&str>,
     ) -> Result<Vec<AgentListEntry>> {
+        let identities = self
+            .agent_identity_records()?
+            .into_iter()
+            .filter(|record| {
+                record.status == AgentRegistryStatus::Active
+                    && record.visibility == AgentVisibility::Public
+                    && parent_agent_id.map_or(true, |parent| {
+                        record
+                            .lineage_parent_agent_id
+                            .as_deref()
+                            .or(record.parent_agent_id.as_deref())
+                            == Some(parent)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if identities.is_empty() {
+            return Ok(Vec::new());
+        }
+        let agent_ids = identities
+            .iter()
+            .map(|record| record.agent_id.clone())
+            .collect::<Vec<_>>();
+        // One connection and one deferred read transaction cover every
+        // roster member's facts, replacing per-agent N+1 repository reads.
+        let rows = self.runtime_db().agent_list_posture_rows(&agent_ids)?;
+        let mut rows_by_agent = rows
+            .rows
+            .into_iter()
+            .map(|row| (row.agent_id.clone(), row))
+            .collect::<HashMap<_, _>>();
+        let catalog = RuntimeModelCatalog::from_config(&self.config());
         let mut entries = Vec::new();
-        for identity in self.agent_identity_records()?.into_iter().filter(|record| {
-            record.status == AgentRegistryStatus::Active
-                && record.visibility == AgentVisibility::Public
-                && parent_agent_id.map_or(true, |parent| {
-                    record
-                        .lineage_parent_agent_id
-                        .as_deref()
-                        .or(record.parent_agent_id.as_deref())
-                        == Some(parent)
-                })
-        }) {
-            let runtime = {
-                let registry = self.inner.runtimes.read().await;
-                registry
-                    .agents
-                    .get(&identity.agent_id)
-                    .filter(|entry| !entry.task.is_finished())
-                    .map(|entry| entry.runtime.clone())
-            };
-            let entry = if let Some(runtime) = runtime {
-                runtime.agent_list_entry().await?
-            } else {
-                self.agent_list_entry_from_storage(&identity)?
-            };
-            entries.push(entry);
+        for identity in identities {
+            let row = rows_by_agent.remove(&identity.agent_id);
+            entries.push(self.agent_list_entry_from_projection_row(&identity, row, &catalog));
         }
         entries.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
         Ok(entries)
+    }
+
+    /// Maps one roster member's committed batch rows to its list entry.
+    /// Resident runtimes are intentionally served from the same committed
+    /// view as unloaded members: `/agents/list` never starts a runtime and
+    /// never mixes per-agent read views. Unreadable payloads degrade this
+    /// one member to placeholder facts, matching the previous per-agent
+    /// read-error behavior.
+    fn agent_list_entry_from_projection_row(
+        &self,
+        identity: &AgentIdentityRecord,
+        row: Option<AgentListPostureRow>,
+        catalog: &RuntimeModelCatalog,
+    ) -> AgentListEntry {
+        let agent = match row.as_ref().and_then(|row| row.agent_state_json.as_deref()) {
+            Some(payload) => match serde_json::from_str::<AgentState>(payload) {
+                Ok(agent) => agent,
+                Err(error) => {
+                    warn!(
+                        agent_id = %identity.agent_id,
+                        error = %error,
+                        "failed to read agent state for /agents/list; using stopped placeholder"
+                    );
+                    stopped_unloaded_agent(&identity.agent_id)
+                }
+            },
+            None => stopped_unloaded_agent(&identity.agent_id),
+        };
+        let model = crate::runtime::agent_model_state_for_catalog(
+            catalog,
+            &self.runtime_context_config(),
+            &agent,
+        );
+        let scheduling_posture = match row {
+            Some(row) => match row.facts {
+                Ok(mut facts) => {
+                    facts.current_work_item_id = agent.current_work_item_id.clone();
+                    facts.has_queued_input = row.has_queued_input;
+                    crate::storage::read_models::agent_posture_from_facts(&agent, &facts)
+                }
+                Err(error) => {
+                    warn!(
+                        agent_id = %identity.agent_id,
+                        error = %error,
+                        "failed to read agent posture for /agents/list; using unknown placeholder"
+                    );
+                    crate::types::AgentPostureProjection::default()
+                }
+            },
+            None => crate::types::AgentPostureProjection::default(),
+        };
+        let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
+        AgentListEntry {
+            identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
+            lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
+            status: agent.status,
+            scheduling_posture,
+            pending: agent.pending,
+            current_run_id: agent.current_run_id,
+            waiting_reason,
+            model: (&model).into(),
+            active_workspace_entry: agent
+                .active_workspace_entry
+                .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+        }
     }
 
     pub async fn operator_agent_tree(&self) -> Result<AgentTreeProjection> {
@@ -9083,6 +9158,201 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["lineage-child"]
         );
+    }
+
+    fn append_public_identity(host: &RuntimeHost, agent_id: &str) -> AgentIdentityRecord {
+        let identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&identity).unwrap();
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+        identity
+    }
+
+    #[tokio::test]
+    async fn list_agent_entries_serves_committed_postures_per_agent() {
+        let (_home, host) = test_host();
+        for agent_id in [
+            "stopped-agent",
+            "active-agent",
+            "queued-agent",
+            "waiting-agent",
+        ] {
+            append_public_identity(&host, agent_id);
+        }
+        let now = Utc::now();
+
+        let mut stopped = AgentState::new("stopped-agent");
+        stopped.status = AgentStatus::Stopped;
+        host.runtime_db().agent_states().upsert(&stopped).unwrap();
+
+        let mut active = AgentState::new("active-agent");
+        active.current_run_id = Some("run-1".into());
+        host.runtime_db().agent_states().upsert(&active).unwrap();
+
+        host.runtime_db()
+            .agent_states()
+            .upsert(&AgentState::new("queued-agent"))
+            .unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "message-1".into(),
+                agent_id: "queued-agent".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        let wait_item = WorkItemRecord::new("waiting-agent", "waiting item", WorkItemState::Open);
+        host.runtime_db()
+            .work_items()
+            .insert_new(&wait_item)
+            .unwrap();
+        let mut waiting = AgentState::new("waiting-agent");
+        waiting.current_work_item_id = Some(wait_item.id.clone());
+        host.runtime_db().agent_states().upsert(&waiting).unwrap();
+        host.runtime_db()
+            .wait_conditions()
+            .upsert(&WaitConditionRecord {
+                id: "wait-1".into(),
+                agent_id: "waiting-agent".into(),
+                work_item_id: Some(wait_item.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Task,
+                source: Some("task".into()),
+                subject_ref: Some("task-7".into()),
+                waiting_for: "task result".into(),
+                wake_sources: Vec::new(),
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
+            })
+            .unwrap();
+
+        let entries = host.list_agent_entries().await.unwrap();
+        let by_id = entries
+            .into_iter()
+            .map(|entry| (entry.identity.agent_id.clone(), entry))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            by_id["stopped-agent"].scheduling_posture.posture,
+            crate::types::AgentSchedulingPosture::Stopped
+        );
+        assert_eq!(
+            by_id["active-agent"].scheduling_posture.posture,
+            crate::types::AgentSchedulingPosture::ActiveTurn
+        );
+        assert_eq!(
+            by_id["active-agent"].current_run_id.as_deref(),
+            Some("run-1")
+        );
+        assert_eq!(
+            by_id["queued-agent"].scheduling_posture.posture,
+            crate::types::AgentSchedulingPosture::HasQueuedInput
+        );
+        let waiting_entry = &by_id["waiting-agent"];
+        assert_eq!(
+            waiting_entry.scheduling_posture.posture,
+            crate::types::AgentSchedulingPosture::WaitingForTask
+        );
+        assert_eq!(
+            waiting_entry.scheduling_posture.work_item_id.as_deref(),
+            Some(wait_item.id.as_str())
+        );
+        assert_eq!(
+            waiting_entry.scheduling_posture.task_id.as_deref(),
+            Some("task-7")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_agent_entries_matches_per_agent_storage_projection() {
+        let (_home, host) = test_host();
+        let now = Utc::now();
+        let mut identities = Vec::new();
+        for agent_id in [
+            "stopped-agent",
+            "queued-agent",
+            "waiting-agent",
+            "fresh-agent",
+        ] {
+            identities.push(append_public_identity(&host, agent_id));
+        }
+
+        let mut stopped = AgentState::new("stopped-agent");
+        stopped.status = AgentStatus::Stopped;
+        host.runtime_db().agent_states().upsert(&stopped).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert(&AgentState::new("queued-agent"))
+            .unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "message-2".into(),
+                agent_id: "queued-agent".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+        let wait_item = WorkItemRecord::new("waiting-agent", "waiting item", WorkItemState::Open);
+        host.runtime_db()
+            .work_items()
+            .insert_new(&wait_item)
+            .unwrap();
+        let mut waiting = AgentState::new("waiting-agent");
+        waiting.current_work_item_id = Some(wait_item.id.clone());
+        host.runtime_db().agent_states().upsert(&waiting).unwrap();
+
+        drop(identities);
+        let entries = host.list_agent_entries().await.unwrap();
+        let mut reference = Vec::new();
+        for identity in host.agent_identity_records().unwrap() {
+            if identity.status == AgentRegistryStatus::Active
+                && identity.visibility == AgentVisibility::Public
+            {
+                reference.push(host.agent_list_entry_from_storage(&identity).unwrap());
+            }
+        }
+        reference.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
+        assert_eq!(entries, reference);
+    }
+
+    #[tokio::test]
+    async fn list_agent_entries_never_starts_or_touches_runtimes() {
+        let (_home, host) = test_host();
+        append_public_identity(&host, "resident-agent");
+        host.get_or_create_agent("resident-agent").await.unwrap();
+
+        let before = host.inner.runtimes.read().await.agents.len();
+        assert!(before >= 1);
+        let entries = host.list_agent_entries().await.unwrap();
+        let after = host.inner.runtimes.read().await.agents.len();
+        assert_eq!(before, after);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.identity.agent_id == "resident-agent"));
     }
 
     #[tokio::test]

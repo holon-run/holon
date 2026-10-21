@@ -36,7 +36,7 @@ mod events;
 mod index_outbox;
 mod legacy;
 mod memory;
-mod read_models;
+pub(crate) mod read_models;
 mod recovery;
 mod store;
 mod work_queue;

@@ -10,6 +10,7 @@
 //! - [`repositories`]: domain repository implementations.
 //! - [`index_outbox`]: runtime index outbox repository.
 
+pub mod agent_list;
 pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;

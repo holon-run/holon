@@ -6994,7 +6994,7 @@ pub(crate) fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<Dat
 /// [`rusqlite::Error::InvalidQuery`] whose Display text ("Query is not
 /// read-only") is completely unrelated to the actual failure (e.g. a malformed
 /// timestamp or invalid enum value), making diagnosis nearly impossible.
-fn wait_condition_decode_error(e: anyhow::Error) -> rusqlite::Error {
+pub(crate) fn wait_condition_decode_error(e: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Text,
