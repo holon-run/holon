@@ -129,6 +129,7 @@ struct CanonicalClaimPlan {
 
 enum CanonicalClaimOutcome {
     ReduceOnly,
+    ConsumeSettledRecoverySource,
     Plan(CanonicalClaimPlan),
     RejectQueued {
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
@@ -806,6 +807,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             continuation_decision.model_reentry,
         ) {
             Ok(CanonicalClaimOutcome::ReduceOnly) => None,
+            Ok(CanonicalClaimOutcome::ConsumeSettledRecoverySource) => {
+                return self
+                    .consume_settled_recovery_source(&candidate, &persisted_message)
+                    .await;
+            }
             Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
             Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
@@ -1473,6 +1479,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
         ) && !self.task_result_recovery_is_deliverable(message)?
         {
+            if self
+                .runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .settled_recovery_source(message)?
+            {
+                return Ok(CanonicalClaimOutcome::ConsumeSettledRecoverySource);
+            }
             return Ok(CanonicalClaimOutcome::ReduceOnly);
         }
         if crate::wake_contract::agent_message_reply_reference(message).is_some() {
@@ -2305,6 +2320,120 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Ok(CanonicalLifecycleRecovery::RecoverFrom(
             predecessor_id.to_owned(),
         ))
+    }
+
+    async fn consume_settled_recovery_source(
+        &self,
+        candidate: &QueueCandidate,
+        message: &MessageEnvelope,
+    ) -> Result<PrepareMessageOutcome> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
+            return Ok(PrepareMessageOutcome::Poll(self.shutdown(guard)?));
+        }
+        if guard.state.status == AgentStatus::Stopped {
+            return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Stopped(
+                guard.state.clone(),
+                guard.queue.len(),
+            )));
+        }
+        let wait_triggers = self
+            .runtime
+            .inner
+            .storage
+            .latest_wait_conditions_for_agent(&message.agent_id)?
+            .into_iter()
+            .filter(|wait| wait.status == crate::types::WaitConditionStatus::Triggered)
+            .filter_map(|wait| wait.trigger_message_id)
+            .collect();
+        let (selected, obligation) =
+            self.select_runtime_queue_message(&guard.queue, &wait_triggers)?;
+        if !selected.is_some_and(|selected| selected.id == message.id)
+            || obligation != candidate.wait_obligation
+        {
+            return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
+        }
+        let expected = self
+            .runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)?
+            .ok_or_else(|| anyhow!("settled recovery source has no durable queue entry"))?;
+        if !matches!(
+            expected.status,
+            QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+        ) {
+            return Ok(PrepareMessageOutcome::Replan);
+        }
+        let mut record = expected.clone();
+        record.status = QueueEntryStatus::Processed;
+        record.updated_at = self.runtime.now();
+        let mut next_state = guard.state.clone();
+        next_state.pending = guard.queue.len().saturating_sub(1);
+        let decision = scheduler::SchedulerDecision::new(
+            scheduler::SchedulerDecisionKind::ReduceMessageOnly,
+            "task_result_recovery_already_settled",
+        )
+        .message(message)
+        .boundary(scheduler::SchedulerBoundary::RunLoop.as_str())
+        .model_reentry(false);
+        let mut audit_events =
+            scheduler::scheduler_decision_events(&message.agent_id, &decision)?.to_vec();
+        audit_events.push(AuditEvent::legacy(
+            "task_result_recovery_source_consumed",
+            serde_json::json!({
+                "message_id": message.id,
+                "agent_id": message.agent_id,
+                "work_item_id": message.work_item_id,
+                "result_message_id": message.source_refs.get("task_result_message_id"),
+                "result_identity": message.source_refs.get("task_result_identity"),
+                "owner_key": message.source_refs.get("task_result_owner_key"),
+                "prior_queue_status": expected.status,
+                "queue_status": record.status,
+                "reason": "owner_results_already_settled",
+                "disposition": "system_only",
+            }),
+        ));
+        let mut commit = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: message.agent_id.clone(),
+            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+            mutation:
+                crate::runtime_db::transitions::QueueMutation::ConsumeSettledTaskResultRecovery {
+                    expected,
+                    record,
+                    source: Box::new(message.clone()),
+                },
+            scheduler_claim_work_item: None,
+            agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(guard.state.clone())),
+                record: Box::new(next_state.clone()),
+            }),
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: None,
+            audit_events,
+            notify_scheduler: true,
+            fault: self.runtime.take_transition_fault(),
+            brief_evidence: Vec::new(),
+        })?;
+        if !commit.applied {
+            return Ok(PrepareMessageOutcome::Replan);
+        }
+        let _ = guard
+            .queue
+            .pop_selected(&message.id, candidate.wait_obligation);
+        guard.state = next_state.clone();
+        guard.last_persisted_state = next_state;
+        commit.effects.agent_state = None;
+        drop(guard);
+        self.runtime.apply_transition_commit(commit).await;
+        Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle))
     }
 
     async fn terminalize_rejected_queue_head(
@@ -3374,6 +3503,57 @@ mod tests {
     use crate::types::{WaitConditionKind, WakeSource};
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_after_settled_recovery_planning_preserves_source() {
+        use crate::runtime::task_result_recovery::stale_source_tests::settled_recovery;
+        use crate::runtime::tests::support::LifecycleHarness;
+
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let (_, recovery_id) = settled_recovery(&harness).await;
+        let source = runtime
+            .storage()
+            .read_message_by_id(&recovery_id)
+            .unwrap()
+            .unwrap();
+        assert!(runtime
+            .runtime_db()
+            .task_result_settlements()
+            .settled_recovery_source(&source)
+            .unwrap());
+        let candidate = {
+            let mut guard = runtime.inner.agent.lock().await;
+            let candidate = QueueCandidate {
+                message: source.clone(),
+                prior_state: guard.state.clone(),
+                queue_len: guard.queue.len(),
+                wait_obligation: false,
+            };
+            guard.state.status = AgentStatus::Stopped;
+            guard.persist_state(&runtime.inner.storage).unwrap();
+            candidate
+        };
+        let before = harness.snapshot();
+        assert!(matches!(
+            SchedulerDecisionExecutor::new(runtime)
+                .consume_settled_recovery_source(&candidate, &source)
+                .await
+                .unwrap(),
+            PrepareMessageOutcome::Poll(RunLoopPoll::Stopped(..)),
+        ));
+        harness.assert_unchanged(&before);
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&recovery_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Queued,
+        );
+    }
 
     fn queued_message(priority: Priority, id: &str) -> MessageEnvelope {
         let mut message = MessageEnvelope::new(

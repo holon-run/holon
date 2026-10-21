@@ -17,7 +17,9 @@ pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 mod exact_waiter;
 pub(crate) mod live_turn;
 mod obligation;
-pub(crate) use obligation::{classify_obligation_tx, TaskResultObligation};
+pub(crate) use obligation::{
+    classify_obligation_tx, settled_recovery_source_tx, TaskResultObligation,
+};
 mod provider_handoff;
 pub(crate) use provider_handoff::transfer_provider_admitted_tx;
 mod recovery_budget;

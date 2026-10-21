@@ -37,6 +37,11 @@ pub(crate) enum TaskResultObligation {
 }
 
 impl TaskResultSettlementRepository<'_> {
+    pub(crate) fn settled_recovery_source(&self, source: &MessageEnvelope) -> Result<bool> {
+        self.db
+            .transaction(|tx| settled_recovery_source_tx(tx, source))
+    }
+
     pub(crate) fn exact_waiter_recovery_continuation(
         &self,
         record: &TaskResultSettlementRecord,
@@ -130,6 +135,84 @@ impl TaskResultSettlementRepository<'_> {
             classify_obligation_tx(tx, record, current_activation_id, waiter_work_item_id)
         })
     }
+}
+
+/// Only a fully settled owner wake is no work. Exact wait continuations and
+/// unresolved evidence retain their existing reducer/admission semantics.
+pub(crate) fn settled_recovery_source_tx(
+    tx: &Transaction<'_>,
+    source: &MessageEnvelope,
+) -> Result<bool> {
+    if source.kind != MessageKind::InternalFollowup
+        || !matches!(&source.origin, MessageOrigin::System { subsystem } if subsystem == "task_result_recovery")
+        || source.authority_class != AuthorityClass::RuntimeInstruction
+        || source.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+        || source.admission_context != Some(AdmissionContext::RuntimeOwned)
+        || source.source_refs.contains_key("wait_id")
+        || !source.source_refs.contains_key("task_result_owner_key")
+    {
+        return Ok(false);
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [&source.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(false);
+    };
+    let durable: MessageEnvelope = serde_json::from_str(&payload)?;
+    if serde_json::to_value(&durable)? != serde_json::to_value(source)? {
+        return Ok(false);
+    }
+    let Some(result_id) = source.source_refs.get("task_result_message_id") else {
+        return Ok(false);
+    };
+    let Some(record) = super::latest_for_message_tx(tx, result_id)? else {
+        return Ok(false);
+    };
+    if record.agent_id != source.agent_id
+        || record.work_item_id != source.work_item_id
+        || record.state != TaskResultSettlementState::Settled
+        || record.disposition.is_none()
+        || source.source_refs.get("task_result_identity") != Some(&record.result_identity)
+        || source.source_refs.get("task_result_parent_turn_id") != Some(&record.parent_turn_id)
+        || source.source_refs.get("task_result_rejoin_generation")
+            != Some(&record.rejoin_generation.to_string())
+        || !record_matches_durable_task_tx(tx, &record)?
+    {
+        return Ok(false);
+    }
+    // The anchor being settled is insufficient: another result can have arrived
+    // for the same owner since this wake was queued.
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM task_result_settlements
+           WHERE agent_id = ?1 AND work_item_id IS ?2 AND state != 'settled')",
+        params![source.agent_id, source.work_item_id],
+        |row| row.get(0),
+    )?;
+    if pending {
+        return Ok(false);
+    }
+    let mut statement = tx.prepare(
+        "SELECT payload_json FROM wait_conditions
+         WHERE agent_id = ?1 AND status IN ('active', 'triggered')",
+    )?;
+    let waits = statement.query_map([&source.agent_id], |row| row.get::<_, String>(0))?;
+    for payload in waits {
+        let wait: WaitConditionRecord = serde_json::from_str(&payload?)?;
+        if wait.work_item_id == source.work_item_id
+            || wait.wake_sources.iter().any(|wake| {
+                matches!(wake, WakeSource::TaskResult { task_id } if task_id == &record.task_id)
+            })
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn exact_waiter_recovery_source_tx(

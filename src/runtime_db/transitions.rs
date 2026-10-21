@@ -112,6 +112,11 @@ pub(crate) enum QueueMutation {
         expected: QueueEntryRecord,
         record: QueueEntryRecord,
     },
+    ConsumeSettledTaskResultRecovery {
+        expected: QueueEntryRecord,
+        record: QueueEntryRecord,
+        source: Box<MessageEnvelope>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2330,6 +2335,15 @@ impl RuntimeTransitionRepository<'_> {
             }
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
+            if let QueueMutation::ConsumeSettledTaskResultRecovery { source, .. } =
+                &command.mutation
+            {
+                if !crate::runtime_db::task_result_settlement::settled_recovery_source_tx(
+                    tx, source,
+                )? {
+                    return Ok(TransitionCommit::default());
+                }
+            }
             if let Some(timer_wake_claim) = timer_wake_claim {
                 let valid = tx.query_row(
                     "SELECT EXISTS(
@@ -2521,7 +2535,10 @@ impl RuntimeTransitionRepository<'_> {
                         }
                     },
                     QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
-                    QueueMutation::CompareAndSet { expected, record } => {
+                    QueueMutation::CompareAndSet { expected, record }
+                    | QueueMutation::ConsumeSettledTaskResultRecovery {
+                        expected, record, ..
+                    } => {
                         compare_and_set_queue_entry_tx(tx, expected, record)?
                     }
                 }
@@ -3964,7 +3981,13 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         (QueueMutation::Upsert(_), Some(existing)) => {
             queue_entry_transition(existing, incoming)?;
         }
-        (QueueMutation::CompareAndSet { expected, record }, _) => {
+        (QueueMutation::CompareAndSet { expected, record }, _)
+        | (
+            QueueMutation::ConsumeSettledTaskResultRecovery {
+                expected, record, ..
+            },
+            _,
+        ) => {
             queue_entry_transition(expected, record)?;
         }
         _ => {}
@@ -3975,7 +3998,8 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
 fn queue_mutation_record(mutation: &QueueMutation) -> &QueueEntryRecord {
     match mutation {
         QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
-        QueueMutation::CompareAndSet { record, .. } => record,
+        QueueMutation::CompareAndSet { record, .. }
+        | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => record,
     }
 }
 
@@ -4052,10 +4076,7 @@ fn validate_delivery_queue_admission(
     command: &QueueTransitionCommand,
     delivery: &AgentMessageDeliveryRecord,
 ) -> Result<()> {
-    let queue_record = match &command.mutation {
-        QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
-        QueueMutation::CompareAndSet { record, .. } => record,
-    };
+    let queue_record = queue_mutation_record(&command.mutation);
     let message_id = delivery
         .message_id
         .as_deref()
@@ -4074,6 +4095,26 @@ fn validate_delivery_queue_admission(
 }
 
 fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
+    if let QueueMutation::ConsumeSettledTaskResultRecovery {
+        expected,
+        record,
+        source,
+    } = &command.mutation
+    {
+        if command.operation != QueueOperation::Settle
+            || !matches!(
+                expected.status,
+                QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+            )
+            || record.status != QueueEntryStatus::Processed
+            || source.id != record.message_id
+            || source.agent_id != record.agent_id
+            || command.agent_id != source.agent_id
+        {
+            bail!("invalid settled task-result recovery queue consumption");
+        }
+        return Ok(());
+    }
     let valid = matches!(
         (&command.operation, &command.mutation),
         (
