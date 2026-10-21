@@ -1,92 +1,99 @@
 ---
 lang: en
-version: 0.12
-updated: 2026-09-18
+version: 0.13
+updated: 2026-10-21
 status: draft
-title: Holon: Agents that act and follow through
+title: Holon: Create and run AI assistants
 ---
 
-# Holon: Agents that act and follow through
+# Holon: Create and run AI assistants
 
-**Create and manage AI agents with ongoing responsibilities.**
+**Assign real work, track progress, and let your assistants follow up.**
 
-Give an agent work such as sorting incoming mail, following up on order issues, investigating problems, or reviewing code. You set the goal and requirements; it uses tools to do the work, saves progress while waiting, and continues when the conditions are met.
+Holon is open-source software for individuals and teams to create and run AI assistants on their own computers or servers. Give an assistant a goal, materials, and completion criteria. It uses configured tools to do the work and leaves results with supporting evidence.
 
-**Act on changes and schedules**\
-Once connected, new emails, order updates, or an agreed time can prompt the agent to act.
+Start with investigating a problem or reviewing a code change. With tools and events connected, an assistant can also take on ongoing mail triage or issue follow-up. Progress stays with the work while it waits for a reply or check result, ready to continue when the condition is met.
 
-**Keep progress and follow through**\
-Goals, findings, and next steps stay with the work. Replies and new results let it pick up where it left off.
+**Hand over a task**\
+State what to solve, what to deliver, and which decisions need your approval.
 
-**Check in and guide the work**\
-See progress, add context, or change direction. When a decision needs your judgment, the agent asks you.
+**Pick up from existing progress**\
+Goals, findings, and next steps are saved with the work, rather than explained from scratch each time.
+
+**Step in when needed**\
+Inspect results and evidence, add context, change direction, and make decisions that need your judgment.
 
 ![External events, schedules, and task assignments enter Holon. The agent checks progress, decides, acts, and records results. It waits when needed, resumes when conditions are met, and delivers when the work meets its requirements.](assets/work-loop-en.png)
 
-## What Holon provides
+## Give an assistant one concrete task
 
-### Act on changes and schedules
+You do not need to connect every business system first. Choose work with clear inputs and completion criteria, then check whether the assistant delivers something useful.
 
-| Feature | What it does | Why it helps |
+**1. Set the requirements.** Provide the goal, materials, and acceptance criteria. For example: "Investigate the anomaly in this device log. Deliver reproduction clues, possible causes, and open questions. Do not change code."
+
+**2. Work with tools.** The assistant reads materials, runs checks, and organizes findings in its configured environment. File changes and system access remain subject to configured permissions and your authorization.
+
+**3. Inspect progress.** Read conclusions, next steps, and waiting reasons first. Inspect tool activity and source evidence when needed, rather than relying on a conversational answer alone.
+
+**4. Add context or make a decision.** Supply missing material, adjust scope, or decide a disputed trade-off. Findings and next steps remain available while the assistant waits for your reply.
+
+**5. Review the delivery.** Check the report, files, or changes against your requirements. Failed checks and unverified points should be explicit, not hidden behind a claim of completion.
+
+### Separate the role, method, and work
+
+An assistant in Holon is called an **agent**. Each keeps its own role, memory, and work records. Create one from a template or configure it for your needs.
+
+| Component | What it defines | Example |
 | --- | --- | --- |
-| **External events** | Receives messages through Webhooks, or signals an agent to check for updates | Mail and order changes can start work without someone forwarding each update |
-| **Scheduled tasks** | Runs at an agreed time or checks at regular intervals | Follows up, monitors, and summarizes without repeated reminders |
-| **Progress-aware follow-up** | Reads its role, findings, and next steps when a message arrives | Continues the same work without starting the explanation over |
+| **Agent Template** | The assistant's role | Problem investigation or code review |
+| **Skills** | Methods for doing that work | Log analysis steps or a review checklist |
+| **WorkItem** | The goal, plan, and progress of work that needs follow-up | Following this device anomaly through investigation |
 
-Integration depends on the source system. Webhook support allows direct notifications; reading mail, filtering content, or converting formats requires suitable tools or adapters. The agent then considers the change alongside existing progress.
+Workspaces connect the assistant to real project directories and materials. One assistant can switch between workspaces as a task requires; coding tasks can also use Git worktree for separate code directories.
 
-### Reuse roles and working methods
+## How work keeps moving
 
-| Feature | What it does | Why it helps |
-| --- | --- | --- |
-| **Persistent agents** | Keeps each agent's role, memory, and work records | Supports ongoing responsibilities with accumulated context |
-| **Agent templates** | Creates agents from role instructions and skill settings; templates can be customized and shared | Reuses a role without configuring it from scratch |
-| **Skills per agent** | Manages reusable methods and enables or disables them for each agent, to be read as needed | Gives each role its own methods, adjustable independently |
-| **Model choice** | Sets a default model, with optional choices per agent | Matches the model and provider to the task |
+Following up does not mean generating text nonstop. Holon records what work is waiting for and resumes it when the corresponding result or event arrives.
 
-For example, a template can define a support role, skills can explain how to classify and answer requests, and "follow up on this return request" is one work item. **Templates define roles; skills describe methods; work items record goals and progress.** This is a configuration example, requiring the relevant business integrations.
+**Wait for execution results.** While a command or delegated task is running, wait for its result. Read that result before deciding the next step.
 
-### Keep progress while waiting; leave evidence on completion
+**Wait for your judgment.** When materials are missing or approval is needed, bring the question back to you. A reply lets the assistant continue with the existing goal and findings.
 
-| Feature | What it does | Why it helps |
-| --- | --- | --- |
-| **Work items** | Records each task's goal, plan, checklist, waiting reasons, and completion report | Shows what is done, what is holding it up, and what counts as complete |
-| **Wait and resume** | Tracks pending execution results, replies, and external conditions | Continues the same work when those conditions are met |
-| **Delegation and tracking** | Assigns tasks to subagents, tracks progress and results, and allows additional input or cancellation | Keeps ownership, progress, and results visible |
-| **Inspectable results** | Preserves message sources, tool activity, and completion reports | Lets you read the conclusion first and inspect the evidence when needed |
+**Respond to external changes.** Webhooks can deliver system messages or prompt an assistant to check for updates. Code changes, check results, or order updates can become follow-up signals.
 
-### Organize the working environment
+**Check on a schedule.** Timers support one-off reminders and recurring checks for status reviews, summaries, or pending work.
 
-| Feature | What it does | Why it helps |
-| --- | --- | --- |
-| **Workspaces** | Lets one agent use multiple workspaces and switch between them | Works across project files and directories toward one goal |
-| **Separate code directories** | Uses Git worktree to create independent coding directories | Supports parallel changes, experiments, and reviews |
-| **Web and terminal** | Connects Web and TUI interfaces to one service, with CLI and HTTP API access too | Lets you return to the same agents and work through your preferred interface |
-| **Self-hosting** | Bundles the Web interface with the binary for a personal computer or server | Needs no separate frontend deployment and can serve a remote team |
+Each ongoing piece of work can have its own WorkItem, recording the goal, plan, checklist, waiting reasons, and completion report. The assistant uses those records when new messages and results arrive. Readers can inspect the report first, then check sources and tool activity.
 
-Choose who owns the work, which files and tools they use, and how to inspect progress and results.
+### What ongoing work requires
 
-## A reviewer that follows through
+- **Keep the host running.** Closing a browser or disconnecting a terminal does not stop the background service. Turning off the host or stopping Holon's service prevents further execution.
+- **Configure the connections you need.** Systems with Webhook support can send notifications. Reading mail, filtering content, or converting formats requires suitable tools or adapters. You can supply new results manually first.
+- **A notification is not authorization.** System messages and human instructions retain their sources. Connecting events does not grant permission to publish, merge code, or access other systems.
+
+Self-hosting means Holon and its working environment run on your chosen machine. **It does not mean all model inference is local.** Data sent in model requests depends on the provider and configuration you choose.
+
+## An assistant with an ongoing review role
 
 **For individual developers and teams that need ongoing code review.**
 
-Create a review agent from a template, configure skills, a project workspace, and GitHub events, then give it an ongoing responsibility:
+Create an assistant from a review template, configure skills and a project workspace, and give it an ongoing responsibility. Start by supplying one PR manually; connect GitHub events later:
 
 > Review this repository's pull requests (PRs), focusing on compatibility and regressions. Follow up when code changes or automated checks (CI) finish. Ask me about disputed trade-offs. Keep a conclusion and supporting evidence for each PR.
 
-For example, CI can send its result and the relevant PR through a Webhook. On failure, the agent investigates; on success, it checks for any remaining issues.
+Each delivery should state the findings, evidence, checks performed, and decisions still needed. Once events are connected, CI can send its result through a Webhook. On failure, the assistant investigates; on success, it checks for remaining issues.
 
 ![A new PR, code changes, and CI results prompt successive reviews. Findings and progress stay in the same work item through waiting, re-review, and delivery.](assets/pr-review-en.png)
 
-**Each PR has its own work record.** When revised code arrives, the agent checks it against earlier findings. It follows up on unresolved issues and delivers a report once the requirements are met.
+**Each PR has its own work record.** The assistant checks revised code against earlier findings, keeps next steps while waiting for changes or CI, and delivers a report once the requirements are met. A review conclusion does not replace a person's merge decision.
 
 Close the terminal and return later through a browser. While the host and Holon's background service remain running, the agent can keep receiving updates and following up.
 
 *Illustrative workflow. Automatic GitHub updates require tools, account permissions, and event integration. You can also supply new results manually. Publishing or merging code requires authorization.*
 
-## Give shared agents a role in the team
+## Use it on your own or with a team
 
-Run Holon on a team server. Shared agents can own investigation, review, or acceptance testing. Members use a browser or terminal to see the same progress, add context, or take over.
+On your own, keep an assistant responsible for a project and return to its progress later. With a team, run Holon on a server and give shared assistants investigation, review, or acceptance-testing roles. Members use a browser or terminal to see the same progress, add context, or take over.
 
 [A four-person AI hardware team's experience](../website/blog/agents-in-a-small-team.md) illustrates two handoffs:
 
@@ -102,9 +109,9 @@ Scheduled checks can also identify which fixes are ready to test, which are stil
 
 *The diagram combines two handoffs from the team's account, not one measured end-to-end run. Scheduled checks are a configuration example. Logs, GitHub, and release systems require integration and access permissions.*
 
-## Put your first agent to work
+## Start with your first task
 
-Start with one concrete task, then add events and schedules as needed.
+Install Holon, configure a model provider, and start the background service. Complete one concrete task before adding ongoing responsibilities.
 
 **1. Create from a template.** Choose an Agent Template to reuse a role and its working methods.
 
@@ -112,13 +119,23 @@ Start with one concrete task, then add events and schedules as needed.
 
 **3. Assign a task.** Provide the goal, materials, and completion criteria. Review progress, add context, and make decisions when needed.
 
-**4. Connect updates and schedules.** Receive business messages through Webhooks or adapters, or schedule regular follow-ups.
+**4. Add ongoing follow-up.** Receive business messages through Webhooks or adapters, or schedule regular checks. Define which changes need attention and when to involve you.
 
 ![The English Holon Web workbench: choose an agent, read updates and progress, inspect plans and waiting reasons, and add information.](assets/web-gui-review-en.png)
 
 *Workbench shown with demo data. Choose an agent on the left, read updates in the center, inspect the plan and waiting reason on the right, and add input below. A terminal interface connects to the same service.*
 
-Run Holon on your computer or a team server; the Web interface is included. Configure a model, tools, and workspace. Keep the host and background service running for ongoing follow-up.
+### Choose how to connect
+
+**Web and terminal.** The binary includes the Web interface. A TUI connects to the same service and existing agents and work; CLI and HTTP API access support automation.
+
+**Mobile clients.** iOS and Android clients connect to a running Holon host; they do not run its background service on the phone. Configure connectivity and authentication for remote access. Beta options:
+
+- [iOS · TestFlight](https://testflight.apple.com/join/XkTfN12S)
+- [Android · Join testing](https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0): Google Group testing instructions; access may require membership or permission.
+- [Android APK downloads](https://github.com/holon-run/holon/releases): choose an APK from a release; direct installation requires allowing that installation source.
+
+Configure a model, tools, and workspace, and keep the host and background service running for ongoing follow-up. A shared deployment does not imply strong sandbox isolation between assistants. Set file, tool, and access permissions explicitly.
 
 **Get started:** [Installation and quick start](../website/getting-started/README.md) · [Source code](https://github.com/holon-run/holon) · [Documentation](https://holon.run)
 
