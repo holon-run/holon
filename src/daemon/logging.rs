@@ -28,7 +28,7 @@ pub struct DaemonLogHealth {
     pub last_error: Option<String>,
 }
 
-fn segment_path(path: &Path, index: usize) -> PathBuf {
+pub(crate) fn segment_path(path: &Path, index: usize) -> PathBuf {
     if index == 0 {
         return path.to_path_buf();
     }
@@ -77,6 +77,15 @@ struct RollingLog {
 
 impl RollingLog {
     fn open(path: &Path, limit: u64, segments: usize) -> io::Result<(Self, u64)> {
+        Self::open_with_owner_timeout(path, limit, segments, Duration::from_secs(5))
+    }
+
+    fn open_with_owner_timeout(
+        path: &Path,
+        limit: u64,
+        segments: usize,
+        owner_timeout: Duration,
+    ) -> io::Result<(Self, u64)> {
         assert!(limit > 0 && segments > 0);
         let mut lock_path = path.as_os_str().to_os_string();
         lock_path.push(".lock");
@@ -85,7 +94,25 @@ impl RollingLog {
             .truncate(false)
             .write(true)
             .open(PathBuf::from(lock_path))?;
-        fs2::FileExt::try_lock_exclusive(&ownership)?;
+        // Control shutdown can precede the previous collector's final drain.
+        // Wait for ownership, never mutate history while another writer owns it.
+        let deadline = Instant::now() + owner_timeout;
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&ownership) {
+                Ok(()) => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "timed out waiting for the previous daemon log owner",
+                        ));
+                    }
+                    std::thread::sleep(remaining.min(Duration::from_millis(10)));
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let mut discarded = 0;
         for index in 0..segments {
             let path = segment_path(path, index);
@@ -94,8 +121,9 @@ impl RollingLog {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            let length = source.metadata()?.len();
-            if !source.metadata()?.is_file() {
+            let metadata = source.metadata()?;
+            let length = metadata.len();
+            if !metadata.is_file() {
                 return Err(io::Error::other("daemon log segment is not a regular file"));
             }
             if length <= limit {
@@ -116,7 +144,7 @@ impl RollingLog {
                     .write(true)
                     .create_new(true)
                     .open(&temporary)?;
-                target.set_permissions(source.metadata()?.permissions())?;
+                target.set_permissions(metadata.permissions())?;
                 source.seek(SeekFrom::Start(length - limit))?;
                 io::copy(&mut source.take(limit), &mut target)?;
                 target.flush()?;

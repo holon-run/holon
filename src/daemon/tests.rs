@@ -783,6 +783,37 @@ fn daemon_logs_surface_healthy_log_health_without_degraded_message() {
 }
 
 #[test]
+fn daemon_logs_preserve_tail_when_log_health_is_unavailable() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.log_path, "last line\n").unwrap();
+    let health_path = paths.log_path.with_file_name("daemon.log.status.json");
+    fs::write(&health_path, b"{\"degraded\":").unwrap();
+
+    for unreadable in [false, true] {
+        if unreadable {
+            fs::remove_file(&health_path).unwrap();
+            fs::create_dir(&health_path).unwrap();
+        }
+        for tail_lines in [0, 1] {
+            let view = daemon_logs(&config, tail_lines).unwrap();
+            assert!(view.ok);
+            assert_eq!(view.log_health, None);
+            assert!(view.message.contains("daemon log health unavailable"));
+            assert_eq!(view.tail.len(), tail_lines);
+            if tail_lines > 0 {
+                assert_eq!(view.tail, ["last line"]);
+            }
+            assert!(serde_json::to_value(&view)
+                .unwrap()
+                .get("log_health")
+                .is_none());
+        }
+    }
+}
+
+#[test]
 fn daemon_logs_tail_zero_omits_log_tail() {
     let config = test_config();
     let paths = daemon_paths(&config);

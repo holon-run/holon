@@ -11,12 +11,34 @@ fn retained(path: &Path, segments: usize) -> Vec<u8> {
 }
 
 #[test]
+fn rolling_log_waits_for_previous_owner_before_mutating_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("daemon.log");
+    let (mut first, _) = RollingLog::open(&path, 64, 4).unwrap();
+    first.write_all(b"first owner\n").unwrap();
+    let previous = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        first.write_all(b"tail").unwrap();
+    });
+    let next = RollingLog::open(&path, 4, 4);
+    previous.join().unwrap();
+    let (_next, discarded) = next.expect("new owner must wait for the previous collector");
+    assert_eq!(discarded, 12);
+    assert_eq!(fs::read(&path).unwrap(), b"tail");
+}
+
+#[test]
 fn rolling_log_rejects_a_second_owner_before_mutating_history() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("daemon.log");
     let (mut first, _) = RollingLog::open(&path, 64, 4).unwrap();
     first.write_all(b"first owner\n").unwrap();
-    assert!(RollingLog::open(&path, 4, 4).is_err());
+    let started = Instant::now();
+    let error = RollingLog::open_with_owner_timeout(&path, 4, 4, Duration::from_millis(20))
+        .err()
+        .expect("a live owner must exclude competing writers");
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(started.elapsed() >= Duration::from_millis(20));
     assert_eq!(fs::read(&path).unwrap(), b"first owner\n");
 }
 

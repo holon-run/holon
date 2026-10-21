@@ -81,6 +81,9 @@ output is not post-processed to remove control sequences.
 The fixed first-version retention is four segments of at most 16 MiB each:
 `daemon.log`, then `.1` through `.3` (oldest). Large writes are split at the
 boundary. A process-lifetime file lock excludes competing managed writers.
+Acquisition waits at most five seconds for a previous collector to finish its
+shutdown drain after control has stopped; timeout fails startup without touching
+retained logs. Other lock errors fail immediately.
 On startup, oversized legacy segments retain only their latest 16 MiB, using
 bounded copying; no giant historical backup is kept. This retention discards
 old history and reports the discarded byte count. Migration may temporarily
@@ -104,6 +107,8 @@ and permits ordinary disk-full diagnostics without new allocations on disk.
 If the filesystem itself cannot update this block, persisted diagnostics may
 be stale; this is not a guarantee of observability on a completely failed
 filesystem. These diagnostics are separate from runtime failure summaries.
+An unreadable or concurrently overwritten health block omits `log_health` and
+adds an explicit availability warning without suppressing the log tail.
 The tail reader spans the four segments with one shared 128 KiB read budget
 and the existing 8 Ki-character per-line limit, including during rotation.
 

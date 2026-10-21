@@ -404,12 +404,8 @@ fn read_daemon_log_tail(config: &AppConfig, tail_lines: usize) -> Result<Vec<Str
     #[cfg(unix)]
     let mut seen_files = std::collections::HashSet::new();
     // Open newest first before reading so renames do not invalidate open segments.
-    for index in 0..=3 {
-        let path = if index == 0 {
-            log_path.clone()
-        } else {
-            log_path.with_file_name(format!("daemon.log.{index}"))
-        };
+    for index in 0..super::logging::SEGMENT_COUNT {
+        let path = super::logging::segment_path(&log_path, index);
         let file = match fs::File::open(&path) {
             Ok(file) => file,
             Err(err) if err.kind() == ErrorKind::NotFound => continue,
@@ -498,7 +494,10 @@ pub fn daemon_logs(config: &AppConfig, tail_lines: usize) -> Result<DaemonLogsVi
     let last_failure = latest_known_runtime_failure(config).ok().flatten();
     let startup_failure = load_startup_failure(config).ok().flatten();
     let shutdown_failure = load_shutdown_failure(config).ok().flatten();
-    let log_health = super::logging::read_log_health(&paths.log_path)?;
+    let (log_health, health_error) = match super::logging::read_log_health(&paths.log_path) {
+        Ok(health) => (health, None),
+        Err(error) => (None, Some(error)),
+    };
     let tail = read_daemon_log_tail(config, tail_lines)?;
     let mut message = if tail_lines == 0 {
         "daemon log tail omitted (--tail 0)".into()
@@ -512,6 +511,9 @@ pub fn daemon_logs(config: &AppConfig, tail_lines: usize) -> Result<DaemonLogsVi
             "; daemon logging degraded (dropped_bytes={}, buffered_bytes={})",
             health.dropped_bytes, health.buffered_bytes
         ));
+    }
+    if let Some(error) = health_error {
+        message.push_str(&format!("; daemon log health unavailable ({error:#})"));
     }
     Ok(DaemonLogsView {
         ok: true,
