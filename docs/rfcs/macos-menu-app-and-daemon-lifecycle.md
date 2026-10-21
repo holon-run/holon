@@ -67,6 +67,57 @@ arguments and consumes their JSON results. Rust remains the only implementation
 of daemon identity checks, stale-state cleanup, graceful shutdown, and process
 fallback behavior.
 
+### Standalone file logging
+
+The standalone `serve` process, not the short-lived launcher or menu app, owns
+its log collector. On Unix the launcher marks this managed child; before
+tracing or Tokio starts, the child captures both stdout and stderr through a
+bounded local socket into one size-rotating writer. Foreground `serve` and
+service-manager/journald output are not redirected by default. Unsupported
+platforms fail managed capture explicitly rather than silently using unbounded
+append. Tracing enables ANSI only when stderr is a terminal; arbitrary native
+output is not post-processed to remove control sequences.
+
+The fixed first-version retention is four segments of at most 16 MiB each:
+`daemon.log`, then `.1` through `.3` (oldest). Large writes are split at the
+boundary. A process-lifetime file lock excludes competing managed writers.
+Acquisition waits at most five seconds for a previous collector to finish its
+shutdown drain after control has stopped; timeout fails startup without touching
+retained logs. Other lock errors fail immediately.
+On startup, oversized legacy segments retain only their latest 16 MiB, using
+bounded copying; no giant historical backup is kept. This retention discards
+old history and reports the discarded byte count. Migration may temporarily
+need one additional 16 MiB suffix file; it never reads a whole legacy log into
+memory. Only explicitly named managed segments and metadata are touched.
+
+Initialization and capture failures fail startup with a bootstrap diagnostic.
+At runtime an I/O failure never falls back to unbounded append or recursively
+logs through the failed destination. The collector keeps draining, retaining
+at most 64 KiB of pending bytes and counting overflow as dropped bytes. A
+one-second read timeout also retries and publishes loss after a burst followed
+by silence; continuous output observes the same one-second retry backoff.
+On recovery buffered bytes are written before new bytes; shutdown makes one
+final retry and accounts for any remaining discarded bytes. Logging failure does not automatically kill
+the daemon or change runtime readiness.
+
+`daemon logs` exposes additive `log_health` diagnostics (degradation, buffered
+and dropped bytes, historical retention and last error). A fixed 4 KiB
+preallocated `daemon.log.status.json` block avoids unbounded failure reports
+and permits ordinary disk-full diagnostics without new allocations on disk.
+If the filesystem itself cannot update this block, persisted diagnostics may
+be stale; this is not a guarantee of observability on a completely failed
+filesystem. These diagnostics are separate from runtime failure summaries.
+An unreadable or concurrently overwritten health block omits `log_health` and
+adds an explicit availability warning without suppressing the log tail.
+The tail reader spans the four segments with one shared 128 KiB read budget
+and the existing 8 Ki-character per-line limit, including during rotation.
+
+Orderly exit flushes standard streams, fences inherited socket write ends,
+drains and joins the in-process collector; it leaves no logging helper process.
+Panic unwinding normally also drains via the guard. Process abort, SIGKILL,
+power loss and writes from descendants racing shutdown can lose the final
+in-flight bytes; crash exactly-once delivery is not promised.
+
 ## Lifecycle Contract
 
 Every status or mutation result identifies:

@@ -1,4 +1,5 @@
 mod lifecycle;
+pub mod logging;
 mod profile;
 mod service;
 mod state;
