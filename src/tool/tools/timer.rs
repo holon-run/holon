@@ -138,8 +138,8 @@ pub(crate) async fn cancel(
 ) -> Result<crate::tool::ToolResult> {
     let args: TimerIdArgs = parse_tool_args(CANCEL_NAME, input)?;
     let timer_id = validate_non_empty(args.timer_id, CANCEL_NAME, "timer_id")?;
-    let timer = runtime.cancel_timer(&timer_id).await?;
-    serialize_success(CANCEL_NAME, &timer)
+    let cancellation = runtime.cancel_timer_with_evidence(&timer_id).await?;
+    serialize_success(CANCEL_NAME, &cancellation)
 }
 
 fn validate_positive(tool_name: &str, field: &str, value: u64) -> Result<()> {

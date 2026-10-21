@@ -1,7 +1,11 @@
 //! Public types for runtime_db repositories.
 
+use crate::runtime_db::transitions::PostCommitEffects;
 use crate::runtime_db::RuntimeDb;
-use crate::types::{AgentState, MessageEnvelope, QueueEntryRecord, TimerRecord};
+use crate::types::{
+    AgentState, AuditEvent, MessageEnvelope, QueueEntryRecord, TimerRecord, WaitConditionRecord,
+    WorkItemRecord,
+};
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,7 @@ pub struct TimerCancel {
     pub expected: TimerRecord,
     pub record: TimerRecord,
     pub agent_state: Option<(AgentState, AgentState)>,
+    pub cancelled_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,19 +51,24 @@ pub struct TimerFireResult {
     pub message: Option<MessageEnvelope>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct TimerCancelResult {
     pub cancelled: bool,
     pub dropped_message_id: Option<String>,
+    pub cancelled_wait_condition_ids: Vec<String>,
+    pub(crate) effects: PostCommitEffects,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimerWakeRecoveryResult {
     pub retained_wakes: usize,
     pub created_wakes: usize,
     pub reactivated_wakes: usize,
     pub invalidated_wakes: usize,
     pub dropped_message_ids: Vec<String>,
+    pub settled_wait_conditions: Vec<WaitConditionRecord>,
+    pub work_items: Vec<WorkItemRecord>,
+    pub audit_events: Vec<AuditEvent>,
 }
 
 pub struct WorkItemRepository<'a> {
