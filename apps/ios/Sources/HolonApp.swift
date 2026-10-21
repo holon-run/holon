@@ -315,6 +315,7 @@ struct HolonApp: App {
         case .conversation(let agent):
             if reader.selectedAgentID == agent {
                 ConversationReadingView(reader: reader, sender: sender?.selectedAgentID == agent ? sender : nil,
+                    apiBaseURL: connection.selectedProfile?.apiBaseURL,
                     openReference: { reference in
                         guard files.selectedAgentID == agent else { return }
                         router.path.append(.file(agent, .source(.reference(reference))))

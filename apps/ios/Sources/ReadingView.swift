@@ -139,6 +139,7 @@ struct ConversationReadingView: View {
     private enum ScrollRequest: Hashable { case top(String), latest }
     @Bindable var reader: ReadingCoordinator
     let sender: SendingCoordinator?
+    var apiBaseURL: URL?
     var openReference: (String) -> Void
     var openWork: (String) -> Void
     var openTask: (String) -> Void
@@ -152,6 +153,7 @@ struct ConversationReadingView: View {
     @State private var userScrolling = false
     @State private var scrollRequest: ScrollRequest?
     @State private var scrollPosition = ScrollPosition(idType: String.self)
+    @State private var showPrivacyInfo = false
 
     private var turnIDs: [String] { turns.map(\.id) }
     private var turnRange: Range<Int> { ConversationTurnWindow.range(ids: turnIDs, endingAt: historyEndTurnID) }
@@ -364,10 +366,13 @@ struct ConversationReadingView: View {
                     NavigationLink(value: AppRoute.tools) { Label("settings.sharing", systemImage: "square.and.arrow.up") }
                     NavigationLink(value: AppRoute.diagnostics) { Label("diagnostics.title", systemImage: "stethoscope") }
                         .accessibilityIdentifier("diagnostics.open")
+                    Button { showPrivacyInfo = true } label: { Label("privacy.aiInfo", systemImage: "hand.raised") }
+                        .accessibilityIdentifier("conversation.privacyInfo")
                 } label: { Image(systemName: "ellipsis.circle").accessibilityLabel(Text("conversation.more")) }
                 .accessibilityIdentifier("conversation.more")
             }
         }
+        .sheet(isPresented: $showPrivacyInfo) { PrivacyInfoSheet(apiBaseURL: apiBaseURL) }
         .confirmationDialog("reading.markRead", isPresented: Binding(
             get: { readThroughToConfirm != nil },
             set: { if !$0 { readThroughToConfirm = nil } }
