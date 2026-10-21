@@ -1,6 +1,6 @@
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { memo, useEffect, useState, useMemo, useRef, useId, type AnchorHTMLAttributes, type ImgHTMLAttributes, type ReactNode } from "react";
+import { createContext, useContext, memo, useEffect, useState, useMemo, useRef, useId, type AnchorHTMLAttributes, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
 import type { RuntimeCitation, WorkspaceFileLocation, ResolvedFileLocation } from "../runtime/types";
@@ -172,6 +172,26 @@ export function safeCitation(citation: RuntimeCitation): RuntimeCitation | undef
   }
 }
 
+type RenderReference = (key: string, children: ReactNode, image?: boolean, alt?: string, linkProps?: AnchorHTMLAttributes<HTMLAnchorElement>, imageProps?: ImgHTMLAttributes<HTMLImageElement>) => ReactNode;
+const MarkdownReferenceContext = createContext<RenderReference | undefined>(undefined);
+
+// Keep element types stable while resolver results and callbacks change.
+// Inline component definitions remount loaded images on every preview render.
+const markdownComponents: Components = {
+  a: function MarkdownLink({ children, href, node, ...props }) {
+    const renderReference = useContext(MarkdownReferenceContext);
+    const key = node?.properties["data-file-reference"];
+    if (typeof key === "string" && renderReference) return renderReference(key, children, false, undefined, props);
+    return <a {...props} href={href} rel="noopener noreferrer" target="_blank">{children}</a>;
+  },
+  img: function MarkdownImage({ src, alt, node, ...props }) {
+    const renderReference = useContext(MarkdownReferenceContext);
+    const key = node?.properties["data-file-reference"];
+    if (typeof key === "string" && renderReference) return renderReference(key, alt || "Image", true, alt, undefined, props);
+    return src ? <img {...props} src={src} alt={alt ?? ""} /> : <span>{alt || "Image"} — Unsupported image URL</span>;
+  },
+};
+
 function MarkdownContentView({ text, citations, compact = false, baseFile, fragment, onFragmentChange, onOpenFile }: MarkdownContentProps) {
   const baseKey = JSON.stringify(baseFile);
   const base = useMemo(() => baseFile, [baseKey]);
@@ -194,7 +214,7 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
     const store = useRuntimeStore.getState();
     store.openResolvedFile(store.selectedAgentId, target);
   });
-  const renderReference = (key: string, children: ReactNode, image = false, alt?: string, linkProps?: AnchorHTMLAttributes<HTMLAnchorElement>, imageProps?: ImgHTMLAttributes<HTMLImageElement>) => {
+  const renderReference: RenderReference = (key, children, image = false, alt, linkProps, imageProps) => {
     const reference = references.get(key);
     const entry = reference?.value;
     if (!entry) return children;
@@ -228,23 +248,14 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
   return (
     <div ref={container} className={`markdown-content${compact ? " compact" : ""}`}>
       {fragmentError ? <p role="status" className="inspector-muted">{fragmentError}</p> : null}
-      <ReactMarkdown
-        remarkPlugins={[[remarkGfm, { singleTilde: false }], [remarkFileReferences, { base, prefix }]]}
-        components={{
-          a: ({ children, href, node, ...props }) => {
-            const key = node?.properties["data-file-reference"];
-            if (typeof key === "string") return renderReference(key, children, false, undefined, props);
-            return <a {...props} href={href} rel="noopener noreferrer" target="_blank">{children}</a>;
-          },
-          img: ({ src, alt, node, ...props }) => {
-            const key = node?.properties["data-file-reference"];
-            if (typeof key === "string") return renderReference(key, alt || "Image", true, alt, undefined, props);
-            return src ? <img {...props} src={src} alt={alt ?? ""} /> : <span>{alt || "Image"} — Unsupported image URL</span>;
-          },
-        }}
-      >
-        {visibleText}
-      </ReactMarkdown>
+      <MarkdownReferenceContext.Provider value={renderReference}>
+        <ReactMarkdown
+          remarkPlugins={[[remarkGfm, { singleTilde: false }], [remarkFileReferences, { base, prefix }]]}
+          components={markdownComponents}
+        >
+          {visibleText}
+        </ReactMarkdown>
+      </MarkdownReferenceContext.Provider>
       {safeCitations.length > 0 ? (
         <section className="markdown-sources" aria-label="Sources">
           <strong>Sources</strong>
