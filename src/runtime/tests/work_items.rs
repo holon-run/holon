@@ -68,6 +68,80 @@ struct CompleteWorkItemReportProvider {
     calls: Mutex<usize>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateCompletionReportPlacement {
+    BeforeCompletion,
+    AfterCompletion,
+    BeforeUpdate,
+}
+
+struct UpdateThenCompleteWorkItemProvider {
+    work_item_id: String,
+    report_placement: UpdateCompletionReportPlacement,
+    same_response: bool,
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for UpdateThenCompleteWorkItemProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        assert_valid_provider_tool_result_sequence(&request.conversation);
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let call = *calls;
+        let completion_round = if self.same_response { 1 } else { 2 };
+        let mut blocks = Vec::new();
+        if call == 1 {
+            if self.report_placement == UpdateCompletionReportPlacement::BeforeUpdate {
+                blocks.push(ModelBlock::Text {
+                    text: "This report precedes the update and must not be promoted.".into(),
+                });
+            }
+            blocks.push(ModelBlock::ToolUse {
+                id: "update-before-completion".into(),
+                name: "UpdateWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": self.work_item_id,
+                    "objective": "updated before completion"
+                }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            });
+        }
+        if call == completion_round {
+            if self.report_placement == UpdateCompletionReportPlacement::BeforeCompletion {
+                blocks.push(ModelBlock::Text {
+                    text: "Updated and completed the tracked work.".into(),
+                });
+            }
+            blocks.push(ModelBlock::ToolUse {
+                id: "complete-after-update".into(),
+                name: "CompleteWorkItem".into(),
+                input: serde_json::json!({"work_item_id": self.work_item_id}),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            });
+        } else if call == completion_round + 1
+            && self.report_placement != UpdateCompletionReportPlacement::BeforeCompletion
+        {
+            blocks.push(ModelBlock::Text {
+                text: "Updated and completed the tracked work.".into(),
+            });
+        }
+        assert!(!blocks.is_empty(), "unexpected provider call {call}");
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 struct DetachedCompletionThenWaitProvider {
     work_item_id: String,
     delivery: &'static str,
@@ -3539,6 +3613,258 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
     runtime_task.abort();
 }
 
+async fn assert_update_then_complete_work_item(
+    work_item_bound: bool,
+    report_placement: UpdateCompletionReportPlacement,
+    same_response: bool,
+) {
+    use crate::domain::execution_protocol::{
+        ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
+        WorkItemExecutionState, WorkItemOutcome,
+    };
+
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item("complete after update".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+    let provider = Arc::new(UpdateThenCompleteWorkItemProvider {
+        work_item_id: work_item.id.clone(),
+        report_placement,
+        same_response,
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "update and finish the focused work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    if work_item_bound {
+        message.work_item_id = Some(work_item.id.clone());
+    }
+    runtime.enqueue(message.clone()).await.unwrap();
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    let turn = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(turn) = runtime
+                .storage()
+                .read_recent_turns(10)
+                .unwrap()
+                .into_iter()
+                .find(|turn| {
+                    turn.input_message_ids.contains(&message.id) && turn.terminal.is_some()
+                })
+            {
+                break turn;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    runtime_task.abort();
+    let turn = turn.expect("completion should settle the admitted turn");
+    assert_eq!(
+        turn.terminal.as_ref().unwrap().kind,
+        TurnTerminalKind::Completed,
+        "completion failed: {:?}",
+        runtime.storage().read_recent_events(30).unwrap()
+    );
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.objective, "updated before completion");
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Processed
+    );
+    let briefs = runtime.recent_briefs(10).await.unwrap();
+    let report = briefs
+        .iter()
+        .find(|brief| Some(&brief.id) == completed.result_brief_id.as_ref())
+        .expect("completion must publish its canonical report");
+    assert_eq!(report.text, "Updated and completed the tracked work.");
+    assert_eq!(report.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+    assert_eq!(
+        briefs
+            .iter()
+            .filter(|brief| brief.text == report.text)
+            .count(),
+        1
+    );
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    for name in ["UpdateWorkItem", "CompleteWorkItem"] {
+        let tool = tools.iter().find(|tool| tool.tool_name == name).unwrap();
+        assert_eq!(tool.status, ToolExecutionStatus::Success);
+        assert!(turn.tool_execution_ids.contains(&tool.id));
+    }
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = protocol
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
+        .unwrap();
+    assert!(if work_item_bound {
+        matches!(&attempt.binding, ExecutionBinding::WorkItem { work_item_id } if work_item_id == &work_item.id)
+    } else {
+        matches!(&attempt.binding, ExecutionBinding::Conversation { .. })
+    });
+    assert_eq!(attempt.state, ExecutionAttemptState::Settled);
+    let outcomes = protocol
+        .outcomes
+        .values()
+        .filter(|outcome| outcome.attempt_id == attempt.attempt_id)
+        .collect::<Vec<_>>();
+    assert_eq!(outcomes.len(), 1);
+    assert!(if work_item_bound {
+        matches!(&outcomes[0].outcome, ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { completion }) if completion == &report.id)
+    } else {
+        assert_eq!(
+            completed
+                .completion_intent
+                .as_ref()
+                .unwrap()
+                .expected_work_revision,
+            completed.revision - 1
+        );
+        matches!(
+            &outcomes[0].outcome,
+            ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+        )
+    });
+    assert!(matches!(
+        protocol.work_items[&work_item.id].state,
+        WorkItemExecutionState::Terminal { .. }
+    ));
+    assert_eq!(
+        *provider.calls.lock().await,
+        (if same_response { 1 } else { 2 })
+            + usize::from(report_placement != UpdateCompletionReportPlacement::BeforeCompletion)
+    );
+}
+
+#[tokio::test]
+async fn conversation_update_then_complete_work_item_same_round() {
+    assert_update_then_complete_work_item(
+        false,
+        UpdateCompletionReportPlacement::BeforeCompletion,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn conversation_update_then_complete_work_item_deferred() {
+    assert_update_then_complete_work_item(
+        false,
+        UpdateCompletionReportPlacement::AfterCompletion,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bound_update_then_complete_work_item_same_round() {
+    assert_update_then_complete_work_item(
+        true,
+        UpdateCompletionReportPlacement::BeforeCompletion,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn bound_update_then_complete_work_item_deferred() {
+    assert_update_then_complete_work_item(
+        true,
+        UpdateCompletionReportPlacement::AfterCompletion,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn conversation_update_then_complete_work_item_same_response() {
+    assert_update_then_complete_work_item(
+        false,
+        UpdateCompletionReportPlacement::BeforeCompletion,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn conversation_update_then_complete_work_item_same_response_deferred() {
+    assert_update_then_complete_work_item(
+        false,
+        UpdateCompletionReportPlacement::AfterCompletion,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn conversation_update_then_complete_work_item_discards_report_before_update() {
+    assert_update_then_complete_work_item(
+        false,
+        UpdateCompletionReportPlacement::BeforeUpdate,
+        true,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn lifecycle_completion_registers_missing_legacy_work_item_execution() {
     let dir = tempdir().unwrap();
@@ -5547,8 +5873,9 @@ async fn completion_report_text_only_fallback_notifies_model_and_completes() {
     }));
 }
 
-#[tokio::test]
-async fn invalidated_completion_report_binding_interrupts_deferred_tool_atomically() {
+async fn assert_invalidated_completion_report_binding_interrupts_deferred_tool(
+    work_item_bound: bool,
+) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let seed_runtime = RuntimeHandle::new(
@@ -5610,16 +5937,38 @@ async fn invalidated_completion_report_binding_interrupts_deferred_tool_atomical
         MessageDeliverySurface::HttpControlPrompt,
         AdmissionContext::ControlAuthenticated,
     );
-    message.work_item_id = Some(work_item.id.clone());
+    if work_item_bound {
+        message.work_item_id = Some(work_item.id.clone());
+    }
 
     let runtime_task = tokio::spawn(runtime.clone().run());
-    runtime.enqueue(message).await.unwrap();
+    runtime.enqueue(message.clone()).await.unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(3),
         followup_started.notified(),
     )
     .await
     .expect("follow-up completion report round should start");
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let attempt = protocol
+        .attempts
+        .values()
+        .find(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
+        .unwrap();
+    assert!(if work_item_bound {
+        matches!(&attempt.binding, crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } if work_item_id == &work_item.id)
+    } else {
+        matches!(
+            &attempt.binding,
+            crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+        )
+    });
     runtime
         .update_work_item_fields(
             work_item.id.clone(),
@@ -5709,6 +6058,16 @@ async fn invalidated_completion_report_binding_interrupts_deferred_tool_atomical
         .iter()
         .all(|event| event.kind != "tool_execution_failed"));
     runtime_task.abort();
+}
+
+#[tokio::test]
+async fn invalidated_completion_report_binding_interrupts_deferred_tool_atomically() {
+    assert_invalidated_completion_report_binding_interrupts_deferred_tool(true).await;
+}
+
+#[tokio::test]
+async fn invalidated_conversation_completion_report_interrupts_deferred_tool_atomically() {
+    assert_invalidated_completion_report_binding_interrupts_deferred_tool(false).await;
 }
 
 #[tokio::test]
