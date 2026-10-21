@@ -33,8 +33,12 @@ class References(HTMLParser):
     def __init__(self):
         super().__init__()
         self.targets = []
+        self.reading_cards = []
 
     def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "a" and "home-reading-card" in attributes.get("class", "").split():
+            self.reading_cards.append(attributes.get("href", ""))
         for name, value in attrs:
             if value and name in ("href", "src"):
                 self.targets.append(value)
@@ -93,8 +97,17 @@ for locale in ("", "zh-CN"):
                 Path(urlsplit(target).path).name.removesuffix(".md")
                 for target in parser.targets
             }
-            if not ARTICLES <= linked:
+            if page.parent == blog and not ARTICLES <= linked:
                 errors.append(f"{page.relative_to(ROOT)}: missing article entry points")
+            if page.parent == base:
+                featured = {
+                    Path(urlsplit(target).path).name.removesuffix(".md")
+                    for target in parser.reading_cards
+                }
+                if len(parser.reading_cards) != 3 or len(featured) != 3 or not featured <= ARTICLES:
+                    errors.append(f"{page.relative_to(ROOT)}: expected three distinct featured articles")
+                if f"/{locale + '/' if locale else ''}blog/" not in parser.targets:
+                    errors.append(f"{page.relative_to(ROOT)}: missing full Blog entry point")
 
 if errors:
     print("\n".join(errors), file=sys.stderr)

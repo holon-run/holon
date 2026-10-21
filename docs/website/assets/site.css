@@ -163,6 +163,10 @@ main:has(.home-page) .catalog-page {
   margin-top: clamp(4.5rem, 9vw, 8rem);
 }
 
+.home-page section {
+  scroll-margin-top: 6rem;
+}
+
 .home-page h1,
 .home-page h2,
 .home-page h3,
@@ -802,13 +806,13 @@ img.article-architecture {
 
 .home-reading-all {
   display: inline-block;
-  margin-bottom: 2rem;
+  margin-top: 1.5rem;
   font-weight: 750;
 }
 
 .home-reading-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1.25rem;
 }
 
@@ -818,7 +822,7 @@ img.article-architecture {
   align-items: flex-start;
   gap: 0.9rem;
   min-width: 0;
-  padding: clamp(1.5rem, 3vw, 2.5rem);
+  padding: clamp(1.25rem, 2vw, 1.75rem);
   border: 1px solid var(--home-line);
   background: #fff;
   color: var(--home-ink);
@@ -879,7 +883,7 @@ img.article-architecture {
 }
 
 .home-start-section {
-  padding: clamp(2.25rem, 5vw, 4.5rem);
+  padding: clamp(1.5rem, 3vw, 2.5rem);
   border: 1px solid var(--home-line);
   border-radius: 24px;
   background: #f7faff;
@@ -888,8 +892,13 @@ img.article-architecture {
 .home-start {
   display: grid;
   grid-template-columns: minmax(0, 0.85fr) minmax(23rem, 1.15fr);
-  gap: clamp(2.5rem, 6vw, 5rem);
+  gap: clamp(1.5rem, 3vw, 3rem);
   align-items: center;
+}
+
+.home-start h2 {
+  font-size: clamp(1.8rem, 2.6vw, 2.5rem);
+  line-height: 1.1;
 }
 
 .home-start__copy > p:not(.home-kicker):not(.home-start__boundary) {
@@ -908,6 +917,16 @@ img.article-architecture {
 .home-start pre {
   margin: 0;
   box-shadow: 0 18px 42px rgba(15, 34, 58, 0.14);
+}
+
+.home-start__commands {
+  min-width: 0;
+}
+
+.home-start__command-label {
+  margin-bottom: 0.75rem;
+  color: var(--home-muted);
+  font-size: 0.8rem;
 }
 
 .home-mobile {
@@ -985,6 +1004,10 @@ img.article-architecture {
 }
 
 @media (max-width: 980px) {
+  .home-reading-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .home-hero,
   .home-capability-system,
   .home-start,
@@ -1008,6 +1031,10 @@ img.article-architecture {
 @media (max-width: 760px) {
   main:has(.home-page) {
     padding-top: 0.75rem;
+  }
+
+  .home-page section {
+    scroll-margin-top: 9rem;
   }
 
   .home-page section + section {

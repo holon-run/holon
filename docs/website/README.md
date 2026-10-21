@@ -15,14 +15,14 @@ order: 1
 <p class="home-hero__lede">Open-source software for individuals and teams. Assign tasks to your assistants, track their progress, and let them follow up on ongoing work.</p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="#install">Get started</a>
+<a class="home-button home-button--primary" href="#install">Install and start</a>
 <a class="home-button home-button--quiet" href="#capabilities">See how it works ↓</a>
 </div>
 
 <p class="home-hero__note">Give each assistant a role and a task. Check progress, provide input when needed, and review the result.</p>
 
 <div class="home-litepaper" role="group" aria-label="Holon product overview PDF">
-<span class="home-litepaper__label">Product overview · 6-page PDF</span>
+<span class="home-litepaper__label">Product overview</span>
 <a href="/assets/lite-paper/holon-lite-paper-en.pdf" type="application/pdf" hreflang="en" aria-label="Read the Holon lite paper in English (PDF)">Read <span aria-hidden="true">↗</span></a>
 </div>
 
@@ -46,6 +46,40 @@ order: 1
 <aside class="home-followup__human"><span aria-hidden="true">⇄</span><strong>You step in</strong><p>For decisions<br>or approval</p><small>Then work<br>continues</small></aside>
 </div>
 <p class="home-followup__note">Start or resume when an event arrives or a task is due.<br><span>Deliver results when the task is complete.</span></p>
+</div>
+</section>
+
+<section class="home-section home-start-section" id="install">
+<div class="home-start">
+<div class="home-start__copy">
+<p class="home-kicker">Quick start</p>
+
+## Install. Configure. Put an assistant to work.
+
+Install Holon, then run `holon onboard` to configure a model provider and `holon daemon start` to start the background service.
+
+Open `http://localhost:7878` or run `holon tui` to create your first assistant and assign a task.
+
+<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.53.0">v0.53.0</a></p>
+
+<div class="home-actions">
+<a class="home-button home-button--primary" href="/getting-started/">Setup guide · all platforms</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">Download binaries ↗</a>
+</div>
+
+</div>
+
+<div class="home-start__commands">
+<p class="home-start__command-label">macOS · Homebrew</p>
+
+```bash
+brew tap holon-run/tap && brew install holon
+holon onboard
+holon daemon start
+```
+
+</div>
+
 </div>
 </section>
 
@@ -92,6 +126,15 @@ Keep project files and outputs in separate workspaces. Agents work in the backgr
 <figcaption>See what’s done, what’s pending, and what happens next. Screenshot uses demo data. Click to enlarge.</figcaption>
 </figure>
 <p class="home-product__caption">Ongoing work requires the computer or server and the Holon background service to stay running. Your configuration determines which files and tools agents can use.</p>
+<div class="home-mobile">
+<h3>Mobile clients · Beta</h3>
+<p>Connect your phone to Holon running on your computer or server. Android testing instructions require Google Group access. You can also install the APK directly.</p>
+<div class="home-actions">
+<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
+<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · Join testing ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">Download Android APK ↗</a>
+</div>
+</div>
 </section>
 
 <!-- TEMPLATES:START -->
@@ -104,10 +147,9 @@ Keep project files and outputs in separate workspaces. Agents work in the backgr
 
 ## See what you can do with Holon.
 
-See how teams share agents, set up continuous code review, and explore the design behind ongoing work.
+Start with a hands-on task, see how a team shares an assistant, and get to know Holon.
 
 </div>
-<a class="home-reading-all" href="/blog/">View all articles →</a>
 <div class="home-reading-grid">
 <a class="home-reading-card" href="/blog/from-prompt-to-finished-work">
 <img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
@@ -116,87 +158,22 @@ See how teams share agents, set up continuous code review, and explore the desig
 <p>Give an agent a bounded repository task, let it work past the prompt, and return to a result you can inspect.</p>
 <span class="home-reading-card__cta">Follow the workflow →</span>
 </a>
-<a class="home-reading-card" href="/blog/what-is-holon">
-<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">02 · PRODUCT</span>
-<h3>Let multiple agents keep working in your environment</h3>
-<p>Move from asking AI for help each time to giving agents ongoing roles. Meet the local workbench that supports this way of working.</p>
-<span class="home-reading-card__cta">Meet Holon →</span>
-</a>
 <a class="home-reading-card" href="/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">03 · TEAM</span>
+<span class="home-reading-card__category">02 · TEAM</span>
 <h3>Everyone has AI. How does the team work together?</h3>
 <p>Follow a team investigating a faulty digital piano. See how a shared agent uses teammates’ test results to continue the investigation.</p>
 <span class="home-reading-card__cta">Read the team story →</span>
 </a>
-<a class="home-reading-card" href="/blog/one-pr-one-work-item">
-<img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">04 · REVIEWER</span>
-<h3>Set up an agent to follow code reviews through to completion</h3>
-<p>Start with the code-reviewer template, define its role and permissions, and connect repository events. Let it follow pull requests through fixes, automated checks, and merging.</p>
-<span class="home-reading-card__cta">Set up continuous review →</span>
-</a>
-<a class="home-reading-card" href="/blog/why-work-items">
-<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">05 · DESIGN</span>
-<h3>WorkItem: separate work state from the conversation</h3>
-<p>From an API migration to two reviews running side by side, see how work items retain goals, progress, and pending results between conversations.</p>
-<span class="home-reading-card__cta">Explore the design →</span>
-</a>
-<a class="home-reading-card" href="/blog/event-driven-kernel">
-<img class="home-reading-card__cover" src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">06 · ARCHITECTURE</span>
-<h3>From Request-Response to Event-Driven: Designing the Kernel for Long-Lived Agents</h3>
-<p>Why while(true) loops fail in production software engineering. Lessons from OS interrupt history for long-lived autonomous agents.</p>
-<span class="home-reading-card__cta">Explore the kernel design →</span>
-</a>
-<a class="home-reading-card" href="/blog/ai-delivery-quality-and-verification">
-<img class="home-reading-card__cover" src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">07 · ENGINEERING PRACTICE</span>
-<h3>How to Guarantee Quality in AI Delivery Pipelines: Four Layers of Verification and Acceptance in Real-World Engineering</h3>
-<p>Code generation is faster than ever, but software nobody dares deploy remains the real bottleneck. Drawing from an engineering team adopting Holon across cross-platform apps and hardware protocols, this article explores four pragmatic verification layers.</p>
-<span class="home-reading-card__cta">Read the guide →</span>
+<a class="home-reading-card" href="/blog/what-is-holon">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">03 · PRODUCT</span>
+<h3>Let multiple agents keep working in your environment</h3>
+<p>Move from asking AI for help each time to giving agents ongoing roles. Meet the local workbench that supports this way of working.</p>
+<span class="home-reading-card__cta">Meet Holon →</span>
 </a>
 </div>
-</section>
-
-<section class="home-section home-start-section" id="install">
-<div class="home-start">
-<div class="home-start__copy">
-<p class="home-kicker">Start locally</p>
-
-## Choose a template. Assign a task.
-
-Create an agent from an Agent Template, define its role, and give it a first task. Add system events and schedules when you’re ready for it to follow up automatically.
-
-First, install Holon, configure a model provider, and start the background service. Then open `http://localhost:7878` in your browser or run `holon tui`.
-
-<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.53.0">v0.53.0</a></p>
-
-<div class="home-actions">
-<a class="home-button home-button--primary" href="/getting-started/">Full setup guide</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">Download binaries ↗</a>
-</div>
-
-</div>
-
-```bash
-brew tap holon-run/tap && brew install holon
-holon onboard
-holon daemon start
-```
-
-</div>
-<div class="home-mobile">
-<h3>Mobile clients · Beta</h3>
-<p>Connect your phone to Holon running on your computer or server. Android testing instructions require Google Group access. You can also install the APK directly.</p>
-<div class="home-actions">
-<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
-<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · Join testing ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">Download Android APK ↗</a>
-</div>
-</div>
+<a class="home-reading-all" href="/blog/">View all articles →</a>
 </section>
 
 <section class="home-final">

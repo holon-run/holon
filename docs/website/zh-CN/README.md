@@ -15,14 +15,14 @@ order: 1
 <p class="home-hero__lede">面向个人和团队的开源软件。把任务交给 AI 助手，查看执行进展，让它们持续跟进工作。</p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="#install">开始使用</a>
+<a class="home-button home-button--primary" href="#install">安装并开始</a>
 <a class="home-button home-button--quiet" href="#capabilities">了解工作原理 ↓</a>
 </div>
 
 <p class="home-hero__note">给助手明确的职责和任务。查看进展，在需要时补充信息，并验收结果。</p>
 
 <div class="home-litepaper" role="group" aria-label="Holon 产品概览 PDF">
-<span class="home-litepaper__label">产品概览 · 6 页 PDF</span>
+<span class="home-litepaper__label">产品概览</span>
 <a href="/assets/lite-paper/holon-lite-paper-zh-CN.pdf" type="application/pdf" hreflang="zh-CN" aria-label="阅读中文版 Holon Lite Paper（PDF）">阅读 <span aria-hidden="true">↗</span></a>
 </div>
 
@@ -46,6 +46,40 @@ order: 1
 <aside class="home-followup__human"><span aria-hidden="true">⇄</span><strong>你按需参与</strong><p>需要判断<br>或授权时</p><small>确认后<br>回到工作中</small></aside>
 </div>
 <p class="home-followup__note">收到事件或到了约定时间，按需开始或继续。<br><span>任务完成后，交付结果。</span></p>
+</div>
+</section>
+
+<section class="home-section home-start-section" id="install">
+<div class="home-start">
+<div class="home-start__copy">
+<p class="home-kicker">快速开始</p>
+
+## 安装、配置，然后开始。
+
+安装 Holon 后，运行 `holon onboard` 配置模型，再用 `holon daemon start` 启动后台服务。
+
+打开 `http://localhost:7878`，或运行 `holon tui`，创建第一个助手并安排任务。
+
+<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.53.0">v0.53.0</a></p>
+
+<div class="home-actions">
+<a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南 · 各平台</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">下载二进制 ↗</a>
+</div>
+
+</div>
+
+<div class="home-start__commands">
+<p class="home-start__command-label">macOS · Homebrew</p>
+
+```bash
+brew tap holon-run/tap && brew install holon
+holon onboard
+holon daemon start
+```
+
+</div>
+
 </div>
 </section>
 
@@ -92,6 +126,15 @@ order: 1
 <figcaption>Web 工作台：查看已完成的工作、正在等待的结果和下一步。截图使用演示数据，点击可查看大图。</figcaption>
 </figure>
 <p class="home-product__caption">持续跟进需要运行 Holon 的电脑或服务器及后台服务保持开启。Agent 可使用的文件与工具取决于你的配置。</p>
+<div class="home-mobile">
+<h3>移动客户端 · 测试版</h3>
+<p>用手机连接电脑或服务器上已运行的 Holon。Android 测试说明帖需 Google Group 访问权限，也可直接下载 APK 安装。</p>
+<div class="home-actions">
+<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
+<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · 加入测试 ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">下载 Android APK ↗</a>
+</div>
+</div>
 </section>
 
 <!-- TEMPLATES:START -->
@@ -104,10 +147,9 @@ order: 1
 
 ## 从理解 Holon，到用它做事。
 
-看看团队怎样共享 Agent，动手配置持续审阅，再了解支撑持续跟进的设计。
+先动手完成一项任务，再看看团队怎样共享助手，并了解 Holon 的产品思路。
 
 </div>
-<a class="home-reading-all" href="/zh-CN/blog/">查看全部文章 →</a>
 <div class="home-reading-grid">
 <a class="home-reading-card" href="/zh-CN/blog/from-prompt-to-finished-work">
 <img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
@@ -116,87 +158,22 @@ order: 1
 <p>给 Agent 一项边界清楚的仓库任务，让它在 Prompt 结束后继续工作，并在回来时检查结果。</p>
 <span class="home-reading-card__cta">跟着流程开始 →</span>
 </a>
-<a class="home-reading-card" href="/zh-CN/blog/what-is-holon">
-<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">02 · 产品故事</span>
-<h3>让多个 Agent 在你的工作环境里持续做事</h3>
-<p>从每次叫 AI 帮忙，到让固定角色持续跟进。认识支撑这种协作方式的本地工作台。</p>
-<span class="home-reading-card__cta">认识 Holon →</span>
-</a>
 <a class="home-reading-card" href="/zh-CN/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">03 · 团队协作</span>
+<span class="home-reading-card__category">02 · 团队协作</span>
 <h3>个人有了 AI，团队怎样一起工作？</h3>
 <p>从设备故障调查到琴键无声的真机验证，看团队怎样共享 Agent，并根据测试反馈继续调查。</p>
 <span class="home-reading-card__cta">看团队如何协作 →</span>
 </a>
-<a class="home-reading-card" href="/zh-CN/blog/one-pr-one-work-item">
-<img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">04 · 审阅实践</span>
-<h3>搭建持续跟进 PR 的 Reviewer</h3>
-<p>从 code-reviewer 模板开始，确认职责与权限，订阅仓库 PR，持续跟进修复、CI 和合并。</p>
-<span class="home-reading-card__cta">配置持续审阅 →</span>
-</a>
-<a class="home-reading-card" href="/zh-CN/blog/why-work-items">
-<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">05 · 技术设计</span>
-<h3>WorkItem：把工作状态从对话中分离</h3>
-<p>从接口迁移到两个 PR 交替推进，看看目标、进度和等待条件如何跨轮保留。</p>
-<span class="home-reading-card__cta">拆解 WorkItem →</span>
-</a>
-<a class="home-reading-card" href="/zh-CN/blog/event-driven-kernel">
-<img class="home-reading-card__cover" src="/assets/event-driven-kernel-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">06 · 架构设计</span>
-<h3>从请求-响应到事件驱动：长周期 Agent 系统的内核设计</h3>
-<p>为什么死循环无法支撑生产级工作？借鉴操作系统中断演进史，解析长周期 Agent 的持久化等待与事件驱动内核。</p>
-<span class="home-reading-card__cta">探索内核架构 →</span>
-</a>
-<a class="home-reading-card" href="/zh-CN/blog/ai-delivery-quality-and-verification">
-<img class="home-reading-card__cover" src="/assets/ai-delivery-verification-cover.webp" width="1248" height="832" alt="" loading="lazy" decoding="async">
-<span class="home-reading-card__category">07 · 工程实践</span>
-<h3>AI 自动交付流如何保证质量：真实工程中的四层验证与验收防线</h3>
-<p>代码生成速度越来越快，但无人敢把改动推上线才是真正的瓶颈。结合一个采用 Holon 的工程团队在跨端与硬件协议项目中的实践，拆解四层务实的验收防线。</p>
-<span class="home-reading-card__cta">阅读实践解析 →</span>
+<a class="home-reading-card" href="/zh-CN/blog/what-is-holon">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
+<span class="home-reading-card__category">03 · 产品故事</span>
+<h3>让多个 Agent 在你的工作环境里持续做事</h3>
+<p>从每次叫 AI 帮忙，到让固定角色持续跟进。认识支撑这种协作方式的本地工作台。</p>
+<span class="home-reading-card__cta">认识 Holon →</span>
 </a>
 </div>
-</section>
-
-<section class="home-section home-start-section" id="install">
-<div class="home-start">
-<div class="home-start__copy">
-<p class="home-kicker">从本地开始</p>
-
-## 从一个模板，一项任务开始。
-
-从 Agent 模板（Agent Template）创建 Agent，明确职责并安排第一项任务。再根据需要接入系统事件、设置定时任务，让它持续跟进。
-
-先安装 Holon、配置模型并启动后台服务。然后打开 Web 界面 `http://localhost:7878`，或运行 `holon tui`。
-
-<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.53.0">v0.53.0</a></p>
-
-<div class="home-actions">
-<a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">下载二进制 ↗</a>
-</div>
-
-</div>
-
-```bash
-brew tap holon-run/tap && brew install holon
-holon onboard
-holon daemon start
-```
-
-</div>
-<div class="home-mobile">
-<h3>移动客户端 · 测试版</h3>
-<p>用手机连接电脑或服务器上已运行的 Holon。Android 测试说明帖需 Google Group 访问权限，也可直接下载 APK 安装。</p>
-<div class="home-actions">
-<a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
-<a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · 加入测试 ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">下载 Android APK ↗</a>
-</div>
-</div>
+<a class="home-reading-all" href="/zh-CN/blog/">查看全部文章 →</a>
 </section>
 
 <section class="home-final">
