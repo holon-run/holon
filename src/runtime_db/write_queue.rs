@@ -33,10 +33,75 @@ pub(crate) struct RuntimeDbWriter {
 pub(crate) struct RuntimeDbWriterState {
     pub(crate) path: PathBuf,
     pub(crate) connection: Mutex<Connection>,
+    #[cfg(unix)]
+    database_identity: RuntimeDbFileIdentity,
     pub(crate) queue: Arc<RuntimeDbWriteQueue>,
     #[cfg(target_os = "linux")]
     pub(crate) sidecar_guard: Mutex<Option<RuntimeDbSidecarGuard>>,
     protection: Mutex<RuntimeDbProtectionStatus>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RuntimeDbFileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl RuntimeDbFileIdentity {
+    fn read(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            RuntimeDbProtectionError::new(
+                path,
+                format!("cannot inspect runtime db file identity: {error}"),
+            )
+        })?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    fn bind(path: &Path, connection: &Connection) -> Result<Self> {
+        let identity = Self::read(path)?;
+        let mut moved = 0_i32;
+        // SAFETY: the connection and nul-terminated schema outlive the call;
+        // SQLite writes only to `moved` before returning.
+        let result = unsafe {
+            rusqlite::ffi::sqlite3_file_control(
+                connection.handle(),
+                c"main".as_ptr(),
+                rusqlite::ffi::SQLITE_FCNTL_HAS_MOVED,
+                (&mut moved as *mut i32).cast(),
+            )
+        };
+        if result != rusqlite::ffi::SQLITE_OK || moved != 0 {
+            return Err(RuntimeDbProtectionError::new(
+                path,
+                format!(
+                    "cannot bind runtime db file identity to opened SQLite handle: result={result}, moved={moved}"
+                ),
+            )
+            .into());
+        }
+        identity.ensure_matches(path)?;
+        Ok(identity)
+    }
+
+    fn ensure_matches(self, path: &Path) -> Result<()> {
+        let current = Self::read(path)?;
+        if current != self {
+            return Err(RuntimeDbProtectionError::new(
+                path,
+                format!("runtime db file identity changed: opened={self:?}, canonical={current:?}"),
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct RuntimeDbWriteQueue {
@@ -121,10 +186,14 @@ impl RuntimeDbWriter {
     }
 
     pub(crate) fn open_starting(path: PathBuf, connection: Connection) -> Result<Self> {
+        #[cfg(unix)]
+        let database_identity = RuntimeDbFileIdentity::bind(&path, &connection)?;
         let queue = runtime_db_write_queue(&path)?;
         let state = Arc::new(RuntimeDbWriterState {
             path,
             connection: Mutex::new(connection),
+            #[cfg(unix)]
+            database_identity,
             queue,
             #[cfg(target_os = "linux")]
             sidecar_guard: Mutex::new(None),
@@ -309,12 +378,9 @@ impl RuntimeDbWriterState {
             })
     }
 
-    fn ensure_protected(&self) -> Result<()> {
+    pub(crate) fn ensure_protected(&self) -> Result<()> {
         let status = self.protection_status();
         match status.state {
-            RuntimeDbProtectionState::Starting | RuntimeDbProtectionState::Unsupported => {
-                return Ok(());
-            }
             RuntimeDbProtectionState::Quarantined => {
                 return Err(RuntimeDbProtectionError::new(
                     &self.path,
@@ -324,7 +390,14 @@ impl RuntimeDbWriterState {
                 )
                 .into());
             }
-            RuntimeDbProtectionState::Protected => {}
+            _ => {}
+        }
+        #[cfg(unix)]
+        if let Err(error) = self.database_identity.ensure_matches(&self.path) {
+            return Err(self.quarantine(error));
+        }
+        if status.state != RuntimeDbProtectionState::Protected {
+            return Ok(());
         }
         if let Err(error) = ensure_runtime_db_sidecars_are_consistent(&self.path) {
             return Err(self.quarantine(error));
@@ -361,7 +434,7 @@ impl RuntimeDbWriterState {
         .into()
     }
 
-    fn open_connection(&self) -> Result<Connection> {
+    pub(crate) fn open_connection(&self) -> Result<Connection> {
         self.ensure_protected()?;
         open_connection(&self.path).map_err(|error| {
             if error

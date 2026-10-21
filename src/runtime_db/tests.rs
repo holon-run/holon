@@ -4923,7 +4923,7 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn agent_list_posture_rows_opens_one_connection_per_request() -> Result<()> {
+    fn agent_list_posture_rows_reuses_connections_across_requests() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let agent_ids = (0..12)
@@ -4938,26 +4938,15 @@ CREATE TABLE working_memory_deltas (
             ))?;
         }
 
-        let connection_open_count = || {
-            crate::diagnostics::performance_snapshot()
-                .db
-                .iter()
-                .find(|metric| metric.name == "db.connection.open")
-                .map(|metric| metric.count)
-                .unwrap_or(0)
-        };
-        let before = connection_open_count();
         let iterations = 20;
         for _ in 0..iterations {
             db.agent_list_posture_rows(&agent_ids)?;
         }
-        let opened = connection_open_count().saturating_sub(before);
-        // The per-agent path opens ~7 connections per non-stopped agent
-        // (~1680 across the loop); the batch read must stay O(1) per
-        // request. The slack only absorbs unrelated parallel-test noise.
+        let opened = db.reader_pool_stats_for_tests().connections_opened;
+        // Pool-local accounting is independent of unrelated parallel tests.
         assert!(
-            opened <= iterations * 5,
-            "expected O(1) connection opens per batch read, got {opened}"
+            opened > 0 && opened <= 4,
+            "expected bounded physical opens across batch reads, got {opened}"
         );
         Ok(())
     }
