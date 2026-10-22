@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
+  "revision": "models-dev-fd70d4edf75e6b29b624a2683b316bac61a871d5b0ca6122e4fbe4e99f7f41de",
   "upstream": {
     "source": "models.dev",
-    "revision": "3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
-    "fetched_at": "2026-10-19T21:01:15.623567974+00:00",
-    "content_sha256": "3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
-    "adapter_version": "0.53.0 (74014f8d-dirty)"
+    "revision": "fd70d4edf75e6b29b624a2683b316bac61a871d5b0ca6122e4fbe4e99f7f41de",
+    "fetched_at": "2026-10-22T14:33:39.896543117+00:00",
+    "content_sha256": "fd70d4edf75e6b29b624a2683b316bac61a871d5b0ca6122e4fbe4e99f7f41de",
+    "adapter_version": "0.53.0 (706cbfeb-dirty)"
   },
   "models": [
     {
@@ -527,6 +527,56 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "arcee/deepseek/deepseek-v4.1-flash",
+      "display_name": "DeepSeek V4.1 Flash",
+      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "arcee/deepseek/deepseek-v4.1-flash-1017",
+      "display_name": "DeepSeek V4.1 Flash 1017",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 384000,
+      "max_output_tokens_upper_limit": 384000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "arcee/moonshotai/kimi-k3",
       "display_name": "Kimi K3",
       "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
@@ -580,8 +630,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
+      "default_max_output_tokens": 80000,
+      "max_output_tokens_upper_limit": 80000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -609,6 +659,56 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "arcee/zai-org/glm-5.3",
+      "display_name": "GLM-5.3",
+      "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "arcee/zai-org/glm-5.3-flash",
+      "display_name": "GLM-5.3-Flash",
+      "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -1309,6 +1409,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "low",
         "high",
         "max"
       ],
@@ -1334,12 +1435,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
         "high",
-        "xhigh",
         "max"
       ],
       "source": "remote_discovered"
@@ -2566,9 +2662,9 @@
       "model_ref": "deepseek/deepseek-flash",
       "display_name": "DeepSeek V4.1 Flash 1017",
       "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 393216,
       "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
@@ -2592,9 +2688,9 @@
       "model_ref": "deepseek/deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
       "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 393216,
       "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
@@ -2618,9 +2714,9 @@
       "model_ref": "deepseek/deepseek-v4-flash-vision-exp",
       "display_name": "DeepSeek V4 Flash Vision Exp",
       "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 393216,
       "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
@@ -2644,9 +2740,9 @@
       "model_ref": "deepseek/deepseek-v4-pro",
       "display_name": "DeepSeek V4 Pro",
       "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 393216,
       "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
@@ -3016,7 +3112,7 @@
     {
       "model_ref": "fireworks/accounts/fireworks/routers/deepseek-flash-latest",
       "display_name": "DeepSeek Flash Latest",
-      "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
+      "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -3371,7 +3467,7 @@
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
-        "supports_reasoning": true,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -4059,6 +4155,32 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "gemini/gemini-pro-latest",
+      "display_name": "Gemini Pro Latest",
+      "description": "Reasoning-first Gemini preview for agentic coding and complex problem solving",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "gemini/gemma-4-26b-a4b-it",
       "display_name": "Gemma 4 26B A4B IT",
       "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
@@ -4401,8 +4523,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4458,6 +4580,33 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "huggingface/Qwen/Qwen3-8B",
+      "display_name": "Qwen3 8B",
+      "description": "Dense 8B Qwen3 model with switchable thinking for chat, reasoning, and tool use",
+      "context_window_tokens": 40960,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 38912,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "huggingface/Qwen/Qwen3-Coder-30B-A3B-Instruct",
       "display_name": "Qwen3-Coder 30B-A3B Instruct",
       "description": "Smaller Qwen coder for efficient local agents and repo-level fixes",
@@ -4485,8 +4634,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 66536,
-      "max_output_tokens_upper_limit": 66536,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4524,11 +4673,11 @@
       "model_ref": "huggingface/Qwen/Qwen3-Embedding-4B",
       "display_name": "Qwen 3 Embedding 4B",
       "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
-      "context_window_tokens": 32000,
+      "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 30400,
-      "default_max_output_tokens": 2048,
-      "max_output_tokens_upper_limit": 2048,
+      "auto_compact_token_limit": 31129,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4545,11 +4694,11 @@
       "model_ref": "huggingface/Qwen/Qwen3-Embedding-8B",
       "display_name": "Qwen 3 Embedding 8B",
       "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
-      "context_window_tokens": 32000,
+      "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 30400,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
+      "auto_compact_token_limit": 31129,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4569,8 +4718,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 66536,
-      "max_output_tokens_upper_limit": 66536,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4590,8 +4739,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4599,7 +4748,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -4982,8 +5131,8 @@
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155648,
-      "default_max_output_tokens": 163840,
-      "max_output_tokens_upper_limit": 163840,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -5397,6 +5546,27 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "huggingface/meta-llama/Llama-Guard-4-12B",
+      "display_name": "Llama Guard 4 12B",
+      "description": "Multimodal Llama 4-based safety classifier for moderating prompts and responses",
+      "context_window_tokens": 163840,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 155648,
+      "default_max_output_tokens": 163840,
+      "max_output_tokens_upper_limit": 163840,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -6168,8 +6338,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 512000,
-      "max_output_tokens_upper_limit": 512000,
+      "default_max_output_tokens": 524288,
+      "max_output_tokens_upper_limit": 524288,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -6189,8 +6359,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 512000,
-      "max_output_tokens_upper_limit": 512000,
+      "default_max_output_tokens": 524288,
+      "max_output_tokens_upper_limit": 524288,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -6874,27 +7044,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "mistral/open-mistral-7b",
-      "display_name": "Mistral 7B",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
-      "context_window_tokens": 8000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 7600,
-      "default_max_output_tokens": 8000,
-      "max_output_tokens_upper_limit": 8000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "mistral/open-mistral-nemo",
       "display_name": "Open Mistral Nemo",
       "description": "Legacy model retained for compatibility with older integrations",
@@ -6903,48 +7052,6 @@
       "auto_compact_token_limit": 121600,
       "default_max_output_tokens": 128000,
       "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "mistral/open-mixtral-8x22b",
-      "display_name": "Mixtral 8x22B",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
-      "context_window_tokens": 64000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 60800,
-      "default_max_output_tokens": 64000,
-      "max_output_tokens_upper_limit": 64000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "mistral/open-mixtral-8x7b",
-      "display_name": "Mixtral 8x7B",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
-      "context_window_tokens": 32000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 30400,
-      "default_max_output_tokens": 32000,
-      "max_output_tokens_upper_limit": 32000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -7627,17 +7734,17 @@
       "model_ref": "nearai/black-forest-labs/FLUX.2-klein-4B",
       "display_name": "FLUX.2 Klein 4B",
       "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-      "context_window_tokens": 128000,
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": true,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -8474,8 +8581,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -8569,54 +8676,12 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/abacusai/dracarys-llama-3.1-70b-instruct",
-      "display_name": "dracarys-llama-3.1-70b-instruct",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/baai/bge-m3",
-      "display_name": "BGE M3",
-      "description": "Flagship model for demanding analysis, coding, and production agent workflows",
-      "context_window_tokens": 8192,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 7782,
-      "default_max_output_tokens": 1024,
-      "max_output_tokens_upper_limit": 1024,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/black-forest-labs/flux.1-dev",
       "display_name": "FLUX.1-dev",
-      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-      "context_window_tokens": 4096,
+      "description": "Open-weight FLUX.1 text-to-image model for high-quality guidance-distilled generation",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 3891,
+      "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
@@ -8634,12 +8699,12 @@
     {
       "model_ref": "nvidia/black-forest-labs/flux_1-kontext-dev",
       "display_name": "FLUX.1-Kontext-dev",
-      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-      "context_window_tokens": 40960,
+      "description": "Open-weight FLUX.1 Kontext model for instruction-based image editing",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 38912,
-      "default_max_output_tokens": 40960,
-      "max_output_tokens_upper_limit": 40960,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -8655,10 +8720,10 @@
     {
       "model_ref": "nvidia/black-forest-labs/flux_1-schnell",
       "display_name": "FLUX.1-schnell",
-      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-      "context_window_tokens": 77,
+      "description": "Fast few-step FLUX.1 text-to-image model under Apache 2.0",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 73,
+      "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
@@ -8676,12 +8741,12 @@
     {
       "model_ref": "nvidia/black-forest-labs/flux_2-klein-4b",
       "display_name": "FLUX.2 Klein 4B",
-      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-      "context_window_tokens": 40960,
+      "description": "Fast 4B open-weight image generation and editing model",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 38912,
-      "default_max_output_tokens": 40960,
-      "max_output_tokens_upper_limit": 40960,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -8692,131 +8757,6 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/bytedance/seed-oss-36b-instruct",
-      "display_name": "ByteDance-Seed/Seed-OSS-36B-Instruct",
-      "description": "Tool-capable chat model for instruction following and agentic application workflows",
-      "context_window_tokens": 262000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 248900,
-      "default_max_output_tokens": 262000,
-      "max_output_tokens_upper_limit": 262000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/deepseek-ai/deepseek-v4-flash",
-      "display_name": "DeepSeek V4 Flash",
-      "description": "Fast DeepSeek V4 lane for economical reasoning, coding, and long-context work",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "high",
-        "max"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/deepseek-ai/deepseek-v4-flash-0731",
-      "display_name": "DeepSeek V4 Flash 0731",
-      "description": "Official DeepSeek V4 Flash release with enhanced agentic capabilities and integrated DSpark speculative decoding",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "high",
-        "max"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/deepseek-ai/deepseek-v4-pro",
-      "display_name": "DeepSeek V4 Pro",
-      "description": "Open MoE flagship with million-token context for coding and long agent runs",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 393216,
-      "max_output_tokens_upper_limit": 393216,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "high",
-        "max"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/deepseek-ai/deepseek-v4-pro-0813",
-      "display_name": "DeepSeek V4 Pro 0813",
-      "description": "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "high",
-        "max"
-      ],
       "source": "remote_discovered"
     },
     {
@@ -8877,30 +8817,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/google/gemma-2-2b-it",
-      "display_name": "Gemma 2 2b It",
-      "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/google/gemma-3-12b-it",
       "display_name": "Gemma 3 12B IT",
-      "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+      "description": "Open multimodal Gemma instruction model for multilingual text generation and image understanding",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -8921,7 +8840,7 @@
     {
       "model_ref": "nvidia/google/gemma-3-4b-it",
       "display_name": "Gemma 3 4B IT",
-      "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+      "description": "Open multimodal Gemma instruction model for efficient text generation and image understanding",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -8940,51 +8859,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/google/gemma-3n-e2b-it",
-      "display_name": "Gemma 3n E2b It",
-      "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/google/gemma-3n-e4b-it",
-      "display_name": "Gemma 3n E4b It",
-      "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/google/gemma-4-31b-it",
       "display_name": "Gemma-4-31B-IT",
-      "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+      "description": "Largest Gemma 4 instruction model for open, self-hosted chat and reasoning",
       "context_window_tokens": 256000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 243200,
@@ -9005,7 +8882,7 @@
     {
       "model_ref": "nvidia/google/google-paligemma",
       "display_name": "paligemma",
-      "description": "Gemini multimodal model for text, image, audio, video, and document tasks",
+      "description": "Vision-language model for answering questions about images and text",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
@@ -9017,90 +8894,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/esm2-650m",
-      "display_name": "esm2-650m",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/esmfold",
-      "display_name": "esmfold",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/llama-3.1-70b-instruct",
-      "display_name": "Llama 3.1 70b Instruct",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/llama-3.1-8b-instruct",
-      "display_name": "Llama 3.1 8B Instruct",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 16000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 15200,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -9110,7 +8903,7 @@
     {
       "model_ref": "nvidia/meta/llama-3.2-11b-vision-instruct",
       "display_name": "Llama 3.2 11b Vision Instruct",
-      "description": "Open Llama multimodal model for image understanding and text reasoning",
+      "description": "Open multimodal Llama model for image understanding, captioning, and visual QA",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
@@ -9122,48 +8915,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/llama-3.2-1b-instruct",
-      "display_name": "Llama 3.2 1b Instruct",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/llama-3.2-3b-instruct",
-      "display_name": "Llama 3.2 3B Instruct",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 32768,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
-      "default_max_output_tokens": 32000,
-      "max_output_tokens_upper_limit": 32000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -9173,54 +8924,12 @@
     {
       "model_ref": "nvidia/meta/llama-3.2-90b-vision-instruct",
       "display_name": "Llama-3.2-90B-Vision-Instruct",
-      "description": "Open Llama multimodal model for image understanding and text reasoning",
+      "description": "Large open multimodal Llama model for image reasoning, document QA, and captioning",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
       "default_max_output_tokens": 8192,
       "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/llama-3.3-70b-instruct",
-      "display_name": "Llama 3.3 70b Instruct",
-      "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/meta/llama-4-maverick-17b-128e-instruct",
-      "display_name": "Llama 4 Maverick 17b 128e Instruct",
-      "description": "Open multimodal Llama model for strong reasoning and fast responses",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -9236,10 +8945,10 @@
     {
       "model_ref": "nvidia/meta/llama-guard-4-12b",
       "display_name": "Llama Guard 4 12B",
-      "description": "Safety model for policy screening, moderation, and risk-aware routing workflows",
-      "context_window_tokens": 128000,
+      "description": "Multimodal Llama 4-based safety classifier for moderating prompts and responses",
+      "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
+      "auto_compact_token_limit": 155648,
       "default_max_output_tokens": 16384,
       "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
@@ -9284,93 +8993,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/microsoft/phi-4-mini-instruct",
-      "display_name": "Phi-4-Mini",
-      "description": "Efficient model for low-latency assistance, extraction, and routine automation",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/microsoft/phi-4-multimodal-instruct",
-      "display_name": "Phi 4 Multimodal",
-      "description": "General-purpose chat model for instruction following, writing, and analysis",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/minimaxai/minimax-m2.7",
-      "display_name": "MiniMax-M2.7",
-      "description": "MiniMax model for chat, coding, office work, and agentic tasks",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/minimaxai/minimax-m3",
-      "display_name": "MiniMax-M3",
-      "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/mistralai/magistral-small-2506",
       "display_name": "Magistral Small 2506",
-      "description": "Mistral reasoning model for transparent analysis, math, and complex decisions",
+      "description": "Open Mistral reasoning model for transparent step-by-step problem solving",
       "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 31129,
@@ -9389,30 +9014,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/mistralai/ministral-14b-instruct-2512",
-      "display_name": "Ministral 3 14B Instruct 2512",
-      "description": "Compact Mistral VLM for chat and instruction-based workloads",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/mistralai/mistral-7b-instruct-v0.3",
       "display_name": "Mistral-7B-Instruct-v0.3",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
+      "description": "Open 7B Mistral instruction model with function calling",
       "context_window_tokens": 65536,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 62259,
@@ -9424,27 +9028,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/mistralai/mistral-large-3-675b-instruct-2512",
-      "display_name": "Mistral Large 3 675B Instruct 2512",
-      "description": "Flagship Mistral model for advanced reasoning, coding, and multilingual work",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -9473,122 +9056,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/mistralai/mistral-medium-3.5-128b",
-      "display_name": "Mistral Medium 3.5",
-      "description": "Balanced Mistral model for enterprise assistants, multilingual work, and tools",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/mistralai/mistral-nemotron",
-      "display_name": "mistral-nemotron",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/mistralai/mistral-small-4-119b-2603",
-      "display_name": "mistral-small-4-119b-2603",
-      "description": "Efficient Mistral model for fast chat, extraction, and production assistants",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/mistralai/mixtral-8x22b-instruct",
-      "display_name": "Mistral: Mixtral 8x22B Instruct",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
-      "context_window_tokens": 65536,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 62259,
-      "default_max_output_tokens": 13108,
-      "max_output_tokens_upper_limit": 13108,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/mistralai/mixtral-8x7b-instruct",
-      "display_name": "Mistral: Mixtral 8x7B Instruct",
-      "description": "Mistral model for multilingual chat, reasoning, and tool-assisted workflows",
-      "context_window_tokens": 32768,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/moonshotai/kimi-k2.6",
       "display_name": "Kimi K2.6",
-      "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
+      "description": "Multimodal Kimi workhorse for agent loops, coding tasks, and visual context",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
@@ -9644,7 +9114,7 @@
     {
       "model_ref": "nvidia/nvidia/active-speaker-detection",
       "display_name": "Active Speaker Detection",
-      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
+      "description": "Detects and tracks which person is speaking across video frames",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -9665,7 +9135,7 @@
     {
       "model_ref": "nvidia/nvidia/bevformer",
       "display_name": "bevformer",
-      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
+      "description": "Multi-frame bird's-eye-view 3D perception transformer for autonomous driving",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
@@ -9677,27 +9147,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/cosmos-predict1-5b",
-      "display_name": "cosmos-predict1-5b",
-      "description": "Video model for prompt-guided generation, editing, and motion workflows",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -9726,30 +9175,9 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/nvidia/cosmos-transfer1-7b",
-      "display_name": "cosmos-transfer1-7b",
-      "description": "Video model for prompt-guided generation, editing, and motion workflows",
-      "context_window_tokens": null,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/nvidia/cosmos-transfer2_5-2b",
       "display_name": "cosmos-transfer2.5-2b",
-      "description": "Video model for prompt-guided generation, editing, and motion workflows",
+      "description": "Generates physics-aware video world states from text and spatial control videos",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -9761,27 +9189,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/gliner-pii",
-      "display_name": "gliner-pii",
-      "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -9805,48 +9212,6 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/llama-3.1-nemotron-nano-8b-v1",
-      "display_name": "Llama 3.1 Nemotron Nano 8B v1",
-      "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-      "display_name": "Llama 3.1 Nemotron Nano VL 8B v1",
-      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
-      "context_window_tokens": 32768,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -9894,75 +9259,12 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/nvidia/llama-3.3-nemotron-super-49b-v1",
-      "display_name": "Llama 3.3 Nemotron Super 49B v1",
-      "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/llama-3.3-nemotron-super-49b-v1.5",
-      "display_name": "Llama 3.3 Nemotron Super 49B v1.5",
-      "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/llama-3_2-nemoretriever-300m-embed-v1",
-      "display_name": "llama-3_2-nemoretriever-300m-embed-v1",
-      "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
-      "context_window_tokens": 32768,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
-      "default_max_output_tokens": 2048,
-      "max_output_tokens_upper_limit": 2048,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/nvidia/llama-nemotron-embed-vl-1b-v2",
       "display_name": "llama-nemotron-embed-vl-1b-v2",
       "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
-      "context_window_tokens": 32768,
+      "context_window_tokens": 8192,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
+      "auto_compact_token_limit": 7782,
       "default_max_output_tokens": 2048,
       "max_output_tokens_upper_limit": 2048,
       "default_verbosity": null,
@@ -9981,9 +9283,9 @@
       "model_ref": "nvidia/nvidia/llama-nemotron-rerank-vl-1b-v2",
       "display_name": "llama-nemotron-rerank-vl-1b-v2",
       "description": "Reranking model for improving retrieval quality in search and recommendation systems",
-      "context_window_tokens": 128000,
+      "context_window_tokens": 10240,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
+      "auto_compact_token_limit": 9728,
       "default_max_output_tokens": 4096,
       "max_output_tokens_upper_limit": 4096,
       "default_verbosity": null,
@@ -10001,7 +9303,7 @@
     {
       "model_ref": "nvidia/nvidia/magpie-tts-zeroshot",
       "display_name": "magpie-tts-zeroshot",
-      "description": "Speech generation model for controllable voice, narration, and audio delivery",
+      "description": "Expressive text-to-speech that clones a voice from a short audio sample",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -10015,48 +9317,6 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nemotron-3-content-safety",
-      "display_name": "nemotron-3-content-safety",
-      "description": "Safety model for policy screening, moderation, and risk-aware routing workflows",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nemotron-3-nano-30b-a3b",
-      "display_name": "nemotron-3-nano-30b-a3b",
-      "description": "Small Nemotron 3 MoE for efficient coding, math, and long-context agents",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -10101,6 +9361,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "none",
+        "medium",
+        "high"
+      ],
       "source": "remote_discovered"
     },
     {
@@ -10167,69 +9432,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/nvidia/nemotron-content-safety-reasoning-4b",
-      "display_name": "nemotron-content-safety-reasoning-4b",
-      "description": "Safety model for policy screening, moderation, and risk-aware routing workflows",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nemotron-mini-4b-instruct",
-      "display_name": "nemotron-mini-4b-instruct",
-      "description": "Compact Nemotron model for efficient reasoning and deployable AI agents",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nemotron-nano-12b-v2-vl",
-      "display_name": "Nemotron Nano 12B v2 VL",
-      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/nvidia/nemotron-voicechat",
       "display_name": "nemotron-voicechat",
       "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
@@ -10246,69 +9448,6 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nv-embed-v1",
-      "display_name": "nv-embed-v1",
-      "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
-      "context_window_tokens": 32768,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
-      "default_max_output_tokens": 2048,
-      "max_output_tokens_upper_limit": 2048,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nv-embedcode-7b-v1",
-      "display_name": "nv-embedcode-7b-v1",
-      "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 32768,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 31129,
-      "default_max_output_tokens": 2048,
-      "max_output_tokens_upper_limit": 2048,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/nvidia/nvidia-nemotron-nano-9b-v2",
-      "display_name": "nvidia-nemotron-nano-9b-v2",
-      "description": "Compact Nemotron model for efficient reasoning and deployable AI agents",
-      "context_window_tokens": 131072,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -10358,7 +9497,7 @@
     {
       "model_ref": "nvidia/nvidia/sparsedrive",
       "display_name": "sparsedrive",
-      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
+      "description": "End-to-end autonomous driving stack for perception, prediction, and planning",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
@@ -10379,7 +9518,7 @@
     {
       "model_ref": "nvidia/nvidia/streampetr",
       "display_name": "streampetr",
-      "description": "Nemotron multimodal model for visual reasoning and agentic AI workflows",
+      "description": "Temporal 3D object detection model for autonomous driving",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 121600,
@@ -10400,12 +9539,12 @@
     {
       "model_ref": "nvidia/nvidia/studiovoice",
       "display_name": "studiovoice",
-      "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 128000,
+      "description": "Enhances noisy or reverberant speech recordings to studio-quality speech",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -10421,7 +9560,7 @@
     {
       "model_ref": "nvidia/nvidia/synthetic-video-detector",
       "display_name": "synthetic-video-detector",
-      "description": "Video model for prompt-guided generation, editing, and motion workflows",
+      "description": "Detects AI-generated (synthetic) video",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -10484,7 +9623,7 @@
     {
       "model_ref": "nvidia/openai/gpt-oss-20b",
       "display_name": "GPT OSS 20B",
-      "description": "Open-weight GPT model for self-hosted reasoning and instruction-following workloads",
+      "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -10510,10 +9649,10 @@
     {
       "model_ref": "nvidia/openai/whisper-large-v3",
       "display_name": "Whisper Large v3",
-      "description": "Speech transcription model for accurate audio-to-text and captioning workflows",
-      "context_window_tokens": null,
+      "description": "Open Whisper checkpoint for robust multilingual transcription and captioning",
+      "context_window_tokens": 448,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
+      "auto_compact_token_limit": 425,
       "default_max_output_tokens": 4096,
       "max_output_tokens_upper_limit": 4096,
       "default_verbosity": null,
@@ -10552,7 +9691,7 @@
     {
       "model_ref": "nvidia/qwen/qwen-image",
       "display_name": "Qwen Image",
-      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
+      "description": "Text-to-image foundation model with multilingual text rendering",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -10563,7 +9702,7 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": true,
+        "image_input": false,
         "image_generation": true,
         "supports_reasoning": false,
         "interactive_exec": false
@@ -10573,7 +9712,7 @@
     {
       "model_ref": "nvidia/qwen/qwen-image-edit",
       "display_name": "Qwen Image Edit",
-      "description": "Image model for prompt-driven generation, editing, and visual design workflows",
+      "description": "Image editing model with multilingual text editing and subject consistency",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -10589,187 +9728,6 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/qwen/qwen2.5-coder-32b-instruct",
-      "display_name": "Qwen2.5 Coder 32b Instruct",
-      "description": "Qwen coding model for software agents, repository edits, and code reasoning",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
-      "display_name": "Qwen3 Coder 480B A35B Instruct",
-      "description": "Qwen coding model for software agents, repository edits, and code reasoning",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 66536,
-      "max_output_tokens_upper_limit": 66536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/qwen/qwen3-next-80b-a3b-instruct",
-      "display_name": "Qwen3-Next-80B-A3B-Instruct",
-      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/qwen/qwen3.5-122b-a10b",
-      "display_name": "Qwen3.5 122B-A10B",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/qwen/qwen3.5-397b-a17b",
-      "display_name": "Qwen3.5-397B-A17B",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/sarvamai/sarvam-m",
-      "display_name": "sarvam-m",
-      "description": "Efficient Indian-language reasoning model for chat, coding, and multilingual work",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/stepfun-ai/step-3.5-flash",
-      "display_name": "Step 3.5 Flash",
-      "description": "StepFun flash model for efficient multimodal reasoning, coding, and tool use",
-      "context_window_tokens": 256000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 243200,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/stepfun-ai/step-3.7-flash",
-      "display_name": "Step 3.7 Flash",
-      "description": "StepFun flash model for efficient multimodal reasoning, coding, and tool use",
-      "context_window_tokens": 256000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 243200,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
       "source": "remote_discovered"
     },
     {
@@ -10800,69 +9758,6 @@
         "xhigh",
         "max"
       ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/thinkingmachines/inkling",
-      "display_name": "Inkling",
-      "description": "Multimodal MoE reasoning model (975B total, 41B active) for text, image, and audio",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/upstage/solar-10.7b-instruct",
-      "display_name": "solar-10.7b-instruct",
-      "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/z-ai/glm-5.2",
-      "display_name": "GLM-5.2",
-      "description": "Open flagship GLM for long-horizon coding agents and million-token context work",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
       "source": "remote_discovered"
     },
     {
@@ -11330,30 +10225,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openai/gpt-5.2-chat-latest",
-      "display_name": "GPT-5.2 Chat",
-      "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "medium"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openai/gpt-5.2-pro",
       "display_name": "GPT-5.2 Pro",
       "description": "Higher-accuracy GPT-5.2 variant for tougher reasoning and review workflows",
@@ -11377,27 +10248,6 @@
         "high",
         "xhigh"
       ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openai/gpt-5.3-chat-latest",
-      "display_name": "GPT-5.3 Chat (latest)",
-      "description": "Chat-tuned GPT model for conversational assistance, writing, and tool workflows",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
       "source": "remote_discovered"
     },
     {
@@ -13240,8 +12090,8 @@
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155648,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 16000,
+      "max_output_tokens_upper_limit": 16000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13493,8 +12343,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
+      "default_max_output_tokens": 393216,
+      "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14252,8 +13102,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14394,7 +13244,7 @@
     },
     {
       "model_ref": "openrouter/gryphe/mythomax-l2-13b",
-      "display_name": "MythoMax 13B",
+      "display_name": "MythoMax L2 13B",
       "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
       "context_window_tokens": 8192,
       "effective_context_window_percent": 95,
@@ -14711,7 +13561,7 @@
     },
     {
       "model_ref": "openrouter/meituan/longcat-2.0",
-      "display_name": "LongCat 2.0",
+      "display_name": "LongCat-2.0",
       "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
       "context_window_tokens": 1048756,
       "effective_context_window_percent": 95,
@@ -17690,7 +16540,7 @@
     },
     {
       "model_ref": "openrouter/openai/gpt-audio",
-      "display_name": "GPT Audio",
+      "display_name": "GPT-Audio",
       "description": "Speech generation model for controllable voice, narration, and audio delivery",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
@@ -17711,7 +16561,7 @@
     },
     {
       "model_ref": "openrouter/openai/gpt-audio-mini",
-      "display_name": "GPT Audio Mini",
+      "display_name": "GPT-Audio Mini",
       "description": "Speech generation model for controllable voice, narration, and audio delivery",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
@@ -18416,7 +17266,7 @@
     },
     {
       "model_ref": "openrouter/qwen/qwen-2.5-coder-32b-instruct",
-      "display_name": "Qwen2.5 Coder 32B Instruct",
+      "display_name": "Qwen2.5-Coder-32B-Instruct",
       "description": "Qwen coding model for software agents, repository edits, and code reasoning",
       "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
@@ -18458,7 +17308,7 @@
     },
     {
       "model_ref": "openrouter/qwen/qwen2.5-vl-72b-instruct",
-      "display_name": "Qwen2.5 VL 72B Instruct",
+      "display_name": "Qwen2.5-VL 72B Instruct",
       "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
@@ -18521,7 +17371,7 @@
     },
     {
       "model_ref": "openrouter/qwen/qwen3-235b-a22b-thinking-2507",
-      "display_name": "Qwen3 235B A22B Thinking 2507",
+      "display_name": "Qwen3 235B-A22B Thinking 2507",
       "description": "Qwen reasoning model for deliberate problem solving, math, and coding",
       "context_window_tokens": 128000,
       "effective_context_window_percent": 95,
@@ -18563,7 +17413,7 @@
     },
     {
       "model_ref": "openrouter/qwen/qwen3-30b-a3b-instruct-2507",
-      "display_name": "Qwen3 30B A3B Instruct 2507",
+      "display_name": "Qwen3 30B-A3B Instruct 2507",
       "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
@@ -18862,8 +17712,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18904,8 +17754,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19135,8 +17985,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 909000,
+      "max_output_tokens_upper_limit": 909000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19161,8 +18011,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19280,14 +18130,35 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/recursive/flint-v1.0:free",
+      "display_name": "Flint (free)",
+      "description": "Free provider route for experiments, demos, and cost-sensitive chat workloads",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/reflection/beam-1.0-501b-a23b",
       "display_name": "Beam 1.0 501B A23B",
       "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20347,8 +19218,8 @@
       "context_window_tokens": 1050000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 997500,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 945000,
+      "max_output_tokens_upper_limit": 945000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20368,8 +19239,8 @@
       "context_window_tokens": 1050000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 997500,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 945000,
+      "max_output_tokens_upper_limit": 945000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20662,8 +19533,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21552,7 +20423,7 @@
     {
       "model_ref": "together/LiquidAI/LFM2-24B-A2B",
       "display_name": "LFM2-24B-A2B",
-      "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
+      "description": "Efficient open Liquid MoE instruct model for on-device chat and tool calling",
       "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 31129,
@@ -21573,7 +20444,7 @@
     {
       "model_ref": "together/MiniMaxAI/MiniMax-M2.5",
       "display_name": "MiniMax-M2.5",
-      "description": "Legacy model retained for compatibility with older integrations",
+      "description": "Prior MiniMax coding model for agent workflows, office edits, and automation",
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
@@ -21615,12 +20486,12 @@
     {
       "model_ref": "together/MiniMaxAI/MiniMax-M3",
       "display_name": "MiniMax-M3",
-      "description": "MiniMax multimodal coding model for long-context reasoning and agent tasks",
+      "description": "MiniMax multimodal model for long-context coding, perception, and agent planning",
       "context_window_tokens": 524288,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 498073,
-      "default_max_output_tokens": 250000,
-      "max_output_tokens_upper_limit": 250000,
+      "default_max_output_tokens": 524288,
+      "max_output_tokens_upper_limit": 524288,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21636,7 +20507,7 @@
     {
       "model_ref": "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
       "display_name": "Qwen 2.5 7B Instruct Turbo",
-      "description": "Efficient Qwen model for fast chat, extraction, and high-volume workloads",
+      "description": "Small open Qwen2.5 instruction model for chat, structured output, and tool use",
       "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 31129,
@@ -21657,7 +20528,7 @@
     {
       "model_ref": "together/Qwen/Qwen3-235B-A22B-Instruct-2507-tput",
       "display_name": "Qwen3 235B A22B Instruct 2507 FP8",
-      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
+      "description": "Updated large open Qwen3 MoE instruct model for multilingual chat, coding, and tool use",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
@@ -21678,7 +20549,7 @@
     {
       "model_ref": "together/Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
       "display_name": "Qwen3 Coder 480B A35B Instruct",
-      "description": "Legacy model retained for compatibility with older integrations",
+      "description": "Open Qwen coding heavyweight for repository reasoning and agentic engineering",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
@@ -21699,7 +20570,7 @@
     {
       "model_ref": "together/Qwen/Qwen3-Coder-Next-FP8",
       "display_name": "Qwen3 Coder Next FP8",
-      "description": "Legacy model retained for compatibility with older integrations",
+      "description": "Open-weight Qwen coding model for agents, repository edits, and multi-turn tool use",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
@@ -21720,7 +20591,7 @@
     {
       "model_ref": "together/Qwen/Qwen3.5-397B-A17B",
       "display_name": "Qwen3.5 397B A17B",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "description": "Large open Qwen multimodal MoE for visual agents and long technical tasks",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
@@ -21741,7 +20612,7 @@
     {
       "model_ref": "together/Qwen/Qwen3.5-9B",
       "display_name": "Qwen3.5 9B",
-      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
@@ -21762,12 +20633,12 @@
     {
       "model_ref": "together/Qwen/Qwen3.6-Plus",
       "display_name": "Qwen3.6 Plus",
-      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
+      "description": "Earlier Qwen multimodal workhorse for million-token agent and document tasks",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 500000,
-      "max_output_tokens_upper_limit": 500000,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21783,12 +20654,12 @@
     {
       "model_ref": "together/Qwen/Qwen3.7-Max",
       "display_name": "Qwen3.7 Max",
-      "description": "Flagship Qwen model for complex reasoning, coding, and agentic workflows",
+      "description": "Qwen frontier model tuned for agent frameworks, coding assistants, and long tasks",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 500000,
-      "max_output_tokens_upper_limit": 500000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21796,7 +20667,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -21804,7 +20675,7 @@
     {
       "model_ref": "together/deepseek-ai/DeepSeek-R1",
       "display_name": "DeepSeek-R1",
-      "description": "Legacy model retained for compatibility with older integrations",
+      "description": "Classic open reasoning model for transparent math, coding, and deliberate problem solving",
       "context_window_tokens": 163839,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155647,
@@ -21825,7 +20696,7 @@
     {
       "model_ref": "together/deepseek-ai/DeepSeek-V3",
       "display_name": "DeepSeek-V3",
-      "description": "Legacy model retained for compatibility with older integrations",
+      "description": "Open DeepSeek MoE chat model for coding, math, and general reasoning",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -21846,7 +20717,7 @@
     {
       "model_ref": "together/deepseek-ai/DeepSeek-V3-1",
       "display_name": "DeepSeek V3.1",
-      "description": "Legacy model retained for compatibility with older integrations",
+      "description": "Hybrid-reasoning DeepSeek model with thinking and non-thinking modes",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -21909,7 +20780,6 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
-        "low",
         "high",
         "max"
       ],
@@ -21935,6 +20805,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -21944,7 +20815,7 @@
     {
       "model_ref": "together/essentialai/Rnj-1-Instruct",
       "display_name": "Rnj-1 Instruct",
-      "description": "Open-weight instruction model for adaptable chat and self-hosted production workloads",
+      "description": "Open 8B Essential AI model for code, STEM reasoning, and agentic tool use",
       "context_window_tokens": 32768,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 31129,
@@ -21965,7 +20836,7 @@
     {
       "model_ref": "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
       "display_name": "Llama 3.3 70B",
-      "description": "Compact Llama instruction model for fast chat and local deployment",
+      "description": "Popular open Llama workhorse for multilingual chat, coding, and self-hosting",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -22003,6 +20874,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -22030,6 +20902,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
         "low",
         "high",
         "max"
@@ -22081,7 +20954,7 @@
     {
       "model_ref": "together/openai/gpt-oss-120b",
       "display_name": "GPT OSS 120B",
-      "description": "Open-weight GPT model for self-hosted reasoning and instruction-following workloads",
+      "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
@@ -22124,6 +20997,7 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "minimal",
         "low",
         "medium",
         "high",
@@ -22152,12 +21026,13 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
-        "max",
-        "xhigh",
-        "high",
-        "medium",
+        "none",
+        "minimal",
         "low",
-        "none"
+        "medium",
+        "high",
+        "xhigh",
+        "max"
       ],
       "source": "remote_discovered"
     },
@@ -22185,7 +21060,7 @@
     {
       "model_ref": "together/zai-org/GLM-5.1",
       "display_name": "GLM-5.1",
-      "description": "Flagship GLM model for hybrid reasoning, coding, and agentic engineering",
+      "description": "Strong GLM coding model for agentic engineering, terminals, and repository generation",
       "context_window_tokens": 202752,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 192614,
@@ -22232,9 +21107,9 @@
       "model_ref": "together/zai-org/GLM-5.3",
       "display_name": "GLM-5.3",
       "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
-      "context_window_tokens": 1048576,
+      "context_window_tokens": 1048575,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
+      "auto_compact_token_limit": 996146,
       "default_max_output_tokens": 262144,
       "max_output_tokens_upper_limit": 262144,
       "default_verbosity": null,
@@ -23789,6 +22664,33 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "venice/mercury-3",
+      "display_name": "Mercury 3",
+      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "venice/minimax-m25",
       "display_name": "MiniMax M2.5",
       "description": "Prior MiniMax coding model for agent workflows, office edits, and automation",
@@ -24927,33 +23829,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "venice/qwen3-5-9b",
-      "display_name": "Qwen 3.5 9B",
-      "description": "Qwen instruction model for multilingual chat, reasoning, and tool use",
-      "context_window_tokens": 256000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 243200,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "venice/qwen3-6-27b",
       "display_name": "Qwen 3.6 27B",
       "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
@@ -25330,33 +24205,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "venice/zai-org-glm-4.7-flash",
-      "display_name": "GLM 4.7 Flash",
-      "description": "Budget GLM lane for fast coding help, routing, and everyday automation",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "venice/zai-org-glm-5",
       "display_name": "GLM 5",
       "description": "General GLM flagship for coding, analysis, and tool-heavy engineering workflows",
@@ -25504,7 +24352,7 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -25970,7 +24818,8 @@
         "none",
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "source": "remote_discovered"
     },
@@ -25996,7 +24845,8 @@
       "reasoning_effort_options": [
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "source": "remote_discovered"
     },
@@ -26141,7 +24991,7 @@
     {
       "model_ref": "xai/grok-imagine-video-1.5",
       "display_name": "Grok Imagine Video 1.5",
-      "description": "Video model for image-to-video generation, editing, and extension workflows",
+      "description": "Video model for text-to-video, image-to-video, and reference-to-video generation with optional voice references",
       "context_window_tokens": 1024,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 972,

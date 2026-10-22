@@ -9,6 +9,156 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-22 incremental review
+
+- Refreshed models.dev revision
+  `fd70d4edf75e6b29b624a2683b316bac61a871d5b0ca6122e4fbe4e99f7f41de`,
+  fetched on October 22 at 14:33 UTC.
+  Relative to the last merged catalog, the artifact contains 1,091 models
+  (nine additions, 63 removals, 97 changed records). This includes the
+  previous cycle's unsubmitted increment. The supplement retains 51 models
+  and 16 explicit routes, with no new drafts. The existing `mimo-v2.6-pro`
+  metadata and its Token Plan route move into the built-in catalog without
+  changing their effective token defaults or reviewed eligibility.
+  Most changes are upstream-only aggregator descriptions, token limits, or
+  reasoning options; 56 removals are NVIDIA upstream records, not affirmative
+  model-retirement evidence or deletions from the reviewed runtime catalog.
+  The artifact is not loaded directly by the runtime.
+  No general API addition establishes subscription eligibility.
+- All 20 added/changed OpenRouter records match the
+  [public models API](https://openrouter.ai/api/v1/models) for context and
+  `top_provider.max_completion_tokens`, rechecked on October 22 at 14:23 UTC.
+  This comparison is deliberately limited to changed records.
+- The [published Codex model metadata at revision d63a9b83](https://github.com/openai/codex/blob/d63a9b8344cfe58bc78bbe319b560378fc8756ef/codex-rs/models-manager/models.json)
+  is byte-identical to the previous cycle, and GitHub's path-specific commit
+  history now confirms that revision. Existing Codex definitions cover all
+  seven visible, non-retired models, using the published 272,000 default
+  context rather than the optional 872,000 maximum or general API limits.
+  The [Codex lifecycle](https://learn.chatgpt.com/docs/models) still confirms
+  the six previously excluded ChatGPT-sign-in retirements; no new Codex
+  model or route change is established.
+- Rechecked [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing)
+  and the [Responses guide](https://api-docs.deepseek.com/guides/responses_api/).
+  Flash legacy names remain accepted aliases, not new model versions;
+  published context/output units remain 1M/384K. The supplement's sole
+  model-metadata change remains the prior cycle's models.dev integer
+  normalization for `deepseek-v4-flash-vision-exp`, not independent proof
+  of an exact context integer. Endpoint-specific capability and search
+  restrictions remain separate from that upstream metadata.
+- [Xiaomi's retirement notice](https://mimo.mi.com/docs/en-US/updates/deprecate)
+  ended native `mimo-v2.5-pro` and `mimo-v2.5` service on **October 21,
+  2026 at 10:00 Beijing time**. Remove both native API models and Token Plan
+  routes, and reject these exact IDs when drafting or retaining Xiaomi
+  supplement entries. This does not retire Tencent/OpenRouter offerings,
+  Ultraspeed variants, or audio IDs. The [current model table](https://mimo.mi.com/docs/en-US/quick-start/summary/model),
+  [Token Plan table](https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription),
+  [Codex configuration](https://mimo.mi.com/docs/en-US/tokenplan/integration/codex-configuration),
+  and [OpenCode configuration](https://mimo.mi.com/docs/en-US/tokenplan/integration/opencode)
+  independently retain the existing V2.6 Pro/Flash eligibility, Responses
+  protocol, image/reasoning/tool configuration, and 1,048,576/131,072 example
+  limits. Configuration examples are not independent service hard limits;
+  no V2.6 Pro Ultraspeed subscription route is inferred. Promote the already
+  reviewed `mimo-v2.6-pro` entry and Token Plan route into the built-in catalog
+  so both providers retain a non-retired preferred route. This preserves
+  credential-only automatic model selection; user defaults and fallbacks are
+  not rewritten. The promoted description preserves the client-example
+  evidence boundary rather than presenting those defaults as service limits.
+- Volcengine's [Coding Plan](https://docs.volcengine.com/docs/ark/coding-plan-personal-plan-overview?lang=zh)
+  and [Agent Plan](https://docs.volcengine.com/docs/ark/agent-plan-personal-plan-overview?lang=zh)
+  independently add `deepseek-v4.1-flash-economy`. Add only these two
+  subscription routes, with documented image/reasoning support; do not
+  infer a default API route. Published 1049k/384k units do not establish
+  exact integer limits or an effort enum, so those fields remain unset.
+  The `code-plan` spelling returned only a JavaScript shell in this check;
+  its body equivalence to `coding-plan` remains unverified.
+- Tencent's [protocol matrix](https://cloud.tencent.com/document/product/1823/130079)
+  independently supports `deepseek-v4.1-flash-1017` and
+  `minimax-m3.1-flash` in Chat, Messages, and Responses. Add six routes;
+  the separately reviewed Responses allowlist grows from 28 to 30.
+  Exact TokenHub limits, capabilities, and effort controls remain unknown,
+  rather than being inherited from the original vendors. Native Xiaomi
+  retirement does not remove the matrix's `mimo-v2.5-pro` entry.
+- Rechecked [mainland](https://help.aliyun.com/zh/model-studio/coding-plan)
+  and [international](https://www.alibabacloud.com/help/en/model-studio/coding-plan)
+  DashScope Coding Plan separately: the same six current IDs and their
+  image eligibility remain documented, with distinct subscription keys
+  and regional bases. Token Plan retains the union of the
+  [personal](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)
+  and [team](https://help.aliyun.com/zh/model-studio/token-plan-team-overview)
+  tables, including the already registered dated DeepSeek ID; absence
+  from the personal table does not remove team eligibility. The six
+  previously deferred Qwen/Kimi subscription routes remain unconfirmed.
+- MiniMax [international](https://platform.minimax.io/docs/m-plan/quickstart.md)
+  and [China](https://platform.minimaxi.com/docs/m-plan/quickstart.md)
+  independently retain formal M3.1 Flash API/subscription support and key
+  isolation. Its published Messages schema still specifies 131,072
+  recommended output and a 524,288 ceiling, forced thinking, and five
+  effort values; Preview requests remain compatibility aliases, not
+  separate current products. [Z.AI](https://docs.z.ai/devpack/latest-model.md)
+  and [BigModel](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md)
+  retain their independently reviewed model/modality/effort and key-type
+  boundaries. No additional route change is established in these groups.
+- [Step Plan](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api),
+  [Kilo Auto](https://api.kilo.ai/api/gateway/models), and
+  [OpenRouter Auto](https://openrouter.ai/api/v1/models) retain reviewed
+  routes and limits; OpenRouter's completion ceiling is still null.
+  [OpenCode Go](https://opencode.ai/v2/docs/console/go/) documentation is
+  consistent with existing protocol registrations, but its public models
+  endpoint returned 403: the model total was not reverified. The
+  [Moonshot model table](https://platform.kimi.com/docs/models.md) still
+  lists the four reviewed IDs, but an international-site 403 leaves
+  regional eligibility partially unverified. Do not infer new domains,
+  subscription rights, or historical removals from these gaps.
+
+### Final verification
+
+- Snapshot regeneration, refresh, and catalog validation passed: 1,091
+  artifact models, 51 supplement models, and 16 explicit supplement routes.
+  The promoted Xiaomi metadata is unique, both preferred routes are present,
+  and retired native IDs are absent from the built-in catalog and supplement.
+- Catalog tests: 133 passed, one ignored; configuration model-selection
+  tests: seven passed; models.dev adapter tests: 11 passed.
+- `cargo fmt --all -- --check`, `git diff --check`, and
+  `RUSTFLAGS="-D warnings" cargo check --locked --all-targets` passed.
+- Independent read-only review confirmed the Xiaomi automatic-selection
+  repair and found no remaining confirmed blockers in the reviewed changes.
+  This is source and offline verification, not live endpoint execution.
+
+## 2026-10-21 incremental review
+
+- Refreshed models.dev revision
+  `7bd62f47cf6dbda6c70929f5ee5c398e9fc054d7f6dbb964d78eb18de5136b5e`.
+  The artifact contains 1,141 models (two additions, six removals);
+  the supplement retains 52 models with no new drafts or removals.
+  General API additions/removals do not establish subscription eligibility.
+- [DeepSeek Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing)
+  still documents 1M context and 384K maximum output. The refreshed artifact
+  normalizes four DeepSeek context limits from 1,000,000 to 1,048,576;
+  only `deepseek-v4-flash-vision-exp` changes in the supplement.
+  These integer values follow models.dev; the official page publishes unit
+  labels, not an independently verified exact integer context limit.
+  Its compatibility notice still accepts `deepseek-v4-flash` and
+  `deepseek-v4-flash-vision-exp`, backed by V4.1-Flash-1017 and billed as Flash.
+  Preserve those aliases; do not infer new capabilities for legacy routes.
+- This cycle's changed OpenRouter context/output limits match its
+  [public models API](https://openrouter.ai/api/v1/models); this is not a
+  full-catalog zero-difference claim. The existing `minimax/minimax-01`
+  output-limit discrepancy is outside this incremental review.
+  Other upstream changes include Together output limits, xAI reasoning
+  options, and MiniMax integer output ceilings. The MiniMax M3.1-Flash
+  ceiling matches reviewed built-in metadata; M3's direct-endpoint integer
+  limit remains unverified rather than newly established by gateway data.
+- Codex's fetched public model metadata is byte-identical to the previous
+  cycle. The fetched lifecycle document records GPT-5.5's Codex retirement
+  on October 14; the existing Codex routes already exclude it.
+  GitHub API/raw TLS timeouts prevent establishing whether upstream main
+  advanced after the captured metadata; do not claim a newer revision.
+- The extra Token Plan models observed in the running catalog
+  (`qwen3.7-flash`, `qwen3.8-omni-flash`, `kimi-k3`) come from the existing
+  supplement, not missing built-in definitions. Their six Coding/Token Plan
+  routes remain deferred/unconfirmed as recorded below. Preserve them pending
+  affirmative removal evidence; general API metadata is not eligibility proof.
+
 ## 2026-10-20 incremental review
 
 - Refreshed models.dev revision

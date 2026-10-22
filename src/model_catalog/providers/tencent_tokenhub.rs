@@ -232,6 +232,7 @@ const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
     "deepseek-v4-flash-0731",
     "deepseek-v4-pro-0813",
     "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-1017",
     "glm-5.3",
     "glm-5.3-flash",
     "glm-5.3-flashx",
@@ -240,6 +241,7 @@ const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
     "mimo-v2.6-pro",
     "mimo-v2.6-flash",
     "mimo-v2.5-pro",
+    "minimax-m3.1-flash",
     "step-5-preview",
 ];
 
@@ -261,6 +263,7 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash-vision-exp",
     "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-1017",
     "deepseek-v4-flash-0731",
     "deepseek-v4-pro-0813",
     "deepseek-v4-flash",
@@ -272,6 +275,7 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "kimi-k3",
     "kimi-k2.6",
     "minimax-m3",
+    "minimax-m3.1-flash",
     "minimax-m2.7",
     "qwen3.5-flash",
     "qwen3.5-plus",
@@ -329,7 +333,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
 #[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 28);
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 30);
     for id in TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| model.0)

@@ -528,6 +528,11 @@ fn supplement_model_supported_by_provider(
     model_id: &str,
     model: &ModelsDevModel,
 ) -> bool {
+    // Native Chat IDs retired on 2026-10-21; aggregator and audio IDs are separate.
+    // https://mimo.mi.com/docs/en-US/updates/deprecate
+    if provider == "xiaomi" && matches!(model_id, "mimo-v2.5-pro" | "mimo-v2.5") {
+        return false;
+    }
     if provider != "openai-codex" {
         return true;
     }
@@ -931,6 +936,67 @@ mod tests {
                     }));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn excludes_retired_xiaomi_chat_ids_from_new_and_retained_supplements() {
+        let legacy = legacy();
+        let mut parsed: ModelsDevSnapshot =
+            serde_json::from_str(r#"{"xiaomi":{"id":"xiaomi","models":{}}}"#).unwrap();
+        for id in ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2.5-pro-ultraspeed"] {
+            let model = serde_json::from_value(serde_json::json!({
+                "id": id,
+                "release_date": "2026-10-21",
+                "modalities": {"input": ["text"], "output": ["text"]}
+            }))
+            .unwrap();
+            for provider in ["tencent-tokenhub", "openrouter"] {
+                assert!(supplement_model_supported_by_provider(provider, id, &model));
+            }
+            parsed
+                .providers
+                .get_mut("xiaomi")
+                .unwrap()
+                .models
+                .insert(id.into(), model);
+        }
+        let retired = ["xiaomi/mimo-v2.5-pro", "xiaomi/mimo-v2.5"];
+        let mut previous = ModelsDevSupplement::empty();
+        previous.models = retired
+            .iter()
+            .map(|id| supplement_metadata(id, id))
+            .collect();
+        previous.routes = retired
+            .iter()
+            .map(|id| ModelRouteRef::parse(&id.replace("xiaomi/", "xiaomi@token-plan/")).unwrap())
+            .collect();
+        for previous in [None, Some(&previous)] {
+            let update = generate(&parsed, previous, &legacy, "2026-10-01", "rev", "ver").unwrap();
+            for id in retired {
+                assert!(!update
+                    .supplement
+                    .models
+                    .iter()
+                    .any(|m| m.model_ref.as_string() == id));
+                if previous.is_some() {
+                    assert!(update.removed.iter().any(|removed| {
+                        removed.model_ref == id
+                            && removed.reason == RemovalReason::UnsupportedByProvider
+                    }));
+                } else {
+                    assert!(update.deferred.iter().any(|deferred| {
+                        deferred.model_ref == id
+                            && deferred.reason == DeferredReason::UnsupportedByProvider
+                    }));
+                }
+            }
+            assert!(update.supplement.routes.is_empty());
+            assert!(update
+                .supplement
+                .models
+                .iter()
+                .any(|model| { model.model_ref.as_string() == "xiaomi/mimo-v2.5-pro-ultraspeed" }));
         }
     }
 

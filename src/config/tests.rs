@@ -2250,6 +2250,31 @@ fn model_selection_derives_from_authenticated_providers() {
 }
 
 #[test]
+fn model_selection_keeps_xiaomi_candidates_after_native_retirement() {
+    for (provider, key, endpoint) in [
+        ("xiaomi", "XIAOMI_API_KEY", "default"),
+        (
+            "xiaomi-token-plan",
+            "XIAOMI_TOKEN_PLAN_API_KEY",
+            "token-plan",
+        ),
+    ] {
+        let mut providers = super::built_in_provider_registry_with_settings(&HashMap::from([(
+            key.to_string(),
+            "test-key".to_string(),
+        )]))
+        .unwrap();
+        providers.retain(|id, _| id.as_str() == provider);
+        let (default_model, fallbacks) =
+            super::resolve_model_selection_from_explicit(None, None, &providers, &HashMap::new())
+                .unwrap();
+        let expected = route_ref(&format!("xiaomi@{endpoint}/mimo-v2.6-pro"));
+        assert_eq!(default_model, expected);
+        assert_eq!(fallbacks, vec![expected]);
+    }
+}
+
+#[test]
 fn model_selection_explicit_auto_expands_to_authenticated_candidates() {
     let providers = provider_registry_for_tests(
         Some("openai-key"),

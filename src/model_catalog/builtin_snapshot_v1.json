@@ -5034,6 +5034,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "tencent-tokenhub/deepseek-v4.1-flash-1017",
+      "display_name": "deepseek-v4.1-flash-1017",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-flash",
       "display_name": "deepseek/deepseek-flash",
       "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
@@ -5790,6 +5811,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "tencent-tokenhub/minimax-m3.1-flash",
+      "display_name": "minimax-m3.1-flash",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "tencent-tokenhub/qwen3.5-flash",
       "display_name": "Qwen3.5 Flash",
       "description": "Holon conservative built-in metadata for the Tencent TokenHub qwen3.5-flash model.",
@@ -6430,6 +6472,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "volcengine/deepseek-v4.1-flash-economy",
+      "display_name": "DeepSeek V4.1 Flash Economy",
+      "description": "volcengine coding subscription DeepSeek V4.1 Flash Economy; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/doubao-seed-1-8-251228",
       "display_name": "Doubao Seed 1.8",
       "description": "Holon built-in runtime metadata for the volcengine/doubao-seed-1-8-251228 compatible provider model.",
@@ -6934,12 +6997,12 @@
       "source": "built_in_catalog"
     },
     {
-      "model_ref": "xiaomi/mimo-v2.5",
-      "display_name": "Xiaomi MiMo V2.5",
-      "description": "Holon built-in runtime metadata for the xiaomi/mimo-v2.5 compatible provider model.",
+      "model_ref": "xiaomi/mimo-v2.6-pro",
+      "display_name": "MiMo-V2.6-Pro",
+      "description": "Xiaomi MiMo V2.6 Pro; token defaults follow official client configuration examples, not independently verified service hard limits.",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 131072,
       "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
@@ -6948,27 +7011,6 @@
         "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "xiaomi/mimo-v2.5-pro",
-      "display_name": "Xiaomi MiMo V2.5 Pro",
-      "description": "Holon built-in runtime metadata for the xiaomi/mimo-v2.5-pro compatible provider model.",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -10260,6 +10302,16 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@default/deepseek-v4.1-flash-1017",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@default/deepseek/deepseek-flash",
       "policy": {
         "display_name": null,
@@ -10620,6 +10672,16 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@default/minimax-m3.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@default/qwen3.5-flash",
       "policy": {
         "display_name": null,
@@ -10731,6 +10793,16 @@
     },
     {
       "route_ref": "tencent-tokenhub@messages/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@messages/deepseek-v4.1-flash-1017",
       "policy": {
         "display_name": null,
         "description": null,
@@ -11070,6 +11142,16 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@messages/minimax-m3.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@messages/qwen3.5-flash",
       "policy": {
         "display_name": null,
@@ -11171,6 +11253,16 @@
     },
     {
       "route_ref": "tencent-tokenhub@responses/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/deepseek-v4.1-flash-1017",
       "policy": {
         "display_name": null,
         "description": null,
@@ -11361,6 +11453,16 @@
     },
     {
       "route_ref": "tencent-tokenhub@responses/minimax-m3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/minimax-m3.1-flash",
       "policy": {
         "display_name": null,
         "description": null,
@@ -11643,6 +11745,16 @@
       }
     },
     {
+      "route_ref": "volcengine@coding/deepseek-v4.1-flash-economy",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@coding/doubao-seed-2-0-code-preview-260215",
       "policy": {
         "display_name": "Doubao Seed 2.0 Code",
@@ -11913,6 +12025,16 @@
       }
     },
     {
+      "route_ref": "volcengine@plan/deepseek-v4.1-flash-economy",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@plan/doubao-seed-2-0-code-preview-260215",
       "policy": {
         "display_name": "Doubao Seed 2.0 Code",
@@ -12135,7 +12257,7 @@
       }
     },
     {
-      "route_ref": "xiaomi@default/mimo-v2.5",
+      "route_ref": "xiaomi@default/mimo-v2.6-pro",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12145,27 +12267,7 @@
       }
     },
     {
-      "route_ref": "xiaomi@default/mimo-v2.5-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "xiaomi@token-plan/mimo-v2.5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "xiaomi@token-plan/mimo-v2.5-pro",
+      "route_ref": "xiaomi@token-plan/mimo-v2.6-pro",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12623,6 +12725,10 @@
       "target": "tencent-tokenhub/deepseek-v4.1-flash"
     },
     {
+      "alias": "tencent-tokenhub-messages/deepseek-v4.1-flash-1017",
+      "target": "tencent-tokenhub/deepseek-v4.1-flash-1017"
+    },
+    {
       "alias": "tencent-tokenhub-messages/deepseek/deepseek-flash",
       "target": "tencent-tokenhub/deepseek/deepseek-flash"
     },
@@ -12755,6 +12861,10 @@
       "target": "tencent-tokenhub/minimax-m3"
     },
     {
+      "alias": "tencent-tokenhub-messages/minimax-m3.1-flash",
+      "target": "tencent-tokenhub/minimax-m3.1-flash"
+    },
+    {
       "alias": "tencent-tokenhub-messages/qwen3.5-flash",
       "target": "tencent-tokenhub/qwen3.5-flash"
     },
@@ -12797,6 +12907,10 @@
     {
       "alias": "tencent-tokenhub-responses/deepseek-v4.1-flash",
       "target": "tencent-tokenhub/deepseek-v4.1-flash"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/deepseek-v4.1-flash-1017",
+      "target": "tencent-tokenhub/deepseek-v4.1-flash-1017"
     },
     {
       "alias": "tencent-tokenhub-responses/deepseek/deepseek-flash",
@@ -12875,6 +12989,10 @@
       "target": "tencent-tokenhub/minimax-m3"
     },
     {
+      "alias": "tencent-tokenhub-responses/minimax-m3.1-flash",
+      "target": "tencent-tokenhub/minimax-m3.1-flash"
+    },
+    {
       "alias": "tencent-tokenhub-responses/qwen3.5-flash",
       "target": "tencent-tokenhub/qwen3.5-flash"
     },
@@ -12901,6 +13019,10 @@
     {
       "alias": "volcengine-agent/deepseek-v4.1-flash",
       "target": "volcengine/deepseek-v4.1-flash"
+    },
+    {
+      "alias": "volcengine-agent/deepseek-v4.1-flash-economy",
+      "target": "volcengine/deepseek-v4.1-flash-economy"
     },
     {
       "alias": "volcengine-agent/doubao-seed-2-0-code-preview-260215",
@@ -13019,12 +13141,8 @@
       "target": "volcengine/doubao-seedream-5.0-lite"
     },
     {
-      "alias": "xiaomi-token-plan/mimo-v2.5",
-      "target": "xiaomi/mimo-v2.5"
-    },
-    {
-      "alias": "xiaomi-token-plan/mimo-v2.5-pro",
-      "target": "xiaomi/mimo-v2.5-pro"
+      "alias": "xiaomi-token-plan/mimo-v2.6-pro",
+      "target": "xiaomi/mimo-v2.6-pro"
     }
   ],
   "preferred_models": [
@@ -13190,11 +13308,11 @@
     },
     {
       "provider": "xiaomi",
-      "model_ref": "xiaomi/mimo-v2.5-pro"
+      "model_ref": "xiaomi/mimo-v2.6-pro"
     },
     {
       "provider": "xiaomi-token-plan",
-      "model_ref": "xiaomi/mimo-v2.5-pro"
+      "model_ref": "xiaomi/mimo-v2.6-pro"
     },
     {
       "provider": "zai",
@@ -13364,11 +13482,11 @@
     },
     {
       "provider": "xiaomi",
-      "route_ref": "xiaomi@default/mimo-v2.5-pro"
+      "route_ref": "xiaomi@default/mimo-v2.6-pro"
     },
     {
       "provider": "xiaomi-token-plan",
-      "route_ref": "xiaomi@token-plan/mimo-v2.5-pro"
+      "route_ref": "xiaomi@token-plan/mimo-v2.6-pro"
     },
     {
       "provider": "zai",
@@ -14329,6 +14447,10 @@
       "route_ref": "tencent-tokenhub@default/deepseek-v4.1-flash"
     },
     {
+      "model_ref": "tencent-tokenhub/deepseek-v4.1-flash-1017",
+      "route_ref": "tencent-tokenhub@default/deepseek-v4.1-flash-1017"
+    },
+    {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-flash",
       "route_ref": "tencent-tokenhub@default/deepseek/deepseek-flash"
     },
@@ -14473,6 +14595,10 @@
       "route_ref": "tencent-tokenhub@default/minimax-m3"
     },
     {
+      "model_ref": "tencent-tokenhub/minimax-m3.1-flash",
+      "route_ref": "tencent-tokenhub@default/minimax-m3.1-flash"
+    },
+    {
       "model_ref": "tencent-tokenhub/qwen3.5-flash",
       "route_ref": "tencent-tokenhub@default/qwen3.5-flash"
     },
@@ -14593,6 +14719,10 @@
       "route_ref": "volcengine@coding/deepseek-v4.1-flash"
     },
     {
+      "model_ref": "volcengine/deepseek-v4.1-flash-economy",
+      "route_ref": "volcengine@coding/deepseek-v4.1-flash-economy"
+    },
+    {
       "model_ref": "volcengine/doubao-seed-1-8-251228",
       "route_ref": "volcengine@default/doubao-seed-1-8-251228"
     },
@@ -14689,12 +14819,8 @@
       "route_ref": "xai@default/grok-imagine-image-quality"
     },
     {
-      "model_ref": "xiaomi/mimo-v2.5",
-      "route_ref": "xiaomi@default/mimo-v2.5"
-    },
-    {
-      "model_ref": "xiaomi/mimo-v2.5-pro",
-      "route_ref": "xiaomi@default/mimo-v2.5-pro"
+      "model_ref": "xiaomi/mimo-v2.6-pro",
+      "route_ref": "xiaomi@default/mimo-v2.6-pro"
     },
     {
       "model_ref": "zai/glm-4-32b-0414-128k",

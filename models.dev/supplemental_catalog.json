@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "3759647be3fd5d98270b03b5e834bc984ed06e897d55b504b5cd07b5685e6af0",
-  "adapter_version": "0.53.0 (74014f8d-dirty)",
+  "upstream_revision": "fd70d4edf75e6b29b624a2683b316bac61a871d5b0ca6122e4fbe4e99f7f41de",
+  "adapter_version": "0.53.0 (706cbfeb-dirty)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -247,9 +247,9 @@
       "model_ref": "deepseek/deepseek-v4-flash-vision-exp",
       "display_name": "DeepSeek V4 Flash Vision Exp",
       "description": "October 17 update of DeepSeek V4.1 Flash with improved reasoning, coding, agentic tasks, and visual understanding",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 393216,
       "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
@@ -1310,27 +1310,6 @@
       "source": "models_dev_supplement"
     },
     {
-      "model_ref": "xiaomi/mimo-v2.6-pro",
-      "display_name": "MiMo-V2.6-Pro",
-      "description": "MiMo Pro model for multimodal coding agents and long-context automation",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "models_dev_supplement"
-    },
-    {
       "model_ref": "xiaomi/mimo-v2.6-pro-ultraspeed",
       "display_name": "MiMo-V2.6-Pro-UltraSpeed",
       "description": "MiMo pro model for strong multimodal reasoning and agent execution",
@@ -1394,7 +1373,6 @@
     "volcengine@plan/glm-5-2-260617",
     "volcengine@plan/glm-5-3-flash-260828",
     "xiaomi@token-plan/mimo-v2.5-pro-ultraspeed",
-    "xiaomi@token-plan/mimo-v2.6-flash",
-    "xiaomi@token-plan/mimo-v2.6-pro"
+    "xiaomi@token-plan/mimo-v2.6-flash"
   ]
 }
