@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-send-contract-") as temporary
                     headers={"Content-Type": "application/json"},
                 )
                 response = control.getresponse()
-                if response.status != 200:
+                if response.status not in (200, 202):
                     raise RuntimeError(f"legacy main fixture creation failed: {response.status}")
                 response.read()
                 control.request("POST", "/api/auth/pairing/issue")
