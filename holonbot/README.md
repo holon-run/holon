@@ -29,10 +29,15 @@ holonbot/
 
 ## Prerequisites
 
-- Node.js 18+ (for local development)
+- Node.js 24.22.1 or newer in the 24.x release line (for local development and CI)
 - GitHub account with appropriate permissions
 - Vercel account (for deployment)
 - GitHub App credentials
+
+The `engines.node` range selects Node.js 24 on Vercel and declares the minimum
+patched version for local tooling. Vercel manages minor and patch updates; this
+range does not pin or guarantee the deployed patch version. Before deployment,
+confirm that Vercel has rolled out Node.js 24.22.1 or newer to the project.
 
 ## Setup Instructions
 

@@ -52,7 +52,7 @@ cargo test
 
 ## Web GUI 开发
 
-正式发布版本内置了 Web GUI；本地开发服务器用于修改其前端源码。要求 Node.js 24 或更高版本。在仓库根目录执行以下命令，在启动 GUI 之前先安装并构建共享的 conversation SDK：
+正式发布版本内置了 Web GUI；本地开发服务器用于修改其前端源码。要求 Node.js 24.x，且不低于 24.22.1。在仓库根目录执行以下命令，在启动 GUI 之前先安装并构建共享的 conversation SDK：
 
 ```bash
 npm ci --prefix packages/conversation-sdk
