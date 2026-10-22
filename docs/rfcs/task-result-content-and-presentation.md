@@ -75,6 +75,13 @@ tasks and waits cannot replace an already proven result. Active blockers without
 source ownership cannot be ignored. Missing canonical evidence, conflicting
 identity and ambiguous/cyclic continuations are recovery-blocked, not completion.
 
+A nested task result may be consumed by a live attachment in the invocation's
+own terminal turn; it need not create a separate TaskResult-source execution.
+The walker accepts this path only when the exact task generation, captured owner,
+parent turn, result identity and live batch match a settled `ModelDelivered`
+record bound to that same execution. Attachment or a terminal task alone is not
+consumption; unconsumed results still require their canonical continuation.
+
 Terminal task detail retains child observability and worktree metadata on both
 live and recovered paths. Observability describes the proven invocation terminal
 turn/result, not later child activity. A loaded runtime may supply worktree and
