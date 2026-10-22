@@ -302,10 +302,14 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await expect(stale.locator(".composer textarea")).toHaveCount(0);
     await stale.close();
 
+    // A still-running turn auto-expands its execution details; clicking the
+    // toggle now would collapse them and hide the machine inputs again.
     const activityToggle = cold.locator(".conversation-detail-toggle").first();
-    await activityToggle.click();
-  const delegatedInput = cold.locator(".conversation-interjection").filter({ hasText: CHILD_INPUT });
-  await expect(delegatedInput.getByText(CHILD_INPUT, { exact: true })).toBeVisible();
+    if ((await activityToggle.getAttribute("aria-expanded")) !== "true") {
+      await activityToggle.click();
+    }
+    const delegatedInput = cold.locator(".conversation-interjection").filter({ hasText: CHILD_INPUT });
+    await expect(delegatedInput.getByText(CHILD_INPUT, { exact: true })).toBeVisible();
     await expect(cold.locator(".conversation-activity").filter({ hasText: "ExecCommand" }).first()).toBeVisible();
     await expect(cold.locator(".message-list")).toContainText(CHILD_PROGRESS);
     expect((await json<TaskStatus>(daemon, statusPath)).status).not.toBe("completed");
