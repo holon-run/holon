@@ -29,6 +29,37 @@ final class HolonUITests: XCTestCase {
         }
     }
 
+    /// Toggle and draft-edit state settles into the accessibility snapshot
+    /// asynchronously; synchronous reads race on slow CI runners. Assert the
+    /// settled state with a bounded wait, forwarding the caller's position.
+    private func waitForEnabled(_ element: XCUIElement, timeout: TimeInterval = 10,
+                                message: String = "Element must become enabled",
+                                file: StaticString = #filePath, line: UInt = #line) {
+        let enabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isEnabled == true"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: timeout), .completed,
+                       message, file: file, line: line)
+    }
+
+    private func waitForDisabled(_ element: XCUIElement, timeout: TimeInterval = 10,
+                                 message: String = "Element must become disabled",
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        // exists guard: an absent element reports isEnabled == false and would pass vacuously.
+        let disabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND isEnabled == false"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [disabled], timeout: timeout), .completed,
+                       message, file: file, line: line)
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ value: String,
+                              timeout: TimeInterval = 10,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        let matched = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", value), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [matched], timeout: timeout), .completed,
+                       file: file, line: line)
+    }
+
     /// Types a pairing link into the address field and advances; the preview
     /// stays offline until the confirmation button is pressed.
     private func enterPairingPayload(_ app: XCUIApplication, payload: String) throws {
@@ -55,7 +86,7 @@ final class HolonUITests: XCTestCase {
         permission.switches.firstMatch.tap()
         let confirm = app.buttons["onboarding.confirmPairing"]
         reveal(confirm, in: app)
-        XCTAssertTrue(confirm.isEnabled, "Only HTTP confirmation may gate pairing")
+        waitForEnabled(confirm, message: "Only HTTP confirmation may gate pairing")
         confirm.tap()
     }
 
@@ -78,7 +109,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(consent.isHittable)
         XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
         consent.switches.firstMatch.tap()
-        XCTAssertEqual(consent.value as? String, "1")
+        waitForValue(consent, "1")
     }
 
     func testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored() throws {
@@ -495,7 +526,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(permission.value as? String, "0")
         XCTAssertFalse(checkAddress.isEnabled, "Unconfirmed HTTP cannot proceed")
         permission.switches.firstMatch.tap()
-        XCTAssertTrue(checkAddress.isEnabled, "Only HTTP confirmation gates the next step")
+        waitForEnabled(checkAddress, message: "Only HTTP confirmation gates the next step")
         XCTAssertFalse(app.tabBars.firstMatch.exists)
     }
 
@@ -510,8 +541,8 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.tabBars.firstMatch.exists)
         let permission = app.switches["onboarding.pairingHTTP"]
         reveal(permission, in: app); permission.switches.firstMatch.tap()
-        XCTAssertTrue(app.buttons["onboarding.confirmPairing"].isEnabled,
-                      "No data-sharing agreement may disable pairing confirmation")
+        waitForEnabled(app.buttons["onboarding.confirmPairing"],
+                       message: "No data-sharing agreement may disable pairing confirmation")
         XCTAssertFalse(app.switches["privacy.accept"].exists,
                        "Consent is requested after sign-in, not during pairing")
         app.buttons["onboarding.back"].tap()
@@ -678,15 +709,17 @@ final class HolonUITests: XCTestCase {
         XCTAssertEqual(editor.value as? String, "P6 native UI explicit operator message")
         let enqueue = app.buttons["sending.enqueue"]
         reveal(enqueue, in: app)
-        XCTAssertTrue(enqueue.isEnabled)
+        waitForEnabled(enqueue)
         enqueue.tap()
         // Returning from the native editor is not evidence of server acceptance.
         // Outbox must expose a concrete accepted state.
         app.buttons["sending.options"].tap()
         XCTAssertTrue(queue.waitForExistence(timeout: 10))
         queue.tap()
+        // Server acceptance includes a real daemon round trip; slow runners
+        // need a wider window than presentation waits.
         XCTAssertTrue(app.descendants(matching: .any)["sending.state.received"]
-            .waitForExistence(timeout: 30))
+            .waitForExistence(timeout: 60))
         capture(app, "authenticated-outbox")
         app.buttons["Close"].tap()
         app.buttons["conversation.more"].tap()
@@ -781,7 +814,8 @@ final class HolonUITests: XCTestCase {
         reveal(appLink, in: app)
         appLink.tap()
         let close = app.buttons["browser.close"]
-        XCTAssertTrue(close.waitForExistence(timeout: 15), "A classified app link opens the runtime browser")
+        // Full-screen browser presentation is heavy on slow runners.
+        XCTAssertTrue(close.waitForExistence(timeout: 30), "A classified app link opens the runtime browser")
         // The WKHTTPCookieStore-bound holon_session cookie must authorize the
         // app page's same-origin API fetch.
         XCTAssertTrue(app.staticTexts["SESSION_200"].firstMatch.waitForExistence(timeout: 30),
@@ -866,14 +900,14 @@ final class HolonUITests: XCTestCase {
         let app = try openContentReport()
         defer { app.terminate() }
         let submit = app.buttons["report.submit"]
-        reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
+        reveal(submit, in: app); waitForEnabled(submit); submit.tap()
         let confirm = app.alerts.buttons["report.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
         app.alerts.buttons["Cancel"].tap()
         XCTAssertFalse(confirm.exists)
         XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
         XCTAssertFalse(app.staticTexts["report.error"].exists)
-        XCTAssertTrue(submit.isEnabled, "Cancel must leave an editable, unsubmitted draft")
+        waitForEnabled(submit, message: "Cancel must leave an editable, unsubmitted draft")
         app.buttons["report.dismiss"].tap()
     }
 
@@ -886,7 +920,7 @@ final class HolonUITests: XCTestCase {
         app.swipeDown()
         let submit = app.buttons["report.submit"]
         reveal(submit, in: app)
-        XCTAssertFalse(submit.isEnabled, "An invalid draft must not issue a report")
+        waitForDisabled(submit, message: "An invalid draft must not issue a report")
         XCTAssertFalse(app.alerts.buttons["report.confirm"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["report.accepted"].firstMatch.exists)
         app.buttons["report.dismiss"].tap()
@@ -901,7 +935,7 @@ final class HolonUITests: XCTestCase {
         // Dismiss the keyboard through the native form before seeking Submit.
         app.swipeDown()
         let submit = app.buttons["report.submit"]
-        reveal(submit, in: app); XCTAssertTrue(submit.isEnabled); submit.tap()
+        reveal(submit, in: app); waitForEnabled(submit); submit.tap()
         // SwiftUI exposes the native alert control as nested Button nodes.
         let confirm = app.alerts.buttons["report.confirm"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
@@ -1059,7 +1093,7 @@ final class HolonUITests: XCTestCase {
             }
             recipient.tap()
             let send = probe.buttons["share.send"]
-            XCTAssertTrue(send.isEnabled)
+            waitForEnabled(send)
             capture(probe, "system-share-" + kind + "-agent")
             send.tap()
             let confirm = probe.alerts.buttons["Send"]
@@ -1120,7 +1154,7 @@ final class HolonUITests: XCTestCase {
         reveal(proceed, in: app)
         XCTAssertFalse(proceed.isEnabled)
         agreeToSharingConsent(app)
-        reveal(proceed, in: app); XCTAssertTrue(proceed.isEnabled); proceed.tap()
+        reveal(proceed, in: app); waitForEnabled(proceed); proceed.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 15) ||
                       app.buttons["conversation.more"].waitForExistence(timeout: 15))
         app.terminate(); app.launch()
@@ -1232,7 +1266,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 15)); XCTAssertTrue(editor.isHittable)
         editor.tap(); editor.typeText("IOS_ACCESSIBILITY_DRAFT")
         let send = app.buttons["sending.enqueue"]
-        XCTAssertTrue(send.isHittable); XCTAssertTrue(send.isEnabled)
+        XCTAssertTrue(send.isHittable); waitForEnabled(send)
         XCTAssertGreaterThanOrEqual(send.frame.height, 44)
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.exists)
@@ -1702,7 +1736,9 @@ final class HolonUITests: XCTestCase {
         queueGeometry.name = "lost-response-restored-queue-controls"
         queueGeometry.lifetime = .keepAlways; add(queueGeometry)
         reveal(retry, in: app); retry.tap()
-        XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 30))
+        // The retried send must round-trip the real daemon; keep the same
+        // wide window as the primary outbox acceptance wait.
+        XCTAssertTrue(entry.staticTexts["sending.state.received"].waitForExistence(timeout: 60))
         XCTAssertTrue(entry.staticTexts["sending.requestID." + uuid].exists)
         capture(app, "lost-response-explicit-retry-received")
         app.terminate()
