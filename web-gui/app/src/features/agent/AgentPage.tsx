@@ -24,7 +24,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ComposerOptionPicker } from "./ComposerOptionPicker";
 import { CurrentWorkBar } from "./CurrentWorkBar";
-import { pathForRoute } from "../../app/routes";
+import { isPlainLeftClick, pathForRoute } from "../../app/routes";
 import { ConversationSyncStatus, ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { conversationViewport, saveConversationViewport } from "../../runtime/conversation-scope-store";
@@ -69,6 +69,7 @@ interface AgentPageProps {
   agent: AgentSummary;
   parentAgentId?: string;
   parentTaskId?: string;
+  onBackToParent?: () => void;
   sendDisabledReason?: string;
   /** Canonical conversation read-model projection; replaces the raw timeline. */
   conversation?: ConversationTimelineBundle;
@@ -176,6 +177,7 @@ export function AgentPage({
   agent,
   parentAgentId,
   parentTaskId,
+  onBackToParent,
   sendDisabledReason,
   conversation,
   detail,
@@ -769,7 +771,16 @@ export function AgentPage({
             {parentAgentId ? (
               <div className="conversation-parent-status" role="note">
                 <strong>{t("agentAccess.subagent")}</strong>{" · "}
-                <a href={pathForRoute("agent", parentAgentId)}>{t("agentAccess.backToParent")}</a>
+                <a
+                  href={pathForRoute("agent", parentAgentId)}
+                  onClick={(event) => {
+                    if (!onBackToParent || !isPlainLeftClick(event)) return;
+                    event.preventDefault();
+                    onBackToParent();
+                  }}
+                >
+                  {t("agentAccess.backToParent")}
+                </a>
                 {parentTaskId ? <span> · {t("agentAccess.parentTask")}: <code>{parentTaskId}</code></span> : null}
               </div>
             ) : null}

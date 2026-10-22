@@ -1142,6 +1142,7 @@ const zh: Record<string, any> = {
   inspector: {
     targetAgent: "目标智能体",
     openAgentConversation: "打开智能体会话",
+    openConversation: "打开会话",
     unknownTargetIdentity: "历史引用，未记录身份实例",
     source: "来源",
     fullDetail: "完整详情",

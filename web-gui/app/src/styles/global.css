@@ -4469,6 +4469,23 @@ code {
   line-height: 1.45;
 }
 
+.task-conversation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.task-conversation code {
+  overflow-wrap: anywhere;
+}
+
+.task-conversation-open {
+  margin-left: auto;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
 @media (max-width: 920px) {
   .skills-hero,
   .skill-detail-hero,

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../../i18n";
-import type { TaskSummary } from "../../runtime/types";
+import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
 import { AgentTasksPanel, RECENT_TASK_LIMIT } from "./AgentTasksPanel";
 
 const task = (id: string): TaskSummary => ({
@@ -19,14 +19,18 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function renderPanel(loadRecentTasks: (agentId: string) => Promise<TaskSummary[]>, tasks: TaskSummary[] = []) {
+async function renderPanel(
+  loadRecentTasks: (agentId: string) => Promise<TaskSummary[]>,
+  tasks: TaskSummary[] = [],
+  onOpenConversation?: (target: TaskTargetRef) => void,
+) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   roots.push(root);
   const onOpenTask = vi.fn();
   await act(async () => root.render(
-    <AgentTasksPanel agentId="parent" tasks={tasks} activeTaskCount={tasks.length} loadRecentTasks={loadRecentTasks} onOpenTask={onOpenTask} />,
+    <AgentTasksPanel agentId="parent" tasks={tasks} activeTaskCount={tasks.length} loadRecentTasks={loadRecentTasks} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} />,
   ));
   const recentDetails = host.querySelector(".inspector-details-list") as HTMLDetailsElement;
   async function openRecent() {
@@ -79,10 +83,38 @@ describe("AgentTasksPanel", () => {
       target: { kind: "agent_message_wait", agent_id: "peer", incarnation: 3 },
     };
     const { host, openRecent } = await renderPanel(vi.fn().mockResolvedValue([recent]), [active]);
-    expect(host.querySelector("a")?.getAttribute("href")).toBe("/agents/private%20child/conversation?incarnation=7");
+    expect(host.querySelector("a")?.getAttribute("href")).toBe("/agents/private%20child/conversation?incarnation=7&from=parent");
     await openRecent();
     expect(Array.from(host.querySelectorAll("a"), (link) => link.getAttribute("href")))
-      .toEqual(["/agents/private%20child/conversation?incarnation=7", "/agents/peer/conversation?incarnation=3"]);
+      .toEqual(["/agents/private%20child/conversation?incarnation=7&from=parent", "/agents/peer/conversation?incarnation=3&from=parent"]);
+  });
+
+  it("routes plain link clicks through in-app conversation navigation", async () => {
+    const active: TaskSummary = {
+      ...task("active"), kind: "child_agent", status: "running",
+      target: { kind: "child_agent", agent_id: "private child", incarnation: 7 },
+    };
+    const onOpenConversation = vi.fn();
+    const { host } = await renderPanel(vi.fn().mockResolvedValue([]), [active], onOpenConversation);
+    const link = host.querySelector(".task-conversation-open") as HTMLAnchorElement;
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    expect(onOpenConversation).toHaveBeenCalledWith({ kind: "child_agent", agent_id: "private child", incarnation: 7 });
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("leaves modified link activations to the browser default", async () => {
+    const active: TaskSummary = {
+      ...task("active"), kind: "child_agent", status: "running",
+      target: { kind: "child_agent", agent_id: "private child", incarnation: 7 },
+    };
+    const onOpenConversation = vi.fn();
+    const { host } = await renderPanel(vi.fn().mockResolvedValue([]), [active], onOpenConversation);
+    const link = host.querySelector(".task-conversation-open") as HTMLAnchorElement;
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+    link.dispatchEvent(event);
+    expect(onOpenConversation).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
   });
 
   it("does not derive a destination from a summary or rebind a legacy identity", async () => {
