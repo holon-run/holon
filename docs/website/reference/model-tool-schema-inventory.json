@@ -1187,6 +1187,13 @@
                 "display_name": {
                   "type": "string"
                 },
+                "job_id": {
+                  "description": "Background job observing the bootstrap when the receipt is returned\n in the `Provisioning` stage. Absent for terminal stages and for\n callers that bootstrap inline.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "lifecycle": {
                   "enum": [
                     "active",
@@ -1205,14 +1212,23 @@
                   "type": "string"
                 },
                 "stage": {
-                  "enum": [
-                    "reserved",
-                    "profiled",
-                    "resolved",
-                    "degraded",
-                    "bootstrapped"
-                  ],
-                  "type": "string"
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "reserved",
+                        "profiled",
+                        "resolved",
+                        "degraded",
+                        "bootstrapped"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "const": "provisioning",
+                      "description": "Bootstrap was submitted and runs in the background; poll the agent\n detail or the create receipt job for the terminal state.",
+                      "type": "string"
+                    }
+                  ]
                 }
               },
               "required": [

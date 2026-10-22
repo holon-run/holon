@@ -28,6 +28,7 @@ const TEMPLATE_AGENTS_FILENAME: &str = "AGENTS.md";
 const TEMPLATE_SKILLS_FILENAME: &str = "skills.toml";
 const TEMPLATE_MANIFEST_FILENAME: &str = "template.toml";
 const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
+const TEMPLATE_STAGING_FILENAME: &str = "template-staging.json";
 const MANAGED_TEMPLATE_STATE_FILENAME: &str = ".holon-template.json";
 const TEMPLATE_REGISTRY_FILENAME: &str = ".registry.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
@@ -352,6 +353,145 @@ pub fn template_provenance_path(agent_home: &Path) -> PathBuf {
         .join(TEMPLATE_PROVENANCE_FILENAME)
 }
 
+pub fn template_staging_path(agent_home: &Path) -> PathBuf {
+    agent_home
+        .join(".holon")
+        .join("state")
+        .join(TEMPLATE_STAGING_FILENAME)
+}
+
+/// Runtime-owned record of an in-flight template materialization. It lets a
+/// later repair distinguish "the runtime wrote AGENTS.md but never finished"
+/// from genuine user content, without ever overwriting the latter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TemplateStagingRecord {
+    selector: String,
+    started_at: DateTime<Utc>,
+    /// SHA-256 of the AGENTS.md bytes the runtime wrote, so user edits after
+    /// an interrupted install are detected and preserved.
+    agents_md_sha256: String,
+    /// Skill destinations created so far, in creation order.
+    created_paths: Vec<std::path::PathBuf>,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+fn write_template_staging(agent_home: &Path, staging: &TemplateStagingRecord) -> Result<()> {
+    let content = serde_json::to_vec_pretty(staging)?;
+    write_file_atomically(&template_staging_path(agent_home), &content)
+}
+
+fn read_template_staging(agent_home: &Path) -> Result<Option<TemplateStagingRecord>> {
+    let path = template_staging_path(agent_home);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let staging: TemplateStagingRecord = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(staging))
+}
+
+fn remove_template_staging(agent_home: &Path) -> Result<()> {
+    let path = template_staging_path(agent_home);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(anyhow::Error::new(error).context(format!("failed to remove {}", path.display())))
+        }
+    }
+}
+
+/// Clean up a runtime half-materialized template and report whether recovery
+/// happened. Returns `Ok(false)` (touching nothing) when the staging record is
+/// absent, selects a different template, or the current AGENTS.md no longer
+/// matches the bytes the runtime wrote, which means the file may be user
+/// content that must be preserved. An absent AGENTS.md is cleaned up: the run
+/// was interrupted before its first artifact landed, so nothing is user
+/// content yet.
+pub fn recover_template_staging(agent_home: &Path, expected_selector: &str) -> Result<bool> {
+    let Some(staging) = read_template_staging(agent_home)? else {
+        return Ok(false);
+    };
+    if staging.selector != expected_selector {
+        return Ok(false);
+    }
+    let agents_md = agent_home.join(TEMPLATE_AGENTS_FILENAME);
+    let agents_md_is_runtime_bytes = match fs::read(&agents_md) {
+        Ok(bytes) => sha256_hex(&bytes) == staging.agents_md_sha256,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            return Err(anyhow::Error::new(error)
+                .context(format!("failed to read {}", agents_md.display())));
+        }
+    };
+    if !agents_md_is_runtime_bytes {
+        return Ok(false);
+    }
+    for path in staging.created_paths.iter().rev() {
+        match remove_materialized_skill_destination(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(anyhow!(
+                    "failed to remove staged template artifact {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if agents_md.is_file() {
+        fs::remove_file(&agents_md)
+            .with_context(|| format!("failed to remove staged {}", agents_md.display()))?;
+    }
+    remove_template_staging(agent_home)?;
+    tracing::info!(
+        selector = %staging.selector,
+        agent_home = %agent_home.display(),
+        "template_staging_recovered: cleaned interrupted template materialization"
+    );
+    Ok(true)
+}
+
+/// Tracks the runtime-owned staging record across one materialization run.
+struct TemplateStagingGuard {
+    agent_home: std::path::PathBuf,
+    record: TemplateStagingRecord,
+}
+
+impl TemplateStagingGuard {
+    fn begin(agent_home: &Path, selector: &str, agents_md_content: &str) -> Result<Self> {
+        let record = TemplateStagingRecord {
+            selector: selector.to_string(),
+            started_at: Utc::now(),
+            agents_md_sha256: sha256_hex(agents_md_content.as_bytes()),
+            created_paths: Vec::new(),
+        };
+        write_template_staging(agent_home, &record)?;
+        Ok(Self {
+            agent_home: agent_home.to_path_buf(),
+            record,
+        })
+    }
+
+    fn push_created_path(&mut self, path: std::path::PathBuf) -> Result<()> {
+        self.record.created_paths.push(path);
+        write_template_staging(&self.agent_home, &self.record)
+    }
+
+    /// Remove the staging record after provenance landed (success path only).
+    fn finish(self) -> Result<()> {
+        remove_template_staging(&self.agent_home)
+    }
+}
+
 pub fn agent_memory_self_path(agent_home: &Path) -> PathBuf {
     agent_home.join("memory").join("self.md")
 }
@@ -611,45 +751,7 @@ async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
         catalog_agent_home.unwrap_or(&agent_home),
     )
     .await?;
-    let skills_root = agent_home.join("skills");
-    let mut created_skill_destinations = Vec::new();
-
-    let result: Result<TemplateProvenanceRecord> = async {
-        let agents_md = render_agent_home_agents_md(&resolved.agents_md, None);
-        write_file_atomically(&agents_md_path, agents_md.as_bytes())?;
-        for skill_ref in &resolved.skill_refs {
-            let destination = materialize_skill_ref(&agent_home, &skills_root, skill_ref).await?;
-            created_skill_destinations.push(destination);
-        }
-        let record = TemplateProvenanceRecord {
-            selector: template.to_string(),
-            source: resolved.provenance,
-            applied_at: Utc::now(),
-            schema_version: resolved.schema_version,
-        };
-        tracing::info!(
-            template = %record.selector,
-            schema_version = ?record.schema_version,
-            agent_home = %agent_home.display(),
-            "template_applied: agent initialized from template"
-        );
-        let content = serde_json::to_vec_pretty(&record)?;
-        write_file_atomically(&template_provenance_path(&agent_home), &content)?;
-        Ok(record)
-    }
-    .await;
-
-    match result {
-        Ok(record) => Ok(Some(record)),
-        Err(err) => {
-            let _ = fs::remove_file(&agents_md_path);
-            let _ = fs::remove_file(template_provenance_path(&agent_home));
-            for destination in created_skill_destinations.into_iter().rev() {
-                let _ = remove_materialized_skill_destination(&destination);
-            }
-            Err(err)
-        }
-    }
+    materialize_resolved_template(&agent_home, template, &resolved, "template").await
 }
 
 async fn ensure_agent_home_agents_md_from_builtin_default(
@@ -665,30 +767,58 @@ async fn ensure_agent_home_agents_md_from_builtin_default(
         return Ok(None);
     }
     let resolved = resolve_builtin_template(DEFAULT_AGENT_TEMPLATE_ID, home_dir)?;
-    let skills_root = agent_home.join("skills");
+    materialize_resolved_template(
+        &agent_home,
+        DEFAULT_AGENT_TEMPLATE_ID,
+        &resolved,
+        "hidden builtin default template",
+    )
+    .await
+}
+
+/// Shared materialization body for resolved templates: write AGENTS.md under
+/// a runtime staging record, materialize skills (GitHub refs install to the
+/// user library in one batched pass), then write the provenance marker and
+/// clear staging. On error the created files are removed; if the future is
+/// dropped mid-way the staging record stays behind so a later repair can
+/// recover the half-materialized state without touching user content.
+async fn materialize_resolved_template(
+    agent_home: &Path,
+    selector: &str,
+    resolved: &ResolvedTemplate,
+    source_label: &str,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    let agents_md_path = agent_home.join(TEMPLATE_AGENTS_FILENAME);
     let mut created_skill_destinations = Vec::new();
 
     let result: Result<TemplateProvenanceRecord> = async {
         let agents_md = render_agent_home_agents_md(&resolved.agents_md, None);
+        // Land the staging record before any visible artifact so an
+        // interrupted run is always distinguishable from user content.
+        let mut staging = TemplateStagingGuard::begin(agent_home, selector, &agents_md)?;
         write_file_atomically(&agents_md_path, agents_md.as_bytes())?;
-        for skill_ref in &resolved.skill_refs {
-            let destination = materialize_skill_ref(&agent_home, &skills_root, skill_ref).await?;
+        let mut record_destination = |destination: PathBuf| -> Result<()> {
+            staging.push_created_path(destination.clone())?;
             created_skill_destinations.push(destination);
-        }
+            Ok(())
+        };
+        materialize_template_skill_refs(agent_home, &resolved.skill_refs, &mut record_destination)
+            .await?;
         let record = TemplateProvenanceRecord {
-            selector: DEFAULT_AGENT_TEMPLATE_ID.to_string(),
-            source: resolved.provenance,
+            selector: selector.to_string(),
+            source: resolved.provenance.clone(),
             applied_at: Utc::now(),
-            schema_version: resolved.schema_version,
+            schema_version: resolved.schema_version.clone(),
         };
         tracing::info!(
             template = %record.selector,
             schema_version = ?record.schema_version,
             agent_home = %agent_home.display(),
-            "template_applied: agent initialized from hidden builtin default template"
+            "template_applied: agent initialized from {source_label}"
         );
         let content = serde_json::to_vec_pretty(&record)?;
-        write_file_atomically(&template_provenance_path(&agent_home), &content)?;
+        write_file_atomically(&template_provenance_path(agent_home), &content)?;
+        staging.finish()?;
         Ok(record)
     }
     .await;
@@ -697,10 +827,11 @@ async fn ensure_agent_home_agents_md_from_builtin_default(
         Ok(record) => Ok(Some(record)),
         Err(err) => {
             let _ = fs::remove_file(&agents_md_path);
-            let _ = fs::remove_file(template_provenance_path(&agent_home));
+            let _ = fs::remove_file(template_provenance_path(agent_home));
             for destination in created_skill_destinations.into_iter().rev() {
                 let _ = remove_materialized_skill_destination(&destination);
             }
+            let _ = remove_template_staging(agent_home);
             Err(err)
         }
     }
@@ -2950,6 +3081,70 @@ async fn materialize_skill_ref(
             .context("GitHub skill materialization task failed")?
         }
     }
+}
+
+/// Materialize every template skill ref, reporting each destination to
+/// `on_created` in ref order as soon as it lands.
+///
+/// GitHub refs are installed into the user skill library in one batched pass
+/// first, so skills sharing a repository download (and cache) its archive
+/// once instead of once per skill.
+/// Partial creations stay visible to the caller even when a later ref fails,
+/// so rollback and staging journals observe the same set.
+async fn materialize_template_skill_refs(
+    agent_home: &Path,
+    skill_refs: &[TemplateSkillRef],
+    mut on_created: impl FnMut(PathBuf) -> Result<()>,
+) -> Result<()> {
+    let mut github_specs = Vec::new();
+    for skill_ref in skill_refs {
+        if let TemplateSkillRef::Github(github_ref) = skill_ref {
+            let (package, skill) = template_github_skill_package(github_ref)?;
+            github_specs.push(crate::skills::GithubSkillInstallRequest { package, skill });
+        }
+    }
+    let installed_names = if github_specs.is_empty() {
+        Vec::new()
+    } else {
+        tokio::task::spawn_blocking(move || {
+            let user_home = user_home_dir()?;
+            crate::skills::add_github_remote_skills_to_library(&user_home, &github_specs)
+        })
+        .await
+        .context("GitHub skill materialization task failed")??
+    };
+    let mut github_installed = installed_names.into_iter();
+    let local_skills_root = agent_home.join("skills");
+    for skill_ref in skill_refs {
+        let destination = match skill_ref {
+            TemplateSkillRef::Local { path } => {
+                materialize_local_skill_ref(&local_skills_root, path)?
+            }
+            TemplateSkillRef::Github(_) => {
+                let skill_name = github_installed
+                    .next()
+                    .ok_or_else(|| anyhow!("github skill install result missing"))?;
+                materialize_github_library_skill(agent_home, &skill_name)?
+            }
+        };
+        on_created(destination)?;
+    }
+    Ok(())
+}
+
+/// Link an already-installed user-library skill into the agent home and
+/// return its agent-side destination.
+fn materialize_github_library_skill(agent_home: &Path, skill_name: &str) -> Result<PathBuf> {
+    let user_home = user_home_dir()?;
+    crate::skills::install_skill_with_user_home(
+        agent_home,
+        Some(user_home.as_path()),
+        &crate::types::SkillInstallKind::Named {
+            name: skill_name.to_string(),
+            mode: crate::types::SkillInstallMode::Linked,
+        },
+    )?;
+    Ok(crate::skills::agent_skills_root(agent_home).join(skill_name))
 }
 
 fn materialize_github_skill_ref(

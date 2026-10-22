@@ -85,16 +85,54 @@ pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Resu
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = Client::new();
 
+    async fn wait_for_job_terminal(
+        client: &Client,
+        base: &str,
+        job_id: &str,
+    ) -> Result<serde_json::Value> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let job: serde_json::Value = client
+                .get(format!("{base}/api/jobs/{job_id}"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let status = job["job"]["status"].as_str().unwrap_or("unknown");
+            if status == "completed" || status == "failed" {
+                return Ok(job["job"].clone());
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "bootstrap job did not reach a terminal state in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     let create = client
         .post(format!("{base}/api/control/agents/repair-me/create"))
         .json(&serde_json::json!({ "template": "late" }))
         .send()
         .await?;
-    assert_eq!(create.status(), reqwest::StatusCode::OK);
+    assert_eq!(create.status(), reqwest::StatusCode::ACCEPTED);
     let created: serde_json::Value = create.json().await?;
-    assert_eq!(created["receipt"]["stage"], "degraded");
-    assert_eq!(created["receipt"]["bootstrap"]["status"], "degraded");
+    assert_eq!(created["receipt"]["stage"], "provisioning");
+    let create_job_id = created["receipt"]["job_id"]
+        .as_str()
+        .expect("provisioning receipt carries a job id")
+        .to_string();
     assert_eq!(created["identity"]["agent_id"], "repair-me");
+
+    // The template does not exist yet: the background reconcile finishes with
+    // a degraded bootstrap instead of tying the create request to the install.
+    let create_job = wait_for_job_terminal(&client, &base, &create_job_id).await?;
+    assert_eq!(create_job["status"], "completed");
+    assert_eq!(
+        create_job["result"]["bootstrap"]["status"],
+        serde_json::to_value(AgentBootstrapStatus::Degraded)?
+    );
 
     let template_dir = host.config().home_dir.join(".agents/agent_templates/late");
     std::fs::create_dir_all(&template_dir)?;
@@ -105,13 +143,37 @@ pub async fn control_agent_create_returns_degraded_receipt_and_repairs() -> Resu
         .json(&serde_json::json!({}))
         .send()
         .await?;
-    assert_eq!(repaired.status(), reqwest::StatusCode::OK);
+    assert_eq!(repaired.status(), reqwest::StatusCode::ACCEPTED);
     let repaired: serde_json::Value = repaired.json().await?;
+    assert_eq!(repaired["ok"], serde_json::json!(true));
     assert_eq!(
-        repaired["bootstrap"]["status"],
+        repaired["detail"]["bootstrap"]["status"],
+        serde_json::to_value(AgentBootstrapStatus::Degraded)?
+    );
+    let repair_job_id = repaired["job_id"]
+        .as_str()
+        .expect("repair job id")
+        .to_string();
+
+    let repair_job = wait_for_job_terminal(&client, &base, &repair_job_id).await?;
+    assert_eq!(repair_job["status"], "completed");
+    assert_eq!(
+        repair_job["result"]["bootstrap"]["status"],
         serde_json::to_value(AgentBootstrapStatus::Ready)?
     );
-    assert_eq!(repaired["identity"]["agent_id"], "repair-me");
+
+    let detail: serde_json::Value = client
+        .get(format!("{base}/api/control/agents/repair-me/detail"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        detail["bootstrap"]["status"],
+        serde_json::to_value(AgentBootstrapStatus::Ready)?
+    );
+    assert_eq!(detail["identity"]["agent_id"], "repair-me");
 
     server.abort();
     Ok(())

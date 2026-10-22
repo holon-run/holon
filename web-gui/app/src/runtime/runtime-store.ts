@@ -2356,15 +2356,33 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     set({ templateCatalogError: undefined });
     try {
-      await request.client.createAgentFromTemplate(agentId, template, name);
+      const created = await request.client.createAgentFromTemplate(agentId, template, name);
       if (!isCurrentClientRequest(request)) return false;
-      if (get().discovery.mode === "authoritative") {
-        // The authoritative roster owns membership; refresh the snapshot
-        // so the new agent appears through the same atomic apply.
-        globalSyncCoordinator.refreshRoster(get, set);
-        return true;
+      const refreshRosterAfterCreate = async (): Promise<void> => {
+        if (get().discovery.mode === "authoritative") {
+          // The authoritative roster owns membership; refresh the snapshot
+          // so the new agent appears through the same atomic apply.
+          globalSyncCoordinator.refreshRoster(get, set);
+        } else {
+          await get().refreshBootstrap({ background: true });
+        }
+      };
+      await refreshRosterAfterCreate();
+      const jobId = created.receipt?.job_id;
+      if (created.receipt?.stage === "provisioning" && jobId) {
+        // Bootstrap runs in the background; poll its job until it reaches a
+        // terminal state so creation no longer depends on one 8s request.
+        const outcome = await pollAgentBootstrapJob(request, jobId);
+        if (!isCurrentClientRequest(request)) return false;
+        await refreshRosterAfterCreate();
+        if (outcome.status === "failed") {
+          set({
+            templateCatalogError: outcome.error
+              ? `Agent ${agentId} bootstrap failed: ${outcome.error}`
+              : `Agent ${agentId} bootstrap failed.`,
+          });
+        }
       }
-      await get().refreshBootstrap({ background: true });
       return true;
     } catch (error) {
       if (!isCurrentClientRequest(request)) return false;
@@ -4173,6 +4191,46 @@ async function pollTemplateSyncJob(
     // status is "queued" or "running" — continue polling
   }
   throw new Error("Timed out waiting for template remote source sync.");
+}
+
+const AGENT_BOOTSTRAP_POLL_INTERVAL_MS = 1_000;
+const AGENT_BOOTSTRAP_POLL_TIMEOUT_MS = 120_000;
+
+type AgentBootstrapJobOutcome =
+  | { status: "completed" }
+  | { status: "failed"; error?: string }
+  | { status: "timeout" };
+
+/**
+ * Poll the background `agent.bootstrap` job returned by agent creation.
+ * The job registry is in-memory: when the job disappears (for example after
+ * a daemon restart) the poll resolves like a timeout, because the durable
+ * bootstrap record keeps progressing regardless.
+ */
+async function pollAgentBootstrapJob(
+  request: ClientRequest,
+  jobId: string,
+): Promise<AgentBootstrapJobOutcome> {
+  const deadline = Date.now() + AGENT_BOOTSTRAP_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (!isCurrentClientRequest(request)) return { status: "timeout" };
+    await new Promise((resolve) => globalThis.setTimeout(resolve, AGENT_BOOTSTRAP_POLL_INTERVAL_MS));
+    if (!isCurrentClientRequest(request)) return { status: "timeout" };
+    try {
+      const job = await request.client.getJob(jobId);
+      if (!isCurrentClientRequest(request)) return { status: "timeout" };
+      if (job.status === "completed") {
+        return { status: "completed" };
+      }
+      if (job.status === "failed") {
+        return { status: "failed", error: job.error ?? job.summary };
+      }
+    } catch {
+      return { status: "timeout" };
+    }
+    // status is "queued" or "running" — keep polling
+  }
+  return { status: "timeout" };
 }
 
 function updateSkillInstallJob(

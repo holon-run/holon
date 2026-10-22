@@ -593,7 +593,7 @@ with fixture_directory(repo) as root:
             finally:
                 control.close()
 
-            def local(method, path, payload=None):
+            def local(method, path, payload=None, ok=(200,)):
                 connection = LocalControlConnection("localhost", timeout=10)
                 try:
                     connection.request(method, "/api" + path,
@@ -601,14 +601,14 @@ with fixture_directory(repo) as root:
                         headers={"Content-Type": "application/json"})
                     response = connection.getresponse()
                     data = json.loads(response.read())
-                    if response.status != 200:
+                    if response.status not in ok:
                         raise RuntimeError(f"fixture control {path}: HTTP {response.status}: {data}")
                     return data
                 finally:
                     connection.close()
 
             agent = "holon-tester"
-            local("POST", f"/control/agents/{agent}/create", {})
+            local("POST", f"/control/agents/{agent}/create", {}, ok=(200, 202))
             work = local("POST", f"/control/agents/{agent}/work-items", {"objective": "IOS_POPULATED_WORK"})
             work_id = work["id"]
             plan = pathlib.Path(work["plan_artifact"]["path"])
@@ -668,7 +668,7 @@ with fixture_directory(repo) as root:
             if rich_activity_acceptance:
                 # All rich data lives in this temporary daemon, never a production Agent.
                 for number in range(90):
-                    local("POST", f"/control/agents/ios-fixture-agent-{number:03}/create", {})
+                    local("POST", f"/control/agents/ios-fixture-agent-{number:03}/create", {}, ok=(200, 202))
                 for number in range(55):
                     item = local("POST", f"/control/agents/{agent}/work-items", {"objective": f"IOS_RICH_WORK_{number:03}"})
                     # Keep the catalog large without fifty-five unfinished items

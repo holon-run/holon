@@ -1301,6 +1301,18 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             std::env::remove_var(DAEMON_SERVE_ARGS_ENV);
             std::env::remove_var(DAEMON_SERVE_RESOLUTION_ENV);
             host.recover_startup_observed(&startup).await?;
+            startup
+                .observe("bootstrap_sweep", async {
+                    let swept = host.sweep_pending_agent_bootstraps()?;
+                    if swept > 0 {
+                        tracing::info!(
+                            count = swept,
+                            "resumed interrupted agent bootstraps in the background"
+                        );
+                    }
+                    Ok(())
+                })
+                .await?;
             let runtime = startup
                 .observe("default_activation", async {
                     if host.configured_default_agent_id()?.is_some() {
@@ -6512,9 +6524,15 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
         }
         Some(AgentCommands::Repair { agent_id }) => {
             let client = LocalClient::new(config.clone())?;
-            print_json(&serde_json::to_value(
-                client.repair_agent(&agent_id).await?,
-            )?)
+            let repair = client.repair_agent(&agent_id).await?;
+            let detail = match repair.job_id {
+                Some(job_id) => client
+                    .wait_for_agent_bootstrap_job(&agent_id, &job_id)
+                    .await?
+                    .unwrap_or(repair.detail),
+                None => repair.detail,
+            };
+            print_json(&serde_json::to_value(detail)?)
         }
         Some(AgentCommands::Rename { agent_id, name }) => {
             let client = LocalClient::new(config.clone())?;

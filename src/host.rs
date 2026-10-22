@@ -63,21 +63,21 @@ use crate::{
     types::{
         normalize_agent_name, AdmissionContext, AgentBootstrapDesiredState,
         AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
-        AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapWorkspaceState,
-        AgentCanonicalDurability, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
-        AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord,
-        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
-        AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
-        AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState, AgentMessagePrincipalKind,
-        AgentMessageSendRequest, AgentModelResolution, AgentModelResolutionStatus, AgentOwnership,
-        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
-        AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
-        AgentVisibility, AuthorityClass, ChildAgentSummary, CreateAgentRequest,
-        ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskRecord,
-        TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
+        AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapSummary,
+        AgentBootstrapWorkspaceState, AgentCanonicalDurability, AgentCreateReceipt,
+        AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDeletionStatus, AgentDetail,
+        AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
+        AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
+        AgentMessageDeliveryReceipt, AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState,
+        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution,
+        AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
+        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
+        CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary,
+        LoadedAgentsMdView, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationRecord, Priority, QueueEntryStatus,
+        RuntimeFailureSummary, TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
 };
@@ -333,6 +333,12 @@ pub(crate) struct HostInner {
     config_reload_notify: Notify,
     bootstrap_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     bootstrap_handoff_lock: AsyncMutex<()>,
+    // Background bootstrap reconciles in flight, keyed by agent id. Presence
+    // of the key means a reconcile task is running; it drains and removes the
+    // waiters when the reconcile finishes.
+    bootstrap_reconcile_waiters: Mutex<
+        HashMap<String, Vec<tokio::sync::oneshot::Sender<Result<AgentBootstrapRecord, String>>>>,
+    >,
     runtime_operations: Mutex<HostRuntimeOperations>,
     runtime_operations_token: CancellationToken,
     runtime_shutdown_lock: AsyncMutex<()>,
@@ -765,6 +771,26 @@ async fn apply_spawn_model_resolution(
     Ok(())
 }
 
+/// How a create request executes the agent bootstrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentBootstrapExecution {
+    /// Run the full bootstrap inline and return a terminal receipt.
+    Inline,
+    /// Submit identity creation, kick a background reconcile, and return a
+    /// `Provisioning` receipt while bootstrap is still in flight. Request
+    /// cancellation no longer interrupts the install.
+    Background,
+}
+
+/// Outcome of kicking the background bootstrap reconcile for an agent.
+pub(crate) enum AgentBootstrapKick {
+    /// The bootstrap record is already terminal-ready; nothing was started.
+    AlreadyComplete(AgentBootstrapRecord),
+    /// A background reconcile is running; the receiver resolves with its
+    /// final record (or the reconcile error message).
+    Started(tokio::sync::oneshot::Receiver<Result<AgentBootstrapRecord, String>>),
+}
+
 impl RuntimeHost {
     pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
         let runtime_db =
@@ -890,6 +916,7 @@ impl RuntimeHost {
                 config_reload_notify: Notify::new(),
                 bootstrap_locks: Mutex::new(HashMap::new()),
                 bootstrap_handoff_lock: AsyncMutex::new(()),
+                bootstrap_reconcile_waiters: Mutex::new(HashMap::new()),
                 runtime_operations: Mutex::new(HostRuntimeOperations {
                     closing: false,
                     tasks: JoinSet::new(),
@@ -3789,6 +3816,7 @@ impl RuntimeHost {
             lineage_parent_agent_id,
             catalog_agent_home,
             None,
+            AgentBootstrapExecution::Inline,
         )
         .await
     }
@@ -3800,6 +3828,7 @@ impl RuntimeHost {
         lineage_parent_agent_id: Option<&str>,
         catalog_agent_home: Option<&Path>,
         requested_name: Option<&str>,
+        execution: AgentBootstrapExecution,
     ) -> Result<AgentCreateResult> {
         let desired = AgentBootstrapDesiredState {
             template: template.map(ToString::to_string),
@@ -3813,6 +3842,7 @@ impl RuntimeHost {
             lineage_parent_agent_id,
             requested_name,
             desired,
+            execution,
         )
         .await
     }
@@ -3823,6 +3853,7 @@ impl RuntimeHost {
         lineage_parent_agent_id: Option<&str>,
         requested_name: Option<&str>,
         desired: AgentBootstrapDesiredState,
+        execution: AgentBootstrapExecution,
     ) -> Result<AgentCreateResult> {
         let (identity, created) = {
             let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
@@ -3843,8 +3874,31 @@ impl RuntimeHost {
             }
             (identity, created)
         };
-        let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
-        let bootstrap_summary = bootstrap.summary();
+        let (stage, bootstrap_summary) = match execution {
+            AgentBootstrapExecution::Inline => {
+                let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
+                (
+                    Self::agent_create_stage(&bootstrap.summary()),
+                    bootstrap.summary(),
+                )
+            }
+            AgentBootstrapExecution::Background => match self.kick_agent_bootstrap(agent_id)? {
+                AgentBootstrapKick::AlreadyComplete(bootstrap) => (
+                    Self::agent_create_stage(&bootstrap.summary()),
+                    bootstrap.summary(),
+                ),
+                AgentBootstrapKick::Started(_) => {
+                    // Snapshot the durable record for the receipt; the
+                    // background reconcile keeps progressing it.
+                    let bootstrap = self
+                        .runtime_db()
+                        .agent_bootstraps()
+                        .latest(agent_id)?
+                        .ok_or_else(|| anyhow!("agent {agent_id} has no bootstrap state"))?;
+                    (AgentCreateStage::Provisioning, bootstrap.summary())
+                }
+            },
+        };
         Ok(AgentCreateResult {
             identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
             receipt: AgentCreateReceipt {
@@ -3852,13 +3906,10 @@ impl RuntimeHost {
                 agent_id: identity.agent_id.clone(),
                 name: identity.name.clone(),
                 display_name: identity.display_name(),
-                stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
-                    AgentCreateStage::Bootstrapped
-                } else {
-                    AgentCreateStage::Degraded
-                },
+                stage,
                 lifecycle: identity.status,
                 created,
+                job_id: None,
                 bootstrap: bootstrap_summary,
             },
         })
@@ -3918,13 +3969,10 @@ impl RuntimeHost {
                         agent_id: identity.agent_id.clone(),
                         name: identity.name.clone(),
                         display_name: identity.display_name(),
-                        stage: if bootstrap_summary.status == AgentBootstrapStatus::Ready {
-                            AgentCreateStage::Bootstrapped
-                        } else {
-                            AgentCreateStage::Degraded
-                        },
+                        stage: Self::agent_create_stage(&bootstrap_summary),
                         lifecycle: identity.status,
                         created: false,
+                        job_id: None,
                         bootstrap: bootstrap_summary,
                     },
                 });
@@ -3970,6 +4018,7 @@ impl RuntimeHost {
             request.lineage_parent_agent_id.as_deref(),
             request.name.as_deref(),
             desired,
+            AgentBootstrapExecution::Inline,
         )
         .await
     }
@@ -4205,6 +4254,119 @@ impl RuntimeHost {
             .clone()
     }
 
+    /// Kick (or attach to) the background bootstrap reconcile for an agent.
+    ///
+    /// The durable `agent_bootstraps` record stays the source of truth; the
+    /// returned receiver resolves once the background reconcile finishes, so
+    /// HTTP job projections can follow it without owning the lifecycle.
+    pub(crate) fn kick_agent_bootstrap(&self, agent_id: &str) -> Result<AgentBootstrapKick> {
+        let bootstrap = self
+            .runtime_db()
+            .agent_bootstraps()
+            .latest(agent_id)?
+            .ok_or_else(|| anyhow!("agent {agent_id} has no bootstrap state"))?;
+        if bootstrap.summary().status == AgentBootstrapStatus::Ready {
+            return Ok(AgentBootstrapKick::AlreadyComplete(bootstrap));
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let should_spawn = {
+            let mut waiters = self.inner.bootstrap_reconcile_waiters.lock().unwrap();
+            let entry = waiters.entry(agent_id.to_string()).or_default();
+            let should_spawn = entry.is_empty();
+            entry.push(tx);
+            should_spawn
+        };
+        if should_spawn {
+            let host = self.clone();
+            let owned_agent_id = agent_id.to_string();
+            let spawn_result = self.start_runtime_operation(async move {
+                let result = host.reconcile_agent_bootstrap(&owned_agent_id).await;
+                if let Err(error) = result.as_ref() {
+                    tracing::warn!(
+                        agent_id = %owned_agent_id,
+                        error = %error,
+                        "background agent bootstrap reconcile failed"
+                    );
+                }
+                let outcome = match result {
+                    Ok(record) => Ok(record),
+                    Err(error) => Err(error.to_string()),
+                };
+                host.finish_background_bootstrap_reconcile(&owned_agent_id, &outcome);
+                Ok(())
+            });
+            if let Err(error) = spawn_result {
+                // Admission closed: fail the waiters now. The durable record
+                // keeps the pending state for the startup sweep or a later
+                // kick to resume.
+                self.finish_background_bootstrap_reconcile(agent_id, &Err(error.to_string()));
+            }
+        }
+        Ok(AgentBootstrapKick::Started(rx))
+    }
+
+    fn finish_background_bootstrap_reconcile(
+        &self,
+        agent_id: &str,
+        result: &std::result::Result<AgentBootstrapRecord, String>,
+    ) {
+        let waiters = self
+            .inner
+            .bootstrap_reconcile_waiters
+            .lock()
+            .unwrap()
+            .remove(agent_id);
+        let payload = match result {
+            Ok(record) => Ok(record.clone()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Some(waiters) = waiters {
+            for waiter in waiters {
+                let _ = waiter.send(payload.clone());
+            }
+        }
+    }
+
+    /// Resume bootstrap reconciles whose frontier step never recorded a
+    /// result (interrupted by a request cancellation or a process restart).
+    /// Returns how many background reconciles were kicked.
+    pub fn sweep_pending_agent_bootstraps(&self) -> Result<usize> {
+        let candidates = self.runtime_db().agent_bootstraps().pending_frontier()?;
+        let mut kicked = 0usize;
+        for bootstrap in candidates {
+            let active = self
+                .agent_identity_record(&bootstrap.agent_id)?
+                .is_some_and(|identity| identity.status == AgentRegistryStatus::Active);
+            if !active {
+                tracing::debug!(
+                    agent_id = %bootstrap.agent_id,
+                    "skipping pending bootstrap sweep for inactive agent"
+                );
+                continue;
+            }
+            match self.kick_agent_bootstrap(&bootstrap.agent_id) {
+                Ok(AgentBootstrapKick::Started(_)) => kicked += 1,
+                Ok(AgentBootstrapKick::AlreadyComplete(_)) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id = %bootstrap.agent_id,
+                        error = %error,
+                        "pending bootstrap sweep kick failed"
+                    );
+                }
+            }
+        }
+        Ok(kicked)
+    }
+
+    fn agent_create_stage(summary: &AgentBootstrapSummary) -> AgentCreateStage {
+        if summary.status == AgentBootstrapStatus::Ready {
+            AgentCreateStage::Bootstrapped
+        } else {
+            AgentCreateStage::Degraded
+        }
+    }
+
     async fn reconcile_agent_bootstrap(&self, agent_id: &str) -> Result<AgentBootstrapRecord> {
         let lock = self.agent_bootstrap_lock(agent_id);
         let _guard = lock.lock().await;
@@ -4349,11 +4511,24 @@ impl RuntimeHost {
             );
             return Ok(());
         }
-        anyhow::ensure!(
-            !agents_md.exists(),
-            "agent {} AGENTS.md already exists without a runtime template marker; repair refuses to overwrite user content",
-            bootstrap.agent_id
-        );
+        if agents_md.exists() {
+            // Distinguish a runtime half-materialized template (crash or
+            // cancelled request mid-install) from genuine user content using
+            // the runtime-owned staging record.
+            let recovered =
+                crate::agent_template::recover_template_staging(&agent_home, expected_selector)
+                    .map_err(|error| {
+                        anyhow!(
+                            "agent {} template staging recovery failed: {error}",
+                            bootstrap.agent_id
+                        )
+                    })?;
+            anyhow::ensure!(
+                recovered,
+                "agent {} AGENTS.md already exists without a runtime template marker; repair refuses to overwrite user content",
+                bootstrap.agent_id
+            );
+        }
         let config = self.config();
         let template_home = config
             .user_home_dir
@@ -4531,6 +4706,45 @@ impl RuntimeHost {
             .await
             .map_err(PublicAgentError::Runtime)?;
         self.public_agent_detail(agent_id)
+    }
+
+    /// Kick a background bootstrap reconcile for a public agent and return
+    /// the current detail snapshot. The optional receiver resolves when the
+    /// background reconcile finishes; `None` means bootstrap was already
+    /// complete and nothing was started.
+    pub async fn repair_public_agent_background(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<
+        (
+            AgentDetail,
+            Option<tokio::sync::oneshot::Receiver<Result<AgentBootstrapRecord, String>>>,
+        ),
+        PublicAgentError,
+    > {
+        let identity = self.public_agent_identity(agent_id)?;
+        match identity.status {
+            AgentRegistryStatus::Active => {}
+            AgentRegistryStatus::Deleting => {
+                return Err(PublicAgentError::Deleting {
+                    agent_id: agent_id.to_string(),
+                });
+            }
+            AgentRegistryStatus::Deleted => {
+                return Err(PublicAgentError::Deleted {
+                    agent_id: agent_id.to_string(),
+                });
+            }
+        }
+        let kick = self
+            .kick_agent_bootstrap(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let detail = self.public_agent_detail(agent_id)?;
+        let receiver = match kick {
+            AgentBootstrapKick::AlreadyComplete(_) => None,
+            AgentBootstrapKick::Started(receiver) => Some(receiver),
+        };
+        Ok((detail, receiver))
     }
 
     pub fn get_or_create_agent<'a>(
@@ -6373,6 +6587,7 @@ impl RuntimeHost {
             Some(&lineage_parent_agent_id),
             None,
             desired,
+            AgentBootstrapExecution::Inline,
         )
         .await
     }
@@ -9900,6 +10115,7 @@ mod tests {
                 None,
                 None,
                 Some("Receipt Bot"),
+                AgentBootstrapExecution::Inline,
             )
             .await
             .unwrap();
@@ -9939,14 +10155,22 @@ mod tests {
                 None,
                 None,
                 Some("Receipt Worker"),
+                AgentBootstrapExecution::Inline,
             )
             .await
             .expect_err("duplicate display names must fail closed");
         assert!(duplicate.to_string().contains("already_exists"));
 
-        host.create_public_named_agent_with_name("unicode-name", None, None, None, Some("Straße"))
-            .await
-            .unwrap();
+        host.create_public_named_agent_with_name(
+            "unicode-name",
+            None,
+            None,
+            None,
+            Some("Straße"),
+            AgentBootstrapExecution::Inline,
+        )
+        .await
+        .unwrap();
         let unicode_duplicate = host
             .create_public_named_agent_with_name(
                 "other-unicode-name",
@@ -9954,6 +10178,7 @@ mod tests {
                 None,
                 None,
                 Some("STRASSE"),
+                AgentBootstrapExecution::Inline,
             )
             .await
             .expect_err("Unicode-equivalent display names must fail closed");
@@ -10009,6 +10234,7 @@ mod tests {
                 None,
                 None,
                 Some("Retained Name"),
+                AgentBootstrapExecution::Inline,
             )
             .await
             .unwrap();
@@ -10097,9 +10323,16 @@ mod tests {
         // While the deletion job is still pending (not executed), create
         // must fail closed with the typed deletion_incomplete error. Drive
         // this on a second agent whose job is never executed.
-        host.create_public_named_agent_with_name("reborn-pending", None, None, None, None)
-            .await
-            .unwrap();
+        host.create_public_named_agent_with_name(
+            "reborn-pending",
+            None,
+            None,
+            None,
+            None,
+            AgentBootstrapExecution::Inline,
+        )
+        .await
+        .unwrap();
         host.begin_public_agent_deletion("reborn-pending", false, "test-operator")
             .await
             .unwrap();

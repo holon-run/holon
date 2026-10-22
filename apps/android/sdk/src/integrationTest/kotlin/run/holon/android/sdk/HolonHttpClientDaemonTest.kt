@@ -51,7 +51,7 @@ class HolonHttpClientDaemonTest {
                 createMain.setRequestProperty("Authorization", "Bearer $token")
                 createMain.setRequestProperty("Content-Type", "application/json")
                 createMain.outputStream.use { it.write("{}".toByteArray()) }
-                assertEquals(HttpURLConnection.HTTP_OK, createMain.responseCode)
+                assertEquals(HttpURLConnection.HTTP_ACCEPTED, createMain.responseCode)
             } finally {
                 createMain.disconnect()
             }

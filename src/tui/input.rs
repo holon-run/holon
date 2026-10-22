@@ -2670,12 +2670,20 @@ impl TuiApp {
         agent_id: String,
         template: Option<String>,
     ) -> Result<()> {
-        self.client
+        let created = self
+            .client
             .create_agent_with_template(&agent_id, template.clone())
             .await?;
         self.overlay = OverlayState::None;
+        let provisioning = created["receipt"]["stage"].as_str() == Some("provisioning");
         self.status_line = match template {
+            Some(template) if provisioning => format!(
+                "Agent {agent_id} provisioning with template {template}; bootstrap continues in the background"
+            ),
             Some(template) => format!("Created agent {agent_id} with template {template}"),
+            None if provisioning => format!(
+                "Agent {agent_id} provisioning; bootstrap continues in the background"
+            ),
             None => format!("Created agent {agent_id} without template"),
         };
         self.schedule_agent_list_refresh();

@@ -1343,6 +1343,7 @@ def prepare_stress_harnesses(
             "POST",
             f"/api/control/agents/{agent_id}/create",
             {},
+            expected_status=(200, 202),
         )
         worker_harness = copy.copy(harness)
         worker_harness.agent_id = agent_id

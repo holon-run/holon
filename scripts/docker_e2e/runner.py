@@ -971,7 +971,7 @@ class CaseHarness:
         path: str,
         body: Any | None = None,
         *,
-        expected_status: int = 200,
+        expected_status: int | tuple[int, ...] = 200,
         authenticated: bool = True,
     ) -> Any:
         data = None
@@ -1018,9 +1018,12 @@ class CaseHarness:
             except ValueError:
                 retry_delay = 1.0
             time.sleep(min(retry_delay, max(0.0, retry_deadline - time.monotonic())))
-        if status != expected_status:
+        expected_statuses = (
+            (expected_status,) if isinstance(expected_status, int) else expected_status
+        )
+        if status not in expected_statuses:
             raise AssertionError(
-                f"{method} {path} returned {status}, expected {expected_status}: "
+                f"{method} {path} returned {status}, expected {expected_statuses}: "
                 f"{payload.decode(errors='replace')}"
             )
         if not payload.strip():
@@ -1046,7 +1049,9 @@ class CaseHarness:
         except AssertionError as error:
             if f"GET {state_path} returned 404" not in str(error):
                 raise
-        self.request("POST", f"/api/control/agents/{agent_id}/create", {})
+        self.request(
+            "POST", f"/api/control/agents/{agent_id}/create", {}, expected_status=(200, 202)
+        )
         deadline = time.monotonic() + min(self.timeout_seconds, 30)
         while True:
             try:
@@ -2813,6 +2818,7 @@ def run_runtime_agent_lifecycle_case(
             "authority_class": "operator_instruction",
             "template": None,
         },
+        expected_status=(200, 202),
     )
     write_json(harness.evidence / "runtime-agent-created.json", created)
     require(
@@ -2978,6 +2984,7 @@ def run_runtime_upgrade_previous_release_case(
             "authority_class": "operator_instruction",
             "template": None,
         },
+        expected_status=(200, 202),
     )
     write_json(
         harness.evidence / "upgrade-v030-legacy-agent-created.json",
@@ -3183,6 +3190,7 @@ def run_runtime_upgrade_interrupted_schema47_case(
             "authority_class": "operator_instruction",
             "template": None,
         },
+        expected_status=(200, 202),
     )
     write_json(
         harness.evidence / "upgrade-schema47-workitem-agent.json",
