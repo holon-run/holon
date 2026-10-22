@@ -27,6 +27,92 @@ pub struct OnboardingReport {
     pub next_actions: Vec<OnboardingAction>,
 }
 
+/// Safe first-run projection; readiness is local construction, not a live request.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct RuntimeSetup {
+    pub status: RuntimeSetupStatus,
+    pub default_model: Option<String>,
+    pub provider: Option<String>,
+    pub actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSetupStatus {
+    Ready,
+    Blocked,
+}
+
+pub fn runtime_setup(config: &AppConfig) -> RuntimeSetup {
+    // Match bootstrap's provider-chain gate, including supported local auth and
+    // OAuth. Optional onboarding sections must not become turn prerequisites.
+    let catalog = crate::config::RuntimeModelCatalog::from_config(config);
+    let credential_available = |model: &ModelRouteRef| {
+        let Some(route) = catalog
+            .resolve_explicit_model_metadata(&crate::context::ContextConfig::default(), model)
+        else {
+            return true; // The provider builder reports unresolved routes.
+        };
+        let provider = &route.endpoint.runtime_config;
+        // Generic OAuth transports defer profile parsing until their first
+        // request. Inspect locally without refreshing tokens or doing network IO.
+        if provider.auth.source == CredentialSource::AuthProfile
+            && provider.auth.kind == CredentialKind::OAuth
+            && !provider.id.is_openai_codex()
+        {
+            return provider.credential.as_deref().is_some_and(|material| {
+                crate::auth::load_oauth_profile_credential(
+                    material,
+                    provider
+                        .auth
+                        .profile
+                        .as_deref()
+                        .unwrap_or(provider.id.as_str()),
+                )
+                .is_ok_and(|credential| !credential.access_token.trim().is_empty())
+            });
+        }
+        true
+    };
+    let default_credential_missing = !credential_available(&config.default_model);
+    let chain = config
+        .provider_chain()
+        .into_iter()
+        .filter(credential_available)
+        .collect::<Vec<_>>();
+    let ready = crate::provider::build_provider_from_model_chain(config, &chain).is_ok();
+    let actions = if ready {
+        Vec::new()
+    } else {
+        let section = model_provider_section(config);
+        let mut actions = section
+            .actions
+            .into_iter()
+            .filter_map(|action| match action.id.as_str() {
+                "configure_model_provider" | "configure_model_credential" => Some(action.id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if default_credential_missing {
+            actions = vec!["configure_model_credential".into()];
+        }
+        if actions.is_empty() {
+            actions.push("configure_model_provider".into());
+        }
+        actions
+    };
+    RuntimeSetup {
+        status: if ready {
+            RuntimeSetupStatus::Ready
+        } else {
+            RuntimeSetupStatus::Blocked
+        },
+        default_model: Some(config.default_model.as_string()),
+        provider: Some(config.default_model.provider.as_str().into()),
+        actions,
+    }
+}
+
 pub fn credential_repair_plan(config: &AppConfig) -> Option<OnboardingCredentialRepair> {
     let provider_id = &config.default_model.provider;
     let provider = config.providers.get(provider_id);
@@ -1048,6 +1134,132 @@ mod tests {
             providers: provider_registry_for_tests(openai_key, None, PathBuf::new()),
             web_config: crate::web::WebConfig::default(),
         }
+    }
+
+    #[test]
+    fn runtime_setup_projects_only_safe_model_fields() {
+        let config = test_config(Some("secret-provider-key"));
+        let setup = super::runtime_setup(&config);
+        let value = serde_json::to_value(&setup).unwrap();
+        assert_eq!(setup.status, super::RuntimeSetupStatus::Ready);
+        assert!(setup.actions.is_empty());
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert_eq!(value["default_model"], config.default_model.as_string());
+        assert_eq!(value["provider"], "openai");
+        let serialized = value.to_string();
+        for secret in [
+            "secret-provider-key",
+            "control-value",
+            config.home_dir.to_str().unwrap(),
+            config.config_file_path.to_str().unwrap(),
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+    }
+
+    #[test]
+    fn runtime_setup_blocks_empty_or_missing_default_credentials() {
+        for credential in [None, Some(""), Some(" \n")] {
+            let setup = super::runtime_setup(&test_config(credential));
+            assert_eq!(setup.status, super::RuntimeSetupStatus::Blocked);
+            assert_eq!(setup.actions, vec!["configure_model_credential"]);
+        }
+    }
+
+    #[test]
+    fn runtime_setup_ignores_optional_sections_and_accepts_no_auth() {
+        let mut config = test_config(None);
+        let provider = config.providers.get_mut(&ProviderId::openai()).unwrap();
+        provider.auth.source = CredentialSource::None;
+        provider.auth.kind = CredentialKind::None;
+        provider.base_url = "http://127.0.0.1:11434/v1".into();
+        config.vision_model = Some(ModelRouteRef::parse_compatible("missing/vision").unwrap());
+        config.web_config.search.enabled = true;
+        config.web_config.search.builtin_provider_enabled = false;
+        config.web_config.search.provider = "missing-search".into();
+        assert_ne!(
+            onboarding_report(&config).status,
+            OnboardingStatus::Configured
+        );
+        let setup = super::runtime_setup(&config);
+        assert_eq!(setup.status, super::RuntimeSetupStatus::Ready);
+        assert!(setup.actions.is_empty());
+    }
+
+    #[test]
+    fn runtime_setup_obeys_real_route_gate_and_fallback_policy() {
+        let mut config = test_config(Some("key"));
+        config.default_model = ModelRouteRef::parse_compatible("missing/model").unwrap();
+        let blocked = super::runtime_setup(&config);
+        assert_eq!(blocked.status, super::RuntimeSetupStatus::Blocked);
+        assert_eq!(blocked.actions, vec!["configure_model_provider"]);
+        config.fallback_models = vec![ModelRouteRef::parse_compatible("openai/gpt-5.4").unwrap()];
+        assert_eq!(
+            super::runtime_setup(&config).status,
+            super::RuntimeSetupStatus::Ready
+        );
+        config.disable_provider_fallback = true;
+        assert_eq!(
+            super::runtime_setup(&config).status,
+            super::RuntimeSetupStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn runtime_setup_uses_generic_action_for_unknown_route_failure() {
+        let mut config = test_config(Some("key"));
+        config.default_model = ModelRouteRef::parse("openai@missing/gpt-5.4").unwrap();
+        let setup = super::runtime_setup(&config);
+        assert_eq!(setup.status, super::RuntimeSetupStatus::Blocked);
+        assert_eq!(setup.actions, vec!["configure_model_provider"]);
+    }
+
+    #[test]
+    fn runtime_setup_checks_deferred_oauth_without_exposing_profile() {
+        let mut config = test_config(None);
+        let provider = config.providers.get_mut(&ProviderId::openai()).unwrap();
+        provider.auth.source = CredentialSource::AuthProfile;
+        provider.auth.kind = CredentialKind::OAuth;
+        provider.auth.profile = Some("private-oauth-profile".into());
+        for material in [None, Some("invalid-private-material".into())] {
+            config
+                .providers
+                .get_mut(&ProviderId::openai())
+                .unwrap()
+                .credential = material;
+            let setup = super::runtime_setup(&config);
+            assert_eq!(setup.status, super::RuntimeSetupStatus::Blocked);
+            assert_eq!(setup.actions, vec!["configure_model_credential"]);
+            assert!(!serde_json::to_string(&setup).unwrap().contains("private"));
+        }
+        config.providers.get_mut(&ProviderId::openai()).unwrap().credential = Some(
+            r#"{"tokens":{"access_token":"fake-access-token","refresh_token":"fake-refresh-token"}}"#
+                .into(),
+        );
+        assert_eq!(
+            super::runtime_setup(&config).status,
+            super::RuntimeSetupStatus::Ready
+        );
+    }
+
+    #[test]
+    fn runtime_setup_accepts_existing_codex_oauth_profile() {
+        let mut config = test_config(None);
+        config.default_model = ModelRouteRef::parse_compatible("openai-codex/gpt-6-sol").unwrap();
+        let provider = config
+            .providers
+            .get_mut(&ProviderId::openai_codex())
+            .unwrap();
+        provider.codex_home = Some(config.home_dir.join("empty-codex-home"));
+        provider.auth.external = None;
+        provider.credential = Some(
+            r#"{"tokens":{"access_token":"fake-codex-access","refresh_token":"fake-codex-refresh","account_id":"private-account"}}"#
+                .into(),
+        );
+        let setup = super::runtime_setup(&config);
+        assert_eq!(setup.status, super::RuntimeSetupStatus::Ready);
+        assert!(setup.actions.is_empty());
+        assert!(!serde_json::to_string(&setup).unwrap().contains("private"));
     }
 
     #[test]

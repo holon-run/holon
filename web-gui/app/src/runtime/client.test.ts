@@ -384,6 +384,7 @@ describe("createRuntimeClient", () => {
           ok: true,
           config_file_path: "/tmp/config.json",
           runtime_surface: {},
+          setup: { status: "blocked", default_model: "openai/model", provider: "openai", actions: ["configure_model_credential"] },
           reload: {
             requested_generation: 4,
             completed_generation: 3,
@@ -394,6 +395,7 @@ describe("createRuntimeClient", () => {
 
     await expect(client.getRuntimeConfig()).resolves.toMatchObject({
       configFilePath: "/tmp/config.json",
+      setup: { status: "blocked", defaultModel: "openai/model", provider: "openai", actions: ["configure_model_credential"] },
       reload: {
         requestedGeneration: 4,
         completedGeneration: 3,

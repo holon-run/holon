@@ -34,6 +34,7 @@ import { AgentPage } from "../features/agent/AgentPage";
 import type { ConversationNavigation } from "../features/agent/conversation-location";
 import { setConversationNavigationActive } from "../runtime/conversation-scope-store";
 import { OnboardingModal } from "../features/onboarding/OnboardingModal";
+import { setupIsReady } from "../features/onboarding/SetupStatusCard";
 import { FilePreviewPage } from "../features/right-panel/FilePreviewPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
@@ -100,6 +101,8 @@ export function App() {
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [onboardingSuspended, setOnboardingSuspended] = useState(false);
+  const [setupTarget, setSetupTarget] = useState<{ action: string; provider: string | null }>();
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
@@ -529,8 +532,8 @@ export function App() {
     }
   }
 
-  async function createTemplateAgent(agentId: string, template: string): Promise<boolean> {
-    const ok = await createAgentFromTemplate(agentId, template);
+  async function createTemplateAgent(agentId: string, template: string, name?: string): Promise<boolean> {
+    const ok = await createAgentFromTemplate(agentId, template, name);
     if (ok) navigateAgent(agentId);
     return ok;
   }
@@ -546,9 +549,8 @@ export function App() {
 
   async function saveOnboardingModel(model: string): Promise<boolean> {
     const result = await updateRuntimeConfig([{ key: "model.default", value: model }]);
-    if (!result) return false;
-    await refreshRuntimeConfig();
-    return true;
+    return Boolean(result && !result.results?.some((entry) => entry.effect === "rejected")
+      && setupIsReady(result) && result.setup?.defaultModel === model);
   }
 
   if (isInitialBootstrapping) {
@@ -990,6 +992,8 @@ export function App() {
             runtimeConfigLoading={runtimeConfigLoading}
             runtimeConfigSaving={runtimeConfigSaving}
             runtimeConfigError={runtimeConfigError}
+            onStartOnboarding={openOnboarding}
+            setupTarget={setupTarget}
             onRefreshModels={refreshModelCatalog}
             onRefreshRuntimeConfig={refreshRuntimeConfig}
             onUpdateRuntimeConfig={updateRuntimeConfig}
@@ -1090,8 +1094,10 @@ export function App() {
         />
       ) : null}
 
-      {showOnboardingModal ? (
+      {showOnboardingModal || onboardingSuspended ? (
+        <div hidden={!showOnboardingModal}>
         <OnboardingModal
+          active={showOnboardingModal}
           modelCatalog={modelCatalog}
           modelCatalogLoading={modelCatalogLoading}
           runtimeConfig={runtimeConfig}
@@ -1100,8 +1106,18 @@ export function App() {
           templateCatalogLoading={templateCatalogLoading}
           onSaveModel={saveOnboardingModel}
           onCreateAgent={createTemplateAgent}
-          onClose={() => setShowOnboardingModal(false)}
+          existingAgents={visibleAgents}
+          onOpenAgent={(id) => { setShowOnboardingModal(false); setOnboardingSuspended(false); navigateAgent(id); }}
+          onRefresh={() => void refreshRuntimeConfig()}
+          onConfigure={(action, provider) => {
+            setSetupTarget({ action, provider });
+            setOnboardingSuspended(true);
+            setShowOnboardingModal(false);
+            navigateRoute("settings");
+          }}
+          onClose={() => { setShowOnboardingModal(false); setOnboardingSuspended(false); }}
         />
+        </div>
       ) : null}
 
       {showCreateAgentModal ? (

@@ -403,7 +403,7 @@ export interface RuntimeStoreState {
   syncTemplateRemoteSources: () => Promise<boolean>;
   dismissTemplateDiagnostics: () => void;
   dismissTemplateError: () => void;
-  createAgentFromTemplate: (agentId: string, template: string) => Promise<boolean>;
+  createAgentFromTemplate: (agentId: string, template: string, name?: string) => Promise<boolean>;
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
   updateSkillCatalog: (name?: string) => Promise<boolean>;
@@ -567,6 +567,8 @@ const agentSkillCatalogRetryAttempts = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let clientGeneration = 0;
+let runtimeConfigRequestSequence = 0;
+let runtimeConfigSaveSequence = 0;
 let confirmedPresentationSubjectKey: string | undefined;
 let resumeReconciliationInFlight: Promise<void> | undefined;
 let resumeReconciliationCoordinator: ResumeReconciliationCoordinator | undefined;
@@ -2093,14 +2095,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   },
 
   refreshRuntimeConfig: async () => {
+    if (get().runtimeConfigSaving) return;
     const request = captureClientRequest();
+    const sequence = ++runtimeConfigRequestSequence;
     set({ runtimeConfigLoading: true, runtimeConfigError: undefined });
     try {
       const runtimeConfig = await request.client.getRuntimeConfig();
-      if (!isCurrentClientRequest(request)) return;
+      if (!isCurrentClientRequest(request) || sequence !== runtimeConfigRequestSequence) return;
       set({ runtimeConfig, runtimeConfigLoading: false, runtimeConfigError: runtimeConfig.error });
     } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
+      if (!isCurrentClientRequest(request) || sequence !== runtimeConfigRequestSequence) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         runtimeConfig: { ...state.runtimeConfig, error: message },
@@ -2111,11 +2115,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   },
 
   updateRuntimeConfig: async (updates) => {
+    if (get().runtimeConfigSaving) return undefined;
     const request = captureClientRequest();
-    set({ runtimeConfigSaving: true, runtimeConfigError: undefined });
+    const sequence = ++runtimeConfigRequestSequence;
+    const saveSequence = ++runtimeConfigSaveSequence;
+    set({ runtimeConfigSaving: true, runtimeConfigLoading: false, runtimeConfigError: undefined });
     try {
       const response = await request.client.updateRuntimeConfig(updates);
       if (!isCurrentClientRequest(request)) return undefined;
+      if (sequence !== runtimeConfigRequestSequence) return undefined;
+      set({ runtimeConfig: response, runtimeConfigLoading: false });
       const runtimeConfig = response.changed && response.reload
         ? {
             ...response,
@@ -2124,7 +2133,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             results: response.results,
           }
         : response;
-      if (!isCurrentClientRequest(request)) return undefined;
+      if (!isCurrentClientRequest(request) || sequence !== runtimeConfigRequestSequence) return undefined;
       set({ runtimeConfig, runtimeConfigSaving: false, runtimeConfigError: runtimeConfig.error });
       if (runtimeConfig.changed && !runtimeConfig.error) {
         set({ modelCatalogLoading: true, modelCatalogError: undefined });
@@ -2145,7 +2154,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       }
       return runtimeConfig;
     } catch (error) {
-      if (!isCurrentClientRequest(request)) return undefined;
+      if (!isCurrentClientRequest(request) || sequence !== runtimeConfigRequestSequence) return undefined;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
         runtimeConfig: { ...state.runtimeConfig, error: message },
@@ -2153,6 +2162,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         runtimeConfigError: message,
       }));
       return undefined;
+    } finally {
+      // Credential requests can supersede the response, but do not own this save.
+      if (isCurrentClientRequest(request) && saveSequence === runtimeConfigSaveSequence) {
+        set({ runtimeConfigSaving: false });
+      }
     }
   },
 
@@ -2338,11 +2352,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  createAgentFromTemplate: async (agentId, template) => {
+  createAgentFromTemplate: async (agentId, template, name) => {
     const request = captureClientRequest();
     set({ templateCatalogError: undefined });
     try {
-      await request.client.createAgentFromTemplate(agentId, template);
+      await request.client.createAgentFromTemplate(agentId, template, name);
       if (!isCurrentClientRequest(request)) return false;
       if (get().discovery.mode === "authoritative") {
         // The authoritative roster owns membership; refresh the snapshot
@@ -2636,6 +2650,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   setCredential: async (profile, kind, material) => {
     const request = captureClientRequest();
+    const configSequence = ++runtimeConfigRequestSequence;
     try {
       const result = await request.client.setCredential(profile, kind, material);
       if (!isCurrentClientRequest(request)) return undefined;
@@ -2666,6 +2681,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
               : String(credentialResult.reason),
           });
         }
+        if (configSequence !== runtimeConfigRequestSequence) return;
         if (runtimeConfigResult.status === "fulfilled") {
           const runtimeConfig = runtimeConfigResult.value;
           set({ runtimeConfig, runtimeConfigError: runtimeConfig.error });
@@ -2700,6 +2716,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   deleteCredential: async (profile) => {
     const request = captureClientRequest();
+    const configSequence = ++runtimeConfigRequestSequence;
     try {
       const result = await request.client.deleteCredential(profile);
       if (!isCurrentClientRequest(request)) return;
@@ -2725,6 +2742,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
               : String(credentialResult.reason),
           });
         }
+        if (configSequence !== runtimeConfigRequestSequence) return;
         if (runtimeConfigResult.status === "fulfilled") {
           const runtimeConfig = runtimeConfigResult.value;
           set({ runtimeConfig, runtimeConfigError: runtimeConfig.error });

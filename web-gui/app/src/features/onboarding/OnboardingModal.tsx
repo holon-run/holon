@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { ModelSelect } from "../../components/models/ModelSelect";
 import { Button } from "../../components/ui/Button";
+import { SetupStatusCard, setupIsReady } from "./SetupStatusCard";
 import type {
   AgentTemplateCatalogState,
   RuntimeConfigState,
@@ -12,6 +13,7 @@ import type {
 const DEFAULT_TEMPLATE_ID = "holon-default";
 
 interface OnboardingModalProps {
+  active?: boolean;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   runtimeConfig: RuntimeConfigState;
@@ -19,11 +21,16 @@ interface OnboardingModalProps {
   templateCatalog: AgentTemplateCatalogState;
   templateCatalogLoading: boolean;
   onSaveModel: (model: string) => Promise<boolean>;
-  onCreateAgent: (agentId: string, template: string) => Promise<boolean>;
+  onCreateAgent: (agentId: string, template: string, name?: string) => Promise<boolean>;
+  onConfigure?: (action: string, provider: string | null) => void;
+  onRefresh?: () => void;
+  existingAgents?: Array<{ id: string; name?: string }>;
+  onOpenAgent?: (agentId: string) => void;
   onClose: () => void;
 }
 
 export function OnboardingModal({
+  active = true,
   modelCatalog,
   modelCatalogLoading,
   runtimeConfig,
@@ -32,49 +39,84 @@ export function OnboardingModal({
   templateCatalogLoading,
   onSaveModel,
   onCreateAgent,
+  onConfigure,
+  onRefresh,
+  existingAgents = [],
+  onOpenAgent,
   onClose,
 }: OnboardingModalProps) {
   const { t } = useTranslation();
   const [step, setStep] = useState<1 | 2>(1);
   const [model, setModel] = useState("");
-  const [agentId, setAgentId] = useState("");
+  const [agentId, setAgentId] = useState("holon-bot");
+  const [name, setName] = useState("Holon Bot");
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE_ID);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const submitting = useRef(false);
+  const dialog = useRef<HTMLDivElement>(null);
+  const [creationUncertain, setCreationUncertain] = useState(false);
 
   const templates = templateCatalog.catalog;
   const availableModels = modelCatalog.options.filter((option) => option.available);
+  useEffect(() => {
+    if (!active) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const target = step === 2 ? dialog.current?.querySelector<HTMLElement>("form input")
+      : dialog.current?.querySelector<HTMLElement>(".model-select-trigger, .modal-close");
+    target?.focus();
+    return () => { previous?.focus(); };
+  }, [active, step]);
 
   useEffect(() => {
     if (runtimeConfig.surface?.modelDefault && !model) {
       setModel(runtimeConfig.surface.modelDefault);
-    } else if (!model && availableModels.length > 0) {
-      setModel(availableModels[0].routeRef);
     }
-  }, [availableModels, model, runtimeConfig.surface?.modelDefault]);
+  }, [model, runtimeConfig.surface?.modelDefault]);
 
   function close(): void {
     if (!busy) onClose();
   }
 
-  async function finish(): Promise<void> {
-    const trimmedAgentId = agentId.trim();
-    if (!model || !trimmedAgentId) return;
+  async function next(): Promise<void> {
+    if (submitting.current || !model) return;
+    submitting.current = true;
     setBusy(true);
     setError(undefined);
     try {
-      if (!(await onSaveModel(model))) {
-        setError(t("onboarding.saveModelFailed"));
-        return;
-      }
-      if (!(await onCreateAgent(trimmedAgentId, template))) {
-        setError(t("onboarding.createAgentFailed"));
+      if (await onSaveModel(model)) setStep(2);
+      else setError(t("onboarding.saveModelFailed"));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      submitting.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function finish(): Promise<void> {
+    const trimmedAgentId = agentId.trim();
+    if (submitting.current || creationUncertain || !setupIsReady(runtimeConfig)
+      || !trimmedAgentId || !name.trim()) return;
+    if (existingAgents.some((agent) => agent.id === trimmedAgentId)) {
+      setError(t("setup.idConflict"));
+      return;
+    }
+    submitting.current = true;
+    setBusy(true);
+    setError(undefined);
+    try {
+      if (!(await onCreateAgent(trimmedAgentId, template, name.trim()))) {
+        setCreationUncertain(true);
+        setError(t("setup.createUncertain"));
         return;
       }
       onClose();
     } catch (cause) {
+      setCreationUncertain(true);
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   }
@@ -82,9 +124,22 @@ export function OnboardingModal({
   return (
     <div
       className="modal-overlay"
+      ref={dialog}
       role="dialog"
       aria-modal="true"
       aria-label={t("onboarding.title")}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") close();
+        if (event.key !== "Tab") return;
+        const elements = [...event.currentTarget.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex="0"]',
+        )].filter((element) => !element.closest("details:not([open])")
+          || element.tagName === "SUMMARY");
+        const first = elements[0];
+        const last = elements[elements.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }}
       onClick={(event) => {
         if (event.target === event.currentTarget) close();
       }}
@@ -97,6 +152,19 @@ export function OnboardingModal({
           </div>
           <button type="button" className="modal-close" aria-label={t("common.close")} onClick={close}>×</button>
         </div>
+        <SetupStatusCard config={runtimeConfig} loading={runtimeConfigLoading}
+          saving={busy && step === 1}
+          onRepair={(action, provider) => { if (!busy) onConfigure?.(action, provider); }}
+          onRetry={() => onRefresh?.()} />
+        {existingAgents.length > 0 && onOpenAgent ? (
+          <details className="settings-advanced">
+            <summary>{t("setup.existing")}</summary>
+            {existingAgents.map((agent) => (
+              <Button key={agent.id} type="button" variant="outline" disabled={busy}
+                onClick={() => onOpenAgent(agent.id)}>{agent.name ?? agent.id} ({agent.id})</Button>
+            ))}
+          </details>
+        ) : null}
         {step === 1 ? (
           <div className="modal-body">
             <p>{t("onboarding.modelIntro")}</p>
@@ -118,11 +186,8 @@ export function OnboardingModal({
               <Button
                 type="button"
                 variant="accent"
-                disabled={busy || !model || availableModels.length === 0}
-                onClick={() => {
-                  setError(undefined);
-                  setStep(2);
-                }}
+                disabled={busy || runtimeConfigLoading || !availableModels.some((option) => option.routeRef === model)}
+                onClick={() => void next()}
               >
                 {t("onboarding.next")}
               </Button>
@@ -138,15 +203,22 @@ export function OnboardingModal({
           >
             <p>{t("onboarding.agentIntro")}</p>
             <label>
+              <span>{t("setup.name")}</span>
+              <input value={name} onChange={(event) => setName(event.target.value)}
+                autoFocus disabled={busy || creationUncertain} />
+            </label>
+            <p>{t("setup.nameHint")}</p>
+            <details className="settings-advanced">
+              <summary>{t("setup.advanced")}</summary>
+            <label>
               <span>{t("app.agentId")}</span>
               <input
                 value={agentId}
                 onChange={(event) => setAgentId(event.target.value)}
-                placeholder="my-agent"
-                autoFocus
-                disabled={busy}
+                disabled={busy || creationUncertain}
               />
             </label>
+            <p>{t("setup.idHint")}</p>
             <label>
               <span>{t("app.template")}</span>
               {templateCatalogLoading ? (
@@ -165,10 +237,11 @@ export function OnboardingModal({
             {templates.length === 0 && !templateCatalogLoading ? (
               <span role="note">{t("onboarding.noTemplatesNote")}</span>
             ) : null}
+            </details>
             {error ? <span className="connection-error" role="alert">{error}</span> : null}
             <div className="modal-actions">
               <Button type="button" variant="outline" disabled={busy} onClick={() => setStep(1)}>{t("onboarding.back")}</Button>
-              <Button type="submit" variant="accent" disabled={busy || !agentId.trim()}>
+              <Button type="submit" variant="accent" disabled={busy || creationUncertain || !setupIsReady(runtimeConfig) || !agentId.trim() || !name.trim()}>
                 {busy ? t("common.creating") : t("onboarding.finish")}
               </Button>
             </div>

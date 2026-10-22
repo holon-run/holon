@@ -3148,6 +3148,12 @@ mod tests {
             }],
             runtime_surface: runtime_surface.clone(),
             reload: Default::default(),
+            setup: crate::onboarding::RuntimeSetup {
+                status: crate::onboarding::RuntimeSetupStatus::Blocked,
+                default_model: Some("anthropic/claude-sonnet-4-6".into()),
+                provider: Some("anthropic".into()),
+                actions: vec!["configure_model_credential".into()],
+            },
         };
         let status = onboarding_runtime_config_status("openai/gpt-5.4", &accepted);
         assert!(status.contains("via daemon config"));
@@ -3164,6 +3170,7 @@ mod tests {
             }],
             runtime_surface: runtime_surface.clone(),
             reload: Default::default(),
+            setup: accepted.setup.clone(),
         };
         let status = onboarding_runtime_config_status("openai/gpt-5.4", &rejected);
         assert!(status.contains("rejected"));
@@ -3176,6 +3183,7 @@ mod tests {
             results: Vec::new(),
             runtime_surface,
             reload: Default::default(),
+            setup: accepted.setup.clone(),
         };
         let status = onboarding_runtime_config_status("openai/gpt-5.4", &omitted);
         assert!(status.contains("requested"));

@@ -565,6 +565,12 @@ export interface RuntimeConfigState {
   changed?: boolean;
   results?: RuntimeConfigUpdateResult[];
   reload?: RuntimeConfigReloadStatus;
+  setup?: {
+    status: "ready" | "blocked";
+    defaultModel: string | null;
+    provider: string | null;
+    actions: string[];
+  };
   error?: string;
 }
 
