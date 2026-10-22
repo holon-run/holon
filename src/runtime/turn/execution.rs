@@ -106,8 +106,6 @@ struct PendingCompletionReport {
     tool_execution: ToolExecutionRecord,
     warnings: Vec<Value>,
     corrective_retry_attempted: bool,
-    report_tool_rounds: usize,
-    text_only_fallback: bool,
 }
 
 struct PendingWaitReport {
@@ -115,8 +113,6 @@ struct PendingWaitReport {
     request_tool_call_id: String,
     tool_execution: ToolExecutionRecord,
     corrective_retry_attempted: bool,
-    report_tool_rounds: usize,
-    text_only_fallback: bool,
 }
 
 type ProviderRoundSuccess = (
@@ -135,35 +131,20 @@ enum ProviderRoundResult {
     Terminal(AgentLoopOutcome),
 }
 
-const MAX_REPORT_TOOL_ROUNDS: usize = 2;
-
-const WAIT_REPORT_FALLBACK_NOTICE: &str = "Report tool budget exhausted. Tool calls are now disabled at the API layer. Reply with non-empty operator-facing final text only; do not attempt any tool call, including writing tool calls as text.";
-
-const COMPLETION_REPORT_FALLBACK_NOTICE: &str = "Report tool budget exhausted. Tool calls are now disabled at the API layer. Reply with the final operator-facing completion report directly; do not attempt any tool call, including writing tool calls as text.";
-
 fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
     let encoded = serde_json::to_vec(tools).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
 fn report_tool_allowed(name: &str) -> bool {
-    matches!(
+    // Keep the pending terminal intent unique, not a separate capability mode.
+    // All other tools retain the execution's ordinary exposure and permissions.
+    !matches!(
         name,
-        crate::tool::names::GET_AGENT
-            | crate::tool::names::GET_TIMER
-            | crate::tool::names::GET_WORK_ITEM
-            | crate::tool::names::GET_WORKSPACE_STATE
-            | crate::tool::names::LIST_MODEL_PROVIDERS
-            | crate::tool::names::LIST_PROVIDER_MODELS
-            | crate::tool::names::LIST_TASKS
-            | crate::tool::names::LIST_TIMERS
-            | crate::tool::names::LIST_WORK_ITEMS
-            | crate::tool::names::MEMORY_GET
-            | crate::tool::names::MEMORY_SEARCH
-            | crate::tool::names::TASK_STATUS
-            | crate::tool::names::WEB_FETCH
-            | crate::tool::names::WEB_SEARCH
-            | crate::tool::names::X_SEARCH
+        crate::tool::names::COMPLETE_WORK_ITEM
+            | crate::tool::names::WAIT_FOR
+            | crate::tool::names::PICK_WORK_ITEM
+            | crate::tool::names::SLEEP
     )
 }
 
@@ -2103,10 +2084,6 @@ impl TurnExecution<'_> {
                 return Err(err);
             }
             round += 1;
-            // Set when this round's report tool usage moves the pending report
-            // protocol into its text-only fallback; carried into the round
-            // record so the next (tools-disabled) request sees the notice.
-            let mut report_fallback_notice: Option<&'static str> = None;
             if let Some(max_tool_rounds) = loop_control.max_tool_rounds {
                 if round > max_tool_rounds {
                     let final_text = format!(
@@ -2394,21 +2371,9 @@ impl TurnExecution<'_> {
                     let runtime_reminder = budget_warning;
                     let mut recent_turns_budget = effective_prompt.recent_turns_initial_budget();
                     let mut recent_turns_retry_attempts = 0usize;
-                    let report_fallback = pending_completion_report
-                        .as_ref()
-                        .is_some_and(|pending| pending.text_only_fallback)
-                        || pending_wait_report
-                            .as_ref()
-                            .is_some_and(|pending| pending.text_only_fallback);
-                    let report_rounds_exhausted =
-                        pending_completion_report.as_ref().is_some_and(|pending| {
-                            pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
-                        }) || pending_wait_report.as_ref().is_some_and(|pending| {
-                            pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
-                        });
-                    let request_tools = if report_fallback || report_rounds_exhausted {
-                        Vec::new()
-                    } else if pending_completion_report.is_some() || pending_wait_report.is_some() {
+                    let request_tools = if pending_completion_report.is_some()
+                        || pending_wait_report.is_some()
+                    {
                         report_tools(&available_tools)
                     } else {
                         available_tools.clone()
@@ -2615,17 +2580,12 @@ impl TurnExecution<'_> {
                         }
                     }
                     let request_build_started_at = chrono::Utc::now();
-                    let continuation_web_search = if report_fallback || report_rounds_exhausted {
-                        None
-                    } else {
-                        native_web_search.clone()
-                    };
                     let request = build_continuation_request(
                         crate::provider::ContinuationScopeId::new(agent_id),
                         prompt_frame,
                         projection.conversation,
                         request_tools.clone(),
-                        continuation_web_search,
+                        native_web_search.clone(),
                     );
                     record_turn_local_span(
                         trace_context.as_ref(),
@@ -2963,7 +2923,6 @@ impl TurnExecution<'_> {
                         !max_output_recovery_pending
                             && (!combined_text.trim().is_empty() || tool_calls.is_empty())
                     });
-            let mut checkpoint_recorded_this_round = false;
             if should_record_pending_checkpoint {
                 let pending_checkpoint = checkpoint_state
                     .pending
@@ -2977,7 +2936,6 @@ impl TurnExecution<'_> {
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 let checkpoint_recorded = !checkpoint_text.is_empty();
-                checkpoint_recorded_this_round = checkpoint_recorded;
                 if checkpoint_recorded {
                     checkpoint_state.latest = Some(TurnLocalCheckpointRecord {
                         request_id: pending_checkpoint.request_id.clone(),
@@ -3093,17 +3051,14 @@ impl TurnExecution<'_> {
                 let disallowed_report_tool = tool_calls
                     .iter()
                     .any(|call| !report_tool_allowed(&call.name));
-                if (pending.text_only_fallback && !tool_calls.is_empty())
-                    || disallowed_report_tool
-                    || (tool_calls.is_empty() && combined_text.trim().is_empty())
+                if disallowed_report_tool
+                    || (round_purpose == AssistantRoundPurpose::AgentResponse
+                        && tool_calls.is_empty()
+                        && combined_text.trim().is_empty())
                 {
                     if !pending.corrective_retry_attempted {
                         pending.corrective_retry_attempted = true;
-                        let continuation_text = if pending.text_only_fallback {
-                            "Final wait report expected. Reply with non-empty operator-facing final text only. Do not call any tool.".to_string()
-                        } else {
-                            "Final wait report expected. You may use only read-only fact-checking tools, then reply with non-empty operator-facing final text. Do not call lifecycle tools.".to_string()
-                        };
+                        let continuation_text = "Final wait report expected. Finish any remaining authorized cleanup or verification with the available tools, then reply with non-empty operator-facing final text. Do not call WaitFor, CompleteWorkItem, PickWorkItem, or Sleep while this report is pending.".to_string();
                         let corrective_blocks =
                             corrective_replay_blocks(&completed_round_assistant_blocks);
                         completed_rounds.push(TurnRoundRecord {
@@ -3137,33 +3092,8 @@ impl TurnExecution<'_> {
                     anyhow::bail!("wait final report protocol abandoned after corrective retry");
                 }
 
-                if !tool_calls.is_empty() {
-                    pending.report_tool_rounds += 1;
-                    if !pending.text_only_fallback
-                        && pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
-                    {
-                        report_fallback_notice = Some(WAIT_REPORT_FALLBACK_NOTICE);
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": WAIT_REPORT_FALLBACK_NOTICE,
-                                "reason": "wait_report_fallback_notice",
-                            }),
-                        ))?;
-                        runtime.inner.storage.append_event(&AuditEvent::legacy(
-                            "report_fallback_notice_injected",
-                            serde_json::json!({
-                                "path": "wait",
-                                "agent_id": agent_id,
-                                "report_tool_rounds": pending.report_tool_rounds,
-                            }),
-                        ))?;
-                    }
-                    pending.text_only_fallback =
-                        pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS;
+                if !tool_calls.is_empty() || round_purpose != AssistantRoundPurpose::AgentResponse {
+                    // Private checkpoints cannot bind the operator-facing report.
                     pending_wait_report = Some(pending);
                 } else {
                     let args = crate::tool::tools::wait_for::parse_wait_for_args(&pending.input)?;
@@ -3247,7 +3177,7 @@ impl TurnExecution<'_> {
                                 "The previous WaitFor final report request now resolves as \
                                  {result_content}. No wait was registered and no waiting report \
                                  was published. Continue the current turn; the pending-report \
-                                 restriction no longer applies."
+                             terminal intent has been cleared."
                             );
                             runtime.persist_transcript_evidence(&TranscriptEntry::new(
                                 agent_id.to_string(),
@@ -3323,24 +3253,19 @@ impl TurnExecution<'_> {
                 let disallowed_report_tool = tool_calls
                     .iter()
                     .any(|call| !report_tool_allowed(&call.name));
-                if (pending.text_only_fallback && !tool_calls.is_empty())
-                    || disallowed_report_tool
-                    || (tool_calls.is_empty() && combined_text.trim().is_empty())
+                if disallowed_report_tool
+                    || (round_purpose == AssistantRoundPurpose::AgentResponse
+                        && tool_calls.is_empty()
+                        && combined_text.trim().is_empty())
                 {
                     let reason = if disallowed_report_tool {
                         "tool_call_not_allowed"
-                    } else if !tool_calls.is_empty() {
-                        "tool_call_not_allowed_after_fallback"
                     } else {
                         "empty_completion_report"
                     };
                     if !pending.corrective_retry_attempted {
                         pending.corrective_retry_attempted = true;
-                        let continuation_text = if pending.text_only_fallback {
-                            "Completion report expected. Reply with the final operator-facing completion report as text only. Do not call any tool.".to_string()
-                        } else {
-                            "Completion report expected. You may use only read-only fact-checking tools, then reply with the final operator-facing completion report. Do not call lifecycle tools.".to_string()
-                        };
+                        let continuation_text = "Completion report expected. Finish any remaining authorized cleanup or verification with the available tools, then reply with the final operator-facing completion report. Do not call CompleteWorkItem, WaitFor, PickWorkItem, or Sleep while this report is pending.".to_string();
                         let corrective_blocks =
                             corrective_replay_blocks(&completed_round_assistant_blocks);
                         completed_rounds.push(TurnRoundRecord {
@@ -3404,38 +3329,10 @@ impl TurnExecution<'_> {
                         .await;
                 }
 
-                if !tool_calls.is_empty() {
-                    pending.report_tool_rounds += 1;
-                    if !pending.text_only_fallback
-                        && pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
-                    {
-                        report_fallback_notice = Some(COMPLETION_REPORT_FALLBACK_NOTICE);
-                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": COMPLETION_REPORT_FALLBACK_NOTICE,
-                                "reason": "completion_report_fallback_notice",
-                                "completion_request_id": pending.request_id,
-                            }),
-                        ))?;
-                        runtime.inner.storage.append_event(&AuditEvent::legacy(
-                            "report_fallback_notice_injected",
-                            serde_json::json!({
-                                "path": "completion",
-                                "agent_id": agent_id,
-                                "completion_request_id": pending.request_id,
-                                "report_tool_rounds": pending.report_tool_rounds,
-                            }),
-                        ))?;
-                    }
-                    pending.text_only_fallback =
-                        pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS;
+                if !tool_calls.is_empty() || round_purpose != AssistantRoundPurpose::AgentResponse {
                     pending_completion_report = Some(pending);
-                    // Let the regular tool execution path run the controlled
-                    // read-only report tools before asking for the final text.
+                    // Cleanup tools and private checkpoints preserve the intent
+                    // until an agent response binds the final report.
                 } else {
                     let state = runtime.agent_state().await?;
                     let current = runtime.latest_work_item(&pending.work_item_id).await?;
@@ -3840,7 +3737,9 @@ impl TurnExecution<'_> {
                 });
             }
 
-            if tool_calls.is_empty() && checkpoint_recorded_this_round {
+            // Even an empty or reasoning-only private checkpoint must resume
+            // ordinary execution instead of becoming a deliverable terminal.
+            if tool_calls.is_empty() && round_purpose == AssistantRoundPurpose::RuntimeCheckpoint {
                 completed_rounds.push(build_checkpoint_resume_round(
                     round,
                     inference_time.clone(),
@@ -4465,8 +4364,6 @@ impl TurnExecution<'_> {
                                 tool_execution: record.clone(),
                                 warnings: directive.warnings.clone(),
                                 corrective_retry_attempted: false,
-                                report_tool_rounds: 0,
-                                text_only_fallback: false,
                             });
                         }
                         if let Some(crate::tool::spec::ToolLoopDirective::AwaitWaitReport(
@@ -4482,8 +4379,6 @@ impl TurnExecution<'_> {
                                 request_tool_call_id: tool_call_id.clone(),
                                 tool_execution: record.clone(),
                                 corrective_retry_attempted: false,
-                                report_tool_rounds: 0,
-                                text_only_fallback: false,
                             });
                         }
                         if prepared_work_item_completion.is_none()
@@ -4505,7 +4400,13 @@ impl TurnExecution<'_> {
                             error: result.tool_error().cloned(),
                         });
                         execution_terminal_transition_seen |= result.terminal_transition;
-                        if pending_completion_report.is_some() || pending_wait_report.is_some() {
+                        if matches!(
+                            loop_directive,
+                            Some(
+                                crate::tool::spec::ToolLoopDirective::AwaitCompletionReport(_)
+                                    | crate::tool::spec::ToolLoopDirective::AwaitWaitReport(_)
+                            )
+                        ) {
                             break;
                         }
                         if result.terminal_transition || stops_tool_batch {
@@ -4695,9 +4596,6 @@ impl TurnExecution<'_> {
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
-            if let Some(notice) = report_fallback_notice.take() {
-                interjections.push(notice.to_string());
-            }
             let terminal_wait_without_text =
                 all_tool_results_should_sleep && last_assistant_message.is_none();
             let round_record = TurnRoundRecord {
@@ -4903,12 +4801,19 @@ mod tests {
     }
 
     #[test]
-    fn report_tool_allowlist_excludes_lifecycle_and_mutating_tools() {
+    fn report_tools_preserve_ordinary_tools_but_exclude_terminal_intents() {
         assert!(report_tool_allowed(names::MEMORY_SEARCH));
         assert!(report_tool_allowed(names::GET_WORK_ITEM));
         assert!(!report_tool_allowed(names::COMPLETE_WORK_ITEM));
         assert!(!report_tool_allowed(names::WAIT_FOR));
-        assert!(!report_tool_allowed(names::EXEC_COMMAND));
+        assert!(!report_tool_allowed(names::PICK_WORK_ITEM));
+        assert!(!report_tool_allowed(names::SLEEP));
+        assert!(report_tool_allowed(names::EXEC_COMMAND));
+        assert!(report_tool_allowed(names::EXEC_COMMAND_BATCH));
+        assert!(report_tool_allowed(names::APPLY_PATCH));
+        assert!(report_tool_allowed(names::REMOVE_WORKTREE));
+        assert!(report_tool_allowed(names::SWITCH_WORKSPACE));
+        assert!(report_tool_allowed(names::UPDATE_WORK_ITEM));
     }
 
     fn quota_attempt(

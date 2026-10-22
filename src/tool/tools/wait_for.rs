@@ -117,7 +117,7 @@ pub(crate) async fn execute(
             json!({
                 "disposition": "awaiting_final_report",
                 "wait_registered": false,
-                "expected_output": "final_text_only",
+                "expected_output": "non_empty_final_text",
             }),
             Some("Awaiting the final operator-facing report before committing the wait.".into()),
             ToolLoopDirective::AwaitWaitReport(AwaitWaitReportDirective {
