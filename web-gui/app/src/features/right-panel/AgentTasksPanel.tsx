@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { TaskSummary } from "../../runtime/types";
+import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
 import { TaskConversationLink } from "./TaskConversationLink";
 
 export const RECENT_TASK_LIMIT = 20;
@@ -13,9 +13,10 @@ interface AgentTasksPanelProps {
   activeTaskCount: number;
   onOpenTask: (task: TaskSummary) => void;
   loadRecentTasks: (agentId: string) => Promise<TaskSummary[]>;
+  onOpenConversation?: (target: TaskTargetRef) => void;
 }
 
-function TaskList({ tasks, onOpenTask }: Pick<AgentTasksPanelProps, "tasks" | "onOpenTask">) {
+function TaskList({ tasks, agentId, onOpenTask, onOpenConversation }: Pick<AgentTasksPanelProps, "tasks" | "agentId" | "onOpenTask" | "onOpenConversation">) {
   return (
     <ul className="inspector-list">
       {tasks.map((task) => (
@@ -27,7 +28,7 @@ function TaskList({ tasks, onOpenTask }: Pick<AgentTasksPanelProps, "tasks" | "o
             </div>
             <small>{[task.kind, task.command, task.workdir].filter(Boolean).join(" · ")}</small>
           </button>
-          <TaskConversationLink task={task} />
+          <TaskConversationLink task={task} fromAgentId={agentId} onOpenConversation={onOpenConversation} />
         </li>
       ))}
     </ul>
@@ -44,6 +45,7 @@ function AgentTasksPanelContent({
   activeTaskCount,
   onOpenTask,
   loadRecentTasks,
+  onOpenConversation,
 }: AgentTasksPanelProps) {
   const { t } = useTranslation();
   const [recentOpen, setRecentOpen] = useState(false);
@@ -84,7 +86,7 @@ function AgentTasksPanelContent({
         </span>
       </summary>
       <div className="collapsible-inspector-body">
-        {tasks.length ? <TaskList tasks={tasks} onOpenTask={onOpenTask} /> : null}
+        {tasks.length ? <TaskList tasks={tasks} agentId={agentId} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} /> : null}
         <details
           className="inspector-details-list"
           onToggle={(event) => setRecentOpen(event.currentTarget.open)}
@@ -98,7 +100,7 @@ function AgentTasksPanelContent({
               {loading ? <p className="inspector-muted">{t("rightPanel.loadingRecentTasks")}</p> : null}
               {error ? <p className="inspector-error" role="alert">{t("rightPanel.recentTasksError", { error })}</p> : null}
               {!loading && !error && !recent.length ? <p className="inspector-muted">{t("rightPanel.noRecentTasks")}</p> : null}
-              <TaskList tasks={recent} onOpenTask={onOpenTask} />
+              <TaskList tasks={recent} agentId={agentId} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} />
             </div>
           ) : null}
         </details>

@@ -263,7 +263,8 @@ test("real parent delegation exposes a private child conversation, operator inpu
     // A real private child must not be promoted into the public sidebar roster.
     const roster = await json<Array<{ agent_id: string }>>(daemon, "/agents/list");
     expect(JSON.stringify(roster)).not.toContain(childId);
-    const childPath = `/agents/${encodeURIComponent(childId)}/conversation?incarnation=${incarnation}`;
+    const childPath = `/agents/${encodeURIComponent(childId)}/conversation?incarnation=${incarnation}&from=${encodeURIComponent(daemon.agentId)}`;
+    const bareChildPath = `/agents/${encodeURIComponent(childId)}/conversation?incarnation=${incarnation}`;
     await openContextPanel(page);
     const childLink = page.locator(`a[href="${childPath}"]`).first();
     await expect(childLink).toBeVisible();
@@ -273,15 +274,17 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await expect(childLink).toBeVisible();
     await childLink.click();
     await expect(page).toHaveURL(`${daemon.baseUrl}${childPath}`);
+    // In-app navigation keeps the explicit parent provenance for the way back.
+    await expect(page.getByRole("link", { name: "Back to parent agent", exact: true })).toBeVisible();
     await expect(page.locator(".message-list")).toContainText(CHILD_INPUT);
 
     // Exercise a fresh document with no selected-agent cache, then a reload.
     const cold = await page.context().newPage();
     await authenticate(cold, daemon.token);
-    await cold.goto(`${daemon.baseUrl}${childPath}`);
+    await cold.goto(`${daemon.baseUrl}${bareChildPath}`);
     await expect(cold.locator(".message-list")).toContainText(CHILD_INPUT);
     await cold.reload();
-    await expect(cold).toHaveURL(`${daemon.baseUrl}${childPath}`);
+    await expect(cold).toHaveURL(`${daemon.baseUrl}${bareChildPath}`);
     await expect(cold.locator(".message-list")).toContainText(CHILD_INPUT);
     // A historical "default" supervisor is not a verified parent navigation
     // target; do not remap it to whichever agent owns today's default route.
@@ -299,10 +302,14 @@ test("real parent delegation exposes a private child conversation, operator inpu
     await expect(stale.locator(".composer textarea")).toHaveCount(0);
     await stale.close();
 
+    // A still-running turn auto-expands its execution details; clicking the
+    // toggle now would collapse them and hide the machine inputs again.
     const activityToggle = cold.locator(".conversation-detail-toggle").first();
-    await activityToggle.click();
-  const delegatedInput = cold.locator(".conversation-interjection").filter({ hasText: CHILD_INPUT });
-  await expect(delegatedInput.getByText(CHILD_INPUT, { exact: true })).toBeVisible();
+    if ((await activityToggle.getAttribute("aria-expanded")) !== "true") {
+      await activityToggle.click();
+    }
+    const delegatedInput = cold.locator(".conversation-interjection").filter({ hasText: CHILD_INPUT });
+    await expect(delegatedInput.getByText(CHILD_INPUT, { exact: true })).toBeVisible();
     await expect(cold.locator(".conversation-activity").filter({ hasText: "ExecCommand" }).first()).toBeVisible();
     await expect(cold.locator(".message-list")).toContainText(CHILD_PROGRESS);
     expect((await json<TaskStatus>(daemon, statusPath)).status).not.toBe("completed");
@@ -526,7 +533,7 @@ test("existing-agent wait links keep their original identity after deletion and 
     expect(task!.target).toEqual(target);
     const statusPath = `/agents/${daemon.agentId}/tasks/${task!.id}`;
     expect((await json<TaskStatus>(daemon, statusPath)).target).toEqual(target);
-    const targetPath = `/agents/${targetId}/conversation?incarnation=${target.incarnation}`;
+    const targetPath = `/agents/${targetId}/conversation?incarnation=${target.incarnation}&from=${encodeURIComponent(daemon.agentId)}`;
     await openContextPanel(page);
     const targetLink = page.locator(`a[href="${targetPath}"]`).first();
     await expect(targetLink).toHaveAccessibleName("Open agent conversation");
@@ -534,6 +541,8 @@ test("existing-agent wait links keep their original identity after deletion and 
     await expect(targetLink).toBeVisible();
     await targetLink.click();
     await expect(page).toHaveURL(`${daemon.baseUrl}${targetPath}`);
+    // A wait target also carries the owner as the explicit way back.
+    await expect(page.getByRole("link", { name: "Back to parent agent", exact: true })).toBeVisible();
     await expect(page.locator(".message-list")).toContainText(CHILD_INPUT);
     await expect(page.locator(".message-list")).toContainText(CHILD_PROGRESS);
     await page.reload();

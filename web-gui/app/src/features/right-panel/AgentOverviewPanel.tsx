@@ -10,7 +10,7 @@ import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
 import { useRuntimeStore } from "../../runtime/runtime-store";
-import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -24,6 +24,7 @@ interface AgentOverviewPanelProps {
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
+  onOpenConversation?: (target: TaskTargetRef) => void;
   onRefreshAgentSkills: () => void;
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
@@ -103,6 +104,7 @@ export function AgentOverviewPanel({
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onOpenTask,
+  onOpenConversation,
   onRefreshAgentSkills,
   onDisableAgentSkill,
   onOpenSkill,
@@ -544,6 +546,7 @@ export function AgentOverviewPanel({
         tasks={agent.tasks ?? []}
         activeTaskCount={agent.activeTaskCount}
         onOpenTask={onOpenTask}
+        onOpenConversation={onOpenConversation}
         loadRecentTasks={queryAgentRecentTasks}
       />
 

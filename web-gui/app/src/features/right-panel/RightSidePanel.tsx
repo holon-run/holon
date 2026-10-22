@@ -6,7 +6,7 @@ import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState
 import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
 import type { AgentSessionState, TimelineEventsState } from "../../runtime/runtime-store";
 import { getRuntimeTraceRevision, isRuntimeTraceEnabled, subscribeRuntimeTrace } from "../../runtime/runtime-trace";
-import type { TaskSummary } from "../../runtime/types";
+import type { TaskSummary, TaskTargetRef } from "../../runtime/types";
 import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
@@ -40,6 +40,7 @@ interface RightSidePanelProps {
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
+  onOpenConversation?: (target: TaskTargetRef) => void;
   onRefreshAgentSkills: () => void;
   onRefreshAvailableSkills: () => void;
   onEnableAgentSkill: (name: string) => void;
@@ -82,6 +83,7 @@ export function RightSidePanel({
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
   onOpenTask,
+  onOpenConversation,
   onRefreshAgentSkills,
   onRefreshAvailableSkills,
   onEnableAgentSkill,
@@ -353,6 +355,7 @@ export function RightSidePanel({
               detailState={taskDetailState}
               agentId={agent.id}
               onOpenWorkItem={onOpenWorkItemDetail}
+              onOpenConversation={onOpenConversation}
             />
           </div>
         ) : activeView.kind === "tool_execution_detail" ? (
@@ -383,6 +386,7 @@ export function RightSidePanel({
             onLoadWorkItemDetail={onLoadWorkItemDetail}
             onOpenWorkItemDetail={onOpenWorkItemDetail}
             onOpenTask={onOpenTask}
+            onOpenConversation={onOpenConversation}
             onRefreshAgentSkills={onRefreshAgentSkills}
             onDisableAgentSkill={onDisableAgentSkill}
             onOpenSkill={onOpenSkill}

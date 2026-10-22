@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pathForRoute, routeFromLocation, searchQueryForLocation } from "./routes";
+import { isPlainLeftClick, pathForRoute, routeFromLocation, searchQueryForLocation } from "./routes";
 
 describe("routeFromLocation", () => {
   it("restores the search query and advanced scope without carrying conversation locators", () => {
@@ -97,6 +97,26 @@ describe("routeFromLocation", () => {
     }).runtimeId).toBeUndefined();
   });
 
+  it("round-trips the parent agent behind a sub-conversation link", () => {
+    const path = pathForRoute("agent", "child", undefined, { incarnation: 3, from: "parent" });
+    expect(path).toBe("/agents/child/conversation?incarnation=3&from=parent");
+    expect(routeFromLocation({ pathname: "/agents/child/conversation", search: "?incarnation=3&from=parent" })).toEqual({
+      route: "agent",
+      agentId: "child",
+      eventSeq: undefined,
+      sourceRef: undefined,
+      runtimeId: undefined,
+      fromAgentId: "parent",
+    });
+  });
+
+  it("treats an empty from parameter as absent", () => {
+    expect(routeFromLocation({
+      pathname: "/agents/alpha/conversation",
+      search: "?from=",
+    }).fromAgentId).toBeUndefined();
+  });
+
   it("parses the top-level skills route", () => {
     expect(routeFromLocation({ pathname: "/skills", search: "" })).toEqual({
       route: "skills",
@@ -119,5 +139,22 @@ describe("routeFromLocation", () => {
       agentId: "holon-dev2",
       skillId: "workspace:root:trace-report-analysis",
     });
+  });
+});
+
+describe("isPlainLeftClick", () => {
+  const base = { defaultPrevented: false, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
+
+  it("accepts an unmodified primary-button activation", () => {
+    expect(isPlainLeftClick(base)).toBe(true);
+  });
+
+  it("rejects modified, non-primary, or already-handled activations", () => {
+    expect(isPlainLeftClick({ ...base, metaKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...base, ctrlKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...base, shiftKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...base, altKey: true })).toBe(false);
+    expect(isPlainLeftClick({ ...base, button: 1 })).toBe(false);
+    expect(isPlainLeftClick({ ...base, defaultPrevented: true })).toBe(false);
   });
 });

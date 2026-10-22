@@ -9,6 +9,7 @@ import type {
   TaskFailureArtifact,
   TaskStatusSnapshot,
   TaskSummary,
+  TaskTargetRef,
   WorkItemSummary,
 } from "../../runtime/types";
 import { normalizeTaskDetailContent } from "./TaskDetailRenderers";
@@ -47,9 +48,10 @@ interface TaskDetailPanelProps {
   detailState?: TaskDetailState;
   agentId: string;
   onOpenWorkItem?: (workItem: WorkItemSummary) => void;
+  onOpenConversation?: (target: TaskTargetRef) => void;
 }
 
-export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem }: TaskDetailPanelProps) {
+export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem, onOpenConversation }: TaskDetailPanelProps) {
   const { t } = useTranslation();
   const loadAgentTaskDetail = useRuntimeStore((s) => s.loadAgentTaskDetail);
   const loading = detailState?.loading && !detailState?.output;
@@ -93,7 +95,7 @@ export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem }: 
         onRefresh={handleRefresh}
         t={t}
       />
-      <TaskConversationLink task={task} target={task.target ?? status?.target} />
+      <TaskConversationLink task={task} target={task.target ?? status?.target} fromAgentId={agentId} onOpenConversation={onOpenConversation} />
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
       {failureArtifact ? <TaskFailureSection failure={failureArtifact} t={t} /> : null}
       <TaskOverviewSection status={status} task={task} onOpenWorkItem={onOpenWorkItem} t={t} />

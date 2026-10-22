@@ -1141,6 +1141,7 @@ const en = {
   inspector: {
     targetAgent: "Target agent",
     openAgentConversation: "Open agent conversation",
+    openConversation: "Open conversation",
     unknownTargetIdentity: "Historical reference; identity not recorded",
     source: "Source",
     fullDetail: "Full detail",

@@ -67,7 +67,7 @@ import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
-import { pathForRoute, pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
+import { isPlainLeftClick, pathForRoute, pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
   { key: "dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
@@ -153,6 +153,7 @@ export function App() {
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const rosterAgent = useRuntimeStore(selectSelectedAgent);
   const incarnationParam = new URLSearchParams(window.location.search).get("incarnation");
+  const fromAgentParam = new URLSearchParams(window.location.search).get("from") || undefined;
   const expectedIncarnation = incarnationParam === null ? undefined
     : /^\d+$/.test(incarnationParam) && Number.isSafeInteger(Number(incarnationParam)) && Number(incarnationParam) > 0
       ? Number(incarnationParam) : -1;
@@ -469,7 +470,7 @@ export function App() {
     pushBrowserRoute("templateDetail", undefined, catalogId);
   }
 
-  function navigateAgent(agentId: string, sourceRef?: string) {
+  function navigateAgent(agentId: string, sourceRef?: string, context?: { incarnation?: number; fromAgentId?: string }) {
     if (route === "search") searchRouteQuery.current = searchQueryForLocation(window.location);
     setMobileNavOpen(false);
     setAgentNavigation(sourceRef ? {
@@ -477,7 +478,13 @@ export function App() {
       navigation: { requestId: ++navigationRequestId.current, sourceRef, runtimeId: discovery.identity?.runtimeId },
     } : null);
     openAgent(agentId);
-    pushBrowserRoute("agent", agentId, undefined, sourceRef ? { source_ref: sourceRef, runtime_id: discovery.identity?.runtimeId } : undefined);
+    const query = {
+      source_ref: sourceRef,
+      runtime_id: sourceRef ? discovery.identity?.runtimeId : undefined,
+      incarnation: context?.incarnation,
+      from: context?.fromAgentId,
+    };
+    pushBrowserRoute("agent", agentId, undefined, query);
   }
 
   async function handleCreateAgentSubmit(): Promise<void> {
@@ -821,8 +828,11 @@ export function App() {
             agent={activeAgent}
             sendDisabledReason={activeAgent.acceptsInput === false
               ? activeAgent.inputDisabledReason ?? t("agentAccess.stopped") : undefined}
-            parentAgentId={agentAccess.parentAgentId}
+            parentAgentId={agentAccess.parentAgentId ?? fromAgentParam}
             parentTaskId={agentAccess.parentTaskId}
+            onBackToParent={(agentAccess.parentAgentId ?? fromAgentParam)
+              ? () => navigateAgent(agentAccess.parentAgentId ?? fromAgentParam!)
+              : undefined}
             conversation={
               conversationSession.scopeKey === null
                 ? undefined
@@ -912,7 +922,18 @@ export function App() {
             }}
           />
         ) : null}
-        {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} status={agentAccess.status} error={agentAccess.error} parentAgentId={agentAccess.parentAgentId} onRetry={agentAccess.retry} /> : null}
+        {route === "agent" && !activeAgent ? (
+          <MissingAgentPage
+            agentId={selectedAgentId}
+            status={agentAccess.status}
+            error={agentAccess.error}
+            parentAgentId={agentAccess.parentAgentId ?? fromAgentParam}
+            onBackToParent={(agentAccess.parentAgentId ?? fromAgentParam)
+              ? () => navigateAgent(agentAccess.parentAgentId ?? fromAgentParam!)
+              : undefined}
+            onRetry={agentAccess.retry}
+          />
+        ) : null}
         {route === "search" ? (
           <SearchPage
             agents={bootstrap.agents}
@@ -1047,6 +1068,12 @@ export function App() {
           onOpenTask={(task) => {
             showTaskDetail(selectedAgent.id, task);
             loadAgentTaskDetail(selectedAgent.id, task.id);
+          }}
+          onOpenConversation={(target) => {
+            navigateAgent(target.agent_id, undefined, {
+              incarnation: target.incarnation ?? undefined,
+              fromAgentId: selectedAgent.id,
+            });
           }}
           onRefreshAgentSkills={() => refreshAgentSkillCatalog(selectedAgent.id)}
           onRefreshAvailableSkills={() => {
@@ -1332,7 +1359,14 @@ function browserWindowTitle(): string {
   return host ? `${APP_WINDOW_TITLE} · ${host}` : APP_WINDOW_TITLE;
 }
 
-function MissingAgentPage({ agentId, status, error, parentAgentId, onRetry }: { agentId: string; status: AgentAccessStatus; error?: string; parentAgentId?: string; onRetry: () => void }) {
+function MissingAgentPage({ agentId, status, error, parentAgentId, onBackToParent, onRetry }: {
+  agentId: string;
+  status: AgentAccessStatus;
+  error?: string;
+  parentAgentId?: string;
+  onBackToParent?: () => void;
+  onRetry: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <section className="page agent-page" aria-label="Agent conversation">
@@ -1344,7 +1378,18 @@ function MissingAgentPage({ agentId, status, error, parentAgentId, onRetry }: { 
             description={error ?? (agentId || t("app.noAgentId"))}
           />
           {status !== "loading" ? <Button onClick={onRetry}>{t("common.refresh")}</Button> : null}
-          {parentAgentId ? <a href={pathForRoute("agent", parentAgentId)}>{t("agentAccess.backToParent")}</a> : null}
+          {parentAgentId ? (
+            <a
+              href={pathForRoute("agent", parentAgentId)}
+              onClick={(event) => {
+                if (!onBackToParent || !isPlainLeftClick(event)) return;
+                event.preventDefault();
+                onBackToParent();
+              }}
+            >
+              {t("agentAccess.backToParent")}
+            </a>
+          ) : null}
         </section>
       </div>
     </section>

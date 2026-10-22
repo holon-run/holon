@@ -8,6 +8,7 @@ export interface BrowserRoute {
   eventSeq?: number;
   sourceRef?: string;
   runtimeId?: string;
+  fromAgentId?: string;
 }
 
 export function searchQueryForLocation(location: Pick<Location, "search">): Record<string, string | undefined> {
@@ -66,10 +67,16 @@ export function matchBrowserRoute(location: Pick<Location, "pathname" | "search"
       eventSeq: eventSeqFromSearch(location.search),
       sourceRef: new URLSearchParams(location.search).get("source_ref") || undefined,
       runtimeId: new URLSearchParams(location.search).get("runtime_id") || undefined,
+      fromAgentId: new URLSearchParams(location.search).get("from") || undefined,
     };
   }
 
   return undefined;
+}
+
+/** True when only the browser default activation (modified click / middle click) should run. */
+export function isPlainLeftClick(event: Pick<MouseEvent, "defaultPrevented" | "button" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">): boolean {
+  return !event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 }
 
 export function routeFromLocation(location: Pick<Location, "pathname" | "search">): BrowserRoute {
