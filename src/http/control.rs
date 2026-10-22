@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    config::ApiPromptConfigFile, daemon::RuntimeStatusResponse,
+    config::{ApiPromptConfigFile, AppConfig},
+    daemon::RuntimeStatusResponse,
     runtime_db::RuntimeDbProtectionStatus,
 };
 use anyhow::Context as _;
@@ -25,6 +26,182 @@ pub(crate) async fn prompt_body_limit(
     }
 }
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
+
+#[cfg(test)]
+mod setup_tests {
+    use super::{runtime_config_setup, RuntimeConfigReloadState, RuntimeConfigReloadStatus};
+    use crate::{
+        config::{AppConfig, CredentialKind, CredentialSource, ProviderId},
+        host::RuntimeHost,
+        http::{router, AppState},
+        onboarding::RuntimeSetupStatus,
+        provider::StubProvider,
+    };
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn host() -> (tempfile::TempDir, RuntimeHost) {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4","fallbacks":[]}}"#,
+        )
+        .unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        for provider in config.providers.values_mut() {
+            provider.credential = None;
+            provider.codex_home = None;
+        }
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap();
+        (home, host)
+    }
+
+    #[test]
+    fn runtime_setup_never_ready_during_unsettled_reload() {
+        let (_home, host) = host();
+        let mut config = (*host.config()).clone();
+        let provider = config.providers.get_mut(&ProviderId::openai()).unwrap();
+        provider.auth.source = CredentialSource::None;
+        provider.auth.kind = CredentialKind::None;
+        assert_eq!(
+            runtime_config_setup(&config, &RuntimeConfigReloadStatus::default()).status,
+            RuntimeSetupStatus::Ready
+        );
+        for state in [
+            RuntimeConfigReloadState::Applying,
+            RuntimeConfigReloadState::Failed,
+            RuntimeConfigReloadState::Idle,
+            RuntimeConfigReloadState::Completed,
+        ] {
+            let reload = RuntimeConfigReloadStatus {
+                requested_generation: 2,
+                completed_generation: 1,
+                state,
+                last_error: Some("private failure /credential/path".into()),
+            };
+            let setup = runtime_config_setup(&config, &reload);
+            assert_eq!(setup.status, RuntimeSetupStatus::Blocked);
+            assert!(setup.actions.is_empty());
+            assert!(!serde_json::to_string(&setup).unwrap().contains("private"));
+        }
+    }
+
+    async fn request(host: &RuntimeHost, method: &str, body: Value) -> (StatusCode, Value) {
+        let response = router(AppState::for_unix(host.clone()))
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/api/control/runtime/config")
+                    .header("content-type", "application/json")
+                    .body(if method == "GET" {
+                        Body::empty()
+                    } else {
+                        Body::from(body.to_string())
+                    })
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn runtime_setup_http_still_requires_control_authorization() {
+        let (_home, host) = host();
+        let mut state = AppState::for_tcp(host);
+        state.require_control_token = true;
+        let app = router(state);
+        for method in ["GET", "PATCH"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/control/runtime/config")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"updates":[]}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert!(body.get("setup").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_setup_http_read_and_update_follow_effective_reload() {
+        let (_home, host) = host();
+        let (status, initial) = request(&host, "GET", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(initial["setup"]["status"], "blocked");
+        assert_eq!(
+            initial["setup"]["actions"],
+            json!(["configure_model_credential"])
+        );
+        assert_eq!(initial["setup"].as_object().unwrap().len(), 4);
+
+        let (status, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[{"key":"home","value":"/private/new-home"}]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(rejected["changed"], false);
+        assert_eq!(rejected["setup"], initial["setup"]);
+        assert_eq!(host.config_reload_status().requested_generation, 0);
+
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":"providers.openai.auth.source","value":"none"},
+                {"key":"providers.openai.auth.kind","value":"none"},
+                {"key":"providers.openai.base_url","value":"http://127.0.0.1:11434/v1"}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(accepted["changed"], true);
+        let generation = accepted["reload"]["requested_generation"].as_u64().unwrap();
+        assert!(generation > 0);
+        if accepted["reload"]["state"] == "applying" {
+            assert_eq!(accepted["setup"]["status"], "blocked");
+            assert_eq!(accepted["setup"]["actions"], json!([]));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let status = host.config_reload_status();
+                if status.completed_generation >= generation {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reload convergence");
+        let (status, effective) = request(&host, "GET", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(effective["reload"]["state"], "completed");
+        assert_eq!(effective["setup"]["status"], "ready");
+        assert_eq!(effective["setup"]["actions"], json!([]));
+        assert_eq!(effective["setup"]["provider"], "openai");
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
@@ -337,6 +514,7 @@ pub struct RuntimeConfigReadResponse {
     pub config_file_path: std::path::PathBuf,
     pub runtime_surface: RuntimeConfigSurface,
     pub reload: RuntimeConfigReloadStatus,
+    pub setup: crate::onboarding::RuntimeSetup,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -370,6 +548,7 @@ pub struct RuntimeConfigUpdateResponse {
     pub results: Vec<RuntimeConfigUpdateResult>,
     pub runtime_surface: RuntimeConfigSurface,
     pub reload: RuntimeConfigReloadStatus,
+    pub setup: crate::onboarding::RuntimeSetup,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -439,13 +618,40 @@ pub async fn runtime_config(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let before_reload = RuntimeConfigReloadStatus::from_host(&state.host);
     let config = state.host.config();
+    let reload = RuntimeConfigReloadStatus::from_host(&state.host);
+    let mut setup = runtime_config_setup(&config, &reload);
+    if before_reload != reload {
+        setup.status = crate::onboarding::RuntimeSetupStatus::Blocked;
+        setup.actions.clear();
+    }
     Ok(Json(RuntimeConfigReadResponse {
         ok: true,
         config_file_path: config.config_file_path.clone(),
         runtime_surface: RuntimeConfigSurface::new(&config),
-        reload: RuntimeConfigReloadStatus::from_host(&state.host),
+        reload,
+        setup,
     }))
+}
+
+fn runtime_config_setup(
+    config: &AppConfig,
+    reload: &RuntimeConfigReloadStatus,
+) -> crate::onboarding::RuntimeSetup {
+    if matches!(
+        reload.state,
+        RuntimeConfigReloadState::Applying | RuntimeConfigReloadState::Failed
+    ) || reload.requested_generation > reload.completed_generation
+    {
+        return crate::onboarding::RuntimeSetup {
+            status: crate::onboarding::RuntimeSetupStatus::Blocked,
+            default_model: Some(config.default_model.as_string()),
+            provider: Some(config.default_model.provider.as_str().into()),
+            actions: Vec::new(),
+        };
+    }
+    crate::onboarding::runtime_setup(config)
 }
 
 pub async fn runtime_config_update(
@@ -532,15 +738,22 @@ pub async fn runtime_config_update(
             }
         }
     }
+    let before_reload = RuntimeConfigReloadStatus::from_host(&state.host);
     let config = state.host.config();
-
+    let reload = RuntimeConfigReloadStatus::from_host(&state.host);
+    let mut setup = runtime_config_setup(&config, &reload);
+    if before_reload != reload {
+        setup.status = crate::onboarding::RuntimeSetupStatus::Blocked;
+        setup.actions.clear();
+    }
     Ok(Json(RuntimeConfigUpdateResponse {
         ok: true,
         changed,
         config_file_path: config.config_file_path.clone(),
         results,
         runtime_surface: RuntimeConfigSurface::new(&config),
-        reload: RuntimeConfigReloadStatus::from_host(&state.host),
+        reload,
+        setup,
     }))
 }
 

@@ -529,6 +529,247 @@ describe("credential mutations", () => {
   });
 });
 
+describe("runtime config save ownership", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function deferredResponse() {
+    let resolve!: (response: Response) => void;
+    const promise = new Promise<Response>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  function configResponse(model: string, generation = 1) {
+    return {
+      ok: true,
+      runtime_surface: { model_default: model },
+      reload: {
+        requested_generation: generation,
+        completed_generation: generation,
+        state: "completed",
+      },
+    };
+  }
+
+  function installFetch(handle: (url: string, init?: RequestInit) => Response | Promise<Response>) {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
+      if (url.endsWith("/agents/snapshot")) {
+        return Promise.resolve(jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        }));
+      }
+      return Promise.resolve(handle(url, init));
+    }));
+  }
+
+  const interleavings = (["set", "delete"] as const).flatMap((operation) =>
+    [true, false].flatMap((credentialSucceeds) =>
+      [true, false].map((saveSucceeds) => ({ operation, credentialSucceeds, saveSucceeds })),
+    ),
+  );
+
+  it.each(interleavings)(
+    "releases a superseded save: $operation credential success=$credentialSucceeds, save success=$saveSucceeds",
+    async ({ operation, credentialSucceeds, saveSucceeds }) => {
+      const previous = useRuntimeStore.getState();
+      const saveReply = deferredResponse();
+      let saveCalls = 0;
+      let configReads = 0;
+      installFetch((url, init) => {
+        if (url.endsWith("/control/runtime/config")) {
+          if (init?.method === "PATCH") {
+            saveCalls += 1;
+            return saveCalls === 1 ? saveReply.promise : jsonResponse(configResponse("latest"));
+          }
+          configReads += 1;
+          return jsonResponse(configResponse("latest"));
+        }
+        if (url.endsWith("/control/runtime/credentials/openai%3Adefault")) {
+          return credentialSucceeds
+            ? jsonResponse({
+                ok: true,
+                profile: { profile: "openai:default", kind: "api_key", configured: true },
+                reload_generation: 1,
+              })
+            : new Response("credential failed", { status: 500 });
+        }
+        if (url.endsWith("/control/runtime/credentials")) {
+          return jsonResponse({ ok: true, profiles: [] });
+        }
+        if (url.endsWith("/models/refresh")) return jsonResponse({ providers: [] });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+      try {
+        const save = useRuntimeStore.getState().updateRuntimeConfig([{ key: "model.default", value: "old" }]);
+        expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(true);
+        if (operation === "set") {
+          await useRuntimeStore.getState().setCredential("openai:default", "api_key", "secret");
+        } else {
+          await useRuntimeStore.getState().deleteCredential("openai:default");
+        }
+        if (credentialSucceeds) {
+          await vi.waitFor(() => {
+            expect(useRuntimeStore.getState().runtimeConfig.surface?.modelDefault).toBe("latest");
+          });
+        } else {
+          expect(useRuntimeStore.getState().credentialStoreError).toContain("failed with 500");
+        }
+        const currentConfig = useRuntimeStore.getState().runtimeConfig;
+        saveReply.resolve(saveSucceeds
+          ? jsonResponse(configResponse("old"))
+          : new Response("save failed", { status: 500 }));
+
+        expect(await save).toBeUndefined();
+        expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(false);
+        expect(useRuntimeStore.getState().runtimeConfig).toBe(currentConfig);
+        expect(useRuntimeStore.getState().runtimeConfigError).toBeUndefined();
+        const readsBeforeRefresh = configReads;
+        await useRuntimeStore.getState().refreshRuntimeConfig();
+        expect(configReads).toBe(readsBeforeRefresh + 1);
+        expect(await useRuntimeStore.getState().updateRuntimeConfig([])).toMatchObject({
+          surface: { modelDefault: "latest" },
+        });
+        expect(saveCalls).toBe(2);
+        expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(false);
+      } finally {
+        useRuntimeStore.setState(previous, true);
+      }
+    },
+  );
+
+  it.each([false, true])("waits for reload confirmation (superseded=%s)", async (superseded) => {
+    const previous = useRuntimeStore.getState();
+    const reloadReply = deferredResponse();
+    let configReads = 0;
+    installFetch((url, init) => {
+      if (url.endsWith("/control/runtime/config")) {
+        if (init?.method === "PATCH") {
+          return jsonResponse({
+            ...configResponse("saved"),
+            changed: true,
+            reload: { requested_generation: 1, completed_generation: 0, state: "applying" },
+          });
+        }
+        configReads += 1;
+        return configReads === 1 ? reloadReply.promise : jsonResponse(configResponse("latest", 2));
+      }
+      if (url.endsWith("/control/runtime/credentials/openai%3Adefault")) {
+        return jsonResponse({ ok: true, reload_generation: 2 });
+      }
+      if (url.endsWith("/control/runtime/credentials")) return jsonResponse({ profiles: [] });
+      if (url.endsWith("/models/refresh")) return jsonResponse({ providers: [] });
+      if (url.endsWith("/models")) return jsonResponse({ providers: [] });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    try {
+      const save = useRuntimeStore.getState().updateRuntimeConfig([]);
+      await vi.waitFor(() => expect(configReads).toBe(1));
+      expect(useRuntimeStore.getState().runtimeConfig.reload?.state).toBe("applying");
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(true);
+      if (superseded) {
+        await useRuntimeStore.getState().deleteCredential("openai:default");
+        await vi.waitFor(() => {
+          expect(useRuntimeStore.getState().runtimeConfig.surface?.modelDefault).toBe("latest");
+        });
+      }
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(true);
+      reloadReply.resolve(jsonResponse(configResponse("saved")));
+      const result = await save;
+      if (superseded) {
+        expect(result).toBeUndefined();
+      } else {
+        expect(result).toMatchObject({ changed: true, reload: { state: "completed" } });
+      }
+      expect(useRuntimeStore.getState().runtimeConfig.surface?.modelDefault).toBe(superseded ? "latest" : "saved");
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(false);
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("does not let a previous save's model refresh release a later save", async () => {
+    const previous = useRuntimeStore.getState();
+    const modelsReply = deferredResponse();
+    const nextSaveReply = deferredResponse();
+    let saveCalls = 0;
+    let modelReads = 0;
+    installFetch((url, init) => {
+      if (url.endsWith("/control/runtime/config") && init?.method === "PATCH") {
+        saveCalls += 1;
+        return saveCalls === 1
+          ? jsonResponse({ ...configResponse("first"), changed: true, reload: undefined })
+          : nextSaveReply.promise;
+      }
+      if (url.endsWith("/models")) {
+        modelReads += 1;
+        return modelsReply.promise;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    try {
+      const firstSave = useRuntimeStore.getState().updateRuntimeConfig([]);
+      await vi.waitFor(() => expect(modelReads).toBe(1));
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(false);
+      const nextSave = useRuntimeStore.getState().updateRuntimeConfig([]);
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(true);
+      modelsReply.resolve(jsonResponse({ providers: [] }));
+      await firstSave;
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(true);
+      nextSaveReply.resolve(jsonResponse(configResponse("second")));
+      await nextSave;
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(false);
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("does not let an old client save release a new client's save", async () => {
+    const previous = useRuntimeStore.getState();
+    const oldReply = deferredResponse();
+    const newReply = deferredResponse();
+    let saveCalls = 0;
+    installFetch((url, init) => {
+      if (url.endsWith("/control/runtime/config") && init?.method === "PATCH") {
+        saveCalls += 1;
+        return saveCalls === 1 ? oldReply.promise : newReply.promise;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    try {
+      const oldSave = useRuntimeStore.getState().updateRuntimeConfig([]);
+      await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+      const newSave = useRuntimeStore.getState().updateRuntimeConfig([]);
+      oldReply.resolve(jsonResponse(configResponse("old")));
+      expect(await oldSave).toBeUndefined();
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(true);
+      expect(useRuntimeStore.getState().runtimeConfig.surface).toBeUndefined();
+      newReply.resolve(jsonResponse(configResponse("new")));
+      expect(await newSave).toMatchObject({ surface: { modelDefault: "new" } });
+      expect(useRuntimeStore.getState().runtimeConfigSaving).toBe(false);
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
 describe("pendingOperatorPrompts lifecycle", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -6964,6 +6964,14 @@ export interface components {
                     kind: string;
                 }[];
             };
+            /** @description Safe first-run projection; readiness is local construction, not a live request. */
+            setup: {
+                actions: string[];
+                default_model?: string | null;
+                provider?: string | null;
+                /** @enum {string} */
+                status: "ready" | "blocked";
+            };
         };
         /** RuntimeConfigUpdateRequest */
         RuntimeConfigUpdateRequest: {
@@ -7154,6 +7162,14 @@ export interface components {
                     id: string;
                     kind: string;
                 }[];
+            };
+            /** @description Safe first-run projection; readiness is local construction, not a live request. */
+            setup: {
+                actions: string[];
+                default_model?: string | null;
+                provider?: string | null;
+                /** @enum {string} */
+                status: "ready" | "blocked";
             };
         };
         /** RuntimeDecisionTestRequest */

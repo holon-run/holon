@@ -28,6 +28,8 @@ interface DaemonController {
 
 interface DaemonOptions {
   webDist: string;
+  /** Start without a model, provider credentials, or inherited runtime config. */
+  emptyConfig?: boolean;
   /** Skip the normal default-agent bootstrap for empty-runtime onboarding tests. */
   createInitialAgent?: boolean;
   /** Extra environment variables for the daemon process (e.g. provider overrides). */
@@ -59,10 +61,11 @@ async function reservePort(): Promise<number> {
 /**
  * The daemon fails fast at startup unless the configured model chain has a
  * usable provider, and CI runners hold no provider credentials. Every daemon
- * therefore gets a local stub provider that rejects requests quickly, so
+ * normally gets a local stub provider that rejects requests quickly, so
  * startup succeeds and turns settle as deterministic provider errors without
  * external network calls. Specs that need real provider behavior override
- * OPENAI_API_KEY / HOLON_OPENAI_BASE_URL through `options.env`.
+ * OPENAI_API_KEY / HOLON_OPENAI_BASE_URL through `options.env`. First-run specs
+ * opt into emptyConfig instead and configure credentials through the real UI.
  */
 async function startStubProvider(): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
   const port = await reservePort();
@@ -134,6 +137,7 @@ async function createDaemon(
 ): Promise<{ controller: DaemonController; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "holon-web-e2e-"));
   const home = path.join(root, "home");
+  const userHome = path.join(root, "user-home");
   const tokenFile = path.join(root, "control-token");
   const controlToken = randomBytes(24).toString("hex");
   const artifactDir = path.resolve("test-results", "real-daemon", `worker-${workerIndex}`);
@@ -148,11 +152,21 @@ async function createDaemon(
   // The test runner itself may be launched inside an agent process. Do not let
   // that process identity become the daemon's default public Agent.
   const { HOLON_AGENT_ID: _inheritedAgentId, ...inheritedEnv } = process.env;
+  if (options.emptyConfig) {
+    // Keep only process-launch essentials: neither parent-agent provenance nor
+    // provider credentials, alternate config roots, or proxy settings may leak.
+    for (const key of Object.keys(inheritedEnv)) {
+      if (!["PATH", "LANG", "LC_ALL", "TZ", "RUST_BACKTRACE", "RUST_LOG", "RUST_MIN_STACK", "SYSTEMROOT", "WINDIR"].includes(key)) {
+        delete inheritedEnv[key];
+      }
+    }
+  }
   let child: ChildProcessWithoutNullStreams | undefined;
   let agentCreated = false;
   let stderrStream: WriteStream | undefined;
 
   await mkdir(home, { recursive: true });
+  await mkdir(userHome, { recursive: true });
   await mkdir(artifactDir, { recursive: true });
   await writeFile(tokenFile, `${controlToken}\n`, { mode: 0o600 });
 
@@ -173,10 +187,20 @@ async function createDaemon(
         ...inheritedEnv,
         // Nested delegation futures need more stack in unoptimized debug builds.
         RUST_MIN_STACK: inheritedEnv.RUST_MIN_STACK ?? "33554432",
+        ...(options.emptyConfig ? {
+          HOLON_BOOTSTRAP: "true",
+          HOME: userHome,
+          USERPROFILE: userHome,
+          XDG_CONFIG_HOME: path.join(userHome, ".config"),
+          XDG_DATA_HOME: path.join(userHome, ".local", "share"),
+          XDG_CACHE_HOME: path.join(userHome, ".cache"),
+        } : {}),
         HOLON_HOME: home,
         HOLON_AGENT_ID: DEFAULT_AGENT_ID,
-        HOLON_MODEL: "openai/gpt-5.4",
-        OPENAI_API_KEY: "e2e-provider-key",
+        ...(options.emptyConfig ? {} : {
+          HOLON_MODEL: "openai/gpt-5.4",
+          OPENAI_API_KEY: "e2e-provider-key",
+        }),
         HOLON_OPENAI_BASE_URL: stubProvider.baseUrl,
         HOLON_DISABLE_PROVIDER_FALLBACK: "true",
         HOLON_CONTROL_AUTH_MODE: "required",
@@ -189,7 +213,7 @@ async function createDaemon(
     stderrStream = createWriteStream(stderrPath, { flags: "a" });
     child.stderr.pipe(stderrStream);
     await waitForReady(baseUrl, controlToken, child);
-    if (!agentCreated && options.createInitialAgent !== false) {
+    if (!agentCreated && !options.emptyConfig && options.createInitialAgent !== false) {
       const response = await fetch(
         `${baseUrl}/api/control/agents/${DEFAULT_AGENT_ID}/create`,
         {

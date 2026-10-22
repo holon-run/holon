@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ModelSelect } from "../../components/models/ModelSelect";
+import { SetupStatusCard, setupIsReady } from "../onboarding/SetupStatusCard";
 import { ModelList } from "../../components/models/ModelList";
 import { providerPresentation, providerIsConnected, modelSourceLabel } from "../../lib/model-presentation";
 import { rememberModel } from "../../lib/model-preferences";
@@ -52,6 +53,8 @@ interface SettingsPageProps {
   runtimeConfigLoading: boolean;
   runtimeConfigSaving: boolean;
   runtimeConfigError?: string;
+  onStartOnboarding?: () => void;
+  setupTarget?: { action: string; provider: string | null };
   onRefreshModels: () => Promise<void>;
   onRefreshRuntimeConfig: () => Promise<void>;
   onUpdateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
@@ -297,6 +300,8 @@ export function SettingsPage({
   runtimeConfigLoading,
   runtimeConfigSaving,
   runtimeConfigError,
+  onStartOnboarding,
+  setupTarget,
   onRefreshModels,
   onRefreshRuntimeConfig,
   onUpdateRuntimeConfig,
@@ -383,6 +388,22 @@ export function SettingsPage({
       window.history.replaceState(window.history.state, "", url);
     }
   }
+  function repairSetup(action: string, provider: string | null) {
+    setActiveTab("models");
+    setEditingProvider(action === "configure_model_credential" ? provider : null);
+    setProviderFilter("all");
+    setProviderSearch("");
+    requestAnimationFrame(() => {
+      const target = document.getElementById(
+        action === "configure_model_credential" && provider ? "setup-provider-editor" : "setup-default-model",
+      );
+      target?.scrollIntoView({ block: "center" });
+      target?.querySelector<HTMLElement>("input, button, select")?.focus();
+    });
+  }
+  useEffect(() => {
+    if (setupTarget) repairSetup(setupTarget.action, setupTarget.provider);
+  }, [setupTarget]);
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
   const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
@@ -512,7 +533,7 @@ export function SettingsPage({
     setSearchSaveMessage(undefined);
     setSearchProviderSaveMessage(undefined);
     setVisionSaveMessage(undefined);
-    setProviderSaveMessage(undefined);
+    // Reload hydration must not erase the provider operation's save feedback.
   }, [runtimeConfig, surface]);
 
   useEffect(() => {
@@ -581,7 +602,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved to config.json. Configuration reload scheduled."
+          ? setupIsReady(result) ? t("setup.ready") : t("setup.savedIncomplete")
           : "No runtime config changes were persisted.",
     );
   }
@@ -821,7 +842,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Saved ${providerId} provider settings to config.json. Configuration reload scheduled.`
+          ? setupIsReady(result) ? t("setup.ready") : t("setup.savedIncomplete")
           : "No provider config changes were persisted.",
     );
   }
@@ -849,6 +870,10 @@ export function SettingsPage({
     <section className="page settings-page workspace-page" aria-label={t("settings.settingsAria")}>
       <div className="page-inner settings-inner workspace-page-content">
         <PageHeading title={t("settings.title")} description={t("settings.runtimeConfig")} />
+        <SetupStatusCard config={{ ...runtimeConfig, error: runtimeConfigError ?? runtimeConfig.error }}
+          loading={runtimeConfigLoading} saving={runtimeConfigSaving}
+          onRepair={repairSetup} onRetry={() => void onRefreshRuntimeConfig()}
+          onStart={onStartOnboarding} />
         <section className="settings-overview">
           <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
             <div>
@@ -1028,7 +1053,9 @@ export function SettingsPage({
                   void saveRuntimeConfig();
                 }}
               >
-                <ModelSelect label={t("settings.defaultModel")} options={modelCatalog.options} value={modelDefault} onChange={setModelDefault} />
+                <div id="setup-default-model">
+                  <ModelSelect label={t("settings.defaultModel")} options={modelCatalog.options} value={modelDefault} onChange={setModelDefault} />
+                </div>
                 <p className="settings-hint">{t("modelUi.defaultScope")}</p>
                 <details className="settings-advanced">
                   <summary>{t("settings.tabAdvanced")}</summary>
@@ -1818,6 +1845,7 @@ export function SettingsPage({
                 const credentialReady = providerCredentialReady(provider);
                 return (
                   <form
+                    id="setup-provider-editor"
                     className="settings-provider-editor"
                     key={provider.id}
                     onSubmit={(event) => {

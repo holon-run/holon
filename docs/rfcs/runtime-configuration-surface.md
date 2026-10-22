@@ -172,6 +172,41 @@ runtime convergence. Future turns converge asynchronously. An in-flight
 provider turn continues with the snapshot it already owns. A failed generation
 remains observable, and a later successful mutation schedules another attempt.
 
+### First-run setup projection
+
+Both runtime config responses also include `setup`:
+
+```json
+{
+  "status": "blocked",
+  "default_model": "openai@default/gpt-5.4",
+  "provider": "openai",
+  "actions": ["configure_model_credential"]
+}
+```
+
+`status` is `ready` or `blocked`; model and provider are nullable strings, and
+`actions` is an array of stable action IDs. This projection uses only the
+host's effective configuration, not a submitted or persisted candidate.
+It reuses onboarding's model-provider repair actions and the bootstrap
+provider-chain construction gate, including configured fallback policy.
+Deferred generic OAuth profiles are parsed locally before declaring readiness.
+Supported `auth.source=none` providers and existing usable OAuth profiles do
+not require an API key. Optional search, vision, image generation, unrelated
+credentials, and onboarding's aggregate status do not block first-run setup.
+
+`ready` means local runtime prerequisites are satisfied, not that credentials,
+network connectivity, billing, or a model response have been verified remotely.
+An applying, failed, or outstanding reload always yields `blocked` with no
+configuration repair actions; clients explain that lifecycle using `reload`,
+and must not interpret an empty action list as readiness.
+For model blockers, only `configure_model_provider` and
+`configure_model_credential` are exposed. An unknown blocker falls back to
+`configure_model_provider`; raw errors, onboarding details, commands, paths,
+credential material, and credential profile names are never copied into setup.
+The default model/provider identify the configured primary even when a valid
+fallback makes the provider chain ready.
+
 ## Status And Inspectability
 
 Holon should make the active source of truth inspectable:

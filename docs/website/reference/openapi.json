@@ -15050,13 +15050,49 @@
               "web_search_providers"
             ],
             "type": "object"
+          },
+          "setup": {
+            "description": "Safe first-run projection; readiness is local construction, not a live request.",
+            "properties": {
+              "actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "default_model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "ready",
+                  "blocked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "actions"
+            ],
+            "type": "object"
           }
         },
         "required": [
           "ok",
           "config_file_path",
           "runtime_surface",
-          "reload"
+          "reload",
+          "setup"
         ],
         "title": "RuntimeConfigReadResponse",
         "type": "object"
@@ -15713,6 +15749,41 @@
               "web_search_providers"
             ],
             "type": "object"
+          },
+          "setup": {
+            "description": "Safe first-run projection; readiness is local construction, not a live request.",
+            "properties": {
+              "actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "default_model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "ready",
+                  "blocked"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "actions"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -15721,7 +15792,8 @@
           "config_file_path",
           "results",
           "runtime_surface",
-          "reload"
+          "reload",
+          "setup"
         ],
         "title": "RuntimeConfigUpdateResponse",
         "type": "object"

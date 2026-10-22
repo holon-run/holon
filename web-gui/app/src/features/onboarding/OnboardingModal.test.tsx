@@ -32,7 +32,10 @@ const modelCatalog: RuntimeModelCatalog = {
   ],
 };
 
-const runtimeConfig: RuntimeConfigState = { source: "fixture" };
+const runtimeConfig: RuntimeConfigState = {
+  source: "fixture",
+  setup: { status: "ready", defaultModel: "provider/test-model", provider: "provider", actions: [] },
+};
 
 function catalogState(catalog: AgentTemplateCatalogEntry[]): AgentTemplateCatalogState {
   return { source: "fixture", catalog, sources: [], diagnostics: [] };
@@ -53,7 +56,9 @@ const roots: { root: Root; container: HTMLElement }[] = [];
 
 async function renderOnboardingModal(
   templateCatalog: AgentTemplateCatalogState,
-  onCreateAgent: (agentId: string, template: string) => Promise<boolean>,
+  onCreateAgent: (agentId: string, template: string, name?: string) => Promise<boolean>,
+  config: RuntimeConfigState = runtimeConfig,
+  existingAgents: Array<{ id: string; name?: string }> = [],
 ): Promise<HTMLElement> {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
@@ -64,12 +69,13 @@ async function renderOnboardingModal(
       <OnboardingModal
         modelCatalog={modelCatalog}
         modelCatalogLoading={false}
-        runtimeConfig={runtimeConfig}
+        runtimeConfig={config}
         runtimeConfigLoading={false}
         templateCatalog={templateCatalog}
         templateCatalogLoading={false}
         onSaveModel={vi.fn(async () => true)}
         onCreateAgent={onCreateAgent}
+        existingAgents={existingAgents}
         onClose={vi.fn()}
       />,
     );
@@ -90,6 +96,12 @@ function setValue(element: HTMLInputElement | HTMLSelectElement, value: string):
 }
 
 async function advanceToAgentStep(container: HTMLElement): Promise<void> {
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>(".model-select-trigger")!.click();
+  });
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>("button[data-model-choice]")!.click();
+  });
   const next = container.querySelector<HTMLButtonElement>(".modal-actions button.bg-accent");
   expect(next).not.toBeNull();
   await act(async () => {
@@ -109,7 +121,7 @@ async function submitOnboarding(
       setValue(select!, template);
     });
   }
-  const input = container.querySelector<HTMLInputElement>("form input");
+  const input = container.querySelector<HTMLInputElement>("details input");
   expect(input).not.toBeNull();
   await act(async () => {
     setValue(input!, agentId);
@@ -143,7 +155,7 @@ describe("OnboardingModal template selection", () => {
     await act(async () => {
       select.form?.requestSubmit();
     });
-    expect(onCreateAgent).toHaveBeenCalledWith("my-agent", "holon-default");
+    expect(onCreateAgent).toHaveBeenCalledWith("my-agent", "holon-default", "Holon Bot");
   });
 
   it("lists catalog entries besides the built-in default and creates with the selected template", async () => {
@@ -162,6 +174,50 @@ describe("OnboardingModal template selection", () => {
     await act(async () => {
       select.form?.requestSubmit();
     });
-    expect(onCreateAgent).toHaveBeenCalledWith("my-agent", "software-developer");
+    expect(onCreateAgent).toHaveBeenCalledWith("my-agent", "software-developer", "Holon Bot");
+  });
+
+  it("requires an explicit model choice and prefills a separate editable name and stable ID", async () => {
+    const create = vi.fn(async () => true);
+    const container = await renderOnboardingModal(catalogState([]), create);
+    expect(container.querySelector<HTMLButtonElement>(".modal-actions button.bg-accent")!.disabled).toBe(true);
+    await advanceToAgentStep(container);
+    const inputs = container.querySelectorAll<HTMLInputElement>("form input");
+    expect(inputs[0].value).toBe("Holon Bot");
+    expect(inputs[1].value).toBe("holon-bot");
+    await act(async () => setValue(inputs[0], "My Assistant"));
+    expect(inputs[1].value).toBe("holon-bot");
+    await act(async () => container.querySelector("form")!.requestSubmit());
+    expect(create).toHaveBeenCalledWith("holon-bot", "holon-default", "My Assistant");
+  });
+
+  it("does not create an Agent while authoritative setup is blocked", async () => {
+    const create = vi.fn(async () => true);
+    const container = await renderOnboardingModal(catalogState([]), create, {
+      ...runtimeConfig, setup: { ...runtimeConfig.setup!, status: "blocked", actions: ["configure_model_credential"] },
+    });
+    await advanceToAgentStep(container);
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+    await act(async () => container.querySelector("form")!.requestSubmit());
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("keeps existing ID collisions explicit and never overwrites the Agent", async () => {
+    const create = vi.fn(async () => true);
+    const container = await renderOnboardingModal(catalogState([]), create, runtimeConfig, [{ id: "holon-bot" }]);
+    await advanceToAgentStep(container);
+    await act(async () => container.querySelector("form")!.requestSubmit());
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain("already in use");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an ambiguous or degraded create outcome", async () => {
+    const create = vi.fn(async () => false);
+    const container = await renderOnboardingModal(catalogState([]), create);
+    await advanceToAgentStep(container);
+    await act(async () => container.querySelector("form")!.requestSubmit());
+    await act(async () => container.querySelector("form")!.requestSubmit());
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain("Check existing Agents");
   });
 });
