@@ -128,14 +128,14 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             policy: BuiltInModelRoutePolicy::default(),
         })
         .collect::<Vec<_>>();
-    definitions.extend(["mimo-v2.5-pro", "mimo-v2.5"].into_iter().map(|model| {
-        BuiltInModelRouteDefinition {
-            legacy_provider: provider_id("xiaomi-token-plan"),
-            model_ref: ModelRef::new(provider_id("xiaomi"), model),
-            endpoint: ProviderEndpointId::parse("token-plan").expect("valid endpoint"),
-            policy: BuiltInModelRoutePolicy::default(),
-        }
-    }));
+    definitions.push(route_definition(
+        "xiaomi-token-plan",
+        "xiaomi",
+        "token-plan",
+        "mimo-v2.6-pro",
+        None,
+        None,
+    ));
     definitions.extend(
         [
             ("qwen3.7-max", None, None),
@@ -279,6 +279,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             "minimax-m3",
             "glm-5.3-flash",
             "deepseek-v4.1-flash",
+            "deepseek-v4.1-flash-economy",
             "kimi-k2.8-preview",
             "kimi-k3",
             "glm-latest",
@@ -662,24 +663,28 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: Some(ProviderEndpointId::default_endpoint()),
         },
-        catalog_model(
-            "xiaomi",
-            "mimo-v2.5-pro",
-            "Xiaomi MiMo V2.5 Pro",
-            1_048_576,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "xiaomi",
-            "mimo-v2.5",
-            "Xiaomi MiMo V2.5",
-            1_048_576,
-            131_072,
-            true,
-            true,
-        ),
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xiaomi"), "mimo-v2.6-pro"),
+            display_name: "MiMo-V2.6-Pro".into(),
+            description: "Xiaomi MiMo V2.6 Pro; token defaults follow official client configuration examples, not independently verified service hard limits.".into(),
+            context_window_tokens: Some(1_048_576),
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: Some(996_147),
+            default_max_output_tokens: Some(131_072),
+            max_output_tokens_upper_limit: Some(131_072),
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
+        },
         BuiltInModelMetadata {
             model_ref: ModelRef::new(provider_id("xai"), "grok-4.3"),
             display_name: "Grok 4.3".into(),
@@ -1195,6 +1200,12 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             ("minimax-m3", "MiniMax M3", true, true),
             ("glm-5.3-flash", "GLM-5.3 Flash", false, true),
             ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", true, true),
+            (
+                "deepseek-v4.1-flash-economy",
+                "DeepSeek V4.1 Flash Economy",
+                true,
+                true,
+            ),
             ("kimi-k2.8-preview", "Kimi K2.8 Preview", true, true),
             ("kimi-k3", "Kimi K3", true, true),
         ]

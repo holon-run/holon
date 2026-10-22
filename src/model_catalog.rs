@@ -1853,7 +1853,10 @@ fn reasoning_effort_options(
         ("volcengine", _)
             if endpoint.is_none_or(|endpoint| {
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
-            }) && !matches!(model_ref.model.as_str(), "kimi-k2.6" | "kimi-k2.7-code") =>
+            }) && !matches!(
+                model_ref.model.as_str(),
+                "kimi-k2.6" | "kimi-k2.7-code" | "deepseek-v4.1-flash-economy"
+            ) =>
         {
             &["low", "medium", "high"][..]
         }
@@ -2555,58 +2558,12 @@ mod tests {
         assert_eq!(deepseek.runtime_max_output_tokens, 384_000);
         assert_eq!(deepseek.source, ModelMetadataSource::BuiltInCatalog);
 
-        let xiaomi = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi/mimo-v2.5-pro").unwrap(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert_eq!(xiaomi.display_name, "Xiaomi MiMo V2.5 Pro");
-        assert_eq!(xiaomi.context_window_tokens, Some(1_048_576));
-        assert_eq!(xiaomi.runtime_max_output_tokens, 131_072);
-        assert!(xiaomi.capabilities.supports_reasoning);
-        assert!(!xiaomi.capabilities.image_input);
-        assert_eq!(xiaomi.reasoning_effort_options, ["none", "high"]);
-        assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
-
-        let xiaomi_omni = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi/mimo-v2.5").unwrap(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert_eq!(xiaomi_omni.display_name, "Xiaomi MiMo V2.5");
-        assert_eq!(xiaomi_omni.context_window_tokens, Some(1_048_576));
-        assert_eq!(xiaomi_omni.runtime_max_output_tokens, 131_072);
-        assert!(xiaomi_omni.capabilities.supports_reasoning);
-        assert!(xiaomi_omni.capabilities.image_input);
-        assert_eq!(xiaomi_omni.reasoning_effort_options, ["none", "high"]);
-
         assert!(catalog
             .get(&ModelRef::parse("xiaomi/mimo-v2-pro").unwrap())
             .is_none());
         assert!(catalog
             .get(&ModelRef::parse("xiaomi/mimo-v2.5-pro-ultraspeed").unwrap())
             .is_none());
-        assert_eq!(
-            catalog
-                .canonicalize_model_ref(&ModelRef::parse("xiaomi-token-plan/mimo-v2.5").unwrap()),
-            ModelRef::parse("xiaomi/mimo-v2.5").unwrap()
-        );
-        let token_plan = catalog.resolve_route_policy(
-            &ModelRouteRef::parse("xiaomi@token-plan/mimo-v2.5").unwrap(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert!(token_plan.capabilities.image_input);
-        assert_eq!(token_plan.reasoning_effort_options, ["none", "high"]);
         assert!(catalog
             .get(&ModelRef::parse("xiaomi-token-plan/mimo-v2-flash").unwrap())
             .is_none());
@@ -4268,6 +4225,68 @@ mod tests {
     }
 
     #[test]
+    fn retired_xiaomi_chat_ids_do_not_remove_aggregator_or_ultraspeed_models() {
+        for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
+            for id in ["mimo-v2.5-pro", "mimo-v2.5"] {
+                assert!(catalog
+                    .get(&ModelRef::new(provider_id("xiaomi"), id))
+                    .is_none());
+                for endpoint in ["default", "token-plan"] {
+                    let route = ModelRouteRef::parse(&format!("xiaomi@{endpoint}/{id}")).unwrap();
+                    assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+                }
+            }
+            assert!(catalog
+                .get(&ModelRef::parse("tencent-tokenhub/mimo-v2.5-pro").unwrap())
+                .is_some());
+            for (provider, endpoint) in [("xiaomi", "default"), ("xiaomi-token-plan", "token-plan")]
+            {
+                assert_eq!(
+                    catalog.preferred_route_for_provider(&provider_id(provider)),
+                    Some(
+                        ModelRouteRef::parse(&format!("xiaomi@{endpoint}/mimo-v2.6-pro")).unwrap()
+                    )
+                );
+            }
+        }
+        let catalog = BuiltInModelCatalog::new();
+        assert!(catalog
+            .get(&ModelRef::parse("xiaomi/mimo-v2.5-pro-ultraspeed").unwrap())
+            .is_some());
+    }
+
+    #[test]
+    fn volcengine_economy_is_subscription_only_with_unknown_exact_limits() {
+        let catalog = BuiltInModelCatalog::new();
+        for endpoint in ["coding", "plan"] {
+            let route = ModelRouteRef::parse(&format!(
+                "volcengine@{endpoint}/deepseek-v4.1-flash-economy"
+            ))
+            .unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let policy = catalog.resolve_route_policy(
+                &route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert!(policy.capabilities.image_input);
+            assert!(policy.capabilities.supports_reasoning);
+            assert_eq!(policy.context_window_tokens, None);
+            assert_eq!(policy.max_output_tokens_upper_limit, None);
+            assert_eq!(policy.runtime_max_output_tokens, 8192);
+            assert!(policy.reasoning_effort_options.is_empty());
+        }
+        assert!(catalog
+            .get_route(
+                &ModelRouteRef::parse("volcengine@default/deepseek-v4.1-flash-economy").unwrap()
+            )
+            .is_none());
+    }
+
+    #[test]
     fn volcengine_reasoning_effort_options_follow_route_contract() {
         let catalog = BuiltInModelCatalog::new();
 
@@ -4727,7 +4746,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 48);
+        assert_eq!(models.len(), 50);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
