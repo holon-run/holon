@@ -42,6 +42,18 @@ fn isolated_holon_command(home: &tempfile::TempDir) -> Command {
 
 struct ServeChild {
     child: Child,
+    stderr: mpsc::Receiver<String>,
+}
+
+impl ServeChild {
+    fn diagnostics(&mut self) -> String {
+        let status = self.child.try_wait();
+        let stderr = self
+            .stderr
+            .recv_timeout(Duration::from_millis(100))
+            .unwrap_or_else(|error| format!("stderr capture unavailable: {error}"));
+        format!("child status: {status:?}\nstderr:\n{stderr}")
+    }
 }
 
 impl Drop for ServeChild {
@@ -65,6 +77,23 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     spawn_serve_command(command)
 }
 
+fn forward_serve_stdout(reader: impl BufRead, line_tx: mpsc::Sender<std::io::Result<String>>) {
+    for line in reader.lines() {
+        // Keep the pipe open after the startup receiver has its listener address.
+        let _ = line_tx.send(line);
+    }
+}
+
+#[test]
+fn serve_stdout_reader_drains_after_startup_receiver_is_dropped() {
+    let output = b"Holon listening on 127.0.0.1:1234\nlocal listener\nUnix socket\n";
+    let mut reader = std::io::Cursor::new(output);
+    let (line_tx, line_rx) = mpsc::channel();
+    drop(line_rx);
+    forward_serve_stdout(&mut reader, line_tx);
+    assert_eq!(reader.position(), output.len() as u64);
+}
+
 fn spawn_serve_command(mut command: Command) -> (ServeChild, String) {
     let mut child = command
         .env("HOLON_PRE_SERVER_RUNTIME_PREPARED", "1")
@@ -77,12 +106,7 @@ fn spawn_serve_command(mut command: Command) -> (ServeChild, String) {
     let stderr = child.stderr.take().expect("serve stderr should be piped");
     let (line_tx, line_rx) = mpsc::channel();
     thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if line_tx.send(line).is_err() {
-                break;
-            }
-        }
+        forward_serve_stdout(BufReader::new(stdout), line_tx);
     });
     let (stderr_tx, stderr_rx) = mpsc::channel();
     thread::spawn(move || {
@@ -102,15 +126,17 @@ fn spawn_serve_command(mut command: Command) -> (ServeChild, String) {
         }
         let _ = stderr_tx.send(captured);
     });
+    let mut serve = ServeChild {
+        child,
+        stderr: stderr_rx,
+    };
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut addr = None;
     while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("poll holon serve") {
-            let stderr = stderr_rx
-                .recv_timeout(Duration::from_millis(100))
-                .unwrap_or_default();
+        if let Some(status) = serve.child.try_wait().expect("poll holon serve") {
             panic!(
-                "holon serve exited before printing listening address: {status}\nstderr:\n{stderr}"
+                "holon serve exited before printing listening address: {status}\n{}",
+                serve.diagnostics()
             );
         }
         match line_rx.recv_timeout(Duration::from_millis(25)) {
@@ -126,24 +152,24 @@ fn spawn_serve_command(mut command: Command) -> (ServeChild, String) {
                     let Some(addr) = addr.clone() else {
                         unreachable!("addr should be set")
                     };
-                    return (ServeChild { child }, addr);
+                    return (serve, addr);
                 }
             }
             Ok(Err(error)) => panic!("read serve stdout: {error}"),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let stderr = stderr_rx
-                    .recv_timeout(Duration::from_millis(100))
-                    .unwrap_or_default();
-                panic!("holon serve stdout closed before listening address was printed\nstderr:\n{stderr}")
+                panic!(
+                    "holon serve stdout closed before listening address was printed\n{}",
+                    serve.diagnostics()
+                )
             }
         };
     }
-    let _ = child.kill();
-    let stderr = stderr_rx
-        .recv_timeout(Duration::from_millis(100))
-        .unwrap_or_default();
-    panic!("timed out waiting for holon serve to print listening address\nstderr:\n{stderr}");
+    let _ = serve.child.kill();
+    panic!(
+        "timed out waiting for holon serve to print listening address\n{}",
+        serve.diagnostics()
+    );
 }
 
 #[cfg(unix)]
@@ -211,16 +237,25 @@ esac
                     std::env::var("PATH").unwrap_or_default()
                 ),
             );
-        let (_serve, address) = spawn_serve_command(command);
+        let (mut serve, address) = spawn_serve_command(command);
         let port = address.parse::<std::net::SocketAddr>().unwrap().port();
         let base = format!("http://127.0.0.1:{port}");
         let endpoint = format!("{base}/api/control/network/tailscale/serve");
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
+            if serve.child.try_wait().expect("poll holon serve").is_some() {
+                panic!(
+                    "daemon exited before becoming healthy: primary={listen}, bound={address}\n{}",
+                    serve.diagnostics()
+                );
+            }
             match client.get(&endpoint).send() {
                 Ok(response) if response.status() == 401 => break,
                 _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
-                result => panic!("daemon did not become healthy: {result:?}"),
+                result => panic!(
+                    "daemon did not become healthy: primary={listen}, bound={address}, result={result:?}\n{}",
+                    serve.diagnostics()
+                ),
             }
         }
         assert_eq!(
