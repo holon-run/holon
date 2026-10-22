@@ -7,6 +7,7 @@ use crate::types::{
 use chrono::DateTime;
 
 mod obligation;
+mod reader_pressure;
 
 fn task_result_message(task_id: &str) -> MessageEnvelope {
     MessageEnvelope::new(

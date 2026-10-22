@@ -749,30 +749,32 @@ impl RuntimeDb {
         &self,
         identity_key: &str,
     ) -> Result<Option<ProviderQuotaIncident>> {
-        self.connection()?
-            .query_row(
-                "SELECT identity_key, incident_id, revision, consecutive_failures,
+        self.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT identity_key, incident_id, revision, consecutive_failures,
                     next_retry_at, last_failure_kind, last_model_ref,
                     opened_at, last_failed_at, resolved_at
              FROM provider_quota_incidents WHERE identity_key = ?1",
-                [identity_key],
-                |row| {
-                    Ok(ProviderQuotaIncident {
-                        identity_key: row.get(0)?,
-                        incident_id: row.get(1)?,
-                        revision: row.get(2)?,
-                        consecutive_failures: row.get(3)?,
-                        next_retry_at: row.get(4)?,
-                        last_failure_kind: row.get(5)?,
-                        last_model_ref: row.get(6)?,
-                        opened_at: row.get(7)?,
-                        last_failed_at: row.get(8)?,
-                        resolved_at: row.get(9)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
+                    [identity_key],
+                    |row| {
+                        Ok(ProviderQuotaIncident {
+                            identity_key: row.get(0)?,
+                            incident_id: row.get(1)?,
+                            revision: row.get(2)?,
+                            consecutive_failures: row.get(3)?,
+                            next_retry_at: row.get(4)?,
+                            last_failure_kind: row.get(5)?,
+                            last_model_ref: row.get(6)?,
+                            opened_at: row.get(7)?,
+                            last_failed_at: row.get(8)?,
+                            resolved_at: row.get(9)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+        })
     }
 
     pub fn update_provider_quota_retry_at(
@@ -1238,30 +1240,30 @@ impl RuntimeDb {
     }
 
     pub fn storage_domain(&self, domain: &str) -> Result<Option<StorageDomainSnapshot>> {
-        let connection = self.connection()?;
-        read_storage_domain_connection(&connection, domain)
+        self.with_read(|connection| read_storage_domain_connection(connection, domain))
     }
 
     pub fn storage_domains(&self) -> Result<Vec<StorageDomainSnapshot>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT domain, schema_version, import_status, canonical_source,
+        self.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT domain, schema_version, import_status, canonical_source,
                     source_checkpoint_json, imported_at, updated_at
              FROM storage_domains
              ORDER BY domain ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok(StorageDomainSnapshot {
-                domain: row.get(0)?,
-                schema_version: row.get(1)?,
-                import_status: row.get(2)?,
-                canonical_source: row.get(3)?,
-                source_checkpoint_json: row.get(4)?,
-                imported_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
-        rows.map(|row| row.map_err(Into::into)).collect()
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(StorageDomainSnapshot {
+                    domain: row.get(0)?,
+                    schema_version: row.get(1)?,
+                    import_status: row.get(2)?,
+                    canonical_source: row.get(3)?,
+                    source_checkpoint_json: row.get(4)?,
+                    imported_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?;
+            rows.map(|row| row.map_err(Into::into)).collect()
+        })
     }
 
     pub fn diagnose_cutover(&self, expected: &[ExpectedStorageDomain]) -> Result<Vec<String>> {
@@ -1329,11 +1331,13 @@ impl RuntimeDb {
         domain: &str,
         canonical_source: &str,
     ) -> Result<bool> {
-        let connection = self.connection()?;
-        let Some(snapshot) = read_storage_domain_connection(&connection, domain)? else {
-            return Ok(false);
-        };
-        Ok(snapshot.import_status == "complete" && snapshot.canonical_source == canonical_source)
+        self.with_read(|connection| {
+            let Some(snapshot) = read_storage_domain_connection(connection, domain)? else {
+                return Ok(false);
+            };
+            Ok(snapshot.import_status == "complete"
+                && snapshot.canonical_source == canonical_source)
+        })
     }
 
     fn run_storage_domain_import(
@@ -1433,44 +1437,47 @@ impl RuntimeDb {
     }
 
     pub fn event_log_epoch(&self) -> Result<String> {
-        let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
-                [],
-                |row| row.get(0),
-            )
-            .context("runtime event-log epoch is missing")
+        self.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("runtime event-log epoch is missing")
+        })
     }
 
     /// Stable public identity of this runtime installation. Survives
     /// restarts and ordinary reopens; a replaced or rebuilt database mints a
     /// new one. Not a secret.
     pub fn runtime_id(&self) -> Result<String> {
-        let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT value FROM runtime_metadata WHERE key = 'runtime_id'",
-                [],
-                |row| row.get(0),
-            )
-            .context("runtime installation id is missing")
+        self.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = 'runtime_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("runtime installation id is missing")
+        })
     }
 
     /// Monotone visibility policy generation. Bumping it rotates every
     /// derived `visibility_scope_id` without touching the event-log epoch.
     pub fn visibility_policy_generation(&self) -> Result<u64> {
-        let connection = self.connection()?;
-        let value: String = connection
-            .query_row(
-                "SELECT value FROM runtime_metadata WHERE key = 'visibility_policy_generation'",
-                [],
-                |row| row.get(0),
-            )
-            .context("visibility policy generation is missing")?;
-        value
-            .parse()
-            .with_context(|| format!("invalid visibility policy generation {value}"))
+        self.with_read(|connection| {
+            let value: String = connection
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = 'visibility_policy_generation'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("visibility policy generation is missing")?;
+            value
+                .parse()
+                .with_context(|| format!("invalid visibility policy generation {value}"))
+        })
     }
 }
 

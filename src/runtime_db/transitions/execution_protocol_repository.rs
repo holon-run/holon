@@ -1050,48 +1050,51 @@ impl RuntimeTransitionRepository<'_> {
         agent_id: &str,
         attempt_id: &str,
     ) -> Result<Option<ExecutionAttempt>> {
-        let connection = self.db.connection()?;
-        let payload = connection
-            .query_row(
-                "SELECT payload_json FROM execution_protocol_attempts
-                 WHERE agent_id = ?1 AND attempt_id = ?2",
-                params![agent_id, attempt_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let attempt = payload
-            .map(|payload| serde_json::from_str::<ExecutionAttempt>(&payload))
-            .transpose()?;
-        Ok(attempt
-            .filter(|attempt| attempt.agent_id == agent_id && attempt.attempt_id == attempt_id))
+        self.db.with_read(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT payload_json FROM execution_protocol_attempts
+                     WHERE agent_id = ?1 AND attempt_id = ?2",
+                    params![agent_id, attempt_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let attempt = payload
+                .map(|payload| serde_json::from_str::<ExecutionAttempt>(&payload))
+                .transpose()?;
+            Ok(attempt
+                .filter(|attempt| attempt.agent_id == agent_id && attempt.attempt_id == attempt_id))
+        })
     }
 
     pub(crate) fn load_execution_authority_fences(
         &self,
         agent_id: &str,
     ) -> Result<ExecutionAuthorityFences> {
-        let connection = self.db.connection()?;
-        let transaction =
-            Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
-        let fences = authority_fences_tx(&transaction, agent_id)?;
-        transaction.commit()?;
-        Ok(fences)
+        self.db.with_read(|connection| {
+            let transaction =
+                Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+            let fences = authority_fences_tx(&transaction, agent_id)?;
+            transaction.commit()?;
+            Ok(fences)
+        })
     }
 
     pub(crate) fn load_execution_protocol_state_if_initialized(
         &self,
         agent_id: &str,
     ) -> Result<Option<ExecutionProtocolState>> {
-        let connection = self.db.connection()?;
-        let transaction =
-            Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
-        if !partition_exists_tx(&transaction, agent_id)? {
+        self.db.with_read(|connection| {
+            let transaction =
+                Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)?;
+            if !partition_exists_tx(&transaction, agent_id)? {
+                transaction.commit()?;
+                return Ok(None);
+            }
+            let state = load_state_tx(&transaction, agent_id)?;
             transaction.commit()?;
-            return Ok(None);
-        }
-        let state = load_state_tx(&transaction, agent_id)?;
-        transaction.commit()?;
-        Ok(Some(state))
+            Ok(Some(state))
+        })
     }
 
     pub(crate) fn commit_execution_protocol_recovery_plan(

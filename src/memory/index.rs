@@ -3528,26 +3528,28 @@ fn runtime_payload_page<T: DeserializeOwned>(
              LIMIT ?2"
         )
     };
-    let connection = runtime_db.connection()?;
-    let mut statement = connection.prepare(&sql)?;
-    let decode = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(String, String)> {
-        Ok((row.get(0)?, row.get(1)?))
-    };
-    let rows = if let Some((_, agent_id)) = agent_filter {
-        statement
-            .query_map(
-                params![agent_id, cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
-                decode,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    } else {
-        statement
-            .query_map(
-                params![cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
-                decode,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let rows = runtime_db.with_read(|connection| {
+        let mut statement = connection.prepare(&sql)?;
+        let decode = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(String, String)> {
+            Ok((row.get(0)?, row.get(1)?))
+        };
+        let rows = if let Some((_, agent_id)) = agent_filter {
+            statement
+                .query_map(
+                    params![agent_id, cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
+                    decode,
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            statement
+                .query_map(
+                    params![cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
+                    decode,
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    })?;
     rows.into_iter()
         .map(|(key, payload)| {
             serde_json::from_str(&payload)

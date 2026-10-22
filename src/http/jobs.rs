@@ -578,11 +578,24 @@ pub(super) async fn create_template_remote_source_sync_job(
                 Err(error) => {
                     failed += 1;
                     let mut message = error.to_string();
-                    if let Err(record_error) =
+                    let failure_db = db.clone();
+                    let failure_source_id = source_id.clone();
+                    let failure_config = config.clone();
+                    let failure_message = message.clone();
+                    let record_result = tokio::task::spawn_blocking(move || {
                         crate::agent_template::record_agent_template_remote_source_sync_failure(
-                            &db, &source_id, &config, &message,
+                            &failure_db,
+                            &failure_source_id,
+                            &failure_config,
+                            &failure_message,
                         )
-                    {
+                    })
+                    .await
+                    .map_err(|err| {
+                        anyhow!("remote source sync failure recorder worker failed: {err}")
+                    })
+                    .and_then(|result| result);
+                    if let Err(record_error) = record_result {
                         message = format!(
                             "{message}; additionally failed to persist sync failure: {record_error}"
                         );

@@ -540,23 +540,24 @@ impl ConversationRepository<'_> {
         agent_id: &str,
         brief_id: &str,
     ) -> Result<Option<(ConversationIdentity, crate::types::BriefRecord)>> {
-        let mut connection = self.db.connection()?;
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = self.snapshot_context(&tx, agent_id, "", "")? else {
-            return Ok(None);
-        };
-        let payload: Option<String> = tx
-            .query_row(
-                "SELECT payload_json FROM briefs WHERE evidence_id = ?1 AND agent_id = ?2",
-                params![brief_id, agent_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let brief = payload
-            .map(|value| serde_json::from_str(&value))
-            .transpose()?;
-        tx.commit()?;
-        Ok(brief.map(|brief| (context.identity, brief)))
+        self.db.with_read(|connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) = self.snapshot_context(&tx, agent_id, "", "")? else {
+                return Ok(None);
+            };
+            let payload: Option<String> = tx
+                .query_row(
+                    "SELECT payload_json FROM briefs WHERE evidence_id = ?1 AND agent_id = ?2",
+                    params![brief_id, agent_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let brief = payload
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?;
+            tx.commit()?;
+            Ok(brief.map(|brief| (context.identity, brief)))
+        })
     }
 
     pub fn summary_page(
@@ -567,17 +568,19 @@ impl ConversationRepository<'_> {
         membership_upper_bound: Option<&TurnKey>,
     ) -> Result<ConversationSummaryPage> {
         validate_limit("conversation history", limit, MAX_HISTORY_PAGE_LIMIT)?;
-        let mut connection = self.db.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let page = summary_page_in(
-            &transaction,
-            agent_id,
-            limit,
-            before,
-            membership_upper_bound,
-        )?;
-        transaction.commit()?;
-        Ok(page)
+        self.db.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let page = summary_page_in(
+                &transaction,
+                agent_id,
+                limit,
+                before,
+                membership_upper_bound,
+            )?;
+            transaction.commit()?;
+            Ok(page)
+        })
     }
 
     pub fn summary_snapshot(
@@ -610,24 +613,26 @@ impl ConversationRepository<'_> {
             turn_limit,
             MAX_CONVERSATION_SHADOW_TURNS,
         )?;
-        let mut connection = self.db.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) =
-            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
-        else {
+        self.db.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) =
+                self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
+            else {
+                transaction.commit()?;
+                return Ok(None);
+            };
+            let projection = summary_page_in(&transaction, agent_id, turn_limit, None, None)?;
+            let canonical = canonical_shadow_metadata(
+                &transaction,
+                agent_id,
+                turn_limit,
+                projection.membership_upper_bound.as_ref(),
+            )?;
+            let diagnostics = compare_shadow_metadata(context, turn_limit, canonical, projection)?;
             transaction.commit()?;
-            return Ok(None);
-        };
-        let projection = summary_page_in(&transaction, agent_id, turn_limit, None, None)?;
-        let canonical = canonical_shadow_metadata(
-            &transaction,
-            agent_id,
-            turn_limit,
-            projection.membership_upper_bound.as_ref(),
-        )?;
-        let diagnostics = compare_shadow_metadata(context, turn_limit, canonical, projection)?;
-        transaction.commit()?;
-        Ok(Some(diagnostics))
+            Ok(Some(diagnostics))
+        })
     }
 
     fn summary_snapshot_after_context(
@@ -640,55 +645,57 @@ impl ConversationRepository<'_> {
         after_context: impl FnOnce(),
     ) -> Result<Option<ConversationSnapshot<ConversationSummaryPage>>> {
         validate_limit("conversation history", limit, MAX_HISTORY_PAGE_LIMIT)?;
-        let mut connection = self.db.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) =
-            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
-        else {
+        self.db.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) =
+                self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
+            else {
+                transaction.commit()?;
+                return Ok(None);
+            };
+            after_context();
+            let binding = context.binding(agent_id);
+            let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+            let cursor = before_cursor
+                .map(|encoded| codec.decode::<HistoryCursor>(encoded, &binding))
+                .transpose()
+                .map_err(ConversationReadError::from)?;
+            let page = summary_page_in(
+                &transaction,
+                agent_id,
+                limit,
+                cursor.as_ref().map(|cursor| &cursor.before),
+                cursor.as_ref().map(|cursor| &cursor.membership_upper_bound),
+            )?;
+            let next_before_cursor = page.next_before.as_ref().map(|before| {
+                codec.encode(&HistoryCursor {
+                    binding: binding.clone(),
+                    before: before.clone(),
+                    membership_upper_bound: page
+                        .membership_upper_bound
+                        .clone()
+                        .expect("a next history cursor requires a membership upper bound"),
+                })
+            });
+            let snapshot_cursor = codec.encode(&StreamCursor {
+                binding,
+                event_seq: context.event_head_seq,
+            });
             transaction.commit()?;
-            return Ok(None);
-        };
-        after_context();
-        let binding = context.binding(agent_id);
-        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
-        let cursor = before_cursor
-            .map(|encoded| codec.decode::<HistoryCursor>(encoded, &binding))
-            .transpose()
-            .map_err(ConversationReadError::from)?;
-        let page = summary_page_in(
-            &transaction,
-            agent_id,
-            limit,
-            cursor.as_ref().map(|cursor| &cursor.before),
-            cursor.as_ref().map(|cursor| &cursor.membership_upper_bound),
-        )?;
-        let next_before_cursor = page.next_before.as_ref().map(|before| {
-            codec.encode(&HistoryCursor {
-                binding: binding.clone(),
-                before: before.clone(),
-                membership_upper_bound: page
-                    .membership_upper_bound
-                    .clone()
-                    .expect("a next history cursor requires a membership upper bound"),
-            })
-        });
-        let snapshot_cursor = codec.encode(&StreamCursor {
-            binding,
-            event_seq: context.event_head_seq,
-        });
-        transaction.commit()?;
-        Ok(Some(ConversationSnapshot {
-            identity: context.identity,
-            runtime_id: context.runtime_id,
-            event_log_epoch: context.event_log_epoch,
-            visibility_scope_id: context.visibility_scope_id,
-            event_head_seq: context.event_head_seq,
-            oldest_retained_seq: context.oldest_retained_seq,
-            snapshot_cursor,
-            next_before_cursor,
-            next_after_cursor: None,
-            value: page,
-        }))
+            Ok(Some(ConversationSnapshot {
+                identity: context.identity,
+                runtime_id: context.runtime_id,
+                event_log_epoch: context.event_log_epoch,
+                visibility_scope_id: context.visibility_scope_id,
+                event_head_seq: context.event_head_seq,
+                oldest_retained_seq: context.oldest_retained_seq,
+                snapshot_cursor,
+                next_before_cursor,
+                next_after_cursor: None,
+                value: page,
+            }))
+        })
     }
 
     pub fn activities(
@@ -700,18 +707,20 @@ impl ConversationRepository<'_> {
         membership_upper_bound: Option<&ActivityKey>,
     ) -> Result<Option<ConversationActivityPage>> {
         validate_limit("conversation activity", limit, MAX_ACTIVITIES_PAGE_LIMIT)?;
-        let mut connection = self.db.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let page = activities_in(
-            &transaction,
-            agent_id,
-            turn_id,
-            limit,
-            before,
-            membership_upper_bound,
-        )?;
-        transaction.commit()?;
-        Ok(page)
+        self.db.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let page = activities_in(
+                &transaction,
+                agent_id,
+                turn_id,
+                limit,
+                before,
+                membership_upper_bound,
+            )?;
+            transaction.commit()?;
+            Ok(page)
+        })
     }
 
     pub fn activity_snapshot(
@@ -724,64 +733,68 @@ impl ConversationRepository<'_> {
         scope_entitlement: &str,
     ) -> Result<Option<ConversationSnapshot<Option<ConversationActivityPage>>>> {
         validate_limit("conversation activity", limit, MAX_ACTIVITIES_PAGE_LIMIT)?;
-        let mut connection = self.db.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) =
-            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
-        else {
-            transaction.commit()?;
-            return Ok(None);
-        };
-        let binding = context.binding(agent_id);
-        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
-        let cursor = before_cursor
-            .map(|encoded| codec.decode::<DetailCursor>(encoded, &binding))
-            .transpose()
-            .map_err(ConversationReadError::from)?;
-        if cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.turn_id != turn_id)
-        {
-            return Err(ConversationReadError::Cursor(CursorDecodeError::BindingMismatch).into());
-        }
-        let page = activities_in(
-            &transaction,
-            agent_id,
-            turn_id,
-            limit,
-            cursor.as_ref().map(|cursor| &cursor.before),
-            cursor.as_ref().map(|cursor| &cursor.membership_upper_bound),
-        )?;
-        let next_before_cursor = page.as_ref().and_then(|page| {
-            page.next_before.as_ref().map(|before| {
-                codec.encode(&DetailCursor {
-                    binding: binding.clone(),
-                    turn_id: turn_id.to_string(),
-                    before: before.clone(),
-                    membership_upper_bound: page
-                        .membership_upper_bound
-                        .clone()
-                        .expect("a next detail cursor requires a membership upper bound"),
+        self.db.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) =
+                self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
+            else {
+                transaction.commit()?;
+                return Ok(None);
+            };
+            let binding = context.binding(agent_id);
+            let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+            let cursor = before_cursor
+                .map(|encoded| codec.decode::<DetailCursor>(encoded, &binding))
+                .transpose()
+                .map_err(ConversationReadError::from)?;
+            if cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.turn_id != turn_id)
+            {
+                return Err(
+                    ConversationReadError::Cursor(CursorDecodeError::BindingMismatch).into(),
+                );
+            }
+            let page = activities_in(
+                &transaction,
+                agent_id,
+                turn_id,
+                limit,
+                cursor.as_ref().map(|cursor| &cursor.before),
+                cursor.as_ref().map(|cursor| &cursor.membership_upper_bound),
+            )?;
+            let next_before_cursor = page.as_ref().and_then(|page| {
+                page.next_before.as_ref().map(|before| {
+                    codec.encode(&DetailCursor {
+                        binding: binding.clone(),
+                        turn_id: turn_id.to_string(),
+                        before: before.clone(),
+                        membership_upper_bound: page
+                            .membership_upper_bound
+                            .clone()
+                            .expect("a next detail cursor requires a membership upper bound"),
+                    })
                 })
-            })
-        });
-        let snapshot_cursor = codec.encode(&StreamCursor {
-            binding,
-            event_seq: context.event_head_seq,
-        });
-        transaction.commit()?;
-        Ok(Some(ConversationSnapshot {
-            identity: context.identity,
-            runtime_id: context.runtime_id,
-            event_log_epoch: context.event_log_epoch,
-            visibility_scope_id: context.visibility_scope_id,
-            event_head_seq: context.event_head_seq,
-            oldest_retained_seq: context.oldest_retained_seq,
-            snapshot_cursor,
-            next_before_cursor,
-            next_after_cursor: None,
-            value: page,
-        }))
+            });
+            let snapshot_cursor = codec.encode(&StreamCursor {
+                binding,
+                event_seq: context.event_head_seq,
+            });
+            transaction.commit()?;
+            Ok(Some(ConversationSnapshot {
+                identity: context.identity,
+                runtime_id: context.runtime_id,
+                event_log_epoch: context.event_log_epoch,
+                visibility_scope_id: context.visibility_scope_id,
+                event_head_seq: context.event_head_seq,
+                oldest_retained_seq: context.oldest_retained_seq,
+                snapshot_cursor,
+                next_before_cursor,
+                next_after_cursor: None,
+                value: page,
+            }))
+        })
     }
 
     pub fn change_batch(
@@ -803,148 +816,150 @@ impl ConversationRepository<'_> {
             activity_limit,
             MAX_CONVERSATION_CHANGE_ACTIVITIES,
         )?;
-        let mut connection = self.db.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) =
-            self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
-        else {
-            transaction.commit()?;
-            return Ok(None);
-        };
-        let binding = context.binding(agent_id);
-        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
-        let from_seq = after_cursor
-            .map(|encoded| codec.decode::<StreamCursor>(encoded, &binding))
-            .transpose()
-            .map_err(ConversationReadError::from)?
-            .map_or(context.event_head_seq, |cursor| cursor.event_seq);
-        if from_seq > context.event_head_seq {
-            return Err(ConversationReadError::ResetRequired {
-                reason: ConversationResetReason::CursorAhead,
-                requested_seq: from_seq,
-                oldest_retained_seq: context.oldest_retained_seq,
-                event_head_seq: context.event_head_seq,
+        self.db.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) =
+                self.snapshot_context(&transaction, agent_id, scope_principal, scope_entitlement)?
+            else {
+                transaction.commit()?;
+                return Ok(None);
+            };
+            let binding = context.binding(agent_id);
+            let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+            let from_seq = after_cursor
+                .map(|encoded| codec.decode::<StreamCursor>(encoded, &binding))
+                .transpose()
+                .map_err(ConversationReadError::from)?
+                .map_or(context.event_head_seq, |cursor| cursor.event_seq);
+            if from_seq > context.event_head_seq {
+                return Err(ConversationReadError::ResetRequired {
+                    reason: ConversationResetReason::CursorAhead,
+                    requested_seq: from_seq,
+                    oldest_retained_seq: context.oldest_retained_seq,
+                    event_head_seq: context.event_head_seq,
+                }
+                .into());
             }
-            .into());
-        }
-        if from_seq < context.event_head_seq
-            && from_seq.saturating_add(1) < context.oldest_retained_seq
-        {
-            return Err(ConversationReadError::ResetRequired {
-                reason: ConversationResetReason::RetentionExpired,
-                requested_seq: from_seq,
-                oldest_retained_seq: context.oldest_retained_seq,
-                event_head_seq: context.event_head_seq,
+            if from_seq < context.event_head_seq
+                && from_seq.saturating_add(1) < context.oldest_retained_seq
+            {
+                return Err(ConversationReadError::ResetRequired {
+                    reason: ConversationResetReason::RetentionExpired,
+                    requested_seq: from_seq,
+                    oldest_retained_seq: context.oldest_retained_seq,
+                    event_head_seq: context.event_head_seq,
+                }
+                .into());
             }
-            .into());
-        }
 
-        let events = audit_events_between(
-            &transaction,
-            agent_id,
-            from_seq,
-            context.event_head_seq,
-            event_limit + 1,
-        )?;
-        if events.len() > event_limit {
-            return Err(ConversationReadError::ResetRequired {
-                reason: ConversationResetReason::ReplayLimitExceeded,
-                requested_seq: from_seq,
-                oldest_retained_seq: context.oldest_retained_seq,
-                event_head_seq: context.event_head_seq,
+            let events = audit_events_between(
+                &transaction,
+                agent_id,
+                from_seq,
+                context.event_head_seq,
+                event_limit + 1,
+            )?;
+            if events.len() > event_limit {
+                return Err(ConversationReadError::ResetRequired {
+                    reason: ConversationResetReason::ReplayLimitExceeded,
+                    requested_seq: from_seq,
+                    oldest_retained_seq: context.oldest_retained_seq,
+                    event_head_seq: context.event_head_seq,
+                }
+                .into());
             }
-            .into());
-        }
 
-        let mut changes = Vec::new();
-        if !events.is_empty() {
-            let mut turn_ids = BTreeSet::new();
-            let mut message_ids = BTreeSet::new();
-            for event in &events {
-                collect_change_ids(&event.data, &mut turn_ids, &mut message_ids, 0);
-            }
-            turn_ids.extend(assigned_turn_ids_tx(&transaction, agent_id, &message_ids)?);
+            let mut changes = Vec::new();
+            if !events.is_empty() {
+                let mut turn_ids = BTreeSet::new();
+                let mut message_ids = BTreeSet::new();
+                for event in &events {
+                    collect_change_ids(&event.data, &mut turn_ids, &mut message_ids, 0);
+                }
+                turn_ids.extend(assigned_turn_ids_tx(&transaction, agent_id, &message_ids)?);
 
-            let pending_inputs = pending_input_rows(&transaction, agent_id)?;
-            let pending_ids = pending_inputs
-                .iter()
-                .map(|input| input.message_id.clone())
-                .collect::<BTreeSet<_>>();
-            changes.extend(
-                pending_inputs
-                    .into_iter()
-                    .map(|input| ConversationChange::OperatorUpsert { input }),
-            );
-            for message_id in message_ids {
-                if !pending_ids.contains(&message_id) {
-                    changes.push(ConversationChange::OperatorRemove {
-                        revision: source_revision(
+                let pending_inputs = pending_input_rows(&transaction, agent_id)?;
+                let pending_ids = pending_inputs
+                    .iter()
+                    .map(|input| input.message_id.clone())
+                    .collect::<BTreeSet<_>>();
+                changes.extend(
+                    pending_inputs
+                        .into_iter()
+                        .map(|input| ConversationChange::OperatorUpsert { input }),
+                );
+                for message_id in message_ids {
+                    if !pending_ids.contains(&message_id) {
+                        changes.push(ConversationChange::OperatorRemove {
+                            revision: source_revision(
+                                &transaction,
+                                SOURCE_OPERATOR,
+                                &message_id,
+                                agent_id,
+                            )?,
+                            message_id,
+                        });
+                    }
+                }
+
+                for turn in active_turn_rows(&transaction, agent_id)? {
+                    turn_ids.insert(turn.turn_id);
+                }
+                let mut remaining_activity_limit = activity_limit;
+                for turn_id in turn_ids {
+                    let Some((turn, detail_revision)) =
+                        turn_summary_by_id(&transaction, agent_id, &turn_id)?
+                    else {
+                        continue;
+                    };
+                    let active = matches!(turn.execution, ExecutionState::Active);
+                    changes.push(ConversationChange::TurnSummaryUpsert { turn });
+                    if active && remaining_activity_limit > 0 {
+                        if let Some(page) = activities_in(
                             &transaction,
-                            SOURCE_OPERATOR,
-                            &message_id,
                             agent_id,
-                        )?,
-                        message_id,
+                            &turn_id,
+                            remaining_activity_limit,
+                            None,
+                            None,
+                        )? {
+                            if !page.has_more {
+                                remaining_activity_limit =
+                                    remaining_activity_limit.saturating_sub(page.activities.len());
+                                changes.extend(page.activities.into_iter().map(|activity| {
+                                    ConversationChange::ActivityUpsert {
+                                        turn_id: turn_id.clone(),
+                                        activity,
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                    changes.push(ConversationChange::DetailInvalidated {
+                        turn_id,
+                        detail_revision,
                     });
                 }
             }
 
-            for turn in active_turn_rows(&transaction, agent_id)? {
-                turn_ids.insert(turn.turn_id);
-            }
-            let mut remaining_activity_limit = activity_limit;
-            for turn_id in turn_ids {
-                let Some((turn, detail_revision)) =
-                    turn_summary_by_id(&transaction, agent_id, &turn_id)?
-                else {
-                    continue;
-                };
-                let active = matches!(turn.execution, ExecutionState::Active);
-                changes.push(ConversationChange::TurnSummaryUpsert { turn });
-                if active && remaining_activity_limit > 0 {
-                    if let Some(page) = activities_in(
-                        &transaction,
-                        agent_id,
-                        &turn_id,
-                        remaining_activity_limit,
-                        None,
-                        None,
-                    )? {
-                        if !page.has_more {
-                            remaining_activity_limit =
-                                remaining_activity_limit.saturating_sub(page.activities.len());
-                            changes.extend(page.activities.into_iter().map(|activity| {
-                                ConversationChange::ActivityUpsert {
-                                    turn_id: turn_id.clone(),
-                                    activity,
-                                }
-                            }));
-                        }
-                    }
-                }
-                changes.push(ConversationChange::DetailInvalidated {
-                    turn_id,
-                    detail_revision,
-                });
-            }
-        }
-
-        let checkpoint = codec.encode(&StreamCursor {
-            binding,
-            event_seq: context.event_head_seq,
-        });
-        transaction.commit()?;
-        Ok(Some(ConversationChangeBatch {
-            identity: context.identity,
-            runtime_id: context.runtime_id,
-            event_log_epoch: context.event_log_epoch,
-            visibility_scope_id: context.visibility_scope_id,
-            from_seq,
-            through_seq: context.event_head_seq,
-            oldest_retained_seq: context.oldest_retained_seq,
-            checkpoint,
-            changes,
-        }))
+            let checkpoint = codec.encode(&StreamCursor {
+                binding,
+                event_seq: context.event_head_seq,
+            });
+            transaction.commit()?;
+            Ok(Some(ConversationChangeBatch {
+                identity: context.identity,
+                runtime_id: context.runtime_id,
+                event_log_epoch: context.event_log_epoch,
+                visibility_scope_id: context.visibility_scope_id,
+                from_seq,
+                through_seq: context.event_head_seq,
+                oldest_retained_seq: context.oldest_retained_seq,
+                checkpoint,
+                changes,
+            }))
+        })
     }
 }
 

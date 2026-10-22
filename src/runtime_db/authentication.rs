@@ -59,31 +59,33 @@ impl AuthenticationRepository<'_> {
     }
 
     pub fn find_user(&self, issuer: &str, subject: &str) -> Result<Option<AuthUserRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT user_id, issuer, subject, display_name, email,
-                        created_at, updated_at, disabled_at
-                 FROM auth_users WHERE issuer = ?1 AND subject = ?2",
-                params![issuer, subject],
-                row_to_user,
-            )
-            .optional()
-            .context("looking up authenticated user")
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT user_id, issuer, subject, display_name, email,
+                            created_at, updated_at, disabled_at
+                     FROM auth_users WHERE issuer = ?1 AND subject = ?2",
+                    params![issuer, subject],
+                    row_to_user,
+                )
+                .optional()
+                .context("looking up authenticated user")
+        })
     }
 
     pub fn find_user_by_id(&self, user_id: &str) -> Result<Option<AuthUserRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT user_id, issuer, subject, display_name, email,
-                        created_at, updated_at, disabled_at
-                 FROM auth_users WHERE user_id = ?1",
-                [user_id],
-                row_to_user,
-            )
-            .optional()
-            .context("looking up authenticated user by id")
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT user_id, issuer, subject, display_name, email,
+                            created_at, updated_at, disabled_at
+                     FROM auth_users WHERE user_id = ?1",
+                    [user_id],
+                    row_to_user,
+                )
+                .optional()
+                .context("looking up authenticated user by id")
+        })
     }
 
     pub fn create_session(&self, session: &AuthSessionRecord) -> Result<()> {
@@ -108,17 +110,18 @@ impl AuthenticationRepository<'_> {
     }
 
     pub fn find_session(&self, session_digest: &str) -> Result<Option<AuthSessionRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT session_digest, user_id, auth_method,
-                        created_at, expires_at, last_seen_at, revoked_at
-                 FROM auth_sessions WHERE session_digest = ?1",
-                [session_digest],
-                row_to_session,
-            )
-            .optional()
-            .context("looking up authentication session")
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT session_digest, user_id, auth_method,
+                            created_at, expires_at, last_seen_at, revoked_at
+                     FROM auth_sessions WHERE session_digest = ?1",
+                    [session_digest],
+                    row_to_session,
+                )
+                .optional()
+                .context("looking up authentication session")
+        })
     }
 
     pub fn touch_session(&self, session_digest: &str, last_seen_at: DateTime<Utc>) -> Result<bool> {

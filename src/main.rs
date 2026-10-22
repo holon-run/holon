@@ -1518,17 +1518,23 @@ fn ensure_socket_parent(socket_path: &Path) -> Result<()> {
 }
 
 fn spawn_stale_agent_template_remote_source_sync(config: &AppConfig, host: &RuntimeHost) {
-    let sync_candidates = stale_agent_template_remote_source_sync_candidates(
-        &config.stored_config.agent_templates,
-        host.runtime_db(),
-    );
-    if sync_candidates.is_empty() {
-        return;
-    }
-
+    let templates_config = config.stored_config.agent_templates.clone();
     let db = host.runtime_db().clone();
     let user_home = config.home_dir.clone();
     tokio::spawn(async move {
+        let sync_candidates =
+            match stale_agent_template_remote_source_sync_candidates(templates_config, db.clone())
+                .await
+            {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "failed to inspect agent template remote source startup sync candidates"
+                    );
+                    return;
+                }
+            };
         for (source_id, source_config) in sync_candidates {
             if let Err(error) = holon::agent_template::sync_agent_template_remote_source(
                 &db,
@@ -1539,14 +1545,21 @@ fn spawn_stale_agent_template_remote_source_sync(config: &AppConfig, host: &Runt
             .await
             {
                 let message = error.to_string();
-                if let Err(record_error) =
+                let failure_db = db.clone();
+                let failure_source_id = source_id.clone();
+                let failure_config = source_config.clone();
+                let record_result = tokio::task::spawn_blocking(move || {
                     holon::agent_template::record_agent_template_remote_source_sync_failure(
-                        &db,
-                        &source_id,
-                        &source_config,
+                        &failure_db,
+                        &failure_source_id,
+                        &failure_config,
                         &message,
                     )
-                {
+                })
+                .await
+                .map_err(|err| anyhow!("remote source sync failure recorder worker failed: {err}"))
+                .and_then(|result| result);
+                if let Err(record_error) = record_result {
                     warn!(
                         source_id = %source_id,
                         error = %record_error,
@@ -1563,34 +1576,38 @@ fn spawn_stale_agent_template_remote_source_sync(config: &AppConfig, host: &Runt
     });
 }
 
-fn stale_agent_template_remote_source_sync_candidates(
-    config: &AgentTemplatesConfigFile,
-    db: &RuntimeDb,
-) -> Vec<(String, AgentTemplateRemoteSourceConfigFile)> {
-    holon::agent_template::effective_agent_template_remote_sources(config)
-        .into_iter()
-        .filter_map(|(source_id, source_config)| {
-            if !source_config.enabled() {
-                return None;
-            }
-            match holon::agent_template::agent_template_remote_source_needs_sync(
-                db,
-                &source_id,
-                chrono::Duration::hours(24),
-            ) {
-                Ok(true) => Some((source_id, source_config)),
-                Ok(false) => None,
-                Err(error) => {
-                    warn!(
-                        source_id = %source_id,
-                        error = %error,
-                        "failed to inspect agent template remote source sync state"
-                    );
-                    None
+async fn stale_agent_template_remote_source_sync_candidates(
+    config: AgentTemplatesConfigFile,
+    db: RuntimeDb,
+) -> Result<Vec<(String, AgentTemplateRemoteSourceConfigFile)>> {
+    tokio::task::spawn_blocking(move || {
+        holon::agent_template::effective_agent_template_remote_sources(&config)
+            .into_iter()
+            .filter_map(|(source_id, source_config)| {
+                if !source_config.enabled() {
+                    return None;
                 }
-            }
-        })
-        .collect()
+                match holon::agent_template::agent_template_remote_source_needs_sync(
+                    &db,
+                    &source_id,
+                    chrono::Duration::hours(24),
+                ) {
+                    Ok(true) => Some((source_id, source_config)),
+                    Ok(false) => None,
+                    Err(error) => {
+                        warn!(
+                            source_id = %source_id,
+                            error = %error,
+                            "failed to inspect agent template remote source sync state"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
+    })
+    .await
+    .context("agent template remote source startup sync candidate worker failed")
 }
 
 async fn wait_for_shutdown(mut shutdown: tokio::sync::watch::Receiver<bool>) {
@@ -2245,8 +2262,8 @@ mod tests {
         assert_eq!(serve_launch.control_token_env, None);
     }
 
-    #[test]
-    fn stale_template_remote_source_startup_sync_candidates_include_official_when_needed() {
+    #[tokio::test]
+    async fn stale_template_remote_source_startup_sync_candidates_include_official_when_needed() {
         let home = tempfile::tempdir().unwrap();
         let db = RuntimeDb::open_and_migrate(
             home.path().join("runtime.sqlite"),
@@ -2255,15 +2272,18 @@ mod tests {
         .unwrap();
         let config = AgentTemplatesConfigFile::default();
 
-        let candidates = stale_agent_template_remote_source_sync_candidates(&config, &db);
+        let candidates = stale_agent_template_remote_source_sync_candidates(config, db)
+            .await
+            .unwrap();
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, "official");
         assert_eq!(candidates[0].1.url, "https://github.com/holon-run/holon");
     }
 
-    #[test]
-    fn stale_template_remote_source_startup_sync_candidates_skip_recent_and_disabled_sources() {
+    #[tokio::test]
+    async fn stale_template_remote_source_startup_sync_candidates_skip_recent_and_disabled_sources()
+    {
         let home = tempfile::tempdir().unwrap();
         let db = RuntimeDb::open_and_migrate(
             home.path().join("runtime.sqlite"),
@@ -2294,9 +2314,49 @@ mod tests {
             },
         );
 
-        let candidates = stale_agent_template_remote_source_sync_candidates(&config, &db);
+        let candidates = stale_agent_template_remote_source_sync_candidates(config, db)
+            .await
+            .unwrap();
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn stale_template_remote_source_startup_sync_candidates_wait_for_blocking_worker() {
+        let home = tempfile::tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        runtime.block_on(async move {
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let worker = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            started_rx.await.unwrap();
+            let pending = stale_agent_template_remote_source_sync_candidates(
+                AgentTemplatesConfigFile::default(),
+                db,
+            );
+            tokio::pin!(pending);
+            tokio::select! {
+                biased;
+                result = &mut pending => panic!("candidate inspection must wait for a blocking worker: {result:?}"),
+                _ = std::future::ready(()) => {}
+            }
+            release_tx.send(()).unwrap();
+            worker.await.unwrap();
+            let candidates = pending.await.unwrap();
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].0, "official");
+        });
     }
 
     #[test]

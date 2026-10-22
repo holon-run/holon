@@ -903,14 +903,19 @@ pub fn load_remote_template_catalog_snapshot(
     db: &RuntimeDb,
     configured_sources: &BTreeMap<String, AgentTemplateRemoteSourceConfigFile>,
 ) -> Result<AgentTemplateRemoteCatalogSnapshot> {
-    let connection = db.connection()?;
+    let rows = db.with_read(|connection| {
+        configured_sources
+            .keys()
+            .map(|source_id| load_remote_source_stored_row(connection, source_id))
+            .collect::<Result<Vec<_>>>()
+    })?;
     let catalog = Vec::new();
     let mut sources = Vec::new();
     let mut diagnostics = Vec::new();
 
-    for (source_id, config) in configured_sources {
+    for ((source_id, config), row) in configured_sources.iter().zip(rows) {
         let enabled = config.enabled();
-        let Some(row) = load_remote_source_row(&connection, source_id)? else {
+        let Some(row) = row.map(RemoteSourceStoredRow::decode).transpose()? else {
             let status = if enabled {
                 AgentTemplateRemoteSourceSyncStatus::NotSynced
             } else {
@@ -961,8 +966,7 @@ pub fn agent_template_remote_source_needs_sync(
     source_id: &str,
     stale_after: chrono::Duration,
 ) -> Result<bool> {
-    let connection = db.connection()?;
-    let Some(row) = load_remote_source_row(&connection, source_id)? else {
+    let Some(row) = load_remote_source_row(db, source_id)? else {
         return Ok(true);
     };
     if row.status != AgentTemplateRemoteSourceSyncStatus::Synced {
@@ -1001,11 +1005,55 @@ struct RemoteSourceDbRow {
     next_retry_at: Option<DateTime<Utc>>,
 }
 
-fn load_remote_source_row(
+fn load_remote_source_row(db: &RuntimeDb, source_id: &str) -> Result<Option<RemoteSourceDbRow>> {
+    db.with_read(|connection| load_remote_source_stored_row(connection, source_id))?
+        .map(RemoteSourceStoredRow::decode)
+        .transpose()
+}
+
+struct RemoteSourceStoredRow {
+    kind: String,
+    status: String,
+    last_synced_at: Option<String>,
+    resolved_ref: Option<String>,
+    resolved_revision: Option<String>,
+    catalog_json: String,
+    diagnostics_json: String,
+    error: Option<String>,
+    next_retry_at: Option<String>,
+}
+
+impl RemoteSourceStoredRow {
+    fn decode(self) -> Result<RemoteSourceDbRow> {
+        Ok(RemoteSourceDbRow {
+            kind: self.kind,
+            status: parse_remote_source_sync_status(&self.status),
+            last_synced_at: self
+                .last_synced_at
+                .map(|value| value.parse())
+                .transpose()
+                .context("failed to parse remote source last_synced_at")?,
+            resolved_ref: self.resolved_ref,
+            resolved_revision: self.resolved_revision,
+            catalog: serde_json::from_str(&self.catalog_json)
+                .context("failed to decode remote template catalog_json")?,
+            diagnostics: serde_json::from_str(&self.diagnostics_json)
+                .context("failed to decode remote template diagnostics_json")?,
+            error: self.error,
+            next_retry_at: self
+                .next_retry_at
+                .map(|value| value.parse())
+                .transpose()
+                .context("failed to parse remote source next_retry_at")?,
+        })
+    }
+}
+
+fn load_remote_source_stored_row(
     connection: &rusqlite::Connection,
     source_id: &str,
-) -> Result<Option<RemoteSourceDbRow>> {
-    connection
+) -> Result<Option<RemoteSourceStoredRow>> {
+    Ok(connection
         .query_row(
             "SELECT kind, status, last_synced_at, resolved_ref, resolved_revision, catalog_json, diagnostics_json, error, next_retry_at \
              FROM agent_template_remote_source_syncs WHERE source_id = ?1",
@@ -1015,54 +1063,20 @@ fn load_remote_source_row(
                 let last_synced_at: Option<String> = row.get(2)?;
                 let catalog_json: String = row.get(5)?;
                 let diagnostics_json: String = row.get(6)?;
-                Ok((
-                    row.get::<_, String>(0)?,
+                Ok(RemoteSourceStoredRow {
+                    kind: row.get::<_, String>(0)?,
                     status,
                     last_synced_at,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    resolved_ref: row.get::<_, Option<String>>(3)?,
+                    resolved_revision: row.get::<_, Option<String>>(4)?,
                     catalog_json,
                     diagnostics_json,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            },
-        )
-        .optional()?
-        .map(
-            |(
-                kind,
-                status,
-                last_synced_at,
-                resolved_ref,
-                resolved_revision,
-                catalog_json,
-                diagnostics_json,
-                error,
-                next_retry_at,
-            )| {
-                Ok(RemoteSourceDbRow {
-                    kind,
-                    status: parse_remote_source_sync_status(&status),
-                    last_synced_at: last_synced_at
-                        .map(|value| value.parse())
-                        .transpose()
-                        .context("failed to parse remote source last_synced_at")?,
-                    resolved_ref,
-                    resolved_revision,
-                    catalog: serde_json::from_str(&catalog_json)
-                        .context("failed to decode remote template catalog_json")?,
-                    diagnostics: serde_json::from_str(&diagnostics_json)
-                        .context("failed to decode remote template diagnostics_json")?,
-                    error,
-                    next_retry_at: next_retry_at
-                        .map(|value| value.parse())
-                        .transpose()
-                        .context("failed to parse remote source next_retry_at")?,
+                    error: row.get::<_, Option<String>>(7)?,
+                    next_retry_at: row.get::<_, Option<String>>(8)?,
                 })
             },
         )
-        .transpose()
+        .optional()?)
 }
 
 fn parse_remote_source_sync_status(value: &str) -> AgentTemplateRemoteSourceSyncStatus {
@@ -1224,15 +1238,8 @@ pub fn record_agent_template_remote_source_sync_failure(
     config: &AgentTemplateRemoteSourceConfigFile,
     error: &str,
 ) -> Result<AgentTemplateRemoteSourceStatus> {
-    let previous_catalog = db
-        .connection()
-        .ok()
-        .and_then(|connection| {
-            load_remote_source_row(&connection, source_id)
-                .ok()
-                .flatten()
-                .map(|row| row.catalog)
-        })
+    let previous_catalog = load_remote_source_row(db, source_id)?
+        .map(|row| row.catalog)
         .unwrap_or_default();
     let diagnostic = AgentTemplateCatalogDiagnostic {
         source_id: source_id.to_string(),
@@ -4576,6 +4583,185 @@ uses = "owner/repo/skills/demo@main"
             chrono::Duration::hours(24)
         )
         .unwrap());
+    }
+
+    fn remote_source_reader_fixture() -> Result<(
+        tempfile::TempDir,
+        RuntimeDb,
+        AgentTemplateRemoteSourceConfigFile,
+    )> {
+        let home = tempdir()?;
+        let mut db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.sqlite.lock"),
+        )?;
+        db.configure_reader_pool_for_tests(1, Duration::from_millis(100))?;
+        let config = AgentTemplateRemoteSourceConfigFile {
+            url: "https://github.com/owner/repo".into(),
+            git_ref: Some("main".into()),
+            enabled: Some(true),
+            credential_profile: None,
+        };
+        let status = AgentTemplateRemoteSourceStatus {
+            source_id: "official".into(),
+            kind: "github".into(),
+            url: config.url.clone(),
+            requested_ref: config.git_ref.clone(),
+            enabled: true,
+            status: AgentTemplateRemoteSourceSyncStatus::Synced,
+            last_synced_at: Some(Utc::now()),
+            resolved_ref: Some("main".into()),
+            resolved_revision: Some("abc123".into()),
+            error: None,
+        };
+        let catalog = [AgentTemplateCatalogEntry {
+            catalog_id: "remote:official:worker".into(),
+            template: "remote:official:worker".into(),
+            template_id: "worker".into(),
+            source: AgentTemplateSourceKind::Remote,
+            path: None,
+            name: "Worker".into(),
+            schema_version: None,
+            description: String::new(),
+            included_skills: Vec::new(),
+            source_id: Some("official".into()),
+            resolved_ref: Some("main".into()),
+            resolved_revision: Some("abc123".into()),
+            source_url: None,
+        }];
+        upsert_remote_source_sync(&db, &status, &catalog, &[])?;
+        Ok((home, db, config))
+    }
+
+    fn remote_source_stored_payload(db: &RuntimeDb) -> Result<(String, String, String, i64)> {
+        db.with_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT status, catalog_json, diagnostics_json, retry_count \
+                 FROM agent_template_remote_source_syncs WHERE source_id = 'official'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+    }
+
+    #[test]
+    fn remote_source_readers_reuse_capacity_one_and_release_before_failure_write() -> Result<()> {
+        let (_home, db, config) = remote_source_reader_fixture()?;
+        let sources = BTreeMap::from([("official".into(), config.clone())]);
+        let catalog = load_remote_source_row(&db, "official")?.unwrap().catalog;
+        assert!(!catalog.is_empty());
+        for _ in 0..3 {
+            assert_eq!(
+                load_remote_template_catalog_snapshot(&db, &sources)?
+                    .sources
+                    .len(),
+                1
+            );
+            assert!(!agent_template_remote_source_needs_sync(
+                &db,
+                "official",
+                chrono::Duration::hours(24),
+            )?);
+            record_agent_template_remote_source_sync_failure(
+                &db,
+                "official",
+                &config,
+                "temporary failure",
+            )?;
+            assert_eq!(
+                load_remote_source_row(&db, "official")?.unwrap().catalog,
+                catalog
+            );
+        }
+        record_agent_template_remote_source_sync_failure(&db, "missing", &config, "first failure")?;
+        assert!(load_remote_source_row(&db, "missing")?
+            .unwrap()
+            .catalog
+            .is_empty());
+        assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn remote_source_reader_saturation_propagates_without_overwriting_catalog() -> Result<()> {
+        let (_home, db, config) = remote_source_reader_fixture()?;
+        let sources = BTreeMap::from([("official".into(), config.clone())]);
+        let before = remote_source_stored_payload(&db)?;
+        let worker_db = db.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            worker_db.with_read(|_| {
+                started_tx.send(())?;
+                release_rx.recv_timeout(Duration::from_secs(10))?;
+                Ok(())
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(5))?;
+        let reads = [
+            (
+                "snapshot",
+                load_remote_template_catalog_snapshot(&db, &sources).map(drop),
+            ),
+            (
+                "empty snapshot",
+                load_remote_template_catalog_snapshot(&db, &BTreeMap::new()).map(drop),
+            ),
+            (
+                "needs sync",
+                agent_template_remote_source_needs_sync(
+                    &db,
+                    "official",
+                    chrono::Duration::hours(24),
+                )
+                .map(drop),
+            ),
+            (
+                "failure recorder",
+                record_agent_template_remote_source_sync_failure(
+                    &db, "official", &config, "failed",
+                )
+                .map(drop),
+            ),
+        ];
+        release_tx.send(())?;
+        worker.join().expect("reader thread panicked")?;
+        for (name, result) in reads {
+            let error = result.expect_err(name);
+            assert!(
+                error
+                    .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                    .is_some(),
+                "{name}: {error:#}",
+            );
+        }
+        assert_eq!(remote_source_stored_payload(&db)?, before);
+        assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn remote_source_decode_failure_does_not_overwrite_catalog() -> Result<()> {
+        let (_home, db, config) = remote_source_reader_fixture()?;
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE agent_template_remote_source_syncs SET diagnostics_json = 'invalid json' \
+                 WHERE source_id = 'official'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let before = remote_source_stored_payload(&db)?;
+        let error =
+            record_agent_template_remote_source_sync_failure(&db, "official", &config, "failed")
+                .expect_err("a decode failure must not replace a stored catalog with an empty one");
+        assert!(
+            format!("{error:#}").contains("failed to decode remote template diagnostics_json"),
+            "{error:#}",
+        );
+        assert_eq!(remote_source_stored_payload(&db)?, before);
+        assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+        Ok(())
     }
 
     #[tokio::test]

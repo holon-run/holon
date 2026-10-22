@@ -728,28 +728,29 @@ impl TaskResultSettlementRepository<'_> {
         agent_id: &str,
         activation_id: &str,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM task_result_settlements
              WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'
              ORDER BY created_at ASC, result_identity ASC",
-        )?;
-        let rows = statement.query_map(params![agent_id, activation_id], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| {
-            let payload = row?;
-            serde_json::from_str(&payload).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
+            )?;
+            let rows = statement.query_map(params![agent_id, activation_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.map(|row| {
+                let payload = row?;
+                serde_json::from_str(&payload).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
             })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
         })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
     }
 
     pub(crate) fn admit_message(
@@ -937,9 +938,9 @@ impl TaskResultSettlementRepository<'_> {
         now: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM task_result_settlements
              WHERE agent_id = ?1
                AND recovery_paused_at IS NULL
@@ -960,21 +961,23 @@ impl TaskResultSettlementRepository<'_> {
                )
              ORDER BY next_recheck_at ASC, created_at ASC, result_identity ASC
              LIMIT ?3",
-        )?;
-        let rows = statement.query_map(params![agent_id, timestamp(now), limit as i64], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| {
-            serde_json::from_str(&row?).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
+            )?;
+            let rows = statement
+                .query_map(params![agent_id, timestamp(now), limit as i64], |row| {
+                    row.get::<_, String>(0)
+                })?;
+            rows.map(|row| {
+                serde_json::from_str(&row?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
             })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
         })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
     }
 
     pub(crate) fn unsettled_for_agent(
@@ -982,9 +985,9 @@ impl TaskResultSettlementRepository<'_> {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM task_result_settlements
              WHERE agent_id = ?1
                AND (
@@ -1002,21 +1005,22 @@ impl TaskResultSettlementRepository<'_> {
                )
              ORDER BY created_at ASC, result_identity ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit as i64], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| {
-            serde_json::from_str(&row?).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
+            )?;
+            let rows = statement.query_map(params![agent_id, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.map(|row| {
+                serde_json::from_str(&row?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
             })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
         })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
     }
 
     pub(crate) fn unsettled_for_owner(
@@ -1025,9 +1029,9 @@ impl TaskResultSettlementRepository<'_> {
         work_item_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM task_result_settlements
              WHERE agent_id = ?1
                AND work_item_id IS ?2
@@ -1046,27 +1050,29 @@ impl TaskResultSettlementRepository<'_> {
                )
              ORDER BY (recovery_paused_at IS NOT NULL), created_at ASC, result_identity ASC
              LIMIT ?3",
-        )?;
-        let rows = statement.query_map(params![agent_id, work_item_id, limit as i64], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| {
-            serde_json::from_str(&row?).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
+            )?;
+            let rows = statement
+                .query_map(params![agent_id, work_item_id, limit as i64], |row| {
+                    row.get::<_, String>(0)
+                })?;
+            rows.map(|row| {
+                serde_json::from_str(&row?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
             })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
         })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
     }
 
     pub(crate) fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
-        let connection = self.db.connection()?;
-        let value = connection.query_row(
-            "SELECT MIN(next_recheck_at)
+        self.db.with_read(|connection| {
+            let value = connection.query_row(
+                "SELECT MIN(next_recheck_at)
              FROM task_result_settlements
              WHERE agent_id = ?1
                AND recovery_paused_at IS NULL
@@ -1084,23 +1090,24 @@ impl TaskResultSettlementRepository<'_> {
                    )
                  )
                )",
-            params![agent_id],
-            |row| row.get::<_, Option<String>>(0),
-        )?;
-        value
-            .map(|value| {
-                DateTime::parse_from_rfc3339(&value).map(|value| value.with_timezone(&Utc))
-            })
-            .transpose()
-            .map_err(Into::into)
+                params![agent_id],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            value
+                .map(|value| {
+                    DateTime::parse_from_rfc3339(&value).map(|value| value.with_timezone(&Utc))
+                })
+                .transpose()
+                .map_err(Into::into)
+        })
     }
 
     pub(crate) fn latest_for_message(
         &self,
         message_id: &str,
     ) -> Result<Option<TaskResultSettlementRecord>> {
-        let connection = self.db.connection()?;
-        latest_for_message_connection(&connection, message_id)
+        self.db
+            .with_read(|connection| latest_for_message_connection(connection, message_id))
     }
 }
 

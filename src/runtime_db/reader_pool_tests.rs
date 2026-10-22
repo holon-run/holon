@@ -36,6 +36,243 @@ fn healthy_readers_reuse_one_connection_across_ten_thousand_calls_and_clones() -
     Ok(())
 }
 
+fn read_repository_bundle(db: &RuntimeDb) -> Result<()> {
+    assert!(db.work_items().latest("missing-item")?.is_none());
+    assert!(db.tasks().latest("missing-task")?.is_none());
+    assert!(db.queue_entries().latest("missing-message")?.is_none());
+    assert!(db.wait_conditions().for_turn("missing", "turn")?.is_empty());
+    assert!(db.wait_conditions().active_for_agent("missing")?.is_empty());
+    assert!(db
+        .wait_conditions()
+        .unresolved_for_agent("missing")?
+        .is_empty());
+    assert!(db.wait_conditions().active_all()?.is_empty());
+    assert!(db
+        .work_item_continuations()
+        .active_for_agent("missing")?
+        .is_empty());
+    assert!(db
+        .transitions()
+        .execution_attempt_by_id("missing", "attempt")?
+        .is_none());
+    assert!(db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("missing")?
+        .is_none());
+    let settlements = db.task_result_settlements();
+    assert!(settlements
+        .admitted_for_activation("missing", "activation")?
+        .is_empty());
+    assert!(settlements
+        .due_deferred("missing", chrono::Utc::now(), 10)?
+        .is_empty());
+    assert!(settlements.unsettled_for_agent("missing", 10)?.is_empty());
+    assert!(settlements
+        .unsettled_for_owner("missing", None, 10)?
+        .is_empty());
+    assert!(settlements.next_recheck_at("missing")?.is_none());
+    assert!(settlements.latest_for_message("missing")?.is_none());
+    let outbox = db.runtime_index_outbox();
+    assert_eq!(outbox.produced_watermark_for_agent("missing")?, 0);
+    assert_eq!(outbox.pending_count_for_agent("missing", 0)?, 0);
+    assert!(outbox.read_after("missing", 0, 10)?.is_empty());
+    assert!(db
+        .authentication()
+        .find_user("issuer", "subject")?
+        .is_none());
+    assert!(db.agent_message_deliveries().latest("missing")?.is_none());
+    assert!(db.agent_canonical_relations().latest("missing")?.is_none());
+    assert!(db
+        .conversation()
+        .brief_snapshot("missing", "brief")?
+        .is_none());
+    assert!(db.subagent_cleanup_candidates("missing", 10)?.is_empty());
+    assert!(!db.runtime_id()?.is_empty());
+    assert!(!db.event_log_epoch()?.is_empty());
+    db.visibility_policy_generation()?;
+    db.provider_quota_incident("missing")?;
+    db.agent_roster_snapshot_rows()?;
+    db.agent_projection_snapshot_rows("missing")?;
+    db.agent_event_recovery_window(Some("missing"))?;
+    Ok(())
+}
+
+#[test]
+fn migrated_repositories_share_capacity_one_and_release_snapshots() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    for _ in 0..20 {
+        read_repository_bundle(&db)?;
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    let item = crate::types::WorkItemRecord::new(
+        "pool-agent",
+        "committed after warm reads",
+        crate::types::WorkItemState::Open,
+    );
+    db.work_items().insert_new(&item)?;
+    assert_eq!(db.work_items().latest(&item.id)?, Some(item));
+    read_repository_bundle(&db)?;
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
+#[test]
+fn migrated_repository_saturation_never_becomes_missing_or_success() -> Result<()> {
+    let (_directory, mut db) = fixture(1)?;
+    db.configure_reader_pool_for_tests(1, Duration::from_millis(25))?;
+    let worker_db = db.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        worker_db.with_read(|_| {
+            started_tx.send(())?;
+            release_rx.recv_timeout(Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    started_rx.recv_timeout(Duration::from_secs(5))?;
+    let reads = [
+        ("work item", db.work_items().latest("missing").map(drop)),
+        ("task", db.tasks().latest("missing").map(drop)),
+        ("queue", db.queue_entries().latest("missing").map(drop)),
+        (
+            "wait",
+            db.wait_conditions().active_for_agent("missing").map(drop),
+        ),
+        ("all waits", db.wait_conditions().active_all().map(drop)),
+        (
+            "protocol",
+            db.transitions()
+                .load_execution_protocol_state_if_initialized("missing")
+                .map(drop),
+        ),
+        (
+            "authority",
+            db.transitions()
+                .load_execution_authority_fences("missing")
+                .map(drop),
+        ),
+        (
+            "outbox",
+            db.runtime_index_outbox()
+                .produced_watermark_for_agent("missing")
+                .map(drop),
+        ),
+        (
+            "outbox ack precheck",
+            db.runtime_index_outbox()
+                .delete_acknowledged_through("missing", 0)
+                .map(drop),
+        ),
+        (
+            "authentication",
+            db.authentication().find_user("issuer", "subject").map(drop),
+        ),
+        (
+            "conversation",
+            db.conversation()
+                .brief_snapshot("missing", "brief")
+                .map(drop),
+        ),
+        (
+            "relations",
+            db.agent_canonical_relations().latest("missing").map(drop),
+        ),
+        (
+            "cleanup",
+            db.subagent_cleanup_candidates("missing", 10).map(drop),
+        ),
+        ("roster", db.agent_roster_snapshot_rows().map(drop)),
+        (
+            "projection",
+            db.agent_projection_snapshot_rows("missing").map(drop),
+        ),
+        ("metadata", db.runtime_id().map(drop)),
+    ];
+    release_tx.send(())?;
+    worker.join().expect("reader thread panicked")?;
+    for (name, result) in reads {
+        let error = result.expect_err(name);
+        assert!(
+            error.downcast_ref::<RuntimeDbRetryableError>().is_some(),
+            "{name}: {error:#}"
+        );
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    read_repository_bundle(&db)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn outbox_async_discovery_reuses_readers_and_propagates_saturation() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let item = crate::types::WorkItemRecord::new(
+        "pool-agent",
+        "outbox discovery",
+        crate::types::WorkItemState::Open,
+    );
+    let change = super::index_outbox::RuntimeIndexChange {
+        agent_id: item.agent_id.clone(),
+        source_kind: "work_item".into(),
+        source_id: item.id.clone(),
+        source_ref: format!("work_item:{}", item.id),
+        operation: super::index_outbox::RuntimeIndexOperation::Upsert,
+        source_updated_at: Some(item.updated_at),
+        reason: "reader_pool_test".into(),
+    };
+    assert!(db
+        .work_items()
+        .insert_new_with_index_changes(&item, &[change])?);
+    let pending = db.runtime_index_outbox().agent_ids_with_pending()?;
+    let watermarks = db.runtime_index_outbox().agent_ids_with_watermarks()?;
+    assert_eq!(pending, vec!["pool-agent".to_string()]);
+    assert_eq!(watermarks, pending);
+    for _ in 0..10 {
+        assert_eq!(
+            db.runtime_index_outbox()
+                .agent_ids_with_pending_async()
+                .await?,
+            pending
+        );
+        assert_eq!(
+            db.runtime_index_outbox()
+                .agent_ids_with_watermarks_async()
+                .await?,
+            watermarks
+        );
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    let worker_db = db.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        worker_db.with_read(|_| {
+            started_tx.send(())?;
+            release_rx.recv_timeout(Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    started_rx.recv_timeout(Duration::from_secs(5))?;
+    let pending = db
+        .runtime_index_outbox()
+        .agent_ids_with_pending_async()
+        .await;
+    let watermarks = db
+        .runtime_index_outbox()
+        .agent_ids_with_watermarks_async()
+        .await;
+    release_tx.send(())?;
+    worker.join().expect("reader thread panicked")?;
+    for result in [pending, watermarks] {
+        assert!(result
+            .expect_err("saturation must not become an empty agent set")
+            .downcast_ref::<RuntimeDbRetryableError>()
+            .is_some());
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
 #[test]
 fn last_facade_releases_idle_readers_and_writer_protection() -> Result<()> {
     let (directory, db) = fixture(1)?;

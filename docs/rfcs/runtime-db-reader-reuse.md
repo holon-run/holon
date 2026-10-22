@@ -1,20 +1,56 @@
 # Bounded RuntimeDb reader reuse
 
-Status: stage 1 implementation for #3648, approved on 2026-10-21, including
-the explicit pool-level connection-creation retry contract below. The fixed
-pre-pool benchmark is complete. No production rollout authorization.
+Status: stage 1 merged in #3662; the remaining-read P0/P1 implementation was
+approved on 2026-10-21. The explicit pool-level connection-creation retry
+contract below remains unchanged. No production rollout authorization.
 
 ## Current structure and scope
 
 `RuntimeDbWriter` already reuses its dedicated connection and serializes writes.
-The batched agent-list projection already collects all roster facts in one
-deferred read transaction, but opens and closes a connection per request.
-Other repositories still use the mixed-role `RuntimeDb::connection()` API.
+The batched agent-list projection collects all roster facts in one deferred
+read transaction and now reuses a bounded reader. Before P1, most other
+repositories still used the mixed-role `RuntimeDb::connection()` API.
 
 Stage 1 adds an independently bounded read pool and migrates only the batched
-list projection. It does not change SQL selection, decoding, canonical fences,
-poll intervals, write ordering, schema, or the raw connection API. Monitor,
-wait, and outbox migration and query reduction remain separate changes.
+list projection. P1 extends the same pool to remaining runtime pure reads;
+the [method inventory and raw exceptions](../implementation-decisions/runtime-db-read-coverage.md)
+record its scope. Neither phase changes SQL selection, canonical fences, poll
+intervals, write ordering, schema, or the raw connection API. Query reduction
+and Linux sidecar-check optimization remain separate, unimplemented work.
+
+### P1 call-site integration
+
+Repository methods collect owned results inside short reader closures. Shared
+helpers take an existing connection rather than recursively checking out.
+Multi-chunk lookups release each chunk before unrelated repository calls.
+The outbox produced-watermark fallback uses its existing connection; the
+acknowledged-row preflight returns its lease before the writer transaction.
+
+Async monitor evidence and foreground task/wait reads need explicit blocking
+boundaries; daemon outbox enumeration uses asynchronous reader admission.
+Pool saturation must propagate before interpreting missing/consumed records.
+Invocation and message monitors retain responsibility on retryable reader
+failure instead of producing a terminal failure or initiating child cleanup.
+Activation preserves the underlying retryable error type and constructs its
+runtime storage on a blocking worker. A host-owned cold-activation task retains
+the handoff and registry guards through construction and registration, even when
+the requester is cancelled: construction can write storage. Temporary runtime
+handoff owns a cleanup guard, so cancellation also stops the unclaimed runtime
+and archives its ephemeral identity.
+A delivery monitor validates identity once, then retains that identity
+while observing canonical delivery evidence: a later deletion fence must produce
+the recorded cancellation rather than replace it with an identity error.
+Daemon identity discovery, reply reconciliation, and startup template candidate
+selection collect owned snapshots on blocking workers before continuing async
+work. Reconciliation settles its already-matched prefix before reporting a later
+read error or missing receipt, preserving the original per-task ordering.
+Template failure recording must preserve an existing catalog on read/decode
+failure, releasing the read lease before its normal upsert.
+
+P1 correctness, async saturation, independent review, and fixed-work A/B/A
+verification are required before publication. The synchronous microbenchmark
+alone does not validate monitor semantics or production performance. P2 is
+observation only: no sidecar protection or cache change is authorized here.
 
 ## Read contract
 

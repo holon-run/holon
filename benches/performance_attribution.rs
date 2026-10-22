@@ -166,14 +166,18 @@ fn connection_case(extra_fds: usize, operations: usize) -> Result<Value> {
     let rows = fixture.verify_rows(0, 0, 0)?;
     // Avoid last-connection-close checkpoint effects throughout measurement.
     let _held_connection = fixture.db.connection()?;
+    // SQLite may retain a raw descriptor while a pooled reader holds a lock.
+    drop(fixture.db.connection()?); // Warm up before the descriptor baseline.
     let baseline_fds = fd_count();
     let files = (0..extra_fds)
         .map(|_| std::fs::File::open("/dev/null"))
         .collect::<std::io::Result<Vec<_>>>()?;
-    drop(fixture.db.connection()?); // Warm up outside the diagnostic interval.
     let before_fds = fd_count();
     if let (Some(base), Some(before)) = (baseline_fds, before_fds) {
-        ensure!(before == base + extra_fds, "extra descriptor count");
+        ensure!(
+            before == base + extra_fds,
+            "extra descriptor count: baseline={base}, extra={extra_fds}, before={before}"
+        );
     }
     let before = performance_snapshot();
     let mut samples = Vec::with_capacity(operations);

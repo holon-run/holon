@@ -16,6 +16,93 @@ use holon::{
 use serde_json::{json, Value};
 
 pub(super) fn run(repetitions: usize) -> Result<Vec<Value>> {
+    run_workload(repetitions, Workload::List)
+}
+
+pub(super) fn run_coverage(repetitions: usize) -> Result<Vec<Value>> {
+    let mut results = Vec::new();
+    for workload in [
+        Workload::TaskWait,
+        Workload::Outbox,
+        Workload::History,
+        Workload::List,
+        Workload::Mixed,
+    ] {
+        results.extend(run_workload(repetitions, workload)?);
+    }
+    Ok(results)
+}
+
+#[derive(Clone, Copy)]
+enum Workload {
+    List,
+    TaskWait,
+    Outbox,
+    History,
+    Mixed,
+}
+
+impl Workload {
+    fn name(self) -> &'static str {
+        match self {
+            Self::List => "agent_list_control",
+            Self::TaskWait => "task_wait_queue_empty",
+            Self::Outbox => "outbox_page",
+            Self::History => "work_item_history",
+            Self::Mixed => "mixed_list_task_outbox_history",
+        }
+    }
+
+    fn read(self, db: &RuntimeDb, ids: &[String], operation: usize) -> Result<()> {
+        let id = &ids[operation % ids.len()];
+        match self {
+            Self::List => {
+                let rows = db.agent_list_posture_rows(ids)?;
+                ensure!(rows.rows.len() == ids.len(), "list row count");
+                ensure!(
+                    rows.rows.iter().zip(ids).all(|(row, id)| {
+                        row.agent_id == *id
+                            && row.agent_state_json.is_some()
+                            && row.facts.as_ref().is_ok_and(|facts| {
+                                facts.open_work_items.len() == 1
+                                    && facts.open_work_items[0].agent_id == *id
+                            })
+                    }),
+                    "list facts must not silently degrade or cross agent boundaries"
+                );
+                drop(black_box(rows));
+            }
+            Self::TaskWait => {
+                ensure!(db.tasks().latest("absent-task")?.is_none());
+                ensure!(db.queue_entries().latest("absent-message")?.is_none());
+                ensure!(db.wait_conditions().active_for_agent(id)?.is_empty());
+            }
+            Self::Outbox => {
+                let outbox = db.runtime_index_outbox();
+                ensure!(outbox.high_watermark_for_agent(id)? > 0);
+                ensure!(outbox.pending_count_for_agent(id, 0)? > 0);
+                let rows = outbox.read_after(id, 0, 64)?;
+                ensure!(!rows.is_empty() && rows.iter().all(|row| row.agent_id == *id));
+                drop(black_box(rows));
+            }
+            Self::History => {
+                let rows = db.work_items().latest_for_agent(id, 64)?;
+                ensure!(rows.len() == 1 && rows[0].agent_id == *id);
+                ensure!(db.agent_states().latest(id)?.is_some());
+                ensure!(db
+                    .work_item_continuations()
+                    .active_for_agent(id)?
+                    .is_empty());
+                drop(black_box(rows));
+            }
+            Self::Mixed => [Self::List, Self::TaskWait, Self::Outbox, Self::History][operation % 4]
+                .read(db, ids, operation)?,
+        }
+        Ok(())
+    }
+}
+
+fn run_workload(repetitions: usize, workload: Workload) -> Result<Vec<Value>> {
     let operations = std::env::var("HOLON_BENCH_READER_OPERATIONS")
         .ok()
         .map(|value| value.parse::<usize>())
@@ -48,19 +135,20 @@ pub(super) fn run(repetitions: usize) -> Result<Vec<Value>> {
             Ok(())
         })?;
         let start = Instant::now();
-        ensure!(db.agent_list_posture_rows(&ids)?.rows.len() == agents);
+        workload.read(&db, &ids, 0)?;
         let first_read_ns = start.elapsed().as_nanos();
         for workers in [1, 4, 16] {
             for writes in [0, 64] {
                 // Warm every worker before taking fixed-work resource snapshots.
-                let _ = measure(&db, &ids, workers, workers, 0)?;
+                let _ = measure(&db, &ids, workers, workers, 0, workload)?;
                 for repetition in 0..repetitions {
                     let before = performance_snapshot();
                     let resources = super::resource_usage();
                     let fds_before = fd_count();
-                    let measured = measure(&db, &ids, workers, operations, writes)?;
+                    let measured = measure(&db, &ids, workers, operations, writes, workload)?;
                     let after_resources = super::resource_usage();
                     results.push(json!({
+                        "workload": workload.name(),
                         "agents": agents, "workers": workers, "operations": operations,
                         "writes": writes, "repetition": repetition,
                         "fixture_first_read_ns": first_read_ns,
@@ -83,7 +171,8 @@ pub(super) fn run(repetitions: usize) -> Result<Vec<Value>> {
                             "RSS is process lifetime peak; descriptors and WAL are end snapshots.",
                             "Writer is a fixed burst of dedicated-writer transactions, not a rate model.",
                             "Diagnostics are cumulative process-global; use before/after deltas.",
-                            "Fixed case order; repeat A/B/A to assess host and ordering noise."
+                            "Fixed case order; repeat A/B/A to assess host and ordering noise.",
+                            "Mixed case is a deterministic workload mix, not a scheduler priority/fairness model."
                         ]
                     }));
                 }
@@ -105,6 +194,7 @@ fn measure(
     workers: usize,
     operations: usize,
     writes: usize,
+    workload: Workload,
 ) -> Result<Measurement> {
     let gate = Arc::new(Barrier::new(workers + usize::from(writes > 0)));
     let start = Instant::now();
@@ -115,22 +205,9 @@ fn measure(
             readers.push(scope.spawn(move || -> Result<Vec<u128>> {
                 gate.wait();
                 let mut samples = Vec::with_capacity(operations / workers);
-                for _ in 0..operations / workers {
+                for operation in 0..operations / workers {
                     let start = Instant::now();
-                    let rows = db.agent_list_posture_rows(ids)?;
-                    ensure!(rows.rows.len() == ids.len(), "list row count");
-                    ensure!(
-                        rows.rows.iter().zip(ids).all(|(row, id)| {
-                            row.agent_id == *id
-                                && row.agent_state_json.is_some()
-                                && row.facts.as_ref().is_ok_and(|facts| {
-                                    facts.open_work_items.len() == 1
-                                        && facts.open_work_items[0].agent_id == *id
-                                })
-                        }),
-                        "list facts must not silently degrade or cross agent boundaries"
-                    );
-                    drop(black_box(rows));
+                    workload.read(db, ids, operation)?;
                     samples.push(start.elapsed().as_nanos());
                 }
                 Ok(samples)

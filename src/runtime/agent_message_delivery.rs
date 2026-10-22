@@ -389,11 +389,41 @@ mod tests {
     }
 
     async fn real_agent_message_can_reply(live_follower: bool) -> Result<()> {
-        use crate::runtime::tests::support::host_backed_test_runtime;
+        use crate::runtime::tests::support::{
+            tempdir, AgentProvider, AppConfig, ProviderTurnRequest, ProviderTurnResponse,
+            RuntimeHost,
+        };
         use crate::types::{CreateAgentRequest, QueueEntryStatus};
         use anyhow::Context;
+        use std::sync::Arc;
+        use std::time::Duration;
 
-        let (_home, host, sender) = host_backed_test_runtime().await;
+        struct ReplySelectorProvider {
+            started: Notify,
+        }
+
+        #[async_trait::async_trait]
+        impl AgentProvider for ReplySelectorProvider {
+            async fn complete_turn(
+                &self,
+                _request: ProviderTurnRequest,
+            ) -> Result<ProviderTurnResponse> {
+                self.started.notify_one();
+                std::future::pending().await
+            }
+        }
+
+        let home = tempdir()?;
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )?;
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+        let provider = Arc::new(ReplySelectorProvider {
+            started: Notify::new(),
+        });
+        let host = RuntimeHost::new_with_provider(config, provider.clone())?;
+        let sender = host.default_runtime().await?;
         let sender_id = sender.agent_id().await?;
         sender
             .enqueue(
@@ -416,7 +446,19 @@ mod tests {
                 ),
             )
             .await?;
-        let operator_input = start_reply_selector_turn(&sender).await?;
+        // The host owns scheduling; park each admitted turn in the provider
+        // instead of racing its run loop with a second scheduler poll.
+        tokio::time::timeout(Duration::from_secs(2), provider.started.notified()).await?;
+        let sender_state = sender.agent_state().await?;
+        let operator_input = sender
+            .storage()
+            .read_message_by_id(
+                &sender_state
+                    .current_execution_binding
+                    .context("admitted operator turn")?
+                    .source_message_id,
+            )?
+            .context("durable operator input")?;
         sender
             .agent_creation_service()
             .create(CreateAgentRequest {
@@ -442,10 +484,35 @@ mod tests {
                 },
             )
             .await?;
-        let anchor = start_reply_selector_turn(&target).await?;
+        tokio::time::timeout(Duration::from_secs(2), provider.started.notified()).await?;
+        let target_state = target.agent_state().await?;
+        let anchor = target
+            .storage()
+            .read_message_by_id(
+                &target_state
+                    .current_execution_binding
+                    .as_ref()
+                    .context("admitted agent message")?
+                    .source_message_id,
+            )?
+            .context("durable anchor")?;
         assert_eq!(first.message_id.as_deref(), Some(anchor.id.as_str()));
         let selected_id = if live_follower {
-            assert!(target.attach_idle_sender_inputs(&anchor, 24 * 1024).await?);
+            let turn = target
+                .storage()
+                .read_turn_by_id(
+                    target_state
+                        .current_turn_id
+                        .as_deref()
+                        .context("live turn")?,
+                )?
+                .context("admitted turn")?;
+            assert_eq!(
+                turn.idle_input_batch
+                    .context("persisted anchor admission")?
+                    .anchor_message_id,
+                anchor.id
+            );
             let queued = sender
                 .agent_messaging_service()
                 .send(
@@ -523,6 +590,7 @@ mod tests {
         assert_eq!(route.in_reply_to_message_id, Some(selected_id.clone()));
         assert_eq!(reply.causation_id, Some(selected_id));
         assert_eq!(reply.authority_class, expected_authority);
+        host.shutdown().await?;
         Ok(())
     }
 

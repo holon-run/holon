@@ -222,17 +222,20 @@ fn inspect_route_value(
 }
 
 fn inspect_agent_state(runtime_db: &RuntimeDb) -> Result<AgentStateInspection> {
-    let connection = runtime_db.connection()?;
-    let mut statement =
-        connection.prepare("SELECT agent_id, payload_json FROM agent_states ORDER BY agent_id")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    let rows = runtime_db.with_read(|connection| {
+        let mut statement = connection
+            .prepare("SELECT agent_id, payload_json FROM agent_states ORDER BY agent_id")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     })?;
     let mut mutations = Vec::new();
     let mut report = ModelConfigMigrationStoreReport::default();
 
-    for row in rows {
-        let (agent_id, payload_json) = row?;
+    for (agent_id, payload_json) in rows {
         let mut payload: Value = serde_json::from_str(&payload_json)
             .with_context(|| format!("failed to parse agent state payload for {agent_id}"))?;
         let object = payload

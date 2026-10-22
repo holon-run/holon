@@ -160,24 +160,25 @@ impl TaskResultSettlementRepository<'_> {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json FROM task_result_settlements
-             WHERE agent_id = ?1 AND state != 'settled'
-               AND recovery_paused_at IS NOT NULL AND recovery_diagnostic_at IS NULL
-               AND NOT EXISTS (
-                 SELECT 1 FROM execution_protocol_attempts attempts
-                 WHERE attempts.agent_id = task_result_settlements.agent_id
-                   AND attempts.attempt_id = task_result_settlements.activation_id
-                   AND attempts.lifecycle_state = 'open'
-               )
-             ORDER BY recovery_paused_at, result_identity LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit as i64], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
-            .collect()
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM task_result_settlements
+                 WHERE agent_id = ?1 AND state != 'settled'
+                   AND recovery_paused_at IS NOT NULL AND recovery_diagnostic_at IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM execution_protocol_attempts attempts
+                     WHERE attempts.agent_id = task_result_settlements.agent_id
+                       AND attempts.attempt_id = task_result_settlements.activation_id
+                       AND attempts.lifecycle_state = 'open'
+                   )
+                 ORDER BY recovery_paused_at, result_identity LIMIT ?2",
+            )?;
+            let rows = statement.query_map(params![agent_id, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
+                .collect()
+        })
     }
 
     pub(crate) fn mark_recovery_diagnostic(

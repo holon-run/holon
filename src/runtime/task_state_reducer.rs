@@ -167,7 +167,7 @@ impl RuntimeHandle {
         } else {
             None
         };
-        let latest_task = self.inner.runtime_db.tasks().latest(&task.id)?;
+        let latest_task = self.task_record(&task.id).await?;
         if transition.admit_result_message
             && task.is_child_agent_task()
             && task
