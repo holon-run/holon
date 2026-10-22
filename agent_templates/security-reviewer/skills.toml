@@ -22,3 +22,9 @@ path = "skills/agentinbox"
 kind = "github"
 repo = "github/awesome-copilot"
 path = "skills/security-review"
+
+[[skills]]
+kind = "github"
+repo = "cloudflare/security-audit-skill"
+path = "skills/security-audit"
+ref = "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
