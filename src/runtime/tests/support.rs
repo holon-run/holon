@@ -598,6 +598,8 @@ pub(crate) enum ReportCheckpointOutput {
     ReasoningOnly,
 }
 
+const REPORT_COMPACTION_TRIGGER_ESTIMATED_TOKENS: usize = 28000;
+
 pub(crate) struct ReportCompactionProvider {
     pub(crate) inner: Arc<dyn AgentProvider>,
     pub(crate) checkpoint_output: ReportCheckpointOutput,
@@ -659,12 +661,14 @@ impl AgentProvider for ReportCompactionProvider {
         // Text alongside the initial lifecycle call would satisfy its report
         // immediately, without entering the pending-report continuation.
         if *calls == 2 {
-            response.blocks.insert(
-                0,
-                ModelBlock::Text {
-                    text: "Pending report context that may be compacted. ".repeat(1000),
-                },
-            );
+            // Trigger compaction independently of machine-local guidance.
+            let mut text = String::new();
+            while crate::token_estimate::estimate_text_tokens(&text)
+                <= REPORT_COMPACTION_TRIGGER_ESTIMATED_TOKENS
+            {
+                text.push_str("Pending report context that may be compacted. ");
+            }
+            response.blocks.insert(0, ModelBlock::Text { text });
         }
         Ok(response)
     }
@@ -675,7 +679,8 @@ pub(crate) fn report_compaction_context_config(workspace: &TempDir) -> ContextCo
     ContextConfig {
         // Leave room for the ordinary runtime prompt and the checkpoint request,
         // but not for the long pending-report round as well.
-        compaction_trigger_estimated_tokens: config.prompt_budget_estimated_tokens - 65536 + 28000,
+        compaction_trigger_estimated_tokens: config.prompt_budget_estimated_tokens - 65536
+            + REPORT_COMPACTION_TRIGGER_ESTIMATED_TOKENS,
         compaction_keep_recent_estimated_tokens: 2048,
         ..config
     }
