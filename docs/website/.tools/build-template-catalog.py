@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import quote
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -222,7 +223,7 @@ def render_home(catalog, locale):
         label = entry["localized"][locale]
         count = len(entry["skills"])
         skills = f"{count} 个技能引用" if zh else f"{count} skill references"
-        href = f'{base}/templates/#{entry["id"]}'
+        href = f'{base}/templates/{entry["id"]}/'
         cards.append(
             '<article class="template-card">'
             f'{card_heading(entry, locale, href)}'
@@ -282,38 +283,19 @@ def render_directory(catalog, locale):
         )
         for entry in entries:
             label = entry["localized"][locale]
-            command = f'holon agent create {shlex.quote(entry["id"])} --template {shlex.quote(entry["createSelector"])}'
+            href = f'{base}/templates/{entry["id"]}/'
+            keywords = " ".join(skill["reference"] for skill in entry["skills"])
             result.extend([
                 f'<article class="template-entry" id="{entry["id"]}">',
-                f'<div class="template-overview" data-template-category="{category}">'
-                f'{card_heading(entry, locale)}'
+                f'<div class="template-overview" data-template-category="{category}" data-template-keywords="{escape(keywords)}">'
+                f'{card_heading(entry, locale, href)}'
                 f'<p class="template-summary">{escape(label["summary"])}</p>'
-                f'<p class="template-card-footer">{len(entry["skills"])} {"个技能引用" if zh else "skill references"}</p></div>',
-                '<details class="template-details">'
-                f'<summary>{"查看详情" if zh else "View details"}</summary>'
-                '<div class="template-details-body">'
-                f'<p>{escape(label["summary"])}</p>'
-                f'<p class="template-meta">Holon <code>{escape(entry["compatibility"]["holon"])}</code></p>',
-                f'<p><a href="{entry["sourceUrl"]}">{"模板源码（快照）" if zh else "Template source (snapshot)"}</a> · '
-                f'<a href="{entry["contractUrl"]}">AGENTS.md</a> · '
-                f'<a href="{entry["mainUrl"]}">{"跟随 main" if zh else "Follow main"}</a></p>',
-                f'<h4>{"创建 Agent" if zh else "Create an agent"}</h4>'
-                f'<p class="template-meta">{"创建前请安装 Holon，并检查角色契约、技能依赖、环境与权限。展示不代表已安装或已配置。" if zh else "Before creating, install Holon and check the role contract, skills, environment and permissions. Listing does not mean installed or configured."}</p>',
-                f'<pre><code>{escape(command)}</code></pre>',
-                '<div class="template-copy-row">'
-                f'<button type="button" data-template-copy hidden>{"复制命令" if zh else "Copy command"}</button>'
-                '<span class="template-copy-status" role="status"></span></div>',
+                '<p class="template-card-footer">'
+                f'<span>{len(entry["skills"])} {"个技能引用" if zh else "skill references"}</span>'
+                f'<a href="{href}" aria-label="{escape(label["name"])} — {"查看详情" if zh else "View details"}">'
+                f'{"查看详情" if zh else "View details"} <span aria-hidden="true">→</span></a></p></div>',
+                '</article>',
             ])
-            if entry["skills"]:
-                result.append(f'<h4>{"声明的技能引用" if zh else "Declared skill references"}</h4><ul class="template-skills">')
-                for skill in entry["skills"]:
-                    ref = skill.get("ref")
-                    note = (f"ref: {ref}" if ref else
-                            ("本地路径" if zh else "local path") if skill["kind"] == "local" else
-                            ("跟随默认引用" if zh else "follows default reference"))
-                    result.append(f'<li><code>{escape(skill["reference"])}</code> — {escape(note)}</li>')
-                result.append('</ul>')
-            result.append('</div></details></article>')
         result.append('</div></section>')
     result.extend([
         '</div>',
@@ -327,6 +309,66 @@ def render_directory(catalog, locale):
         '</div>\n<script src="/assets/template-catalog.js" defer></script>\n',
     ])
     # Separate HTML blocks so Markdown search chunking can split role content.
+    return "\n\n".join(result)
+
+
+def render_detail(entry, locale):
+    zh = locale == "zh-CN"
+    base = "/zh-CN" if zh else ""
+    label = entry["localized"][locale]
+    command = f'holon agent create {shlex.quote(entry["id"])} --template {shlex.quote(entry["createSelector"])}'
+    result = [
+        "---\n"
+        f'title: {json.dumps(label["name"], ensure_ascii=False)}\n'
+        f'summary: {json.dumps(label["summary"], ensure_ascii=False)}\n---\n',
+        '<div class="template-detail">',
+        f'<a class="template-back" href="{base}/templates/">← {"全部 Agent 模板" if zh else "All agent templates"}</a>',
+        '<header class="template-detail-heading">'
+        f'<div class="template-card-top">{category_icon(entry["category"])}'
+        f'<span class="template-category">{escape(category_name(entry["category"], locale))}</span></div>'
+        f'<h1>{escape(label["name"])}</h1>'
+        f'<p class="template-detail-summary">{escape(label["summary"])}</p>'
+        f'<p class="template-meta"><code>{entry["id"]}</code> · Holon <code>{escape(entry["compatibility"]["holon"])}</code>'
+        f' · {len(entry["skills"])} {"个技能引用" if zh else "skill references"}</p></header>',
+        f'<h2>{"开始之前" if zh else "Before you begin"}</h2>',
+        f'<p>{"先安装 Holon 并配置模型，再检查角色契约、技能依赖、运行环境与权限。模板是角色与技能声明，不代表相关服务已连接或权限已授予。" if zh else "Install Holon and configure a model, then review the role contract, skill dependencies, environment and permissions. A template declares a role and skills; it does not mean services are connected or permissions granted."}</p>',
+        f'<p><a href="{base}/getting-started/">{"安装与配置" if zh else "Install and configure"}</a> · '
+        f'<a href="{base}/reference/agent-templates">{"模板使用指南" if zh else "Template usage guide"}</a> · '
+        f'<a href="{entry["contractUrl"]}">{"阅读完整角色契约与工作流程（AGENTS.md）" if zh else "Read the full role contract and workflow (AGENTS.md)"}</a></p>',
+        f'<h2>{"创建 Agent" if zh else "Create an agent"}</h2>',
+        f'<p>{"选择尚未使用的 Agent ID；以下命令固定到本次构建的模板快照。" if zh else "Choose an unused agent ID. This command pins the template to this build snapshot."}</p>',
+        '<div data-template-command>'
+        f'<pre><code>{escape(command)}</code></pre>'
+        '<div class="template-copy-row">'
+        f'<button type="button" data-template-copy hidden>{"复制命令" if zh else "Copy command"}</button>'
+        '<span class="template-copy-status" role="status"></span></div></div>',
+        f'<h2>{"技能与来源" if zh else "Skills and sources"}</h2>',
+        f'<p>{"以下引用来自模板的 skills.toml。创建时请审阅各技能的说明与依赖；固定模板 SHA 不会固定未指定 ref 的外部技能。" if zh else "These references come from the template’s skills.toml. Review each skill’s instructions and dependencies before use. Pinning the template SHA does not pin external skills without a ref."}</p>',
+    ]
+    if entry["skills"]:
+        result.append('<ul class="template-skills">')
+        for skill in entry["skills"]:
+            ref = skill.get("ref")
+            note = (f"ref: {ref}" if ref else
+                    ("本地路径" if zh else "local path") if skill["kind"] == "local" else
+                    ("跟随默认引用" if zh else "follows default reference"))
+            reference = f'<code>{escape(skill["reference"])}</code>'
+            if skill["kind"] == "github":
+                url = (f'https://github.com/{skill["repo"]}/tree/'
+                       f'{quote(ref or "HEAD", safe="")}/{quote(skill["path"], safe="/")}')
+                reference = f'<a href="{escape(url)}">{reference}</a>'
+            result.append(f'<li>{reference}<br><span class="template-meta">{escape(note)}</span></li>')
+        result.append('</ul>')
+    else:
+        result.append(f'<p>{"此模板未声明技能引用。" if zh else "This template declares no skill references."}</p>')
+    result.extend([
+        '<section class="template-source">'
+        f'<h2>{"模板快照" if zh else "Template snapshot"}</h2>'
+        f'<p><a href="{entry["sourceUrl"]}">{"模板源码（快照）" if zh else "Template source (snapshot)"}</a> · '
+        f'<a href="{entry["mainUrl"]}">{"查看 main 最新源码" if zh else "View current source on main"}</a></p>'
+        f'<p><code>{entry["createSelector"].split("/tree/")[1].split("/")[0]}</code></p></section>',
+        '</div>\n<script src="/assets/template-catalog.js" defer></script>\n',
+    ])
     return "\n\n".join(result)
 
 
@@ -376,6 +418,10 @@ def build(repo: Path, output: Path, sha: str):
             directory = prefix / "templates"
             directory.mkdir(exist_ok=True)
             (directory / "README.md").write_text(render_directory(catalog, locale), encoding="utf-8")
+            for entry in catalog["templates"]:
+                detail = directory / entry["id"]
+                detail.mkdir(exist_ok=True)
+                (detail / "README.md").write_text(render_detail(entry, locale), encoding="utf-8")
         assets = staging / "assets"
         assets.mkdir(exist_ok=True)
         (assets / "agent-templates.json").write_text(

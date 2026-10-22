@@ -1524,12 +1524,14 @@ main:has(.template-directory) .catalog-page {
   letter-spacing: -0.015em;
 }
 
-.template-card h3 a {
+.template-card h3 a,
+.template-entry h3 a {
   color: inherit;
   text-decoration: none;
 }
 
-.template-card h3 a:hover {
+.template-card h3 a:hover,
+.template-entry h3 a:hover {
   color: var(--link, #0f5bd7);
   text-decoration: underline;
 }
@@ -1681,38 +1683,37 @@ main:has(.template-directory) .catalog-page {
 .template-overview {
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
 
-.template-details {
-  margin-top: 1rem;
-  border-top: 1px solid var(--border, #d7e1ec);
+.template-detail {
+  max-width: 52rem;
+  margin-inline: auto;
 }
 
-.template-details > summary {
-  padding-top: 0.9rem;
+.template-back {
   color: var(--link, #0f5bd7);
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   font-weight: 650;
-  cursor: pointer;
 }
 
-.template-details-body {
-  padding-top: 1rem;
-  font-size: 0.8rem;
+.template-detail-heading {
+  margin-block: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border, #d7e1ec);
 }
 
-.template-details-body > p + p {
-  margin-top: 0.75rem;
+.template-detail-heading h1 {
+  margin-block: 1rem;
 }
 
-.template-details-body h4 {
-  margin: 1.25rem 0 0.6rem;
-  font-size: 0.85rem;
-  line-height: 1.5;
-  letter-spacing: 0;
+.template-detail-summary {
+  color: var(--muted, #5a6a7b);
+  font-size: 1.1rem;
+  line-height: 1.75;
 }
 
-.template-entry pre {
+.template-detail pre {
   max-width: 100%;
   margin-bottom: 0.65rem;
   padding: 0.9rem;
@@ -1747,6 +1748,20 @@ main:has(.template-directory) .catalog-page {
 .template-skills {
   padding-left: 1.1rem;
   line-height: 1.7;
+}
+
+.template-detail .template-skills li {
+  margin-bottom: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.template-detail .template-source h2 {
+  margin-top: 0;
+}
+
+.template-detail :focus-visible {
+  outline: 2px solid var(--link, #0f5bd7);
+  outline-offset: 4px;
 }
 
 .template-source {

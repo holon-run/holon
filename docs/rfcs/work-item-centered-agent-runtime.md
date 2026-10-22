@@ -662,9 +662,15 @@ The target `CompleteWorkItem` contract should not ask the model to pass
 Instead, the agent should write the final completion report as assistant text.
 The preferred one-round form places it immediately before
 `CompleteWorkItem`. A tool-only call enters a typed turn-local acquisition
-protocol: the runtime returns an `awaiting_completion_report` result, accepts
-only final text from the bound follow-up round, and then includes that candidate
-in the same atomic completion command.
+protocol: the runtime returns an `awaiting_completion_report` result and asks
+the model to finish with non-empty final text. The model may first finish
+authorized cleanup or verification with the ordinary tools exposed to that
+execution. A tool-bearing response is not the final report, even if it also
+contains text. Runtime-private compaction checkpoints, including empty or
+reasoning-only responses, preserve the pending intent and resume execution
+rather than supplying a report. The runtime binds
+the later tool-free `AgentResponse` final text and includes that candidate in
+the same atomic completion command.
 
 This keeps the agent from writing the same result twice:
 
@@ -681,8 +687,15 @@ It also keeps responsibilities separated:
 Promotion should be conservative. Arbitrary assistant progress text must not
 become a result report just because the WorkItem was current. Follow-up text
 must retain the original execution binding and expected WorkItem revision.
-Empty text or another tool call receives at most one corrective prompt; protocol
-abandonment leaves the WorkItem open.
+The report request is a soft finishing prompt, not a separate tool-round budget
+or read-only capability mode. Ordinary permission checks, cancellation and any
+configured general loop budget still apply. While a report is pending,
+`CompleteWorkItem`, `WaitFor`, `PickWorkItem` and legacy `Sleep` are not exposed
+or accepted: they could replace the pending terminal intent. Empty final text
+or a conflicting terminal tool call receives at most one corrective prompt;
+protocol abandonment leaves the WorkItem open. Mutating the target revision
+during cleanup invalidates the original completion request rather than
+rebinding it to the changed target.
 
 ### CompleteWorkItem With Unfinished Todos
 

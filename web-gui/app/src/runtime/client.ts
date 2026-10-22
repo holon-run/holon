@@ -420,6 +420,12 @@ interface RuntimeConfigResponseDto {
   runtime_surface?: RuntimeConfigSurfaceDto;
   results?: RuntimeConfigUpdateResultDto[];
   reload?: RuntimeConfigReloadStatusDto;
+  setup?: {
+    status: "ready" | "blocked";
+    default_model: string | null;
+    provider: string | null;
+    actions: string[];
+  };
 }
 
 interface RuntimeConfigReloadStatusDto {
@@ -1270,17 +1276,22 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
     async createAgentFromTemplate(
       agentId: string,
       template: string,
+      name?: string,
     ): Promise<AgentCreateResponseDto> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      return postJson<AgentCreateResponseDto>(
+      const result = await postJson<AgentCreateResponseDto>(
         fetchImpl,
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/create`,
-        { template },
+        { template, ...(name === undefined ? {} : { name }) },
         requestHeaders,
       );
+      if (result.receipt?.stage === "degraded" || result.receipt?.bootstrap?.status === "degraded") {
+        throw new Error(`Agent ${agentId} was created, but bootstrap is degraded. Open the existing Agent to repair it; do not create it again.`);
+      }
+      return result;
     },
     async addSkillToCatalog(input: AddSkillInput): Promise<string> {
       if (!baseUrl) {
@@ -2543,6 +2554,12 @@ function projectRuntimeConfigState(response: RuntimeConfigResponseDto): RuntimeC
     configFilePath: response.config_file_path,
     changed: response.changed,
     surface: response.runtime_surface ? projectRuntimeConfigSurface(response.runtime_surface) : undefined,
+    setup: response.setup ? {
+      status: response.setup.status,
+      defaultModel: response.setup.default_model,
+      provider: response.setup.provider,
+      actions: response.setup.actions,
+    } : undefined,
     results: response.results?.map((result) => ({
       key: result.key ?? "unknown",
       effect: result.effect ?? "rejected",

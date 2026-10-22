@@ -67,7 +67,7 @@ python3 docs/website/.tools/check-contract-refs.py
 
 ## 本地预览
 
-使用 Node.js 22 和 Python 3.11 或更高版本。在仓库根目录运行：
+使用 Node.js 22.x（不低于 22.23.4）和 Python 3.11 或更高版本。在仓库根目录运行：
 
 ```bash
 npm ci --prefix docs/website/.tools

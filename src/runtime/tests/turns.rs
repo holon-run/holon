@@ -272,10 +272,11 @@ impl AgentProvider for ImmediateWaitContinuationProvider {
         let pending_runtime = self.pending_runtime.lock().await;
         if *calls == 2 {
             if let Some(runtime) = pending_runtime.as_ref() {
-                assert!(!request
+                assert!(request
                     .tools
                     .iter()
                     .any(|tool| tool.name == "CreateWorkItem"));
+                assert!(!request.tools.iter().any(|tool| tool.name == "WaitFor"));
                 complete_immediate_wait_dependency(runtime, false).await;
                 return Ok(ProviderTurnResponse {
                     blocks: vec![ModelBlock::Text {
@@ -336,11 +337,12 @@ impl AgentProvider for ImmediateWaitContinuationProvider {
                     assert_eq!(receipt["result"]["continuation"], "continue_turn");
                     assert_eq!(receipt["result"]["disposition"], self.disposition);
                 }
-                // A pending final report restricts tools to read-only inspection.
+                // Revalidation restores lifecycle tools when no report remains pending.
                 assert!(request
                     .tools
                     .iter()
                     .any(|tool| tool.name == "CreateWorkItem"));
+                assert!(request.tools.iter().any(|tool| tool.name == "WaitFor"));
                 vec![tool(
                     "continue-create",
                     "CreateWorkItem",
@@ -2060,28 +2062,62 @@ async fn run_wait_for_final_report_test(
     silent_progress: Option<bool>,
     work_item_owned: bool,
 ) {
+    run_wait_for_final_report_test_with_compaction(
+        scenario,
+        silent_progress,
+        work_item_owned,
+        None,
+    )
+    .await;
+}
+
+async fn run_wait_for_final_report_test_with_compaction(
+    scenario: WaitForFinalReportScenario,
+    silent_progress: Option<bool>,
+    work_item_owned: bool,
+    checkpoint_output: Option<ReportCheckpointOutput>,
+) {
+    let force_compaction = checkpoint_output.is_some();
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(WaitForFinalReportProvider {
         calls: Mutex::new(0),
         scenario,
         silent_progress,
+        report_path: workspace.path().join("wait-report-cleanup.txt"),
+        report_runtime: Mutex::new(None),
         saw_settlement_error_follow_up: Mutex::new(false),
-        invalid_final_result_count: Mutex::new(0),
+        settlement_result_count: Mutex::new(0),
         settlement_timer: Mutex::new(None),
     });
+    let compaction_provider = Arc::new(ReportCompactionProvider {
+        inner: provider.clone(),
+        checkpoint_output: checkpoint_output.unwrap_or(ReportCheckpointOutput::Text),
+        checkpoint_calls: Mutex::new(0),
+        response_calls: Mutex::new(0),
+    });
+    let runtime_provider: Arc<dyn AgentProvider> = if force_compaction {
+        compaction_provider.clone()
+    } else {
+        provider.clone()
+    };
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
         "http://127.0.0.1:7878".into(),
-        provider.clone(),
+        runtime_provider,
         "default".into(),
-        ContextConfig {
-            prompt_budget_estimated_tokens: 32768,
-            turn_projection_budget_ratio: 1.0,
-            compaction_keep_recent_estimated_tokens: 2048,
-            ..context_config()
+        if force_compaction {
+            report_compaction_context_config(&workspace)
+        } else {
+            ContextConfig {
+                prompt_budget_estimated_tokens: 65536,
+                compaction_trigger_estimated_tokens: 65536,
+                turn_projection_budget_ratio: 1.0,
+                compaction_keep_recent_estimated_tokens: 2048,
+                ..context_config()
+            }
         },
     )
     .unwrap();
@@ -2092,6 +2128,7 @@ async fn run_wait_for_final_report_test(
         .await
         .state
         .active_workspace_entry = None;
+    *provider.report_runtime.lock().await = Some(runtime.clone());
     if scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
         let timer = runtime
             .schedule_timer(60_000, None, Some("final settlement race".into()))
@@ -2167,14 +2204,51 @@ async fn run_wait_for_final_report_test(
         );
     }
     runtime_task.abort();
+    *provider.report_runtime.lock().await = None;
+    if force_compaction {
+        assert!(
+            *compaction_provider.checkpoint_calls.lock().await > 0,
+            "no private checkpoint after {} ordinary responses; compactions: {:?}",
+            *compaction_provider.response_calls.lock().await,
+            runtime
+                .storage()
+                .read_recent_events(200)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.kind == "turn_local_compaction_applied")
+                .map(|event| (
+                    event.data["round"].clone(),
+                    event.data["checkpoint_request_id"].clone(),
+                    event.data["projected_estimated_tokens"].clone(),
+                    event.data["effective_budget_estimated_tokens"].clone(),
+                ))
+                .collect::<Vec<_>>()
+        );
+        let events = runtime.storage().read_recent_events(200).unwrap();
+        if checkpoint_output != Some(ReportCheckpointOutput::Text) {
+            assert!(events.iter().any(|event| {
+                event.kind == "turn_local_checkpoint_recorded"
+                    && event.data["checkpoint_recorded"] == false
+                    && event.data["text_char_count"] == 0
+            }));
+        }
+        assert!(events.iter().any(|event| {
+            event.kind == "assistant_round_recorded"
+                && event.data["round_purpose"] == "runtime_checkpoint"
+                && event.data["visibility"] == "runtime_private"
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "turn_local_checkpoint_resume_requested"));
+    }
 
     if scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
         assert_eq!(provider.call_count().await, 3);
         assert!(*provider.saw_settlement_error_follow_up.lock().await);
         assert_eq!(
-            *provider.invalid_final_result_count.lock().await,
-            0,
-            "final settlement errors must not inject a cross-round tool result"
+            *provider.settlement_result_count.lock().await,
+            1,
+            "only the original deferred result may remain; final settlement errors must not inject a second tool result"
         );
         let events = runtime.storage().read_recent_events(100).unwrap();
         assert!(events
@@ -2230,8 +2304,8 @@ async fn run_wait_for_final_report_test(
         match silent_progress {
             Some(false) => 1,
             Some(true) => 2,
-            None if scenario == WaitForFinalReportScenario::DisallowedToolCorrective => 3,
-            None if scenario == WaitForFinalReportScenario::AllowedToolBudget => 4,
+            None if scenario == WaitForFinalReportScenario::NestedLifecycleCorrective => 3,
+            None if scenario == WaitForFinalReportScenario::CleanupTools => 7,
             None if scenario == WaitForFinalReportScenario::SettlementErrorRecovery => 3,
             None => 2,
         }
@@ -2262,12 +2336,13 @@ async fn run_wait_for_final_report_test(
                 && brief.text == "Waiting for final verification; I will resume when it changes."
         })
         .expect("final WaitFor should atomically publish its result brief");
-    let turn = runtime
-        .storage()
-        .read_recent_turns(1)
-        .unwrap()
-        .pop()
-        .expect("final WaitFor terminal turn");
+    let mut turns = runtime.storage().read_recent_turns(10).unwrap();
+    assert_eq!(
+        turns.len(),
+        1,
+        "the wait must have exactly one terminal turn"
+    );
+    let turn = turns.pop().expect("final WaitFor terminal turn");
     assert_eq!(brief.turn_id.as_deref(), Some(turn.turn_id.as_str()));
     assert_eq!(brief.workspace_id, "agent_home:default");
     assert_eq!(brief.work_item_id, expected_work_item_id);
@@ -2313,19 +2388,56 @@ async fn run_wait_for_final_report_test(
         .find(|tool| tool.tool_name == "WaitFor")
         .expect("final WaitFor should atomically persist successful tool evidence");
     assert_eq!(wait_tool.status, crate::types::ToolExecutionStatus::Success);
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|tool| tool.tool_name == "WaitFor")
+            .count(),
+        1,
+        "the report must commit exactly one wait tool result"
+    );
+    assert_eq!(
+        briefs
+            .iter()
+            .filter(|brief| brief.kind == BriefKind::Result)
+            .count(),
+        1,
+        "text accompanying cleanup tools must not publish an early result brief"
+    );
     match scenario {
-        WaitForFinalReportScenario::DisallowedToolCorrective => assert!(
-            tools.iter().all(|tool| tool.tool_name != "ExecCommand"),
-            "the corrective report round must not execute disallowed tools"
-        ),
-        WaitForFinalReportScenario::AllowedToolBudget => assert_eq!(
-            tools
+        WaitForFinalReportScenario::NestedLifecycleCorrective => {
+            assert_eq!(tools.len(), 1, "recursive lifecycle tools must not execute");
+            let waits = runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap();
+            assert_eq!(waits.len(), 1);
+            assert_eq!(waits[0].kind, WaitConditionKind::External);
+        }
+        WaitForFinalReportScenario::CleanupTools => {
+            assert_eq!(
+                tools
+                    .iter()
+                    .filter(|tool| tool.tool_name == "ExecCommand")
+                    .count(),
+                5
+            );
+            assert_eq!(
+                tools
+                    .iter()
+                    .filter(|tool| tool.tool_name == "ApplyPatch")
+                    .count(),
+                1
+            );
+            assert!(tools
                 .iter()
-                .filter(|tool| tool.tool_name == "GetAgent")
-                .count(),
-            2,
-            "allowed report tools should execute for both budgeted rounds"
-        ),
+                .all(|tool| tool.status == ToolExecutionStatus::Success));
+            assert!(!provider.report_path.exists());
+            let events = runtime.storage().read_recent_events(200).unwrap();
+            assert!(events
+                .iter()
+                .all(|event| event.kind != "report_fallback_notice_injected"));
+        }
         WaitForFinalReportScenario::Direct => assert!(
             tools.iter().all(|tool| tool.tool_name != "GetAgent"),
             "the direct report path should not execute extra tools"
@@ -2356,9 +2468,9 @@ async fn wait_for_final_report_commits_brief_wait_tool_and_turn_atomically() {
 }
 
 #[tokio::test]
-async fn wait_for_final_report_corrects_extra_tool_once_without_executing_it() {
+async fn wait_for_final_report_rejects_nested_lifecycle_tools_without_executing_them() {
     run_wait_for_final_report_test(
-        WaitForFinalReportScenario::DisallowedToolCorrective,
+        WaitForFinalReportScenario::NestedLifecycleCorrective,
         None,
         false,
     )
@@ -2366,9 +2478,41 @@ async fn wait_for_final_report_corrects_extra_tool_once_without_executing_it() {
 }
 
 #[tokio::test]
-async fn wait_for_final_report_executes_allowed_tools_then_uses_text_only_fallback() {
-    run_wait_for_final_report_test(WaitForFinalReportScenario::AllowedToolBudget, None, false)
-        .await;
+async fn wait_for_final_report_allows_five_cleanup_tool_rounds_before_final_text() {
+    run_wait_for_final_report_test(WaitForFinalReportScenario::CleanupTools, None, false).await;
+}
+
+#[tokio::test]
+async fn wait_for_final_report_survives_private_compaction_before_final_text() {
+    run_wait_for_final_report_test_with_compaction(
+        WaitForFinalReportScenario::CleanupTools,
+        None,
+        false,
+        Some(ReportCheckpointOutput::Text),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn wait_for_final_report_survives_empty_private_compaction() {
+    run_wait_for_final_report_test_with_compaction(
+        WaitForFinalReportScenario::CleanupTools,
+        None,
+        false,
+        Some(ReportCheckpointOutput::Empty),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn wait_for_final_report_survives_reasoning_only_private_compaction() {
+    run_wait_for_final_report_test_with_compaction(
+        WaitForFinalReportScenario::CleanupTools,
+        None,
+        false,
+        Some(ReportCheckpointOutput::ReasoningOnly),
+    )
+    .await;
 }
 
 #[tokio::test]

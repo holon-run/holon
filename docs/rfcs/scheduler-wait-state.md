@@ -293,9 +293,17 @@ Rules:
 - `delivery` is required. Only yielding outcomes request a report for `final`.
   Immediate `continue_turn` outcomes bypass the report protocol for both
   delivery modes. For yielding outcomes, `final` defers registration until the model produces
-  one non-empty operator-facing assistant final; the follow-up allows read-only
-  fact-checking tools and final text, with at most one corrective retry for empty
-  text or a disallowed tool call.
+  one non-empty operator-facing assistant final. This is a soft finishing
+  prompt: the follow-up retains ordinary authorized cleanup and verification
+  tools, without a report-specific tool-round cap or read-only allowlist.
+  Tool-bearing responses do not commit the wait or supply its final report.
+  Runtime-private compaction checkpoints, including empty or reasoning-only
+  responses, preserve the pending intent and resume execution; only an
+  operator-facing `AgentResponse` can supply the final report.
+  `WaitFor`, `CompleteWorkItem`, `PickWorkItem` and legacy `Sleep` remain
+  unavailable while that terminal intent is pending. Empty final text or a
+  conflicting terminal tool call receives at most one corrective retry.
+  General loop budgets, cancellation and normal capability checks still apply.
   `silent` performs no follow-up model round and publishes no new Brief. It
   records typed no-brief settlement only when the Turn has no earlier Brief.
 - `reason` is scheduling metadata, not operator-facing assistant text.
@@ -329,7 +337,7 @@ prepare/classification. Only a yielding preparation returns the deferred
 The report continuation prepares again against current state; the resulting
 preparation remains subject to the atomic terminal validation above. If the
 result was consumed or claimed during report generation, the continuation
-records the updated receipt, lifts the report restriction, and continues the
+records the updated receipt, clears the pending terminal intent, and continues the
 same turn without publishing an obsolete waiting brief. Preparation never
 registers a wait merely to obtain a final report.
 

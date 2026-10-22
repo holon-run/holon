@@ -30,7 +30,8 @@ fn legacy_blocking_payload_task_for_work_item(
 
 fn continuation_context_config() -> ContextConfig {
     ContextConfig {
-        prompt_budget_estimated_tokens: 32768,
+        prompt_budget_estimated_tokens: 65536,
+        compaction_trigger_estimated_tokens: 65536,
         turn_projection_budget_ratio: 1.0,
         compaction_keep_recent_estimated_tokens: 2048,
         ..context_config()
@@ -231,8 +232,9 @@ fn assert_detached_followup_completion_sequence(conversation: &[ConversationMess
         })
         .expect("detached completion continuation should be provider-visible");
     assert!(report_index < continuation_index);
+    assert_complete_work_item_deferred_result(conversation);
     assert!(
-        conversation
+        conversation[report_index + 1..]
             .iter()
             .all(|message| !matches!(message, ConversationMessage::UserToolResults(_))),
         "follow-up report continuation request must not contain a second tool result"
@@ -841,17 +843,114 @@ impl AgentProvider for AbandonCompletionReportProvider {
     }
 }
 
-struct CompletionReportFallbackBudgetProvider {
+struct CompletionReportCleanupProvider {
     work_item_id: String,
+    report_path: std::path::PathBuf,
+    runtime: Mutex<Option<RuntimeHandle>>,
+    attempt_nested_lifecycle: bool,
     calls: Mutex<usize>,
 }
 
 #[async_trait]
-impl AgentProvider for CompletionReportFallbackBudgetProvider {
+impl AgentProvider for CompletionReportCleanupProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        assert_valid_provider_tool_result_sequence(&request.conversation);
         let mut calls = self.calls.lock().await;
         *calls += 1;
-        let blocks = match *calls {
+        if *calls > 1 {
+            for name in ["ExecCommand", "ApplyPatch", "CreateWorkItem", "GetAgent"] {
+                assert!(
+                    request.tools.iter().any(|tool| tool.name == name),
+                    "ordinary tool {name} must remain available during the report"
+                );
+            }
+            for name in ["CompleteWorkItem", "WaitFor", "PickWorkItem", "Sleep"] {
+                assert!(
+                    request.tools.iter().all(|tool| tool.name != name),
+                    "nested lifecycle tool {name} must not be exposed"
+                );
+            }
+            let runtime = self.runtime.lock().await.clone().unwrap();
+            assert_ne!(
+                runtime
+                    .latest_work_item(&self.work_item_id)
+                    .await?
+                    .unwrap()
+                    .state,
+                WorkItemState::Completed,
+                "text accompanying cleanup tools must not complete the WorkItem"
+            );
+            assert!(runtime
+                .recent_briefs(10)
+                .await?
+                .iter()
+                .all(|brief| brief.kind != BriefKind::Result));
+            assert!(runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")?
+                .is_empty());
+            if self.attempt_nested_lifecycle && *calls == 3 {
+                assert!(request.conversation.iter().all(|message| match message {
+                    ConversationMessage::AssistantBlocks(blocks) => blocks.iter().all(|block| {
+                        !matches!(block, ModelBlock::ToolUse { id, .. } if id.starts_with("nested-"))
+                    }),
+                    _ => true,
+                }));
+            }
+            if *calls > 2 && !(self.attempt_nested_lifecycle && *calls == 3) {
+                let mut previous_ids = vec![format!("cleanup-report-tool-{}", *calls - 1)];
+                if *calls == 3 + usize::from(self.attempt_nested_lifecycle) {
+                    previous_ids.push("cleanup-report-batch-check".into());
+                }
+                for previous_id in previous_ids {
+                    let results = request
+                        .conversation
+                        .iter()
+                        .filter_map(|message| match message {
+                            ConversationMessage::UserToolResults(results) => Some(results),
+                            _ => None,
+                        })
+                        .flatten()
+                        .filter(|result| result.tool_use_id == previous_id)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        results.len(),
+                        1,
+                        "cleanup tool {previous_id} must have exactly one result"
+                    );
+                    assert!(!results[0].is_error, "{}", results[0].content);
+                }
+            }
+        }
+        let report_round = if self.attempt_nested_lifecycle && *calls == 2 {
+            0
+        } else {
+            *calls - usize::from(self.attempt_nested_lifecycle && *calls > 2)
+        };
+        let blocks = match report_round {
+            0 => vec![
+                ModelBlock::Text {
+                    text: "This text must not commit a recursive completion.".into(),
+                },
+                ModelBlock::ToolUse {
+                    id: "nested-completion".into(),
+                    name: "CompleteWorkItem".into(),
+                    input: serde_json::json!({"work_item_id": self.work_item_id}),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                },
+                ModelBlock::ToolUse {
+                    id: "nested-wait".into(),
+                    name: "WaitFor".into(),
+                    input: serde_json::json!({
+                        "wake": "operator_input",
+                        "reason": "must not replace pending completion",
+                        "delivery": "silent"
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                },
+            ],
             1 => vec![ModelBlock::ToolUse {
                 id: "complete-work".into(),
                 name: "CompleteWorkItem".into(),
@@ -861,39 +960,59 @@ impl AgentProvider for CompletionReportFallbackBudgetProvider {
                 kind: crate::provider::ModelToolCallKind::Function,
                 provider_data: None,
             }],
-            2 | 3 => {
-                assert!(
-                    request.tools.iter().any(|tool| tool.name == "GetAgent"),
-                    "allowed report tools should remain available within the budget"
-                );
-                vec![ModelBlock::ToolUse {
-                    id: format!("allowed-report-tool-{}", *calls),
-                    name: "GetAgent".into(),
-                    input: serde_json::json!({}),
-                    kind: crate::provider::ModelToolCallKind::Function,
-                    provider_data: None,
-                }]
+            2..=6 => {
+                let path = self.report_path.display();
+                let cmd = match report_round {
+                    2 => format!("printf 'written\\n' > '{path}'"),
+                    3 => {
+                        assert_eq!(std::fs::read_to_string(&self.report_path)?, "written\n");
+                        format!("printf 'verified\\n' >> '{path}'")
+                    }
+                    4 | 5 => {
+                        assert_eq!(
+                            std::fs::read_to_string(&self.report_path)?,
+                            "written\nverified\n"
+                        );
+                        if report_round == 4 {
+                            format!("cat '{path}'")
+                        } else {
+                            format!("rm '{path}'")
+                        }
+                    }
+                    6 => {
+                        assert!(!self.report_path.exists());
+                        format!("test ! -e '{path}'")
+                    }
+                    _ => unreachable!(),
+                };
+                let mut blocks = vec![
+                    ModelBlock::Text {
+                        text: "Cleanup is in progress; this is not the final report.".into(),
+                    },
+                    ModelBlock::ToolUse {
+                        id: format!("cleanup-report-tool-{}", *calls),
+                        name: "ExecCommand".into(),
+                        input: serde_json::json!({"cmd": cmd, "yield_time_ms": 30000}),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    },
+                ];
+                if report_round == 2 {
+                    blocks.push(ModelBlock::ToolUse {
+                        id: "cleanup-report-batch-check".into(),
+                        name: "ExecCommand".into(),
+                        input: serde_json::json!({
+                            "cmd": format!("test -s '{path}'"),
+                            "yield_time_ms": 30000
+                        }),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    });
+                }
+                blocks
             }
-            4 => {
-                assert!(
-                    request.tools.is_empty(),
-                    "the completion report request after two tool rounds must be text-only"
-                );
-                let last_user_text = request
-                    .conversation
-                    .iter()
-                    .rev()
-                    .find_map(|message| match message {
-                        ConversationMessage::UserText(text) => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .expect("text-only fallback request must follow a user text notice");
-                assert!(
-                    last_user_text.contains("Report tool budget exhausted.")
-                        && last_user_text
-                            .contains("Tool calls are now disabled at the API layer"),
-                    "text-only fallback request must be preceded by the fallback notice, got: {last_user_text}"
-                );
+            7 => {
+                assert!(!self.report_path.exists());
                 vec![ModelBlock::Text {
                     text: "All work is complete; final report delivered.".into(),
                 }]
@@ -5714,7 +5833,68 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
 }
 
 #[tokio::test]
-async fn completion_report_text_only_fallback_notifies_model_and_completes() {
+async fn completion_report_allows_five_cleanup_tool_rounds_before_final_text() {
+    assert_completion_report_cleanup(None, false).await;
+}
+
+#[tokio::test]
+async fn completion_report_survives_private_compaction_before_final_text() {
+    assert_completion_report_cleanup_with_compaction(
+        None,
+        false,
+        Some(ReportCheckpointOutput::Text),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn completion_report_survives_empty_private_compaction() {
+    assert_completion_report_cleanup_with_compaction(
+        None,
+        false,
+        Some(ReportCheckpointOutput::Empty),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn completion_report_survives_reasoning_only_private_compaction() {
+    assert_completion_report_cleanup_with_compaction(
+        None,
+        false,
+        Some(ReportCheckpointOutput::ReasoningOnly),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn completion_report_cleanup_obeys_generic_tool_round_limit() {
+    assert_completion_report_cleanup(Some(2), false).await;
+}
+
+#[tokio::test]
+async fn completion_report_rejects_nested_lifecycle_tools_before_cleanup() {
+    assert_completion_report_cleanup(None, true).await;
+}
+
+async fn assert_completion_report_cleanup(
+    max_tool_rounds: Option<usize>,
+    attempt_nested_lifecycle: bool,
+) {
+    assert_completion_report_cleanup_with_compaction(
+        max_tool_rounds,
+        attempt_nested_lifecycle,
+        None,
+    )
+    .await;
+}
+
+async fn assert_completion_report_cleanup_with_compaction(
+    max_tool_rounds: Option<usize>,
+    attempt_nested_lifecycle: bool,
+    checkpoint_output: Option<ReportCheckpointOutput>,
+) {
+    let force_compaction = checkpoint_output.is_some();
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let seed_runtime = RuntimeHandle::new(
@@ -5728,12 +5908,7 @@ async fn completion_report_text_only_fallback_notifies_model_and_completes() {
     )
     .unwrap();
     let work_item = seed_runtime
-        .create_work_item(
-            "completion report fallback budget".into(),
-            None,
-            None,
-            Vec::new(),
-        )
+        .create_work_item("completion report cleanup".into(), None, None, Vec::new())
         .await
         .unwrap();
     seed_runtime
@@ -5741,20 +5916,40 @@ async fn completion_report_text_only_fallback_notifies_model_and_completes() {
         .await
         .unwrap();
 
-    let provider = Arc::new(CompletionReportFallbackBudgetProvider {
+    let report_path = workspace.path().join("completion-report-cleanup.txt");
+    let provider = Arc::new(CompletionReportCleanupProvider {
         work_item_id: work_item.id.clone(),
+        report_path: report_path.clone(),
+        runtime: Mutex::new(None),
+        attempt_nested_lifecycle,
         calls: Mutex::new(0),
     });
+    let compaction_provider = Arc::new(ReportCompactionProvider {
+        inner: provider.clone(),
+        checkpoint_output: checkpoint_output.unwrap_or(ReportCheckpointOutput::Text),
+        checkpoint_calls: Mutex::new(0),
+        response_calls: Mutex::new(0),
+    });
+    let runtime_provider: Arc<dyn AgentProvider> = if force_compaction {
+        compaction_provider.clone()
+    } else {
+        provider.clone()
+    };
     let runtime = RuntimeHandle::new(
         "default",
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
         "http://127.0.0.1:7878".into(),
-        provider.clone(),
+        runtime_provider,
         "default".into(),
-        continuation_context_config(),
+        if force_compaction {
+            report_compaction_context_config(&workspace)
+        } else {
+            continuation_context_config()
+        },
     )
     .unwrap();
+    *provider.runtime.lock().await = Some(runtime.clone());
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
@@ -5774,50 +5969,81 @@ async fn completion_report_text_only_fallback_notifies_model_and_completes() {
     );
     message.work_item_id = Some(work_item.id.clone());
 
-    let mut runtime_task = tokio::spawn(runtime.clone().run());
-    runtime.enqueue(message).await.unwrap();
-    let completion = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            if runtime
-                .latest_work_item(&work_item.id)
-                .await
-                .unwrap()
-                .is_some_and(|record| record.state == WorkItemState::Completed)
-            {
-                break;
+    if max_tool_rounds.is_none() {
+        let runtime_task = tokio::spawn(runtime.clone().run());
+        runtime.enqueue(message.clone()).await.unwrap();
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let entry = runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&message.id)
+                    .unwrap()
+                    .unwrap();
+                if entry.status == QueueEntryStatus::Processed {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            if runtime_task.is_finished() {
-                panic!(
-                    "runtime exited before the text-only fallback completion report: {:#}",
-                    (&mut runtime_task)
-                        .await
-                        .expect("runtime task join")
-                        .expect_err("runtime unexpectedly completed")
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        })
+        .await;
+        runtime_task.abort();
+        settled.expect("completion report queue did not settle after checkpoint");
+        if force_compaction {
+            assert!(
+                *compaction_provider.checkpoint_calls.lock().await > 0,
+                "no private checkpoint after {} ordinary responses; compactions: {:?}",
+                *compaction_provider.response_calls.lock().await,
+                runtime
+                    .storage()
+                    .read_recent_events(200)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| event.kind == "turn_local_compaction_applied")
+                    .map(|event| (
+                        event.data["round"].clone(),
+                        event.data["checkpoint_request_id"].clone(),
+                        event.data["projected_estimated_tokens"].clone(),
+                        event.data["effective_budget_estimated_tokens"].clone(),
+                    ))
+                    .collect::<Vec<_>>()
+            );
         }
-    })
-    .await;
-    if completion.is_err() {
-        let calls = *provider.calls.lock().await;
-        let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
-        let turns = runtime.storage().read_recent_turns(10).unwrap();
-        let events = runtime
-            .storage()
-            .read_recent_events(200)
-            .unwrap()
-            .into_iter()
-            .map(|event| event.kind)
-            .collect::<Vec<_>>();
-        panic!(
-            "timed out waiting for the fallback completion report: calls={calls}, tools={tools:?}, turns={turns:?}, events={events:?}, runtime_finished={}",
-            runtime_task.is_finished()
-        );
+    } else {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runtime.process_interactive_message(&message, LoopControlOptions { max_tool_rounds }),
+        )
+        .await
+        .expect("timed out waiting for the cleanup completion report")
+        .unwrap();
     }
-    runtime_task.abort();
+    *provider.runtime.lock().await = None;
 
-    assert_eq!(*provider.calls.lock().await, 4);
+    if let Some(limit) = max_tool_rounds {
+        assert_eq!(*provider.calls.lock().await, limit);
+        let work_item = runtime
+            .latest_work_item(&work_item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(work_item.state, WorkItemState::Completed);
+        assert!(work_item.result_brief_id.is_none());
+        let turns = runtime.storage().read_recent_turns(10).unwrap();
+        assert_eq!(turns.len(), 1);
+        let terminal = turns[0].terminal.as_ref().unwrap();
+        assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+        assert_eq!(std::fs::read_to_string(&report_path).unwrap(), "written\n");
+        std::fs::remove_file(&report_path).unwrap();
+        return;
+    }
+
+    assert_eq!(
+        *provider.calls.lock().await,
+        7 + usize::from(attempt_nested_lifecycle)
+    );
+    assert!(!report_path.exists());
     let completed = runtime
         .latest_work_item(&work_item.id)
         .await
@@ -5843,34 +6069,67 @@ async fn completion_report_text_only_fallback_notifies_model_and_completes() {
     assert_eq!(
         tools
             .iter()
-            .filter(|tool| tool.tool_name == "GetAgent")
+            .filter(|tool| tool.tool_name == "ExecCommand")
             .count(),
-        2,
-        "allowed report tools should execute for both budgeted rounds"
+        6,
+        "all six cleanup tools across five ordinary tool rounds should execute"
     );
 
+    assert!(tools
+        .iter()
+        .all(|tool| tool.status == ToolExecutionStatus::Success));
+
     let transcript = runtime.storage().read_recent_transcript(20).unwrap();
-    assert!(transcript.iter().any(|entry| {
+    assert!(!transcript.iter().any(|entry| {
         entry.kind == crate::types::TranscriptEntryKind::ContinuationPrompt
             && entry.data.get("reason").and_then(|value| value.as_str())
                 == Some("completion_report_fallback_notice")
-            && entry
-                .data
-                .get("text")
-                .and_then(|value| value.as_str())
-                .is_some_and(|text| text.contains("Report tool budget exhausted."))
     }));
 
     let events = runtime.storage().read_recent_events(200).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "report_fallback_notice_injected"
-            && event.data.get("path").and_then(|value| value.as_str()) == Some("completion")
-            && event
-                .data
-                .get("report_tool_rounds")
-                .and_then(|value| value.as_u64())
-                == Some(2)
-    }));
+    if force_compaction {
+        if checkpoint_output != Some(ReportCheckpointOutput::Text) {
+            assert!(events.iter().any(|event| {
+                event.kind == "turn_local_checkpoint_recorded"
+                    && event.data["checkpoint_recorded"] == false
+                    && event.data["text_char_count"] == 0
+            }));
+        }
+        assert!(events.iter().any(|event| {
+            event.kind == "assistant_round_recorded"
+                && event.data["round_purpose"] == "runtime_checkpoint"
+                && event.data["visibility"] == "runtime_private"
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "turn_local_checkpoint_resume_requested"));
+        assert_eq!(
+            runtime
+                .recent_briefs(10)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|brief| brief.kind == BriefKind::Result)
+                .count(),
+            1
+        );
+    }
+    assert!(events
+        .iter()
+        .all(|event| event.kind != "report_fallback_notice_injected"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "completion_report_request_completed")
+            .count(),
+        1
+    );
+    let turns = runtime.storage().read_recent_turns(10).unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(
+        turns[0].terminal.as_ref().unwrap().kind,
+        TurnTerminalKind::Completed
+    );
 }
 
 async fn assert_invalidated_completion_report_binding_interrupts_deferred_tool(

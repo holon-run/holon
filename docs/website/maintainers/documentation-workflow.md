@@ -78,7 +78,8 @@ prepared content root, which includes generated routes.
 
 ## Preview locally
 
-Use Node.js 22 and Python 3.11 or newer. From the repository root:
+Use Node.js 22.23.4 or newer in the 22.x release line and Python 3.11 or newer.
+From the repository root:
 
 ```bash
 npm ci --prefix docs/website/.tools
