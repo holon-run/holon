@@ -137,6 +137,7 @@ jobs:
       android: ${{ steps.filter.outputs.android }}
       swift_sdk: ${{ steps.filter.outputs.swift_sdk }}
       ios_app: ${{ steps.filter.outputs.ios_app }}
+      ios_compat: ${{ steps.ios-compat.outputs.ios_compat == 'true' || steps.src-scope.outputs.src_non_tui == 'true' }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
       macos_rust_check: ${{ steps.filter.outputs.macos_rust_check }}
       src_non_tui: ${{ steps.src-scope.outputs.src_non_tui }}
@@ -224,10 +225,6 @@ jobs:
               - 'scripts/ios_simulator_text_size.py'
               - 'scripts/test-ios-build-tools.py'
               - 'scripts/package-ios-archive.sh'
-              - 'crates/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'build.rs'
               - 'Makefile'
               - '.github/workflows/ci.yml'
             macos_app:
@@ -244,9 +241,10 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
-      # Non-TUI Rust changes gate the lightweight Swift wire-drift + SDK
-      # tests (swift-sdk job) instead of the full iOS simulator gates; the
-      # full gates stay on iOS-relevant paths and the nightly full sweep.
+      # Non-TUI src changes feed the Rust-base iOS tier (ios_compat): the
+      # swift-sdk wire tests plus the real-daemon contract probe, never the
+      # full iOS simulator gates; those stay on iOS-relevant paths and the
+      # nightly full sweep.
       # paths-filter's default 'some' quantifier cannot express exclusion
       # (a '!' rule would match every other path), so this dedicated step
       # uses predicate-quantifier: every to AND the rules per file:
@@ -264,6 +262,18 @@ jobs:
               - '!src/tui_markdown.rs'
               - '!src/onboarding_tui.rs'
               - '!src/runtime/tests/tui_pipeline_e2e.rs'
+      # Rust-base changes outside src/ (workspace crates and build inputs)
+      # join the same ios_compat tier.
+      - uses: dorny/paths-filter@v3
+        id: ios-compat
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        with:
+          filters: |
+            ios_compat:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
 
   web:
     name: Web
@@ -307,9 +317,11 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     needs: changes
-    # Fast gate for non-TUI Rust changes: wire drift plus mock-based SDK
-    # tests (type check included) without a daemon or simulator.
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.swift_sdk == 'true' || needs.changes.outputs.src_non_tui == 'true'
+    # Data-structure tier: Swift wire drift plus mock-based SDK tests (type
+    # check included) without a daemon or simulator. Swift wire paths and
+    # Rust-base changes (ios_compat) both land here; Rust-base changes also
+    # run the real-daemon contract probe in the ios-app job.
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.swift_sdk == 'true' || needs.changes.outputs.ios_compat == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js
@@ -333,10 +345,16 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
+    # Tiered iOS gating: iOS-relevant paths (ios_app) and full sweeps run
+    # every gate below; Rust-base changes (ios_compat) run only the
+    # real-daemon contract probe — the compatibility surface Rust code can
+    # actually break — and skip the simulator, app and UI gates. Changes
+    # that touch neither surface skip this job entirely.
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true' || needs.changes.outputs.ios_compat == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Require Xcode and an available iOS 18+ simulator
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: |
           xcodebuild -version
           xcrun --sdk iphonesimulator --show-sdk-version
@@ -354,20 +372,24 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Test build tooling contracts
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: python3 scripts/test-ios-build-tools.py
-      - name: Test Swift against the real daemon
+      - name: Test Swift against the real daemon (data structure and compatibility tier)
         run: make ios-contract-test
       - name: Build simulator application
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: make ios-app-build
         env:
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-build
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-build.xcresult
       - name: Test simulator application
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: make ios-app-test
         env:
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-test
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-test.xcresult
       - name: Test isolated simulator UI
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
         run: make ios-ui-test
         env:
           IOS_SHARE_ACCEPTANCE: "1"
@@ -375,7 +397,7 @@ jobs:
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-ui
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-ui.xcresult
       - name: Preserve application test results
-        if: always()
+        if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true')
         uses: actions/upload-artifact@v4
         with:
           name: ios-app-results
