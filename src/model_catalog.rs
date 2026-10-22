@@ -1844,6 +1844,17 @@ fn reasoning_effort_options(
         ("dashscope", "qwen3.8-flash") => &["low", "medium", "xhigh"][..],
         ("zai" | "bigmodel", "glm-5.3" | "glm-5.3-flash") => &["low", "high", "max"][..],
         ("moonshot", "kimi-k3") => &["low", "high", "max"][..],
+        ("xiaomi", "mimo-v2.6-pro" | "mimo-v2.6-flash")
+            if endpoint
+                .is_none_or(|endpoint| matches!(endpoint.as_str(), "default" | "token-plan")) =>
+        {
+            &["none", "low", "medium", "high"][..]
+        }
+        ("xiaomi", "mimo-v2.6-pro-ultraspeed")
+            if endpoint.is_none_or(|endpoint| endpoint.as_str() == "default") =>
+        {
+            &["none", "low", "medium", "high"][..]
+        }
         ("xiaomi", "mimo-v2.5-pro" | "mimo-v2.5")
             if endpoint
                 .is_none_or(|endpoint| matches!(endpoint.as_str(), "default" | "token-plan")) =>
@@ -3257,6 +3268,72 @@ mod tests {
     }
 
     #[test]
+    fn xiaomi_v26_reasoning_controls_are_route_scoped() {
+        let catalog = BuiltInModelCatalog::new();
+        for model in [
+            "mimo-v2.6-pro",
+            "mimo-v2.6-flash",
+            "mimo-v2.6-pro-ultraspeed",
+        ] {
+            let model_ref = ModelRef::parse(&format!("xiaomi/{model}")).unwrap();
+            let metadata = catalog.get(&model_ref).unwrap();
+            for endpoint in ["default", "token-plan"] {
+                let endpoint_id = ProviderEndpointId::parse(endpoint).unwrap();
+                let route_ref =
+                    ModelRouteRef::parse(&format!("xiaomi@{endpoint}/{model}")).unwrap();
+                if model == "mimo-v2.6-pro-ultraspeed" && endpoint == "token-plan" {
+                    assert!(catalog.get_route(&route_ref).is_none());
+                    assert!(reasoning_effort_options(
+                        &model_ref,
+                        Some(&endpoint_id),
+                        &metadata.capabilities,
+                    )
+                    .is_empty());
+                    continue;
+                }
+                assert!(catalog.get_route(&route_ref).is_some());
+                let policy = catalog.resolve_route_policy(
+                    &route_ref,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base_context(),
+                    8192,
+                );
+                assert_eq!(
+                    policy.reasoning_effort_options,
+                    ["none", "low", "medium", "high"],
+                    "{}",
+                    route_ref.as_string()
+                );
+                for effort in ["none", "low", "medium", "high"] {
+                    assert!(policy.validate_reasoning_effort(effort).is_ok());
+                }
+                // The API accepts more aliases, but the official client menu
+                // exposes only these four values, without a service default.
+                for effort in ["off", "minimal", "xhigh", "max", "ultra"] {
+                    assert!(policy.validate_reasoning_effort(effort).is_err());
+                }
+            }
+            assert!(reasoning_effort_options(
+                &model_ref,
+                Some(&ProviderEndpointId::parse("unreviewed").unwrap()),
+                &metadata.capabilities,
+            )
+            .is_empty());
+        }
+        assert!(reasoning_effort_options(
+            &ModelRef::parse("tencent-tokenhub/mimo-v2.6-pro").unwrap(),
+            None,
+            &ModelCapabilityFlags {
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+        )
+        .is_empty());
+    }
+
+    #[test]
     fn xiaomi_ultraspeed_is_api_only() {
         let catalog = BuiltInModelCatalog::new();
         assert!(catalog
@@ -3384,9 +3461,11 @@ mod tests {
             .get(&ModelRef::parse("minimax/MiniMax-M3").unwrap())
             .unwrap();
         assert_eq!(m3.context_window_tokens, Some(1_000_000));
-        assert_eq!(m3.max_output_tokens_upper_limit, Some(32_768));
+        assert_eq!(m3.default_max_output_tokens, Some(131_072));
+        assert_eq!(m3.max_output_tokens_upper_limit, Some(524_288));
         assert!(m3.capabilities.supports_reasoning);
         assert!(m3.capabilities.image_input);
+        assert!(!m3.reasoning_effort_options.contains(&"max".into()));
 
         for model in models.into_iter().filter(|entry| {
             !matches!(
@@ -4552,7 +4631,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 38);
+        assert_eq!(models.len(), 39);
         for model in &models {
             assert!(model.capabilities.supports_reasoning);
             assert!(model.reasoning_effort_options.is_empty());
@@ -4583,6 +4662,7 @@ mod tests {
             "cat-jam-free",
             "step-5-preview",
             "beam-free",
+            "minimax-m3.1-flash",
             "minimax-m3.1-flash-free",
         ] {
             assert_eq!(
@@ -4638,14 +4718,13 @@ mod tests {
                 .is_none());
         }
         for endpoint in ["messages", "responses"] {
-            assert!(catalog
-                .get_route(
-                    &ModelRouteRef::parse(&format!(
-                        "opencode-go@{endpoint}/minimax-m3.1-flash-free"
-                    ))
-                    .unwrap()
-                )
-                .is_none());
+            for id in ["minimax-m3.1-flash", "minimax-m3.1-flash-free"] {
+                assert!(catalog
+                    .get_route(
+                        &ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap()
+                    )
+                    .is_none());
+            }
         }
     }
 
@@ -4656,6 +4735,7 @@ mod tests {
         for (id, older_id) in [
             ("step-5-preview", "step-5-preview-free"),
             ("beam-free", "cat-jam-free"),
+            ("minimax-m3.1-flash", "minimax-m3.1-flash-free"),
         ] {
             let model_ref = ModelRef::new(provider.clone(), id);
             let metadata = catalog.get(&model_ref).unwrap();
@@ -4697,6 +4777,7 @@ mod tests {
             ("cat-jam-free", 262_144, 131_072, false),
             ("step-5-preview", 1_000_000, 65_536, true),
             ("beam-free", 1_048_576, 131_072, false),
+            ("minimax-m3.1-flash", 1_000_000, 512_000, true),
             ("minimax-m3.1-flash-free", 1_000_000, 512_000, true),
         ] {
             let metadata = catalog

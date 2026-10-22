@@ -9,6 +9,102 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-23 incremental review
+
+- Refreshed models.dev revision
+  `fb43d87ae4f5d28f2467baedce982615c7ed30cd492e05ca27c0cc4cbbc6fa0b`.
+  The artifact retains 1,091 models: four additions, four removals, and one
+  changed record relative to the merged catalog. The additions are three
+  Fireworks spot routers and the OpenRouter formal MiniMax ID; removals are
+  three Gemini Veo previews and the OpenRouter MiniMax `:free` ID. OpenRouter
+  GLM-5.3's output limit changes from 943718 to 262144. Only the two added or
+  changed OpenRouter records were compared with the public API's context and
+  `top_provider.max_completion_tokens`; this is not a full-catalog zero-diff
+  claim. These upstream changes are not subscription eligibility evidence.
+  The supplement retains 51 models and 16 explicit routes, with no semantic
+  model or route changes.
+- The official Codex `models-manager/models.json` is byte-identical to the
+  previous cycle (SHA-256
+  `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`).
+  The [lifecycle page](https://learn.chatgpt.com/docs/models) continues to
+  distinguish GPT-5.5's October 14 ChatGPT-sign-in retirement from API-key
+  access. No hidden model, account-specific window, or new Codex route is added.
+- [DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing/) and
+  [Responses](https://api-docs.deepseek.com/guides/responses_api/) retain the
+  reviewed Flash legacy aliases, 1M/384K notation, Flash image support, Pro-only
+  server web search, and stateless Responses restrictions. No route change.
+- Xiaomi's [Responses parameters](https://mimo.mi.com/docs/en-US/api/chat/responses)
+  and the [official client model JSON](https://example-files.cnbj1.mi-fds.com/example-files/configs/model-catalogs.json),
+  linked by its [Codex setup](https://mimo.mi.com/docs/en-US/tokenplan/integration/codex-configuration),
+  confirm the `none/low/medium/high` menu for V2.6 Pro, Flash, and Pro Ultraspeed.
+  Add these options to the exact native route policy, including existing
+  Pro/Flash Token Plan routes but not Ultraspeed Token Plan or aggregators.
+  The API accepts additional aliases: `minimal` maps to `low`, and
+  `xhigh/max/ultra` map to `high`. `none` disables thinking; the remaining
+  values currently do not distinguish actual thinking intensity. The client
+  menu is not proof of distinct server budgets, and its `low` default is not
+  promoted to a service default. The documented output default/maximum is
+  131072; the 1048576 context integer remains client-configuration evidence,
+  not an independently verified service hard limit.
+
+China endpoint evidence was checked on October 22, 20:34–20:42 UTC
+(October 23 Beijing time):
+
+| Endpoint | Result and preserved boundary |
+| --- | --- |
+| DashScope `coding-plan` | [Mainland table](https://help.aliyun.com/zh/model-studio/coding-plan) still lists the same six IDs. Keep reviewed history; six previously unconfirmed supplement routes remain unconfirmed. |
+| DashScope `coding-plan-intl` | [International table](https://www.alibabacloud.com/help/en/model-studio/coding-plan) independently confirms the same six IDs, with vision on the first three Qwen IDs and Kimi. Keep its `coding-intl` domains and plan-specific key separate; no exact token/effort limit evidence. |
+| DashScope `token-plan` | The [personal table](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview) now directly lists `deepseek-v4-pro-0813`, superseding the previous team-only evidence note. Retain the union with the [team table](https://help.aliyun.com/zh/model-studio/token-plan-team-overview), `auto`, and reviewed history. No route changes. |
+| Volcengine `coding` / `coding-plan` | [Current overview](https://docs.volcengine.com/docs/ark/coding-plan-personal-plan-overview?lang=zh) includes the already-added Economy route. Both `MiniMax-M3` and `Kimi-K2.7-Code` are marked for future removal without an effective date; do not remove them. |
+| Volcengine `code-plan` spelling | [Alternate page](https://docs.volcengine.com/docs/ark/code-plan-personal-plan-overview?lang=zh) still yielded only a JavaScript shell. Its equivalence is not independently established; no new endpoint. |
+| Volcengine `plan` | [Agent Plan](https://docs.volcengine.com/docs/ark/agent-plan-personal-plan-overview?lang=zh) confirms multimodal Economy and only `1049k/384k` notation, not exact integers or effort enums. Preserve seven historical dated routes. Enabling excess postpaid use permits charges on the same URL/key; this review did not enable it. |
+| Tencent TokenHub default / `messages` / `responses` | [Protocol matrix](https://cloud.tencent.com/document/product/1823/130079) lists 40/37/30 IDs respectively. The 30 Responses IDs exactly match the local allowlist; all current IDs are covered. Retain history absent from the current table, exclude the three Chat-only `hy-mt2-*` IDs from Messages, and do not inherit original-vendor capabilities or effort. |
+| Xiaomi native | Add the route-scoped effort menu above. Both V2.5 native chat IDs were already removed after the [October 21, 10:00 Beijing retirement](https://mimo.mi.com/docs/en-US/updates/deprecate); do not repeat the removal or affect Tencent's same-named routes. |
+| Xiaomi `token-plan` | [Subscription table](https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription) preserves Pro/Flash eligibility. [OpenCode setup](https://mimo.mi.com/docs/en-US/tokenplan/integration/opencode) additionally lists the European `token-plan-ams.xiaomimimo.com` domain; this alone does not establish regional model parity or authorize a new endpoint. No Ultraspeed plan route. |
+| Z.AI `coding-plan` | [Model table](https://docs.z.ai/devpack/latest-model.md) retains text GLM-5.3, image GLM-5.3-Flash, configured context 1000000, and `low/high/max`. Chat/Responses alternative URLs remain an unregistered coverage gap, not an implicit expansion. [Key types](https://docs.z.ai/devpack/notice/api-key-management.md) remain separate from URL selection. |
+| BigModel `coding-plan` | Independently checked the [regional model table](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md) and [key rules](https://docs.bigmodel.cn/cn/coding-plan/notice/api-key-management.md), rather than copying Z.AI eligibility. New standard/personal/team keys since October 16 are billed by key type; changing URLs does not change that purpose, and legacy keys have separate compatibility rules. No route changes. |
+
+Other endpoint evidence was checked on October 22, 20:34–20:50 UTC
+(October 23 Beijing time):
+
+| Endpoint | Result and preserved boundary |
+| --- | --- |
+| MiniMax international `default` / `m-plan` | The [international schema](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md) explicitly gives both M3 and M3.1 a recommended output of 131072 and maximum 524288. Correct the existing native M3's 32768 values; do not copy M3.1's effort menu to M3 or change aggregator limits. Formal M3.1 was already correct. The [subscription guide](https://platform.minimax.io/docs/m-plan/quickstart.md) requires a separate Subscription Key; [Preview forwarding](https://platform.minimax.io/docs/m-plan/intro.md) remains subscription compatibility, not a new general API route. |
+| MiniMax China `default` / `m-plan` | Independently checked the [regional schema](https://platform.minimaxi.com/docs/api-reference/text-chat-anthropic.md) and [subscription guide](https://platform.minimaxi.com/docs/m-plan/quickstart.md): formal M3.1 and separate subscription credentials remain correct. [Existing Token Plans](https://platform.minimaxi.com/docs/m-plan/token-plan-notice.md) do not require inventing another endpoint. No new regional M3 route. |
+| Moonshot international `default` | The [international model page](https://platform.moonshot.ai/docs/models.md) still returns 403. China's [model table](https://platform.kimi.com/docs/models.md) and [K3 guide](https://platform.kimi.com/docs/guide/kimi-k3-quickstart.md) do not establish international retirement, eligibility, or limits. Preserve reviewed routes and record this regional evidence gap. |
+| StepFun `plan` | The [Plan integration](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md) confirms the existing Chat address and five IDs. [Messages](https://platform.stepfun.com/docs/zh/api-reference/chat/messages-create.md) is separately documented but unregistered; do not silently expand protocol coverage or turn “250K” into an integer hard limit. |
+| OpenCode Go `default` / `messages` / `responses` | The [official protocol table](https://github.com/anomalyco/opencode/blob/074f2fe524892a7efc03b2709b86008188ee9057/services/www/src/docs/content/console/go.mdx), updated after the previous cycle, confirms formal `minimax-m3.1-flash` on Chat only. Add that exact ID; retain the distinct historical Free ID. Advisory context 1000000, output 512000, image input, and reasoning come from the Go-specific models.dev entry, not MiniMax's native API. No new Messages/Responses route or effort enum. Other registered protocol assignments remain supported; direct discovery still returns 403, so this is not a live model-count claim. |
+| Kilo `default` | The [public model API](https://api.kilo.ai/api/gateway/models) still confirms all five Auto IDs and their reviewed limits. Free is text-only and may use data for training; Small is paid. No fixed effort enum or new route. |
+| OpenRouter `default` | The [public API](https://openrouter.ai/api/v1/models) lists native `openrouter/auto`, context 2000000, and a null completion ceiling. The existing short model ID `auto` remains a compatibility uncertainty, not proven request failure. Record it without silently migrating stored model references or treating artifact fallback output values as an official ceiling. |
+
+Unregistered coverage and remaining evidence boundaries:
+
+- Kimi Code's [Chinese](https://www.kimi.com/code/docs/) and
+  [English](https://www.kimi.com/code/docs/en/) overviews separately document
+  `api.kimi.com/coding/v1` and `api.kimi.ai/coding/v1` for Chat/Responses,
+  with `/coding/` bases for Messages. Its Code key is separate from Moonshot's
+  prepaid API; cross-region key interchangeability is unconfirmed. The
+  [model settings](https://www.kimi.com/code/docs/kimi-code/models.html) and
+  [membership rules](https://www.kimi.com/code/docs/kimi-code/membership.html)
+  confirm tier-specific K3 context and default effort `high`, not native K3's
+  `max`. Neither regional endpoint is added in this incremental repair.
+- OpenCode's [pay-as-you-go table](https://github.com/anomalyco/opencode/blob/074f2fe524892a7efc03b2709b86008188ee9057/services/www/src/docs/content/console/models.mdx)
+  is independent of Go: same-named M3 and Qwen models can use different protocols.
+  Zen/Console remains unregistered; no Go eligibility is copied across.
+- Go documents a real client User-Agent and stable `x-opencode-session`.
+  Runtime registration alone does not demonstrate these client requirements
+  or authenticated subscription usability; no live inference was performed.
+
+Validation for this cycle: built-in snapshot regeneration and `models-dev
+validate` pass (1,091 artifact models, 51 supplement models, 16 explicit
+supplement routes, no stale mappings). `cargo test --locked --lib
+model_catalog::` passes 134 tests with one intentional snapshot-writer ignore;
+`cargo test --locked models_dev` passes 63 matching library tests.
+`cargo fmt --all -- --check`, `RUSTFLAGS="-D warnings" cargo check --locked
+--all-targets`, and `git diff --check` pass. Independent read-only review and
+the focused Go/M3 follow-up found no confirmed defects. Generated metadata and
+routes match the reviewed source; supplement changes are provenance-only.
+
 ## 2026-10-22 incremental review
 
 - Refreshed models.dev revision

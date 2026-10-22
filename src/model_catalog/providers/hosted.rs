@@ -564,6 +564,20 @@ fn minimax_m31_model(provider: &str) -> BuiltInModelMetadata {
     entry
 }
 
+fn minimax_m3_model() -> BuiltInModelMetadata {
+    let mut entry = catalog_model(
+        "minimax",
+        "MiniMax-M3",
+        "MiniMax M3",
+        1_000_000,
+        131_072,
+        true,
+        true,
+    );
+    entry.max_output_tokens_upper_limit = Some(524_288);
+    entry
+}
+
 fn minimax_m_plan_model(provider: &str) -> BuiltInModelMetadata {
     BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id(provider), "MiniMax-M3.1-Flash-Preview"),
@@ -614,15 +628,7 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
     vec![
         minimax_m31_model("minimax"),
         minimax_m31_model("minimax-cn"),
-        catalog_model(
-            "minimax",
-            "MiniMax-M3",
-            "MiniMax M3",
-            1_000_000,
-            32_768,
-            true,
-            true,
-        ),
+        minimax_m3_model(),
         catalog_model(
             "minimax",
             "MiniMax-M2.7",
