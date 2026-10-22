@@ -577,6 +577,29 @@ fn bounded_bootstrap_error(error: &anyhow::Error) -> String {
     summary.chars().take(MAX_CHARS).collect()
 }
 
+/// Default bootstrap initialization message for agents created without an
+/// explicit `initial_message` (#2795): a runtime-owned, deterministic-id
+/// instruction that makes the new agent run one initialization turn so its
+/// conversation is not empty. Mirrors the `first_run_intro` contract.
+fn default_agent_bootstrap_initial_message(agent_id: &str) -> AgentBootstrapInitialMessage {
+    AgentBootstrapInitialMessage {
+        message_id: format!("agent_bootstrap_message:{agent_id}"),
+        text: default_agent_bootstrap_initial_message_text().to_string(),
+        authority_class: AuthorityClass::RuntimeInstruction,
+        creator_agent_id: String::new(),
+    }
+}
+
+fn default_agent_bootstrap_initial_message_text() -> &'static str {
+    "This agent was just created without an initial message. Perform a one-time \
+     initialization turn: read your AGENTS.md and template contract, note your \
+     installed skills and workspaces, then briefly introduce yourself to the user — \
+     your role, what you can do, and a few starter actions. Keep it friendly and \
+     concise; do not invent tasks or modify files. Choose the user's most likely \
+     language from trusted preferences and environment hints such as locale or \
+     timezone; adapt if the user replies in another language."
+}
+
 fn named_agent_already_exists_error(agent_id: &str) -> anyhow::Error {
     anyhow::Error::from(
         ToolError::new(
@@ -3787,6 +3810,7 @@ impl RuntimeHost {
             workspace: None,
             model_resolution: None,
             initial_message: None,
+            default_initial_message: false,
         };
         let (identity, created) = self
             .ensure_named_agent(
@@ -3810,6 +3834,9 @@ impl RuntimeHost {
         lineage_parent_agent_id: Option<&str>,
         catalog_agent_home: Option<&Path>,
     ) -> Result<AgentCreateResult> {
+        // Test/compat wrapper: production user-initiated creations should
+        // call `create_public_named_agent_with_name` and state whether the
+        // default bootstrap initialization message is requested (#2795).
         self.create_public_named_agent_with_name(
             agent_id,
             template,
@@ -3817,6 +3844,7 @@ impl RuntimeHost {
             catalog_agent_home,
             None,
             AgentBootstrapExecution::Inline,
+            false,
         )
         .await
     }
@@ -3829,6 +3857,7 @@ impl RuntimeHost {
         catalog_agent_home: Option<&Path>,
         requested_name: Option<&str>,
         execution: AgentBootstrapExecution,
+        default_initial_message: bool,
     ) -> Result<AgentCreateResult> {
         let desired = AgentBootstrapDesiredState {
             template: template.map(ToString::to_string),
@@ -3836,6 +3865,7 @@ impl RuntimeHost {
             workspace: None,
             model_resolution: None,
             initial_message: None,
+            default_initial_message,
         };
         self.create_public_named_agent_with_bootstrap(
             agent_id,
@@ -3855,6 +3885,19 @@ impl RuntimeHost {
         desired: AgentBootstrapDesiredState,
         execution: AgentBootstrapExecution,
     ) -> Result<AgentCreateResult> {
+        // The default bootstrap initialization turn requires a usable model
+        // provider, mirroring `first_run_intro`. Drop the intent when no
+        // provider is ready (e.g. onboarding bootstrap mode) instead of
+        // enqueueing a message the new agent cannot run.
+        let desired = if desired.default_initial_message && !self.config().default_provider_ready()
+        {
+            AgentBootstrapDesiredState {
+                default_initial_message: false,
+                ..desired
+            }
+        } else {
+            desired
+        };
         let (identity, created) = {
             let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
             let had_default_agent = self.configured_default_agent_id()?.is_some();
@@ -4006,12 +4049,17 @@ impl RuntimeHost {
                 authority_class: request.authority_class,
                 creator_agent_id: parent_state.id,
             });
+        // #2795: creations without an explicit initial message still request
+        // the default bootstrap initialization turn; the bootstrap funnel
+        // drops the intent when no model provider is ready yet.
+        let default_initial_message = initial_message.is_none();
         let desired = AgentBootstrapDesiredState {
             template: request.template,
             catalog_agent_home,
             workspace,
             model_resolution: request.model_resolution,
             initial_message,
+            default_initial_message,
         };
         self.create_public_named_agent_with_bootstrap(
             &request.agent_id,
@@ -4653,8 +4701,25 @@ impl RuntimeHost {
         &self,
         bootstrap: &AgentBootstrapRecord,
     ) -> Result<()> {
-        let Some(initial) = bootstrap.desired.initial_message.as_ref() else {
-            return Ok(());
+        let synthesized_default = bootstrap.desired.initial_message.is_none();
+        let initial = match bootstrap.desired.initial_message.clone() {
+            Some(initial) => initial,
+            None if bootstrap.desired.default_initial_message => {
+                // The default initialization turn exists so a brand-new agent
+                // does not start with an empty conversation (#2795). Agents
+                // recreated after deletion keep their retained history, so
+                // they are not empty and must not get an intro turn; the
+                // existing-content checks also keep retries idempotent when
+                // the deterministic-id message was already enqueued.
+                let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
+                if runtime.storage().count_messages()? > 0
+                    || !runtime.storage().read_recent_turns(1)?.is_empty()
+                {
+                    return Ok(());
+                }
+                default_agent_bootstrap_initial_message(&bootstrap.agent_id)
+            }
+            None => return Ok(()),
         };
         let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
         let mut message = MessageEnvelope::new(
@@ -4674,12 +4739,16 @@ impl RuntimeHost {
             AdmissionContext::RuntimeOwned,
         );
         message.id = initial.message_id.clone();
-        message.metadata = Some(json!({
+        let mut metadata = json!({
             "spawn_preset": AgentProfilePreset::PublicNamed,
             "creator_agent_id": initial.creator_agent_id,
             "spawned_agent_id": bootstrap.agent_id,
             "bootstrap": true,
-        }));
+        });
+        if synthesized_default {
+            metadata["bootstrap_default"] = json!(true);
+        }
+        message.metadata = Some(metadata);
         runtime.enqueue(message).await?;
         Ok(())
     }
@@ -6558,6 +6627,7 @@ impl RuntimeHost {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
         let lineage_parent_agent_id = parent_state.id.clone();
+        let default_initial_message = initial_message.is_none();
         let desired = AgentBootstrapDesiredState {
             template,
             catalog_agent_home: Some(parent_agent_home),
@@ -6581,6 +6651,7 @@ impl RuntimeHost {
                 authority_class,
                 creator_agent_id: parent_state.id,
             }),
+            default_initial_message,
         };
         self.create_public_named_agent_with_bootstrap(
             agent_id,
@@ -8909,6 +8980,7 @@ mod tests {
                 workspace: None,
                 model_resolution: None,
                 initial_message: None,
+                default_initial_message: false,
             },
         )
         .await
@@ -10116,6 +10188,7 @@ mod tests {
                 None,
                 Some("Receipt Bot"),
                 AgentBootstrapExecution::Inline,
+                false,
             )
             .await
             .unwrap();
@@ -10156,6 +10229,7 @@ mod tests {
                 None,
                 Some("Receipt Worker"),
                 AgentBootstrapExecution::Inline,
+                false,
             )
             .await
             .expect_err("duplicate display names must fail closed");
@@ -10168,6 +10242,7 @@ mod tests {
             None,
             Some("Straße"),
             AgentBootstrapExecution::Inline,
+            false,
         )
         .await
         .unwrap();
@@ -10179,6 +10254,7 @@ mod tests {
                 None,
                 Some("STRASSE"),
                 AgentBootstrapExecution::Inline,
+                false,
             )
             .await
             .expect_err("Unicode-equivalent display names must fail closed");
@@ -10235,6 +10311,7 @@ mod tests {
                 None,
                 Some("Retained Name"),
                 AgentBootstrapExecution::Inline,
+                false,
             )
             .await
             .unwrap();
@@ -10330,6 +10407,7 @@ mod tests {
             None,
             None,
             AgentBootstrapExecution::Inline,
+            false,
         )
         .await
         .unwrap();
@@ -12750,7 +12828,7 @@ mod tests {
         );
         assert!(
             named.storage().read_recent_messages(10).unwrap().is_empty(),
-            "omitted initial_message should not enqueue a bootstrap message"
+            "omitted initial_message must not enqueue a bootstrap message while no model provider is ready"
         );
 
         host.spawn_public_named_agent(
@@ -12840,6 +12918,162 @@ mod tests {
                 .count(),
             1,
             "concurrent repair must not duplicate the bootstrap message"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_agent_creation_without_initial_message_enqueues_default_bootstrap() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let agent_id = "intro-agent".to_string();
+
+        host.create_public_named_agent_with_name(
+            &agent_id,
+            None,
+            None,
+            None,
+            Some("Intro Agent"),
+            AgentBootstrapExecution::Inline,
+            true,
+        )
+        .await
+        .unwrap();
+
+        let runtime = host.get_public_agent(&agent_id).await.unwrap();
+        let messages = runtime.storage().read_recent_messages(10).unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "default bootstrap should enqueue exactly one initialization message"
+        );
+        let bootstrap = &messages[0];
+        assert_eq!(
+            bootstrap.id,
+            format!("agent_bootstrap_message:{agent_id}"),
+            "default bootstrap message must use the deterministic bootstrap id"
+        );
+        assert_eq!(bootstrap.kind, MessageKind::InternalFollowup);
+        assert_eq!(
+            bootstrap.origin,
+            MessageOrigin::System {
+                subsystem: "spawn_agent".into()
+            }
+        );
+        assert_eq!(
+            bootstrap.authority_class,
+            AuthorityClass::RuntimeInstruction
+        );
+        assert_eq!(
+            bootstrap.delivery_surface,
+            Some(MessageDeliverySurface::RuntimeSystem)
+        );
+        assert_eq!(
+            bootstrap.admission_context,
+            Some(AdmissionContext::RuntimeOwned)
+        );
+        let metadata = bootstrap.metadata.as_ref().unwrap();
+        assert_eq!(
+            metadata.get("bootstrap").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            metadata
+                .get("bootstrap_default")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            bootstrap.body,
+            MessageBody::Text {
+                text: default_agent_bootstrap_initial_message_text().to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_initial_message_bootstrap_has_no_default_marker() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+        let agent_id = "explicit-bootstrap".to_string();
+
+        host.spawn_public_named_agent(
+            parent,
+            &agent_id,
+            Some("bootstrap release lane".into()),
+            AuthorityClass::OperatorInstruction,
+            None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
+        )
+        .await
+        .unwrap();
+
+        let runtime = host.get_public_agent(&agent_id).await.unwrap();
+        let messages = runtime.storage().read_recent_messages(10).unwrap();
+        let bootstrap = messages
+            .iter()
+            .find(|message| message.id == format!("agent_bootstrap_message:{agent_id}"))
+            .expect("explicit initial_message should still enqueue its bootstrap input");
+        let metadata = bootstrap.metadata.as_ref().unwrap();
+        assert!(
+            metadata.get("bootstrap_default").is_none(),
+            "explicit initial_message must not be marked as the default bootstrap"
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("bootstrap"))
+                    .and_then(|value| value.as_bool())
+                    == Some(true))
+                .count(),
+            1,
+            "explicit initial_message must not also trigger the default bootstrap"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_creation_without_default_intent_stays_silent() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+
+        host.create_public_named_agent("legacy-silent", None, None, None)
+            .await
+            .unwrap();
+
+        let runtime = host.get_public_agent("legacy-silent").await.unwrap();
+        assert!(
+            runtime.storage().read_recent_messages(10).unwrap().is_empty(),
+            "legacy creation without the default intent must stay silent even with a ready provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_bootstrap_intent_is_dropped_without_ready_provider() {
+        let (_home, host) = test_host();
+
+        host.create_public_named_agent_with_name(
+            "no-provider-intro",
+            None,
+            None,
+            None,
+            Some("No Provider Intro"),
+            AgentBootstrapExecution::Inline,
+            true,
+        )
+        .await
+        .unwrap();
+
+        let runtime = host.get_public_agent("no-provider-intro").await.unwrap();
+        assert!(
+            runtime
+                .storage()
+                .read_recent_messages(10)
+                .unwrap()
+                .is_empty(),
+            "default bootstrap intent must be dropped when no model provider is ready"
         );
     }
 

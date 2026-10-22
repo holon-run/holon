@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 
 use crate::{
     config::{AppConfig, ModelRouteRef},
-    host::RuntimeHost,
+    host::{AgentBootstrapExecution, RuntimeHost},
     ingress::InboundRequest,
     provider::ProviderCacheUsage,
     runtime::RuntimeHandle,
@@ -520,8 +520,22 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
 
     if let Some(agent_id) = request.agent_id.as_deref() {
         if request.create_agent {
-            host.create_public_named_agent(agent_id, request.template.as_deref(), None, None)
-                .await?;
+            // No default initialization turn here (#2795): a run_once
+            // creation is always immediately followed by the user's prompt
+            // in this same session, so the conversation is never empty and
+            // an intro turn would only compete with the real request.
+            // Standalone `holon agent create` goes through the control HTTP
+            // path and does request the default turn.
+            host.create_public_named_agent_with_name(
+                agent_id,
+                request.template.as_deref(),
+                None,
+                None,
+                None,
+                AgentBootstrapExecution::Inline,
+                false,
+            )
+            .await?;
         }
         let runtime = host.get_public_agent_for_external_ingress(agent_id).await?;
         Ok(RunSession {
