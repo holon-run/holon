@@ -187,5 +187,13 @@ test("sign-out clears conversation caches and rechecks sibling tabs", async ({ p
     request.onerror = () => reject(request.error);
   }));
   expect(count).toBe(0);
+  const authChange = await page.evaluate(() => localStorage.getItem("holon.conversationAuthChange.v1"));
+  expect(authChange).toBeTruthy();
+  // Rechecking the same rejected cookie must not announce another auth change
+  // and make the other tab reload in response.
+  await Promise.all([page.reload(), sibling.reload()]);
+  await expect(page.getByRole("heading", { name: "Sign in to Holon" })).toBeVisible();
+  await expect(sibling.getByRole("heading", { name: "Sign in to Holon" })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("holon.conversationAuthChange.v1"))).toBe(authChange);
   await sibling.close();
 });

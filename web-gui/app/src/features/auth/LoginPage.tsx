@@ -51,7 +51,7 @@ export function LoginPage() {
     })
       .then(async (response) => {
         if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
-        await clearConversationCaches();
+        await clearConversationCaches({ notifySiblingTabs: true });
         clearStoredRuntimeConnectionToken();
         window.location.replace(returnTo.href);
       })
@@ -102,7 +102,7 @@ export function LoginPage() {
         body: JSON.stringify({ credential: token }),
       });
       if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
-      await clearConversationCaches();
+      await clearConversationCaches({ notifySiblingTabs: true });
       clearStoredRuntimeConnectionToken();
       const destination = returnTo;
       if (destination.pathname === window.location.pathname && destination.search === window.location.search) {

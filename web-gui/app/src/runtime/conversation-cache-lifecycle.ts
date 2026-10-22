@@ -4,12 +4,14 @@ import { clearAgentAccessRecords } from "./agent-access-records";
 
 const AUTH_CHANGE_KEY = "holon.conversationAuthChange.v1";
 
-/** Drop in-memory readers before removing persisted content on auth transitions. */
-export async function clearConversationCaches(): Promise<void> {
+/** Notify peers only when this tab changed the shared cookie, not when rechecking it. */
+export async function clearConversationCaches({ notifySiblingTabs = false }: { notifySiblingTabs?: boolean } = {}): Promise<void> {
   clearAgentAccessRecords();
   disposeAllConversationScopes(false);
   await cacheClearAll();
-  try { localStorage.setItem(AUTH_CHANGE_KEY, crypto.randomUUID()); } catch { /* storage unavailable */ }
+  if (notifySiblingTabs) {
+    try { localStorage.setItem(AUTH_CHANGE_KEY, crypto.randomUUID()); } catch { /* storage unavailable */ }
+  }
 }
 
 if (typeof window !== "undefined") {
