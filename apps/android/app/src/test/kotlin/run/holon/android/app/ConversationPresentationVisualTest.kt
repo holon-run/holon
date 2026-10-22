@@ -98,6 +98,20 @@ class ConversationPresentationVisualTest(
         }
     }
 
+    @Test fun localReceiptShowsOriginalDateInsteadOfAppearingNew() {
+        val old = OutboxEntity(
+            "old-request", "scope", "fixture", "This message was sent earlier.", "[]",
+            "received", "old-message", null,
+            java.time.Instant.parse("2025-10-01T23:59:00Z").toEpochMilli(),
+            java.time.Instant.parse("2026-10-22T03:00:00Z").toEpochMilli(),
+        )
+        paparazzi.snapshot {
+            CompositionLocalProvider(LocalDensity provides androidx.compose.ui.unit.Density(LocalDensity.current.density, fontScale)) {
+                MaterialTheme { Surface { LocalMessageCard(old, false, {}, {}, {}) } }
+            }
+        }
+    }
+
     @Test fun canonicalSourceRetainsExternalIdentity() {
         val message = HolonMessageBatch.from(HolonJsonDocument(Json.parseToJsonElement("""
             {"messages":[{"id":"input","agent_id":"fixture","created_at":"2026-10-20T10:32:00Z",

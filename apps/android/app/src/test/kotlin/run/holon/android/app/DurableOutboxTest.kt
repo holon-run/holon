@@ -6,6 +6,15 @@ import kotlin.test.*
 import run.holon.android.sdk.HolonPromptReceipt
 
 class DurableOutboxTest {
+    @Test fun `received entries are terminal and never sent again`() = runTest {
+        val entry = OutboxEntity("stable-id", "scope-A", "holon-tester", "old", "[]", "received", "message", null, 1, 2)
+        val outbox = DurableOutbox(
+            OutboxStore { fail("A received entry must not be rewritten") },
+            OutboxSender { fail("A received entry must not be resent") },
+        )
+        assertEquals(entry, outbox.deliver(entry))
+    }
+
     @Test fun `lost response retains immutable request for recovery`() = runTest {
         val entry = OutboxEntity("stable-id", "scope-A", "holon-tester", "original", "[]", "pending", null, null, 1, 1)
         val stored = mutableListOf<OutboxEntity>()

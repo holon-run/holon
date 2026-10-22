@@ -553,6 +553,20 @@ internal fun HolonUiState.afterDeletingNetwork(
         copy(busy = false, networkProfiles = profiles, error = null, statusMessage = "网络已删除")
     }
 
+internal data class ComposerRevision(val draft: Long, val attachments: Long)
+
+/** A slow conversation load must not replace edits made while it was in flight. */
+internal fun HolonUiState.withRestoredComposer(
+    bundle: ConversationBundle,
+    loading: ComposerRevision,
+    current: ComposerRevision,
+    preserveExisting: Boolean = false,
+): HolonUiState =
+    if (preserveExisting) this else copy(
+        draft = if (loading.draft == current.draft) bundle.draft else draft,
+        attachments = if (loading.attachments == current.attachments && !stagingAttachment) bundle.attachments else attachments,
+    )
+
 internal fun isCurrentLiveSync(
     foreground: Boolean,
     phase: AppPhase,

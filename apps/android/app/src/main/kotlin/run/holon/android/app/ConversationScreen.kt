@@ -1231,7 +1231,7 @@ internal fun LocalMessageCard(
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(message.text.ifBlank { ui("附件") })
                 Text(
-                    label,
+                    "${outboxTimestamp(message.createdAt)} · $label",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (message.state == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
                 )
