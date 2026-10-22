@@ -93,11 +93,14 @@ fn main() -> Result<()> {
 
     let filter = benchmark_filter();
     let results = run_benchmarks(samples, &filter)?;
-    let reader_reuse = if benchmark_selected(&filter, "projection.agent_list.reader_reuse") {
+    let mut reader_reuse = if benchmark_selected(&filter, "projection.agent_list.reader_reuse") {
         reader_reuse::run(samples)?
     } else {
         Vec::new()
     };
+    if benchmark_selected(&filter, "runtime_db.reader_coverage") {
+        reader_reuse.extend(reader_reuse::run_coverage(samples)?);
+    }
     anyhow::ensure!(
         !results.is_empty() || !reader_reuse.is_empty(),
         "HOLON_BENCH_FILTER selected no workloads"

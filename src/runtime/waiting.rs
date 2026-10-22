@@ -452,373 +452,382 @@ impl RuntimeHandle {
         .await
     }
 
-    pub(super) async fn prepare_wait_for_outcome_with_id(
-        &self,
-        agent_id: &str,
+    pub(super) fn prepare_wait_for_outcome_with_id<'a>(
+        &'a self,
+        agent_id: &'a str,
         mut work_item_id: Option<String>,
         wake: WaitForWakeKind,
         resource: Option<String>,
         reason: String,
         recheck_after_ms: Option<u64>,
         condition_id: Option<String>,
-    ) -> Result<PrepareWaitForOutcome> {
-        let runtime_agent_id = self.agent_id().await?;
-        if agent_id != runtime_agent_id {
-            return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
-        }
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<PrepareWaitForOutcome>> + Send + 'a>,
+    > {
+        // Keep preparation and terminal settlement frames out of wait callers.
+        Box::pin(async move {
+            let runtime_agent_id = self.agent_id().await?;
+            if agent_id != runtime_agent_id {
+                return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
+            }
 
-        let mut expected_task = None;
-        if wake == WaitForWakeKind::TaskResult {
-            let task_id = wait_resource_required(wake, resource.clone())?;
-            let task = self
-                .inner
-                .runtime_db
-                .tasks()
-                .latest(&task_id)?
-                .ok_or_else(|| {
+            let mut expected_task = None;
+            if wake == WaitForWakeKind::TaskResult {
+                let task_id = wait_resource_required(wake, resource.clone())?;
+                let task = self.task_record(&task_id).await?.ok_or_else(|| {
                     RuntimeError::not_found(
                         "task_not_found",
                         format!("wait_for task does not exist: {task_id}"),
                     )
                     .with_safe_context("task_id", &task_id)
                 })?;
-            // #3124: the task's captured owner never changes and never
-            // restricts who may wait; an explicit waiter (resolved by the
-            // caller, binding-first) wins. With no explicit waiter, keep the
-            // legacy task-owner attribution so a conversation-scoped wait
-            // still hands off to the WorkItem that owns the task.
-            self.validate_wait_for_task_access(agent_id, &task)?;
-            if work_item_id.is_none() {
-                work_item_id = task.work_item_id.clone();
+                // #3124: the task's captured owner never changes and never
+                // restricts who may wait; an explicit waiter (resolved by the
+                // caller, binding-first) wins. With no explicit waiter, keep the
+                // legacy task-owner attribution so a conversation-scoped wait
+                // still hands off to the WorkItem that owns the task.
+                self.validate_wait_for_task_access(agent_id, &task)?;
+                if work_item_id.is_none() {
+                    work_item_id = task.work_item_id.clone();
+                }
+                if task_state_reducer::is_terminal_task_status(&task.status) {
+                    return self
+                        .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
+                        .await;
+                }
+                expected_task = Some(task_expectation(&task));
             }
-            if task_state_reducer::is_terminal_task_status(&task.status) {
-                return self
-                    .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
-                    .await;
-            }
-            expected_task = Some(task_expectation(&task));
-        }
 
-        let now = self.now();
-        let mut pending_timer_wake = None;
-        let timer_wake_at = if wake == WaitForWakeKind::Timer {
-            let timer_id = wait_resource_required(wake, resource.clone())?;
-            let timer = self
-                .inner
-                .storage
-                .latest_timer_record(&timer_id)?
+            let now = self.now();
+            let mut pending_timer_wake = None;
+            let timer_wake_at = if wake == WaitForWakeKind::Timer {
+                let timer_id = wait_resource_required(wake, resource.clone())?;
+                let storage = self.inner.storage.clone();
+                let read_timer_id = timer_id.clone();
+                let timer = tokio::task::spawn_blocking(move || {
+                    storage.latest_timer_record(&read_timer_id)
+                })
+                .await??
                 .ok_or_else(|| {
                     RuntimeError::not_found("timer_not_found", "wait_for timer does not exist")
                 })?;
-            if timer.agent_id != agent_id {
-                return Err(RuntimeError::policy(
-                    "timer_agent_mismatch",
-                    "wait_for timer is not owned by this agent",
-                )
-                .into());
-            }
-            match timer.status {
-                TimerStatus::Active => Some(timer.next_fire_at.ok_or_else(|| {
-                    RuntimeError::validation(
-                        "timer_invalid_state",
-                        "wait_for timer has no next fire time",
+                if timer.agent_id != agent_id {
+                    return Err(RuntimeError::policy(
+                        "timer_agent_mismatch",
+                        "wait_for timer is not owned by this agent",
                     )
-                })?),
-                TimerStatus::Completed => {
-                    let timer_wake = self
-                        .inner
-                        .runtime_db
-                        .timers()
-                        .pending_wake(&timer_id)?
+                    .into());
+                }
+                match timer.status {
+                    TimerStatus::Active => Some(timer.next_fire_at.ok_or_else(|| {
+                        RuntimeError::validation(
+                            "timer_invalid_state",
+                            "wait_for timer has no next fire time",
+                        )
+                    })?),
+                    TimerStatus::Completed => {
+                        let db = self.inner.runtime_db.clone();
+                        let timer_wake = tokio::task::spawn_blocking(move || {
+                            db.timers().pending_wake(&timer_id)
+                        })
+                        .await??
                         .ok_or_else(|| {
                             RuntimeError::validation(
                                 "timer_wake_unavailable",
                                 "wait_for timer wake is unavailable",
                             )
                         })?;
-                    let wake_at = timer_wake.created_at;
-                    pending_timer_wake = Some(timer_wake);
-                    Some(wake_at)
+                        let wake_at = timer_wake.created_at;
+                        pending_timer_wake = Some(timer_wake);
+                        Some(wake_at)
+                    }
+                    TimerStatus::Cancelled => {
+                        return Err(RuntimeError::validation(
+                            "timer_cancelled",
+                            "wait_for timer is cancelled",
+                        )
+                        .into())
+                    }
                 }
-                TimerStatus::Cancelled => {
-                    return Err(RuntimeError::validation(
-                        "timer_cancelled",
-                        "wait_for timer is cancelled",
-                    )
-                    .into())
-                }
-            }
-        } else {
-            None
-        };
-        let external_trigger_id = if wake == WaitForWakeKind::External {
-            self.inner
-                .runtime_db
-                .external_triggers()
-                .active_default_for_agent(&agent_id)?
-                .map(|trigger| trigger.external_trigger_id)
-        } else {
-            None
-        };
-        let (kind, subject_ref, wake_sources) =
-            wait_condition_parts(wake, resource.clone(), timer_wake_at, external_trigger_id)?;
-        let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
-        let mut state = self.agent_state().await?;
-        let expected_state = state.clone();
-        let current_turn_id = state.current_turn_id.clone();
-        let mut work_item = None;
-        let active_waits = if let Some(work_item_id) = work_item_id.as_deref() {
-            self.inner
-                .storage
-                .raw_unresolved_wait_conditions_for_agent(agent_id)?
-                .into_iter()
-                .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
-                .collect::<Vec<_>>()
-        } else {
-            self.inner
-                .storage
-                .raw_unresolved_wait_conditions_for_agent(agent_id)?
-                .into_iter()
-                .filter(|record| record.work_item_id.is_none())
-                .collect()
-        };
-        let replaced = replace_wait_conditions(active_waits, now);
-        let mut wait_conditions = replaced.records;
-        let cancelled_wait_condition_ids = replaced.cancelled_ids;
-        let resolved_after_trigger_wait_condition_ids = replaced.resolved_after_trigger_ids;
-        wait_conditions.reserve(1);
-        let mut work_items = Vec::new();
-        let mut audit_events = Vec::new();
-        let mut index_changes = Vec::new();
-        let mut committed_agent_state = None;
-        let mut condition = WaitConditionRecord {
-            id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
-            agent_id: agent_id.to_string(),
-            work_item_id: work_item_id.clone(),
-            status: WaitConditionStatus::Active,
-            kind,
-            source: Some("WaitFor".to_string()),
-            subject_ref,
-            waiting_for: reason.clone(),
-            wake_sources,
-            continuation: Some(serde_json::json!({
-                "created_by": "WaitFor",
-                "wake": wake,
-                "resource": resource,
-                "recheck_after_ms": recheck_after_ms,
-                "recheck_at": recheck_at,
-                "recovery": recheck_at.map(|_| serde_json::json!({
-                    "kind": "recoverable",
-                    "recheck_source": "WaitFor",
-                })),
-                "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
-            })),
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: current_turn_id,
-            trigger_message_id: None,
-            triggered_at: None,
-        };
-        if let Some(timer_wake) = pending_timer_wake.as_ref() {
-            condition.mark_triggered(&timer_wake.message_id, now);
-        }
-        if !cancelled_wait_condition_ids.is_empty() {
-            audit_events.push(AuditEvent::legacy(
-                "wait_conditions_cancelled",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "work_item_id": work_item_id,
-                    "reason": "wait_for_replaced",
-                    "wait_condition_ids": &cancelled_wait_condition_ids,
-                }),
-            ));
-        }
-        if !resolved_after_trigger_wait_condition_ids.is_empty() {
-            audit_events.push(AuditEvent::legacy(
-                "wait_conditions_resolved",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "work_item_id": work_item_id,
-                    "reason": "wait_for_replaced_after_trigger",
-                    "wait_condition_ids": &resolved_after_trigger_wait_condition_ids,
-                }),
-            ));
-        }
-        if let Some(work_item_id) = work_item_id.as_deref() {
-            let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
-            if existing.state != WorkItemState::Open {
-                return Err(RuntimeError::validation(
-                    "work_item_completed",
-                    format!("cannot wait on completed work item {work_item_id}"),
-                )
-                .with_safe_context("work_item_id", work_item_id)
-                .into());
-            }
-            let preserve_blocker = wake == WaitForWakeKind::TaskResult
-                && task_wait_preserves_blocker(&existing, &wait_conditions);
-            let mut updated = WorkItemRecord {
-                revision: existing.revision + 1,
-                blocked_by: if preserve_blocker {
-                    existing.blocked_by.clone()
-                } else {
-                    Some(reason.clone())
-                },
-                blocked_by_wait_id: if preserve_blocker {
-                    existing.blocked_by_wait_id.clone()
-                } else {
-                    Some(condition.id.clone())
-                },
-                recheck_at: if preserve_blocker {
-                    existing.recheck_at
-                } else {
-                    recheck_at
-                },
-                recheck_consumed_at: if preserve_blocker {
-                    existing.recheck_consumed_at
-                } else {
-                    None
-                },
-                updated_at: now,
-                ..existing.clone()
+            } else {
+                None
             };
-            let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
-                self.agent_home().as_path(),
-                &mut updated,
-            )?;
-            if plan_artifact_changed {
-                if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
-                    audit_events.push(event);
-                }
+            let external_trigger_id = if wake == WaitForWakeKind::External {
+                let db = self.inner.runtime_db.clone();
+                let agent_id = agent_id.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    db.external_triggers().active_default_for_agent(&agent_id)
+                })
+                .await??
+                .map(|trigger| trigger.external_trigger_id)
+            } else {
+                None
+            };
+            let (kind, subject_ref, wake_sources) =
+                wait_condition_parts(wake, resource.clone(), timer_wake_at, external_trigger_id)?;
+            let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
+            let mut state = self.agent_state().await?;
+            let expected_state = state.clone();
+            let current_turn_id = state.current_turn_id.clone();
+            let mut work_item = None;
+            let storage = self.inner.storage.clone();
+            let read_agent_id = agent_id.to_owned();
+            let active_waits = tokio::task::spawn_blocking(move || {
+                storage.raw_unresolved_wait_conditions_for_agent(&read_agent_id)
+            })
+            .await??;
+            let active_waits = if let Some(work_item_id) = work_item_id.as_deref() {
+                active_waits
+                    .into_iter()
+                    .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
+                    .collect::<Vec<_>>()
+            } else {
+                active_waits
+                    .into_iter()
+                    .filter(|record| record.work_item_id.is_none())
+                    .collect()
+            };
+            let replaced = replace_wait_conditions(active_waits, now);
+            let mut wait_conditions = replaced.records;
+            let cancelled_wait_condition_ids = replaced.cancelled_ids;
+            let resolved_after_trigger_wait_condition_ids = replaced.resolved_after_trigger_ids;
+            wait_conditions.reserve(1);
+            let mut work_items = Vec::new();
+            let mut audit_events = Vec::new();
+            let mut index_changes = Vec::new();
+            let mut committed_agent_state = None;
+            let mut condition = WaitConditionRecord {
+                id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
+                agent_id: agent_id.to_string(),
+                work_item_id: work_item_id.clone(),
+                status: WaitConditionStatus::Active,
+                kind,
+                source: Some("WaitFor".to_string()),
+                subject_ref,
+                waiting_for: reason.clone(),
+                wake_sources,
+                continuation: Some(serde_json::json!({
+                    "created_by": "WaitFor",
+                    "wake": wake,
+                    "resource": resource,
+                    "recheck_after_ms": recheck_after_ms,
+                    "recheck_at": recheck_at,
+                    "recovery": recheck_at.map(|_| serde_json::json!({
+                        "kind": "recoverable",
+                        "recheck_source": "WaitFor",
+                    })),
+                    "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
+                })),
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: current_turn_id,
+                trigger_message_id: None,
+                triggered_at: None,
+            };
+            if let Some(timer_wake) = pending_timer_wake.as_ref() {
+                condition.mark_triggered(&timer_wake.message_id, now);
             }
-            let mut projection_waits = wait_conditions
-                .iter()
-                .filter(|record| record.status == WaitConditionStatus::Active)
-                .cloned()
-                .collect::<Vec<_>>();
-            projection_waits.push(condition.clone());
-            let readiness = crate::work_item_scheduling::readiness_from_facts(
-                &updated,
-                false,
-                &projection_waits,
-            );
-            audit_events.push(self.work_item_written_event_with_readiness(
-                "wait_for_blocked",
-                &updated,
-                readiness,
-                Value::Null,
-            ));
-            index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
-            work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
-                record: updated.clone(),
-                expected_revision: existing.revision,
-            });
-            if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
-                state.current_turn_work_item_id = None;
+            if !cancelled_wait_condition_ids.is_empty() {
                 audit_events.push(AuditEvent::legacy(
-                    "work_item_turn_binding_released",
+                    "wait_conditions_cancelled",
                     serde_json::json!({
                         "agent_id": agent_id,
-                        "work_item_id": updated.id.as_str(),
-                        "reason": "work_item_waiting",
-                        "readiness": readiness,
-                        "revision": updated.revision,
+                        "work_item_id": work_item_id,
+                        "reason": "wait_for_replaced",
+                        "wait_condition_ids": &cancelled_wait_condition_ids,
                     }),
                 ));
-                committed_agent_state = Some(state.clone());
             }
-            if wake == WaitForWakeKind::OperatorInput
-                && state.current_work_item_id.as_deref() == Some(updated.id.as_str())
-            {
-                state.current_work_item_id = None;
+            if !resolved_after_trigger_wait_condition_ids.is_empty() {
                 audit_events.push(AuditEvent::legacy(
-                    "work_item_focus_released",
+                    "wait_conditions_resolved",
                     serde_json::json!({
                         "agent_id": agent_id,
-                        "work_item_id": updated.id.as_str(),
-                        "reason": "operator_input_wait",
-                        "readiness": readiness,
-                        "revision": updated.revision,
+                        "work_item_id": work_item_id,
+                        "reason": "wait_for_replaced_after_trigger",
+                        "wait_condition_ids": &resolved_after_trigger_wait_condition_ids,
                     }),
                 ));
-                committed_agent_state = Some(state.clone());
             }
-            work_item = Some(updated);
-        }
-
-        wait_conditions.push(condition.clone());
-        audit_events.extend(
-            self.inner
-                .storage
-                .wait_condition_auxiliary_events(&condition),
-        );
-        audit_events.push(AuditEvent::legacy(
-            "wait_condition_registered",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "work_item_id": work_item_id,
-                "wait_condition_id": condition.id,
-                "source": "WaitFor",
-                "continuation": WaitForContinuation::YieldAndWait,
-                "kind": &condition.kind,
-                "subject_ref": &condition.subject_ref,
-                "waiting_for": &condition.waiting_for,
-                "wake_sources": &condition.wake_sources,
-                "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
-            }),
-        ));
-        let execution_protocol =
-            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)?;
-        let command = crate::runtime_db::transitions::WaitTransitionCommand {
-            task_result_admission: None,
-            agent_id: agent_id.to_string(),
-            work_items,
-            expected_wait_conditions: Vec::new(),
-            wait_conditions,
-            timer_wake: pending_timer_wake.as_ref().map(|wake| {
-                crate::runtime_db::transitions::TimerWakeClaim {
-                    timer_id: wake.timer_id.clone(),
-                    message_id: wake.message_id.clone(),
-                    fire_count: wake.fire_count,
+            if let Some(work_item_id) = work_item_id.as_deref() {
+                let existing = self
+                    .validate_wait_for_work_item(agent_id, work_item_id)
+                    .await?;
+                if existing.state != WorkItemState::Open {
+                    return Err(RuntimeError::validation(
+                        "work_item_completed",
+                        format!("cannot wait on completed work item {work_item_id}"),
+                    )
+                    .with_safe_context("work_item_id", work_item_id)
+                    .into());
                 }
-            }),
-            agent_state: committed_agent_state.map(|record| {
-                crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(expected_state)),
-                    record: Box::new(record),
-                }
-            }),
-            audit_events,
-            index_changes,
-            notify_scheduler: true,
-            fault: self.take_transition_fault(),
-        };
-        Ok(PrepareWaitForOutcome::Prepared(Box::new(
-            PreparedWaitForSettlement {
-                delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
-                wake,
-                registration: WaitForRegistration {
-                    scope: if condition.work_item_id.is_some() {
-                        WaitForScope::WorkItem
+                let preserve_blocker = wake == WaitForWakeKind::TaskResult
+                    && task_wait_preserves_blocker(&existing, &wait_conditions);
+                let mut updated = WorkItemRecord {
+                    revision: existing.revision + 1,
+                    blocked_by: if preserve_blocker {
+                        existing.blocked_by.clone()
                     } else {
-                        WaitForScope::Agent
+                        Some(reason.clone())
                     },
-                    condition,
-                    recheck_after_ms,
-                    recheck_at,
-                    work_item,
-                    cancelled_wait_condition_ids,
+                    blocked_by_wait_id: if preserve_blocker {
+                        existing.blocked_by_wait_id.clone()
+                    } else {
+                        Some(condition.id.clone())
+                    },
+                    recheck_at: if preserve_blocker {
+                        existing.recheck_at
+                    } else {
+                        recheck_at
+                    },
+                    recheck_consumed_at: if preserve_blocker {
+                        existing.recheck_consumed_at
+                    } else {
+                        None
+                    },
+                    updated_at: now,
+                    ..existing.clone()
+                };
+                let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+                    self.agent_home().as_path(),
+                    &mut updated,
+                )?;
+                if plan_artifact_changed {
+                    if let Some(event) = self.work_item_plan_artifact_refreshed_event(&updated) {
+                        audit_events.push(event);
+                    }
+                }
+                let mut projection_waits = wait_conditions
+                    .iter()
+                    .filter(|record| record.status == WaitConditionStatus::Active)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                projection_waits.push(condition.clone());
+                let readiness = crate::work_item_scheduling::readiness_from_facts(
+                    &updated,
+                    false,
+                    &projection_waits,
+                );
+                audit_events.push(self.work_item_written_event_with_readiness(
+                    "wait_for_blocked",
+                    &updated,
+                    readiness,
+                    Value::Null,
+                ));
+                index_changes.extend(self.inner.storage.index_changes_for_work_item(&updated)?);
+                work_items.push(crate::runtime_db::transitions::WorkItemMutation::Update {
+                    record: updated.clone(),
+                    expected_revision: existing.revision,
+                });
+                if state.current_turn_work_item_id.as_deref() == Some(updated.id.as_str()) {
+                    state.current_turn_work_item_id = None;
+                    audit_events.push(AuditEvent::legacy(
+                        "work_item_turn_binding_released",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "work_item_id": updated.id.as_str(),
+                            "reason": "work_item_waiting",
+                            "readiness": readiness,
+                            "revision": updated.revision,
+                        }),
+                    ));
+                    committed_agent_state = Some(state.clone());
+                }
+                if wake == WaitForWakeKind::OperatorInput
+                    && state.current_work_item_id.as_deref() == Some(updated.id.as_str())
+                {
+                    state.current_work_item_id = None;
+                    audit_events.push(AuditEvent::legacy(
+                        "work_item_focus_released",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "work_item_id": updated.id.as_str(),
+                            "reason": "operator_input_wait",
+                            "readiness": readiness,
+                            "revision": updated.revision,
+                        }),
+                    ));
+                    committed_agent_state = Some(state.clone());
+                }
+                work_item = Some(updated);
+            }
+
+            wait_conditions.push(condition.clone());
+            audit_events.extend(
+                self.inner
+                    .storage
+                    .wait_condition_auxiliary_events(&condition),
+            );
+            audit_events.push(AuditEvent::legacy(
+                "wait_condition_registered",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": work_item_id,
+                    "wait_condition_id": condition.id,
+                    "source": "WaitFor",
+                    "continuation": WaitForContinuation::YieldAndWait,
+                    "kind": &condition.kind,
+                    "subject_ref": &condition.subject_ref,
+                    "waiting_for": &condition.waiting_for,
+                    "wake_sources": &condition.wake_sources,
+                    "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
+                }),
+            ));
+            let execution_protocol = self
+                .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
+                .await?;
+            let command = crate::runtime_db::transitions::WaitTransitionCommand {
+                task_result_admission: None,
+                agent_id: agent_id.to_string(),
+                work_items,
+                expected_wait_conditions: Vec::new(),
+                wait_conditions,
+                timer_wake: pending_timer_wake.as_ref().map(|wake| {
+                    crate::runtime_db::transitions::TimerWakeClaim {
+                        timer_id: wake.timer_id.clone(),
+                        message_id: wake.message_id.clone(),
+                        fire_count: wake.fire_count,
+                    }
+                }),
+                agent_state: committed_agent_state.map(|record| {
+                    crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(record),
+                    }
+                }),
+                audit_events,
+                index_changes,
+                notify_scheduler: true,
+                fault: self.take_transition_fault(),
+            };
+            Ok(PrepareWaitForOutcome::Prepared(Box::new(
+                PreparedWaitForSettlement {
+                    delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
+                    wake,
+                    registration: WaitForRegistration {
+                        scope: if condition.work_item_id.is_some() {
+                            WaitForScope::WorkItem
+                        } else {
+                            WaitForScope::Agent
+                        },
+                        condition,
+                        recheck_after_ms,
+                        recheck_at,
+                        work_item,
+                        cancelled_wait_condition_ids,
+                    },
+                    command,
+                    execution_protocol,
+                    expected_task,
+                    tool_execution: None,
+                    brief: None,
+                    brief_publication_scope: None,
                 },
-                command,
-                execution_protocol,
-                expected_task,
-                tool_execution: None,
-                brief: None,
-                brief_publication_scope: None,
-            },
-        )))
+            )))
+        })
     }
 
     fn validate_wait_for_task_access(&self, agent_id: &str, task: &TaskRecord) -> Result<()> {
@@ -833,6 +842,20 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn validate_wait_for_work_item(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<WorkItemRecord> {
+        let runtime = self.clone();
+        let agent_id = agent_id.to_owned();
+        let work_item_id = work_item_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            runtime.validate_owned_work_item(&agent_id, &work_item_id)
+        })
+        .await?
+    }
+
     async fn prepare_terminal_task_result(
         &self,
         task: TaskRecord,
@@ -845,7 +868,9 @@ impl RuntimeHandle {
         // WorkItem (#3124).
         let mut existing_waiter_work_item = None;
         if let Some(work_item_id) = waiter_work_item_id.as_deref() {
-            let existing = self.validate_owned_work_item(&task.agent_id, work_item_id)?;
+            let existing = self
+                .validate_wait_for_work_item(&task.agent_id, work_item_id)
+                .await?;
             if existing.state != WorkItemState::Open {
                 return Err(RuntimeError::validation(
                     "work_item_completed",
@@ -866,26 +891,30 @@ impl RuntimeHandle {
             )
             .with_safe_context("task_id", &task.id)
         })?;
-        let result_message = self
-            .inner
-            .storage
-            .read_message_by_id(&result_message_id)?
-            .ok_or_else(|| {
-                RuntimeError::validation(
-                    "task_result_evidence_missing",
-                    format!(
-                        "terminal task result message evidence is missing: {}",
-                        task.id
-                    ),
-                )
-                .with_safe_context("task_id", &task.id)
-                .with_safe_context("result_message_id", &result_message_id)
-            })?;
-        let settlement_record = self
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .latest_for_message(&result_message_id)?;
+        let storage = self.inner.storage.clone();
+        let read_result_message_id = result_message_id.clone();
+        let result_message = tokio::task::spawn_blocking(move || {
+            storage.read_message_by_id(&read_result_message_id)
+        })
+        .await??
+        .ok_or_else(|| {
+            RuntimeError::validation(
+                "task_result_evidence_missing",
+                format!(
+                    "terminal task result message evidence is missing: {}",
+                    task.id
+                ),
+            )
+            .with_safe_context("task_id", &task.id)
+            .with_safe_context("result_message_id", &result_message_id)
+        })?;
+        let db = self.inner.runtime_db.clone();
+        let read_result_message_id = result_message_id.clone();
+        let settlement_record = tokio::task::spawn_blocking(move || {
+            db.task_result_settlements()
+                .latest_for_message(&read_result_message_id)
+        })
+        .await??;
         let Some(settlement_record) = settlement_record else {
             return Ok(PrepareWaitForOutcome::Immediate(
                 WaitForRegistrationOutcome::TaskResultUnavailable {
@@ -899,17 +928,20 @@ impl RuntimeHandle {
         let current_activation_id = state
             .current_execution_binding
             .as_ref()
-            .and_then(|binding| binding.activation_id.as_deref());
+            .and_then(|binding| binding.activation_id.clone());
         use crate::runtime_db::task_result_settlement::TaskResultObligation;
-        let obligation = self
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .classify_obligation(
-                &settlement_record,
-                current_activation_id,
-                waiter_work_item_id.as_deref(),
-            )?;
+        let db = self.inner.runtime_db.clone();
+        let read_settlement = settlement_record.clone();
+        let read_waiter_work_item_id = waiter_work_item_id.clone();
+        let read_current_activation_id = current_activation_id.clone();
+        let obligation = tokio::task::spawn_blocking(move || {
+            db.task_result_settlements().classify_obligation(
+                &read_settlement,
+                read_current_activation_id.as_deref(),
+                read_waiter_work_item_id.as_deref(),
+            )
+        })
+        .await??;
         let immediate = match obligation {
             TaskResultObligation::AlreadyAdmitted { activation_id } => {
                 Some(WaitForRegistrationOutcome::TaskResultAlreadyAdmitted {
@@ -961,18 +993,18 @@ impl RuntimeHandle {
         let result_message = if let Some(reply_id) =
             crate::wake_contract::agent_message_reply_reference(&result_message)
         {
-            self.inner
-                .storage
-                .read_message_by_id(reply_id)?
+            let storage = self.inner.storage.clone();
+            let reply_id = reply_id.to_owned();
+            tokio::task::spawn_blocking(move || storage.read_message_by_id(&reply_id))
+                .await??
                 .ok_or_else(|| anyhow!("agent reply message is missing"))?
         } else {
             result_message
         };
         let result_message_id = result_message.id.clone();
-        let existing_entry = self
-            .inner
-            .storage
-            .latest_queue_entries()?
+        let storage = self.inner.storage.clone();
+        let existing_entry = tokio::task::spawn_blocking(move || storage.latest_queue_entries())
+            .await??
             .into_iter()
             .find(|entry| entry.message_id == result_message_id);
         let source_message_id = result_message_id.clone();
@@ -986,16 +1018,25 @@ impl RuntimeHandle {
             )
         });
         let (result_message, existing_entry) = if canonical_recovery {
-            self.task_result_repair_source(&settlement_record, waiter_work_item_id.as_deref())?
+            let runtime = self.clone();
+            let read_settlement = settlement_record.clone();
+            let read_waiter_work_item_id = waiter_work_item_id.clone();
+            tokio::task::spawn_blocking(move || {
+                runtime.task_result_repair_source(
+                    &read_settlement,
+                    read_waiter_work_item_id.as_deref(),
+                )
+            })
+            .await??
         } else {
             (result_message, existing_entry)
         };
         let result_message_id = result_message.id.clone();
-        let agent_wait_conditions = self
-            .inner
-            .runtime_db
-            .wait_conditions()
-            .snapshot_for_agent(&task.agent_id)?;
+        let db = self.inner.runtime_db.clone();
+        let agent_id = task.agent_id.clone();
+        let agent_wait_conditions =
+            tokio::task::spawn_blocking(move || db.wait_conditions().snapshot_for_agent(&agent_id))
+                .await??;
         let carries_result_trigger = |record: &WaitConditionRecord| {
             matches!(
                 record.status,
@@ -1087,10 +1128,14 @@ impl RuntimeHandle {
                     .insert("wait_id".into(), condition.id.clone());
             }
         }
+        let storage = self.inner.storage.clone();
+        let agent_id = task.agent_id.clone();
+        let unresolved_waits = tokio::task::spawn_blocking(move || {
+            storage.raw_unresolved_wait_conditions_for_agent(&agent_id)
+        })
+        .await??;
         let replaced = replace_wait_conditions(
-            self.inner
-                .storage
-                .raw_unresolved_wait_conditions_for_agent(&task.agent_id)?
+            unresolved_waits
                 .into_iter()
                 .filter(|record| record.id != condition.id)
                 .filter(|record| match waiter_work_item_id.as_deref() {
@@ -1229,14 +1274,16 @@ impl RuntimeHandle {
         }
         let expected_task = task_expectation(&task);
         let execution_protocol = if work_item.is_some() {
-            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)?
+            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
+                .await?
         } else {
             self.execution_continue_settlement_transition(
                 &task,
                 waiter_work_item_id.as_deref(),
                 &result_message,
                 now,
-            )?
+            )
+            .await?
         };
         let guard = self.inner.agent.lock().await;
         let already_in_memory = guard
@@ -1250,8 +1297,10 @@ impl RuntimeHandle {
             .len()
             .saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
-        committed_state.total_message_count = self.inner.storage.count_messages()?
-            + usize::from(canonical_recovery && existing_entry.is_none());
+        let storage = self.inner.storage.clone();
+        committed_state.total_message_count =
+            tokio::task::spawn_blocking(move || storage.count_messages()).await??
+                + usize::from(canonical_recovery && existing_entry.is_none());
         scheduler::apply_message_wake_projection(&mut committed_state);
         if let (Some(work_item_id), Some(updated)) =
             (waiter_work_item_id.as_deref(), work_item.as_ref())
@@ -1309,7 +1358,7 @@ impl RuntimeHandle {
                             record: queue_entry,
                             obligation: crate::runtime_db::transitions::WaitTaskResultObligation {
                                 expected: settlement_record,
-                                current_activation_id: current_activation_id.map(str::to_owned),
+                                current_activation_id,
                                 waiter_work_item_id,
                                 canonical_recovery,
                                 source_message_id,
@@ -1336,7 +1385,7 @@ impl RuntimeHandle {
         )))
     }
 
-    fn execution_continue_settlement_transition(
+    async fn execution_continue_settlement_transition(
         &self,
         task: &TaskRecord,
         waiter_work_item_id: Option<&str>,
@@ -1348,11 +1397,13 @@ impl RuntimeHandle {
             ExecutionProtocolCommand, SettleExecution, WorkItemOutcome,
         };
 
-        let Some(state) = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&task.agent_id)?
+        let db = self.inner.runtime_db.clone();
+        let agent_id = task.agent_id.clone();
+        let Some(state) = tokio::task::spawn_blocking(move || {
+            db.transitions()
+                .load_execution_protocol_state_if_initialized(&agent_id)
+        })
+        .await??
         else {
             return Ok(Default::default());
         };
@@ -1401,7 +1452,7 @@ impl RuntimeHandle {
         )
     }
 
-    fn execution_wait_settlement_transition(
+    async fn execution_wait_settlement_transition(
         &self,
         condition: &WaitConditionRecord,
         work_item: Option<&WorkItemRecord>,
@@ -1413,11 +1464,13 @@ impl RuntimeHandle {
             WorkItemExecutionRecord, WorkItemExecutionState, WorkItemOutcome,
         };
 
-        let Some(state) = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized(&condition.agent_id)?
+        let db = self.inner.runtime_db.clone();
+        let agent_id = condition.agent_id.clone();
+        let Some(state) = tokio::task::spawn_blocking(move || {
+            db.transitions()
+                .load_execution_protocol_state_if_initialized(&agent_id)
+        })
+        .await??
         else {
             return Ok(Default::default());
         };

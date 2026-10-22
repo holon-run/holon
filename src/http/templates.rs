@@ -15,22 +15,25 @@ pub async fn templates_catalog(
 
     let config = state.host.config();
     let user_home = crate::agent_template::user_home_dir().ok();
-    // Use a non-existent agent_home path so the global catalog shows only
-    // user_global entries, parallel to /skills/catalog. The hidden builtin
-    // default remains available only as the no-selector fallback.
-    let catalog = crate::agent_template::discover_agent_templates_catalog(
-        user_home.as_deref(),
-        FsPath::new("/nonexistent-agent-home"),
-    );
+    let db = state.host.runtime_db().clone();
     let remote_sources = crate::agent_template::effective_agent_template_remote_sources(
         &config.stored_config.agent_templates,
     );
-    let remote = crate::agent_template::load_remote_template_catalog_snapshot(
-        state.host.runtime_db(),
-        &remote_sources,
-    )
+    let (mut catalog, remote) = tokio::task::spawn_blocking(move || {
+        // Use a non-existent agent_home path so the global catalog shows only
+        // user_global entries, parallel to /skills/catalog. The hidden builtin
+        // default remains available only as the no-selector fallback.
+        let catalog = crate::agent_template::discover_agent_templates_catalog(
+            user_home.as_deref(),
+            FsPath::new("/nonexistent-agent-home"),
+        );
+        let remote =
+            crate::agent_template::load_remote_template_catalog_snapshot(&db, &remote_sources)?;
+        Ok::<_, anyhow::Error>((catalog, remote))
+    })
+    .await
+    .map_err(|err| error_response(anyhow!("catalog worker failed: {err}")))?
     .map_err(error_response)?;
-    let mut catalog = catalog;
     catalog.extend(remote.catalog);
     Ok(Json(json!({
         "ok": true,
@@ -64,20 +67,23 @@ pub async fn template_detail(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
     let user_home = crate::agent_template::user_home_dir().ok();
-    let catalog = crate::agent_template::discover_agent_templates_catalog(
-        user_home.as_deref(),
-        FsPath::new("/nonexistent-agent-home"),
-    );
     let config = state.host.config();
+    let db = state.host.runtime_db().clone();
     let remote_sources = crate::agent_template::effective_agent_template_remote_sources(
         &config.stored_config.agent_templates,
     );
-    let remote = crate::agent_template::load_remote_template_catalog_snapshot(
-        state.host.runtime_db(),
-        &remote_sources,
-    )
+    let (mut catalog, remote) = tokio::task::spawn_blocking(move || {
+        let catalog = crate::agent_template::discover_agent_templates_catalog(
+            user_home.as_deref(),
+            FsPath::new("/nonexistent-agent-home"),
+        );
+        let remote =
+            crate::agent_template::load_remote_template_catalog_snapshot(&db, &remote_sources)?;
+        Ok::<_, anyhow::Error>((catalog, remote))
+    })
+    .await
+    .map_err(|err| error_response(anyhow!("catalog worker failed: {err}")))?
     .map_err(error_response)?;
-    let mut catalog = catalog;
     catalog.extend(remote.catalog);
     let Some(entry) = catalog
         .iter()

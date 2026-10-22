@@ -309,6 +309,13 @@ pub(crate) struct HostInner {
     static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
     #[cfg(test)]
     spawn_child_error: Mutex<Option<anyhow::Error>>,
+    #[cfg(test)]
+    runtime_constructor_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<String>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
@@ -326,6 +333,20 @@ pub(crate) struct HostInner {
     config_reload_notify: Notify,
     bootstrap_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     bootstrap_handoff_lock: AsyncMutex<()>,
+    runtime_operations: Mutex<HostRuntimeOperations>,
+    runtime_operations_token: CancellationToken,
+    runtime_shutdown_lock: AsyncMutex<()>,
+}
+
+struct HostRuntimeOperations {
+    closing: bool,
+    tasks: JoinSet<()>,
+}
+
+struct PendingTemporaryRuntime {
+    spawned: Arc<Mutex<Option<(String, RuntimeHandle, JoinHandle<()>)>>>,
+    // Dropping the result wakes its already tracked cleanup, without spawning.
+    _handoff: tokio::sync::oneshot::Sender<()>,
 }
 
 const CONFIG_RELOAD_IDLE: u8 = 0;
@@ -845,6 +866,8 @@ impl RuntimeHost {
                 static_provider: Mutex::new(static_provider),
                 #[cfg(test)]
                 spawn_child_error: Mutex::new(None),
+                #[cfg(test)]
+                runtime_constructor_gate: Mutex::new(None),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
@@ -867,6 +890,12 @@ impl RuntimeHost {
                 config_reload_notify: Notify::new(),
                 bootstrap_locks: Mutex::new(HashMap::new()),
                 bootstrap_handoff_lock: AsyncMutex::new(()),
+                runtime_operations: Mutex::new(HostRuntimeOperations {
+                    closing: false,
+                    tasks: JoinSet::new(),
+                }),
+                runtime_operations_token: CancellationToken::new(),
+                runtime_shutdown_lock: AsyncMutex::new(()),
             }),
         };
         host.ensure_legacy_public_agent_bootstraps()?;
@@ -1056,15 +1085,24 @@ impl RuntimeHost {
         self.inner.bootstrap_provider_active.load(Ordering::Acquire)
     }
 
-    async fn wait_for_bootstrap_ready(&self) {
+    async fn wait_for_bootstrap_ready(&self) -> Result<()> {
         loop {
             let notified = self.inner.bootstrap_ready_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if !self.bootstrap_mode_active() {
-                return;
+            if self.inner.runtime_operations_token.is_cancelled() {
+                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
             }
-            notified.await;
+            if !self.bootstrap_mode_active() {
+                return Ok(());
+            }
+            tokio::select! {
+                biased;
+                _ = self.inner.runtime_operations_token.cancelled() => {
+                    return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+                }
+                _ = notified => {}
+            }
         }
     }
 
@@ -1682,7 +1720,8 @@ impl RuntimeHost {
                 .inner
                 .runtime_db
                 .runtime_index_outbox()
-                .agent_ids_with_pending()
+                .agent_ids_with_pending_async()
+                .await
             {
                 Ok(ids) => ids,
                 Err(error) => {
@@ -1713,9 +1752,20 @@ impl RuntimeHost {
             // dirty marker or missing full-backfill checkpoints never appear
             // in the pending-row enumerations above. Without this union they
             // stay freshness=stale forever (issue #2895).
-            let mut backfill_candidates: Vec<String> = self
-                .agent_identity_records()
-                .unwrap_or_default()
+            let host = self.clone();
+            let identities = match spawn_blocking(move || host.agent_identity_records()).await {
+                Ok(Ok(records)) => records,
+                Ok(Err(error)) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: failed to query agent identities");
+                    Vec::new()
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: identity worker failed");
+                    self.wait_daemon_indexer_round(None).await;
+                    continue;
+                }
+            };
+            let mut backfill_candidates: Vec<String> = identities
                 .into_iter()
                 .filter(|record| {
                     record.status == AgentRegistryStatus::Active
@@ -1727,7 +1777,8 @@ impl RuntimeHost {
                 .inner
                 .runtime_db
                 .runtime_index_outbox()
-                .agent_ids_with_watermarks()
+                .agent_ids_with_watermarks_async()
+                .await
             {
                 Ok(ids) => backfill_candidates.extend(ids),
                 Err(error) => {
@@ -1760,7 +1811,13 @@ impl RuntimeHost {
                 }
                 let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
                 let _bootstrap_guard = bootstrap_lock.lock().await;
-                match self.memory_indexer_agent_status(agent_id) {
+                let host = self.clone();
+                let read_agent_id = agent_id.clone();
+                let status =
+                    spawn_blocking(move || host.memory_indexer_agent_status(&read_agent_id))
+                        .await
+                        .unwrap_or_else(|error| Err(error.into()));
+                match status {
                     Ok(Some(AgentRegistryStatus::Active)) => {}
                     Ok(Some(status)) => {
                         agent_retry_not_before.remove(agent_id);
@@ -2034,8 +2091,68 @@ impl RuntimeHost {
         }
     }
 
+    fn start_runtime_operation<T: Send + 'static>(
+        &self,
+        operation: impl Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<T>>> {
+        let mut operations = self.inner.runtime_operations.lock().unwrap();
+        if operations.closing {
+            return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+        }
+        while let Some(result) = operations.tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::warn!(error = %error, "host runtime operation failed");
+            }
+        }
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        operations.tasks.spawn(async move {
+            let _ = result_tx.send(operation.await);
+        });
+        Ok(result_rx)
+    }
+
+    // Only use for waits before construction; never cancel a storage constructor.
+    async fn wait_for_runtime_operation<T>(
+        &self,
+        request_cancelled: &CancellationToken,
+        wait: impl Future<Output = T>,
+    ) -> Result<T> {
+        tokio::select! {
+            biased;
+            _ = self.inner.runtime_operations_token.cancelled() => {
+                Err(anyhow::Error::new(RuntimeAdmissionClosed))
+            }
+            _ = request_cancelled.cancelled() => {
+                Err(anyhow!("runtime activation request cancelled"))
+            }
+            result = wait => Ok(result),
+        }
+    }
+
+    async fn drain_runtime_operations(&self) {
+        // Keep the set in HostInner even if the shutdown caller is cancelled.
+        while let Some(result) = std::future::poll_fn(|cx| {
+            self.inner
+                .runtime_operations
+                .lock()
+                .unwrap()
+                .tasks
+                .poll_join_next(cx)
+        })
+        .await
+        {
+            if let Err(error) = result {
+                tracing::warn!(error = %error, "host runtime operation failed");
+            }
+        }
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
+        let _shutdown = self.inner.runtime_shutdown_lock.lock().await;
+        self.inner.runtime_operations.lock().unwrap().closing = true;
+        self.inner.runtime_operations_token.cancel();
         self.shutdown_config_reload_coordinator().await;
+        self.drain_runtime_operations().await;
         let entries = {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
@@ -2632,6 +2749,19 @@ impl RuntimeHost {
                 agent_id: agent_id.to_string(),
             }),
         }
+    }
+
+    async fn active_agent_identity_async(&self, agent_id: &str) -> Result<AgentIdentityRecord> {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        spawn_blocking(move || {
+            host.active_agent_identity(&agent_id)
+                .map_err(|error| match error {
+                    PublicAgentError::Runtime(error) => error,
+                    error => anyhow::Error::from(error),
+                })
+        })
+        .await?
     }
 
     fn public_agent_identity(
@@ -4425,11 +4555,21 @@ impl RuntimeHost {
         observation: Option<crate::startup::StartupObservation>,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
         Box::pin(async move {
+            if self.inner.runtime_operations_token.is_cancelled() {
+                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+            }
             self.ensure_runtime_recovery_coordinator();
             self.validate_agent_id(agent_id)?;
-            if agent_id == self.config().default_agent_id
-                && self.agent_identity_record(agent_id)?.is_none()
-            {
+            let default_identity_missing = if agent_id == self.config().default_agent_id {
+                let host = self.clone();
+                let agent_id = agent_id.to_string();
+                spawn_blocking(move || host.agent_identity_record(&agent_id))
+                    .await??
+                    .is_none()
+            } else {
+                false
+            };
+            if default_identity_missing {
                 match reason {
                     RuntimeActivationReason::StartupRecovery
                     | RuntimeActivationReason::SchedulerDispatch
@@ -4447,8 +4587,7 @@ impl RuntimeHost {
                     }
                 }
             }
-            self.active_agent_identity(agent_id)
-                .map_err(anyhow::Error::new)?;
+            self.active_agent_identity_async(agent_id).await?;
             {
                 let registry = self.inner.runtimes.read().await;
                 if registry.phase != HostRuntimePhase::Open {
@@ -4460,83 +4599,148 @@ impl RuntimeHost {
                     }
                 }
             }
-            if agent_id != self.config().default_agent_id && self.bootstrap_mode_active() {
-                self.wait_for_bootstrap_ready().await;
-            }
-            let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
-            self.active_agent_identity(agent_id)
-                .map_err(anyhow::Error::new)?;
-            if agent_id == self.config().default_agent_id {
-                self.ensure_default_agent_home_initialized().await?;
-            }
-            loop {
-                let mut stale_entry = None;
-                let mut failed_runtime_phase = None;
-                let mut registry = self.inner.runtimes.write().await;
-                if registry.phase != HostRuntimePhase::Open {
-                    return Err(anyhow::Error::new(RuntimeAdmissionClosed));
-                }
-                if let Err(error) = self.active_agent_identity(agent_id) {
-                    return Err(anyhow::Error::new(error));
-                }
-                if let Some(entry) = registry.agents.get(agent_id) {
-                    if entry.accepts_host_access() {
-                        return Ok(entry.runtime.clone());
-                    }
-                    if !entry.task.is_finished()
-                        && (*entry.phase.borrow() == AgentRuntimePhase::FailedCleaning
-                            || !entry.runtime.accepts_execution_admission())
-                    {
-                        failed_runtime_phase = Some(entry.phase.clone());
-                    } else {
-                        stale_entry = registry.agents.remove(agent_id);
-                        if let Some(entry) = &stale_entry {
-                            entry.runtime.close_execution_admission();
-                        }
-                    }
-                }
-                if let Some(mut phase) = failed_runtime_phase {
-                    drop(registry);
-                    while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
-                        if phase.changed().await.is_err() {
-                            break;
-                        }
-                    }
-                    continue;
-                }
-                let generation = registry.next_generation;
-                registry.next_generation = registry.next_generation.saturating_add(1);
-                let (runtime, runtime_task, phase) =
-                    self.spawn_runtime(agent_id, Some(generation), observation.clone())?;
-                tracing::debug!(
-                    agent_id,
-                    activation_reason = reason.as_str(),
-                    "activating agent runtime"
-                );
-                registry.agents.insert(
-                    agent_id.to_string(),
-                    AgentEntry {
-                        runtime: runtime.clone(),
-                        task: runtime_task,
-                        phase,
-                        generation,
-                        idle_observation: None,
-                    },
-                );
-                drop(registry);
-                if let Some(entry) = stale_entry {
-                    let _ = entry.task.await;
-                }
-                return Ok(runtime);
-            }
+            // A host task retains the guards through storage writes and registration,
+            // even if the requesting future is cancelled during construction.
+            let host = self.clone();
+            let agent_id = agent_id.to_string();
+            let request_cancelled = CancellationToken::new();
+            let _cancel_on_drop = request_cancelled.clone().drop_guard();
+            self.start_runtime_operation(async move {
+                host.activate_cold_agent(&agent_id, reason, observation, &request_cancelled)
+                    .await
+            })?
+            .await?
         })
+    }
+
+    async fn activate_cold_agent(
+        &self,
+        agent_id: &str,
+        reason: RuntimeActivationReason,
+        observation: Option<crate::startup::StartupObservation>,
+        request_cancelled: &CancellationToken,
+    ) -> Result<RuntimeHandle> {
+        if agent_id != self.config().default_agent_id && self.bootstrap_mode_active() {
+            self.wait_for_runtime_operation(request_cancelled, self.wait_for_bootstrap_ready())
+                .await??;
+        }
+        let _bootstrap_handoff_guard = self
+            .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
+            .await?;
+        self.active_agent_identity_async(agent_id).await?;
+        if agent_id == self.config().default_agent_id {
+            self.ensure_default_agent_home_initialized().await?;
+        }
+        loop {
+            let mut stale_entry = None;
+            let mut failed_runtime_phase = None;
+            let mut registry = self
+                .wait_for_runtime_operation(request_cancelled, self.inner.runtimes.write())
+                .await?;
+            if registry.phase != HostRuntimePhase::Open {
+                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+            }
+            self.active_agent_identity_async(agent_id).await?;
+            if let Some(entry) = registry.agents.get(agent_id) {
+                if entry.accepts_host_access() {
+                    return Ok(entry.runtime.clone());
+                }
+                if !entry.task.is_finished()
+                    && (*entry.phase.borrow() == AgentRuntimePhase::FailedCleaning
+                        || !entry.runtime.accepts_execution_admission())
+                {
+                    failed_runtime_phase = Some(entry.phase.clone());
+                } else {
+                    stale_entry = registry.agents.remove(agent_id);
+                    if let Some(entry) = &stale_entry {
+                        entry.runtime.close_execution_admission();
+                    }
+                }
+            }
+            if let Some(mut phase) = failed_runtime_phase {
+                drop(registry);
+                while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                    if self
+                        .wait_for_runtime_operation(request_cancelled, phase.changed())
+                        .await?
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                continue;
+            }
+            let generation = registry.next_generation;
+            registry.next_generation = registry.next_generation.saturating_add(1);
+            let (runtime, runtime_task, phase) = self
+                .spawn_runtime(agent_id, Some(generation), observation.clone())
+                .await?;
+            tracing::debug!(
+                agent_id,
+                activation_reason = reason.as_str(),
+                "activating agent runtime"
+            );
+            registry.agents.insert(
+                agent_id.to_string(),
+                AgentEntry {
+                    runtime: runtime.clone(),
+                    task: runtime_task,
+                    phase,
+                    generation,
+                    idle_observation: None,
+                },
+            );
+            drop(registry);
+            if let Some(entry) = stale_entry {
+                let _ = entry.task.await;
+            }
+            return Ok(runtime);
+        }
     }
 
     pub(crate) async fn spawn_temporary_runtime(
         &self,
         category: &str,
     ) -> Result<(String, RuntimeHandle, JoinHandle<()>)> {
-        let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
+        let host = self.clone();
+        let category = category.to_string();
+        let request_cancelled = CancellationToken::new();
+        let _cancel_on_drop = request_cancelled.clone().drop_guard();
+        let pending = self
+            .start_runtime_operation(async move {
+                host.spawn_temporary_runtime_owned(&category, &request_cancelled)
+                    .await
+            })?
+            .await??;
+        let spawned = {
+            let operations = self.inner.runtime_operations.lock().unwrap();
+            if operations.closing {
+                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+            }
+            pending
+                .spawned
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| anyhow::Error::new(RuntimeAdmissionClosed))?
+        };
+        Ok(spawned)
+    }
+
+    async fn spawn_temporary_runtime_owned(
+        &self,
+        category: &str,
+        request_cancelled: &CancellationToken,
+    ) -> Result<PendingTemporaryRuntime> {
+        let _bootstrap_handoff_guard = self
+            .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
+            .await?;
+        let registry = self
+            .wait_for_runtime_operation(request_cancelled, self.inner.runtimes.write())
+            .await?;
+        if registry.phase != HostRuntimePhase::Open {
+            return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+        }
         let agent_id = match category {
             "run" => ids::runtime_id(TEMP_RUN_AGENT_PREFIX.trim_end_matches('_')),
             other => ids::runtime_id(&format!("{TEMP_AGENT_PREFIX}{other}")),
@@ -4558,14 +4762,51 @@ impl RuntimeHost {
             .agent_identities()
             .create_with_relations(&identity, &relations)?;
         self.cache_agent_identity(&identity)?;
-        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None, None) {
+        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None, None).await
+        {
             Ok(spawned) => spawned,
             Err(error) => {
                 let _ = self.archive_temporary_runtime_identity(&agent_id);
                 return Err(error);
             }
         };
-        Ok((agent_id, runtime, runtime_task))
+        let spawned = Arc::new(Mutex::new(Some((agent_id, runtime, runtime_task))));
+        let (handoff, handed_off) = tokio::sync::oneshot::channel();
+        let cleanup_spawned = spawned.clone();
+        let host = self.clone();
+        // This is a continuation of the admitted construction, so it must be
+        // registered even if shutdown has closed admission in the meantime.
+        self.inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .spawn(async move {
+                tokio::select! {
+                    _ = handed_off => {}
+                    _ = host.inner.runtime_operations_token.cancelled() => {}
+                }
+                let unclaimed = cleanup_spawned.lock().unwrap().take();
+                let Some((agent_id, _runtime, task)) = unclaimed else {
+                    return;
+                };
+                let _handoff = host.inner.bootstrap_handoff_lock.lock().await;
+                task.abort();
+                let _ = task.await;
+                let cleanup_host = host.clone();
+                if let Err(error) = spawn_blocking(move || {
+                    cleanup_host.archive_temporary_runtime_identity(&agent_id)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.into()))
+                {
+                    tracing::warn!(error = %error, "cancelled temporary runtime cleanup failed");
+                }
+            });
+        Ok(PendingTemporaryRuntime {
+            spawned,
+            _handoff: handoff,
+        })
     }
 
     pub(crate) fn archive_temporary_runtime_identity(&self, agent_id: &str) -> Result<()> {
@@ -5511,7 +5752,7 @@ impl RuntimeHost {
                 Err(error)
                     if describe_runtime_error(&error).code == "runtime_instance_retiring" =>
                 {
-                    continue
+                    continue;
                 }
                 Err(error) => return Err(error),
             }
@@ -5865,7 +6106,7 @@ impl RuntimeHost {
                 Err(error)
                     if describe_runtime_error(&error).code == "runtime_instance_retiring" =>
                 {
-                    continue
+                    continue;
                 }
                 Err(error) => return Err(error),
             }
@@ -6244,60 +6485,71 @@ impl RuntimeHost {
         worktree: bool,
     ) -> Result<ChildInvocationResolution> {
         let evidence = async {
-            use crate::domain::execution_protocol::ExecutionSourceIdentity;
-            let (identity, source) = self.supervised_invocation_source(task, child_agent_id)?;
-            let execution = self
-                .runtime_db()
-                .transitions()
-                .load_execution_protocol_state_if_initialized(child_agent_id)?
-                .ok_or(ChildInvocationReason::AwaitingAdmission)?;
-            let mut roots = execution.attempts.values().filter(|attempt| {
-                attempt.recovery_of_attempt_id.is_none()
-                    && attempt.source_message_id.as_deref() == Some(source.id.as_str())
-                    && matches!(&attempt.source.identity,
+            let host = self.clone();
+            let task = task.clone();
+            let child_agent_id = child_agent_id.to_string();
+            let binding = spawn_blocking(move || {
+                use crate::domain::execution_protocol::ExecutionSourceIdentity;
+                let (identity, source) =
+                    host.supervised_invocation_source(&task, &child_agent_id)?;
+                let execution = host
+                    .runtime_db()
+                    .transitions()
+                    .load_execution_protocol_state_if_initialized(&child_agent_id)?
+                    .ok_or(ChildInvocationReason::AwaitingAdmission)?;
+                let mut roots = execution.attempts.values().filter(|attempt| {
+                    attempt.recovery_of_attempt_id.is_none()
+                        && attempt.source_message_id.as_deref() == Some(source.id.as_str())
+                        && matches!(&attempt.source.identity,
                         ExecutionSourceIdentity::QueueMessage { message_id }
                         | ExecutionSourceIdentity::InternalFollowup { message_id }
                         if message_id == &source.id)
-            });
-            let root = roots
-                .next()
-                .ok_or(ChildInvocationReason::AwaitingAdmission)?;
-            anyhow::ensure!(
-                roots.next().is_none(),
-                ChildInvocationReason::AmbiguousInvocationBinding
-            );
-            anyhow::ensure!(
-                root.agent_id == child_agent_id && root.turn_id == source.turn_id,
-                ChildInvocationReason::SourceMismatch
-            );
-            let storage = self.agent_storage(child_agent_id)?;
-            if let Some(baseline) = task
-                .detail
-                .as_ref()
-                .and_then(|detail| detail["child_turn_baseline"].as_u64())
-            {
-                if let Some(turn_id) = root.turn_id.as_deref() {
-                    if let Some(turn) = self
-                        .runtime_db()
-                        .turn_records()
-                        .by_id(Some(child_agent_id), turn_id)?
-                    {
-                        anyhow::ensure!(
-                            turn.turn_index > baseline,
-                            ChildInvocationReason::SourceMismatch
-                        );
+                });
+                let root = roots
+                    .next()
+                    .ok_or(ChildInvocationReason::AwaitingAdmission)?;
+                anyhow::ensure!(
+                    roots.next().is_none(),
+                    ChildInvocationReason::AmbiguousInvocationBinding
+                );
+                anyhow::ensure!(
+                    root.agent_id == child_agent_id && root.turn_id == source.turn_id,
+                    ChildInvocationReason::SourceMismatch
+                );
+                let storage = host.agent_storage(&child_agent_id)?;
+                if let Some(baseline) = task
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail["child_turn_baseline"].as_u64())
+                {
+                    if let Some(turn_id) = root.turn_id.as_deref() {
+                        if let Some(turn) = host
+                            .runtime_db()
+                            .turn_records()
+                            .by_id(Some(&child_agent_id), turn_id)?
+                        {
+                            anyhow::ensure!(
+                                turn.turn_index > baseline,
+                                ChildInvocationReason::SourceMismatch
+                            );
+                        }
                     }
                 }
-            }
-            let Some(evidence) = self.canonical_invocation_terminal_evidence(
-                &storage,
-                child_agent_id,
-                &source.id,
-                root.attempt_id.clone(),
-                root.turn_id.clone(),
-                true,
-            )?
-            else {
+                let Some(evidence) = host.canonical_invocation_terminal_evidence(
+                    &storage,
+                    &child_agent_id,
+                    &source.id,
+                    root.attempt_id.clone(),
+                    root.turn_id.clone(),
+                    true,
+                )?
+                else {
+                    return Ok(None);
+                };
+                Ok::<_, anyhow::Error>(Some((storage, identity, source, evidence)))
+            })
+            .await??;
+            let Some((storage, identity, source, evidence)) = binding else {
                 return Ok(ChildInvocationResolution::Pending(
                     ChildInvocationReason::AwaitingContinuation,
                 ));
@@ -6338,29 +6590,32 @@ impl RuntimeHost {
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(child_agent_id)?;
-        let identity = self
-            .active_agent_identity(child_agent_id)
-            .map_err(anyhow::Error::from)?;
-        if let Some(evidence) = self.invocation_delivery_terminal_evidence(
-            &storage,
-            child_agent_id,
-            delivery_id,
-            invocation_task_id,
-        )? {
-            return self
-                .invocation_terminal_result(&storage, &identity, delivery_id, evidence, worktree)
-                .await;
-        }
-
-        let _runtime = self.get_or_create_agent(child_agent_id).await?;
+        let identity = loop {
+            match self.active_agent_identity_async(child_agent_id).await {
+                Ok(identity) => break identity,
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let mut runtime_started = false;
         loop {
-            if let Some(evidence) = self.invocation_delivery_terminal_evidence(
-                &storage,
-                child_agent_id,
-                delivery_id,
-                invocation_task_id,
-            )? {
-                return self
+            let host = self.clone();
+            let read_storage = storage.clone();
+            let child = child_agent_id.to_string();
+            let delivery = delivery_id.to_string();
+            let task = invocation_task_id.to_string();
+            let evidence = spawn_blocking(move || {
+                host.invocation_delivery_terminal_evidence(&read_storage, &child, &delivery, &task)
+            })
+            .await?;
+            match evidence {
+                Ok(Some(evidence)) => match self
                     .invocation_terminal_result(
                         &storage,
                         &identity,
@@ -6368,7 +6623,53 @@ impl RuntimeHost {
                         evidence,
                         worktree,
                     )
-                    .await;
+                    .await
+                {
+                    Ok(result) => return Ok(result),
+                    Err(error)
+                        if error
+                            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                            .is_some() =>
+                    {
+                        tracing::debug!(error = %error, "invocation terminal projection reader unavailable; retrying");
+                    }
+                    Err(error) => return Err(error),
+                },
+                Ok(None) => {
+                    if !runtime_started {
+                        match self.get_or_create_agent(child_agent_id).await {
+                            Ok(_runtime) => runtime_started = true,
+                            Err(error)
+                                if error
+                                    .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                                    .is_some() =>
+                            {
+                                tracing::debug!(error = %error, "invocation activation reader unavailable; retrying");
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.downcast_ref::<PublicAgentError>(),
+                                    Some(
+                                        PublicAgentError::Deleting { .. }
+                                            | PublicAgentError::Deleted { .. }
+                                    )
+                                ) =>
+                            {
+                                // The deletion fence atomically records delivery cancellation.
+                                tracing::debug!(error = %error, "invocation target deletion fenced; reading cancellation evidence");
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tracing::debug!(error = %error, "invocation monitor reader unavailable; retaining recovery responsibility");
+                }
+                Err(error) => return Err(error),
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -6382,45 +6683,64 @@ impl RuntimeHost {
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(recipient_agent_id)?;
         loop {
-            if let Some(delivery) = self
-                .runtime_db()
-                .agent_message_deliveries()
-                .first_accepted_from_sender_after(
-                    recipient_agent_id,
-                    sender_agent_id,
-                    after_delivery_rowid,
-                )?
-            {
+            let db = self.runtime_db().clone();
+            let read_storage = storage.clone();
+            let recipient = recipient_agent_id.to_string();
+            let sender = sender_agent_id.to_string();
+            let reply = spawn_blocking(move || -> Result<_> {
+                let Some(delivery) = db
+                    .agent_message_deliveries()
+                    .first_accepted_from_sender_after(&recipient, &sender, after_delivery_rowid)?
+                else {
+                    return Ok(None);
+                };
                 let message_id = delivery.message_id.clone().ok_or_else(|| {
                     anyhow!(
                         "accepted agent message delivery {} is missing its message id",
                         delivery.delivery_id
                     )
                 })?;
-                let message = storage.read_message_by_id(&message_id)?.ok_or_else(|| {
-                    anyhow!(
-                        "accepted agent message delivery {} is missing message {}",
-                        delivery.delivery_id,
-                        message_id
-                    )
-                })?;
-                let text = format!(
-                    "Agent reply received; see message {} / delivery {}.",
-                    message.id, delivery.delivery_id
-                );
-                return Ok(ChildTaskTerminalResult {
-                    status: TaskStatus::Completed,
-                    text,
-                    task_detail: Some(json!({
-                        "message_wait_satisfied": true,
-                        "sender_agent_id": sender_agent_id,
-                        "recipient_agent_id": recipient_agent_id,
-                        "response_delivery_id": delivery.delivery_id,
-                        "message_id": message_id,
-                        "message_wait_after_delivery_rowid": after_delivery_rowid,
-                        "business_completion": false,
-                    })),
-                });
+                let message = read_storage
+                    .read_message_by_id(&message_id)?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "accepted agent message delivery {} is missing message {}",
+                            delivery.delivery_id,
+                            message_id
+                        )
+                    })?;
+                Ok(Some((delivery, message, message_id)))
+            })
+            .await?;
+            match reply {
+                Ok(Some((delivery, message, message_id))) => {
+                    let text = format!(
+                        "Agent reply received; see message {} / delivery {}.",
+                        message.id, delivery.delivery_id
+                    );
+                    return Ok(ChildTaskTerminalResult {
+                        status: TaskStatus::Completed,
+                        text,
+                        task_detail: Some(json!({
+                            "message_wait_satisfied": true,
+                            "sender_agent_id": sender_agent_id,
+                            "recipient_agent_id": recipient_agent_id,
+                            "response_delivery_id": delivery.delivery_id,
+                            "message_id": message_id,
+                            "message_wait_after_delivery_rowid": after_delivery_rowid,
+                            "business_completion": false,
+                        })),
+                    });
+                }
+                Ok(None) => {}
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tracing::debug!(error = %error, "message monitor reader unavailable; retaining recovery responsibility");
+                }
+                Err(error) => return Err(error),
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -7047,29 +7367,36 @@ impl RuntimeHost {
         evidence: InvocationTerminalEvidence,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let state = if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
-            runtime.agent_state().await?
-        } else {
-            storage
-                .read_agent()?
-                .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id))
-        };
-        let turn = evidence
-            .turn_id
-            .as_deref()
-            .map(|turn_id| {
-                self.runtime_db()
-                    .turn_records()
-                    .by_id(Some(&identity.agent_id), turn_id)
-            })
-            .transpose()?
-            .flatten();
-        let briefs = evidence
-            .turn_id
-            .as_deref()
-            .map(|turn_id| storage.read_briefs_for_turn(turn_id))
-            .transpose()?
-            .unwrap_or_default();
+        let loaded_state =
+            if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
+                Some(runtime.agent_state().await?)
+            } else {
+                None
+            };
+        let db = self.runtime_db().clone();
+        let read_storage = storage.clone();
+        let agent_id = identity.agent_id.clone();
+        let turn_id = evidence.turn_id.clone();
+        let (state, turn, briefs) = spawn_blocking(move || -> Result<_> {
+            let state = match loaded_state {
+                Some(state) => state,
+                None => read_storage
+                    .read_agent()?
+                    .unwrap_or_else(|| stopped_unloaded_agent(&agent_id)),
+            };
+            let turn = turn_id
+                .as_deref()
+                .map(|turn_id| db.turn_records().by_id(Some(&agent_id), turn_id))
+                .transpose()?
+                .flatten();
+            let briefs = turn_id
+                .as_deref()
+                .map(|turn_id| read_storage.read_briefs_for_turn(turn_id))
+                .transpose()?
+                .unwrap_or_default();
+            Ok((state, turn, briefs))
+        })
+        .await??;
         // Terminal observability belongs to this invocation, never later child activity.
         let observability = crate::types::ChildAgentObservabilitySnapshot {
             phase: crate::types::ChildAgentPhase::Terminal,
@@ -7157,16 +7484,21 @@ impl RuntimeHost {
         RuntimeModelCatalog::from_config(&config).resolved_context_config(&base, None)
     }
 
-    fn spawn_runtime(
+    fn construct_runtime(
         &self,
         agent_id: &str,
-        recovery_generation: Option<u64>,
-        observation: Option<crate::startup::StartupObservation>,
-    ) -> Result<(
-        RuntimeHandle,
-        JoinHandle<()>,
-        watch::Receiver<AgentRuntimePhase>,
-    )> {
+        observation: Option<&crate::startup::StartupObservation>,
+    ) -> Result<RuntimeHandle> {
+        #[cfg(test)]
+        {
+            let gate = self.inner.runtime_constructor_gate.lock().unwrap().take();
+            if let Some((started, release)) = gate {
+                let _ = started.send(agent_id.to_string());
+                release
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("runtime constructor gate was not released");
+            }
+        }
         let config = self.config();
         let static_provider = self
             .inner
@@ -7174,11 +7506,7 @@ impl RuntimeHost {
             .lock()
             .expect("static provider lock poisoned")
             .clone();
-        let observation =
-            observation.map(|observation| observation.for_agent(agent_id, recovery_generation));
-        let constructor = observation
-            .as_ref()
-            .map(|observation| observation.phase("storage_constructor"));
+        let constructor = observation.map(|observation| observation.phase("storage_constructor"));
         let runtime_result = if let Some(provider) = static_provider {
             RuntimeHandle::new_static_with_host_bridge(
                 agent_id.to_string(),
@@ -7212,7 +7540,30 @@ impl RuntimeHost {
         if let Some(constructor) = constructor {
             constructor.finish(&runtime_result);
         }
-        let runtime = runtime_result?;
+        runtime_result
+    }
+
+    async fn spawn_runtime(
+        &self,
+        agent_id: &str,
+        recovery_generation: Option<u64>,
+        observation: Option<crate::startup::StartupObservation>,
+    ) -> Result<(
+        RuntimeHandle,
+        JoinHandle<()>,
+        watch::Receiver<AgentRuntimePhase>,
+    )> {
+        let observation =
+            observation.map(|observation| observation.for_agent(agent_id, recovery_generation));
+        let host = self.clone();
+        let runtime_agent_id = agent_id.to_string();
+        let constructor_observation = observation.clone();
+        let runtime = spawn_blocking(move || {
+            host.construct_runtime(&runtime_agent_id, constructor_observation.as_ref())
+        })
+        .await??;
+        // The owning host task keeps the activation guards through registration
+        // or temporary-runtime handoff, even if its requester is cancelled.
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let (phase_tx, phase_rx) = watch::channel(AgentRuntimePhase::Bootstrapping);
         let runtime_recovery_tx = self.inner.runtime_recovery_tx.clone();
@@ -7329,8 +7680,7 @@ impl RuntimeHostBridge {
     }
 
     pub(crate) async fn wait_for_bootstrap_ready(&self) -> Result<()> {
-        self.host()?.wait_for_bootstrap_ready().await;
-        Ok(())
+        self.host()?.wait_for_bootstrap_ready().await
     }
 
     pub(crate) fn skills_registry(&self) -> Result<Arc<RwLock<SkillsRegistry>>> {
@@ -7341,7 +7691,9 @@ impl RuntimeHostBridge {
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
-        self.host()?.agent_identity_record(agent_id)
+        let host = self.host()?;
+        let agent_id = agent_id.to_string();
+        spawn_blocking(move || host.agent_identity_record(&agent_id)).await?
     }
 
     pub(crate) async fn delete_supervised_child(
@@ -7357,14 +7709,19 @@ impl RuntimeHostBridge {
 
     pub(crate) async fn activate_agent_deletion(&self, agent_id: &str) -> Result<()> {
         let host = self.host()?;
-        let identity = host
-            .runtime_db()
-            .agent_identities()
-            .latest(agent_id)?
-            .ok_or_else(|| {
-                anyhow!("agent {agent_id} identity not found after deletion admission")
-            })?;
-        host.cache_agent_identity(&identity)?;
+        let read_host = host.clone();
+        let read_agent_id = agent_id.to_string();
+        spawn_blocking(move || {
+            let identity = read_host
+                .runtime_db()
+                .agent_identities()
+                .latest(&read_agent_id)?
+                .ok_or_else(|| {
+                    anyhow!("agent {read_agent_id} identity not found after deletion admission")
+                })?;
+            read_host.cache_agent_identity(&identity)
+        })
+        .await??;
         host.unload_runtime(agent_id).await;
         host.notify_deletion_coordinator();
         Ok(())
@@ -7374,10 +7731,9 @@ impl RuntimeHostBridge {
         &self,
         agent_id: &str,
     ) -> Result<Option<crate::types::AgentCanonicalRelationsProjection>> {
-        self.host()?
-            .runtime_db()
-            .agent_canonical_relations()
-            .latest(agent_id)
+        let db = self.host()?.runtime_db().clone();
+        let agent_id = agent_id.to_string();
+        spawn_blocking(move || db.agent_canonical_relations().latest(&agent_id)).await?
     }
 
     pub(crate) async fn child_summaries(
@@ -8702,6 +9058,30 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("timed out waiting for task {task_id} to become terminal");
+    }
+
+    async fn wait_for_agent_inputs_settled(runtime: &RuntimeHandle) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = runtime.agent_state().await.unwrap();
+                let entries = runtime.storage().latest_queue_entries().unwrap();
+                if state.current_run_id.is_none()
+                    && entries.iter().all(|entry| {
+                        !matches!(
+                            entry.status,
+                            QueueEntryStatus::Queued
+                                | QueueEntryStatus::Dequeued
+                                | QueueEntryStatus::Interrupted
+                        )
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("target inputs must settle before sending an out-of-turn report");
     }
 
     async fn send_agent_message(
@@ -10348,6 +10728,9 @@ mod tests {
                 started: Arc<Notify>,
                 release: Arc<Notify>,
                 gated: AtomicBool,
+                peer_gate: AtomicBool,
+                peer_started: Notify,
+                peer_release: Notify,
             }
             #[async_trait]
             impl AgentProvider for GateProvider {
@@ -10358,6 +10741,9 @@ mod tests {
                     if !self.gated.swap(true, Ordering::SeqCst) {
                         self.started.notify_one();
                         self.release.notified().await;
+                    } else if self.peer_gate.load(Ordering::SeqCst) {
+                        self.peer_started.notify_one();
+                        self.peer_release.notified().await;
                     }
                     StubProvider::new("issue-3484-fixture-done")
                         .complete_turn(request)
@@ -10372,6 +10758,9 @@ mod tests {
                 started: Arc::new(Notify::new()),
                 release: Arc::new(Notify::new()),
                 gated: AtomicBool::new(false),
+                peer_gate: AtomicBool::new(false),
+                peer_started: Notify::new(),
+                peer_release: Notify::new(),
             });
             config.default_agent_id = "default".into();
             let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
@@ -10422,6 +10811,8 @@ mod tests {
                 TaskStatus::Completed
             );
             let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+            // Hold the replying turn open across async target activation.
+            provider.peer_gate.store(true, Ordering::SeqCst);
             let receipt = parent
                 .agent_invocation_service()
                 .invoke(InvokeAgentRequest {
@@ -10433,6 +10824,9 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), provider.peer_started.notified())
+                .await
+                .expect("peer must enter its replying turn");
             let task_id = &receipt.task_handle.task_id;
             let registration = if use_wait {
                 Some(
@@ -10472,6 +10866,8 @@ mod tests {
                     .await
                     .unwrap();
             }
+            provider.peer_gate.store(false, Ordering::SeqCst);
+            provider.peer_release.notify_one();
             let terminal = wait_for_terminal_task(&parent, task_id).await;
             assert_eq!(terminal.status, TaskStatus::Completed);
             assert!(terminal.work_item_id.is_none());
@@ -10697,19 +11093,21 @@ mod tests {
                 "result must retain its durable ledger"
             );
             println!(
-            "3484 real durable evidence: task_fence={:?}; result_has_attempt={result_has_attempt}; settlement={:?}",
-            stored_task.rejoin_fence().unwrap(),
-            settlement.as_ref().map(|record| (
-                record.state,
-                record.disposition,
-                record.rejoin_generation,
-                record.activation_id.as_deref(),
-            ))
-        );
+                "3484 real durable evidence: task_fence={:?}; result_has_attempt={result_has_attempt}; settlement={:?}",
+                stored_task.rejoin_fence().unwrap(),
+                settlement.as_ref().map(|record| (
+                    record.state,
+                    record.disposition,
+                    record.rejoin_generation,
+                    record.activation_id.as_deref(),
+                ))
+            );
             assert!(!events
                 .iter()
                 .any(|event| event.kind == "agent_runtime_loop_failed"));
-            println!("3484 real fixture: use_wait={use_wait}; result admitted before late OperatorInstruction TaskStatus; status processed; task remains completed; no canonical result/status attempt; no loop failure");
+            println!(
+                "3484 real fixture: use_wait={use_wait}; result admitted before late OperatorInstruction TaskStatus; status processed; task remains completed; no canonical result/status attempt; no loop failure"
+            );
             host.shutdown().await.unwrap();
         }
     }
@@ -10912,6 +11310,7 @@ mod tests {
         assert_eq!(reattached.len(), 1);
         assert!(remaining.is_empty());
 
+        wait_for_agent_inputs_settled(&target).await;
         let response = send_agent_message(
             &target,
             &parent_agent_id,
@@ -11038,6 +11437,7 @@ mod tests {
         let second = second.unwrap();
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
         let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        wait_for_agent_inputs_settled(&child).await;
         let response = send_agent_message(
             &child,
             &parent_agent_id,
@@ -11106,6 +11506,7 @@ mod tests {
             } else {
                 None
             };
+            wait_for_agent_inputs_settled(&target).await;
             let response =
                 send_agent_message(&target, &parent_id, "shared-reply", "unique reply body").await;
             let reply_id = host
@@ -11756,9 +12157,11 @@ mod tests {
             assert_eq!(tool_error.recovery_hint.as_deref(), Some(hint));
             assert!(tool_error.message.contains("owner/repo@skill"));
             assert!(tool_error.message.contains(&cause));
-            assert!(error
-                .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
-                .is_some());
+            assert!(
+                error
+                    .downcast_ref::<crate::skills::RemoteSkillArchiveFetchFailed>()
+                    .is_some()
+            );
             let rendered = tool_error.render_for_model(Some("InvokeAgent"));
             assert!(rendered.contains("owner/repo@skill"));
             assert!(rendered.contains(&cause));
@@ -11783,23 +12186,29 @@ mod tests {
             assert!(persisted_cause.contains("owner/repo@skill"));
             assert!(persisted_cause.contains(&cause));
             assert!(!persisted_cause.contains("do-not-publish"));
-            assert!(detail
-                .get("child_agent_id")
-                .and_then(Value::as_str)
-                .is_none());
+            assert!(
+                detail
+                    .get("child_agent_id")
+                    .and_then(Value::as_str)
+                    .is_none()
+            );
             let output = parent.task_output(task_id, false, 0).await.unwrap();
             let failure = output
                 .task
                 .failure_artifact
                 .expect("failed admission must expose a failure artifact");
             assert_eq!(failure.task_id.as_deref(), Some(task_id));
-            assert!(failure
-                .source_chain
-                .iter()
-                .any(|entry| entry.contains("owner/repo@skill") && entry.contains(&cause)));
-            assert!(!serde_json::to_string(&failure)
-                .unwrap()
-                .contains("do-not-publish"));
+            assert!(
+                failure
+                    .source_chain
+                    .iter()
+                    .any(|entry| entry.contains("owner/repo@skill") && entry.contains(&cause))
+            );
+            assert!(
+                !serde_json::to_string(&failure)
+                    .unwrap()
+                    .contains("do-not-publish")
+            );
             for serialized in [
                 rendered,
                 serde_json::to_string(&tool_error).unwrap(),
@@ -12873,6 +13282,693 @@ mod tests {
             Some("original-source-result")
         );
         assert!(host.try_get_loaded_runtime(child_id).await.is_none());
+    }
+
+    struct SaturatedRuntimeReaders {
+        release: Vec<std::sync::mpsc::Sender<()>>,
+        workers: Vec<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for SaturatedRuntimeReaders {
+        fn drop(&mut self) {
+            for release in self.release.drain(..) {
+                let _ = release.send(());
+            }
+            for worker in self.workers.drain(..) {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn saturate_runtime_readers(host: &RuntimeHost) -> SaturatedRuntimeReaders {
+        let mut held = SaturatedRuntimeReaders {
+            release: Vec::new(),
+            workers: Vec::new(),
+        };
+        let (ready, acquired) = std::sync::mpsc::channel();
+        for _ in 0..4 {
+            let db = host.runtime_db().clone();
+            let ready = ready.clone();
+            let (release, released) = std::sync::mpsc::channel();
+            held.release.push(release);
+            held.workers.push(std::thread::spawn(move || {
+                db.with_read(|_| {
+                    ready.send(()).unwrap();
+                    let _ = released.recv();
+                    Ok(())
+                })
+                .unwrap();
+            }));
+        }
+        for _ in 0..4 {
+            acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        held
+    }
+
+    #[tokio::test]
+    async fn runtime_constructor_cancellation_retains_activation_guards() {
+        let (_home, host, _task) = source_bound_invocation_fixture();
+        let (started, constructed) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *host.inner.runtime_constructor_gate.lock().unwrap() = Some((started, released));
+        let activation_host = host.clone();
+        let activation = tokio::spawn(async move {
+            activation_host
+                .get_or_create_agent("source-bound-child")
+                .await
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), constructed)
+                .await
+                .unwrap()
+                .unwrap(),
+            "source-bound-child"
+        );
+        activation.abort();
+        assert!(activation.await.err().unwrap().is_cancelled());
+        assert!(host.inner.bootstrap_handoff_lock.try_lock().is_err());
+        assert!(host.inner.runtimes.try_write().is_err());
+        let next_host = host.clone();
+        let next =
+            tokio::spawn(async move { next_host.get_or_create_agent("source-bound-child").await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!next.is_finished());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), next)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        {
+            let registry = host.inner.runtimes.read().await;
+            assert!(registry.agents.contains_key("source-bound-child"));
+            assert_eq!(
+                registry.next_generation, 2,
+                "must not construct a second runtime"
+            );
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_runtime_constructor_cancellation_archives_unclaimed_identity() {
+        let (_home, host) = test_host();
+        let (started, constructed) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *host.inner.runtime_constructor_gate.lock().unwrap() = Some((started, released));
+        let creation_host = host.clone();
+        let creation =
+            tokio::spawn(async move { creation_host.spawn_temporary_runtime("run").await });
+        let agent_id = tokio::time::timeout(Duration::from_secs(3), constructed)
+            .await
+            .unwrap()
+            .unwrap();
+        creation.abort();
+        assert!(creation.await.err().unwrap().is_cancelled());
+        assert!(host.inner.bootstrap_handoff_lock.try_lock().is_err());
+        assert!(host.inner.runtimes.try_write().is_err());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if host
+                    .agent_identity_record(&agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    == AgentRegistryStatus::Deleted
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(host.try_get_loaded_runtime(&agent_id).await.is_none());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_runtime_unclaimed_handoff_archives_identity() {
+        let (_home, host) = test_host();
+        let creation_host = host.clone();
+        let creation = tokio::spawn(async move {
+            creation_host
+                .spawn_temporary_runtime_owned("run", &CancellationToken::new())
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !creation.is_finished() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // Drop a completed, unconsumed task result, not only an in-flight request.
+        let identities = host.runtime_db().agent_identities().latest_all().unwrap();
+        let agent_id = identities
+            .into_iter()
+            .find(|identity| RuntimeHost::is_temporary_agent_id(&identity.agent_id))
+            .unwrap()
+            .agent_id;
+        drop(creation);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if host
+                    .agent_identity_record(&agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    == AgentRegistryStatus::Deleted
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    async fn wait_for_runtime_operation_admission(host: &RuntimeHost, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while host.inner.runtime_operations.lock().unwrap().tasks.len() < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("runtime operation was not admitted");
+    }
+
+    #[tokio::test]
+    async fn cancelled_activation_releases_bootstrap_wait() {
+        let (_home, host, _task) = source_bound_invocation_fixture();
+        host.inner
+            .bootstrap_provider_active
+            .store(true, Ordering::Release);
+        let activation_host = host.clone();
+        let activation = tokio::spawn(async move {
+            activation_host
+                .get_or_create_agent("source-bound-child")
+                .await
+        });
+        wait_for_runtime_operation_admission(&host, 1).await;
+        activation.abort();
+        assert!(activation.await.err().unwrap().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(3), host.drain_runtime_operations())
+            .await
+            .expect("cancelled bootstrap wait must finish without onboarding");
+        assert!(host.inner.bootstrap_provider_active.load(Ordering::Acquire));
+        assert_eq!(host.inner.runtimes.read().await.next_generation, 1);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_activation_bootstrap_wait() {
+        let (_home, host, _task) = source_bound_invocation_fixture();
+        host.inner
+            .bootstrap_provider_active
+            .store(true, Ordering::Release);
+        let bridge = host.bridge();
+        let bridge_wait = bridge.wait_for_bootstrap_ready();
+        tokio::pin!(bridge_wait);
+        assert!(futures_util::poll!(&mut bridge_wait).is_pending());
+        let activation_host = host.clone();
+        let activation = tokio::spawn(async move {
+            activation_host
+                .get_or_create_agent("source-bound-child")
+                .await
+        });
+        wait_for_runtime_operation_admission(&host, 1).await;
+        tokio::time::timeout(Duration::from_secs(3), host.shutdown())
+            .await
+            .expect("shutdown must not wait for onboarding")
+            .unwrap();
+        let error = activation.await.unwrap().err().unwrap();
+        assert!(error.downcast_ref::<RuntimeAdmissionClosed>().is_some());
+        let error = bridge_wait.await.err().unwrap();
+        assert!(error.downcast_ref::<RuntimeAdmissionClosed>().is_some());
+        assert!(host.inner.bootstrap_provider_active.load(Ordering::Acquire));
+        assert_eq!(host.inner.runtimes.read().await.next_generation, 1);
+        assert!(host
+            .inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_cancelled_cold_runtime_construction() {
+        let (_home, host, _task) = source_bound_invocation_fixture();
+        let (started, constructed) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *host.inner.runtime_constructor_gate.lock().unwrap() = Some((started, released));
+        let activation_host = host.clone();
+        let activation = tokio::spawn(async move {
+            activation_host
+                .get_or_create_agent("source-bound-child")
+                .await
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), constructed)
+                .await
+                .unwrap()
+                .unwrap(),
+            "source-bound-child"
+        );
+        activation.abort();
+        assert!(activation.await.err().unwrap().is_cancelled());
+        let shutdown = host.shutdown();
+        tokio::pin!(shutdown);
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        assert!(host.inner.runtime_operations_token.is_cancelled());
+        assert!(host.inner.bootstrap_handoff_lock.try_lock().is_err());
+        assert!(host.inner.runtimes.try_write().is_err());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), &mut shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert_eq!(registry.next_generation, 2);
+        assert!(registry.agents.is_empty());
+        assert!(host
+            .inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_cancelled_temporary_runtime_construction() {
+        let (_home, host) = test_host();
+        let (started, constructed) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *host.inner.runtime_constructor_gate.lock().unwrap() = Some((started, released));
+        let creation_host = host.clone();
+        let creation =
+            tokio::spawn(async move { creation_host.spawn_temporary_runtime("run").await });
+        let agent_id = tokio::time::timeout(Duration::from_secs(3), constructed)
+            .await
+            .unwrap()
+            .unwrap();
+        creation.abort();
+        assert!(creation.await.err().unwrap().is_cancelled());
+        let shutdown = host.shutdown();
+        tokio::pin!(shutdown);
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        assert!(host.inner.runtime_operations_token.is_cancelled());
+        assert!(host.inner.bootstrap_handoff_lock.try_lock().is_err());
+        assert!(host.inner.runtimes.try_write().is_err());
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), &mut shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            host.agent_identity_record(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(host.try_get_loaded_runtime(&agent_id).await.is_none());
+        assert!(host
+            .inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_dropped_temporary_runtime_cleanup() {
+        let (_home, host) = test_host();
+        let pending = host
+            .spawn_temporary_runtime_owned("run", &CancellationToken::new())
+            .await
+            .unwrap();
+        let agent_id = pending.spawned.lock().unwrap().as_ref().unwrap().0.clone();
+        let handoff = host.inner.bootstrap_handoff_lock.lock().await;
+        drop(pending);
+        let shutdown = host.shutdown();
+        tokio::pin!(shutdown);
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        assert!(host.inner.runtime_operations_token.is_cancelled());
+        assert_eq!(
+            host.agent_identity_record(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        drop(handoff);
+        tokio::time::timeout(Duration::from_secs(3), &mut shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            host.agent_identity_record(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(host
+            .inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_archives_unconsumed_temporary_runtime_handoff() {
+        let (_home, host) = test_host();
+        let pending = host
+            .spawn_temporary_runtime_owned("run", &CancellationToken::new())
+            .await
+            .unwrap();
+        let agent_id = pending.spawned.lock().unwrap().as_ref().unwrap().0.clone();
+        tokio::time::timeout(Duration::from_secs(3), host.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(pending.spawned.lock().unwrap().is_none());
+        assert_eq!(
+            host.agent_identity_record(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(host
+            .inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .is_empty());
+        drop(pending);
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_queued_runtime_construction() {
+        let (_home, host, _task) = source_bound_invocation_fixture();
+        let identities_before = host
+            .runtime_db()
+            .agent_identities()
+            .latest_all()
+            .unwrap()
+            .len();
+        let handoff = host.inner.bootstrap_handoff_lock.lock().await;
+        let activation_host = host.clone();
+        let activation = tokio::spawn(async move {
+            activation_host
+                .get_or_create_agent("source-bound-child")
+                .await
+        });
+        let creation_host = host.clone();
+        let creation =
+            tokio::spawn(async move { creation_host.spawn_temporary_runtime("run").await });
+        wait_for_runtime_operation_admission(&host, 2).await;
+        // Neither operation has started constructing. Shutdown must finish even
+        // while the handoff lock stays held.
+        tokio::time::timeout(Duration::from_secs(3), host.shutdown())
+            .await
+            .expect("shutdown must cancel queued constructors")
+            .unwrap();
+        assert!(activation
+            .await
+            .unwrap()
+            .err()
+            .unwrap()
+            .downcast_ref::<RuntimeAdmissionClosed>()
+            .is_some());
+        assert!(creation
+            .await
+            .unwrap()
+            .err()
+            .unwrap()
+            .downcast_ref::<RuntimeAdmissionClosed>()
+            .is_some());
+        assert_eq!(host.inner.runtimes.read().await.next_generation, 1);
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest_all()
+                .unwrap()
+                .len(),
+            identities_before
+        );
+        assert!(host
+            .inner
+            .runtime_operations
+            .lock()
+            .unwrap()
+            .tasks
+            .is_empty());
+        drop(handoff);
+    }
+
+    #[tokio::test]
+    async fn runtime_activation_saturation_preserves_retryable_error_and_yields() {
+        let (_home, host, _task) = source_bound_invocation_fixture();
+        let held = saturate_runtime_readers(&host);
+        let activation_host = host.clone();
+        let activation = tokio::spawn(async move {
+            activation_host
+                .get_or_create_agent("source-bound-child")
+                .await
+        });
+        let started = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let heartbeat = started.elapsed();
+        let result = tokio::time::timeout(Duration::from_secs(3), activation).await;
+        drop(held);
+        assert!(heartbeat < Duration::from_millis(150), "{heartbeat:?}");
+        let error = result.unwrap().unwrap().err().unwrap();
+        assert!(
+            error
+                .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                .is_some(),
+            "{error:#}"
+        );
+        assert!(host
+            .try_get_loaded_runtime("source-bound-child")
+            .await
+            .is_none());
+        host.shutdown_runtime_recovery_coordinator().await;
+    }
+
+    #[tokio::test]
+    async fn invocation_activation_reader_pressure_and_target_deletion_preserve_cancellation() {
+        for saturated in [false, true] {
+            let (_home, host, task) = source_bound_invocation_fixture();
+            let child_id = "source-bound-child";
+            let prepared = crate::runtime::AgentMessageDeliveryService::prepare(
+                AgentMessageSendRequest {
+                    target_agent_id: child_id.into(),
+                    content: MessageBody::Text {
+                        text: "queued invocation".into(),
+                    },
+                    client_idempotency_key: task.id.clone(),
+                    correlation_id: Some(task.id.clone()),
+                    causation_id: None,
+                    requested_priority: Some(Priority::Normal),
+                    forward: false,
+                    reply_context_id: None,
+                },
+                AgentMessageCallerContext {
+                    caller_principal: format!("agent:{}", task.agent_id),
+                    caller_agent_id: Some(task.agent_id.clone()),
+                    principal_kind: AgentMessagePrincipalKind::SupervisingParent,
+                    route: "supervision_follow_up".into(),
+                    origin: MessageOrigin::Task {
+                        task_id: task.id.clone(),
+                    },
+                    authority_class: AuthorityClass::OperatorInstruction,
+                    delivery_surface: MessageDeliverySurface::RuntimeSystem,
+                    admission_context: AdmissionContext::RuntimeOwned,
+                    current_turn_id: None,
+                    current_task_id: Some(task.id.clone()),
+                    current_work_item_id: None,
+                    inherited_routing_context: None,
+                    routing_activation_id: None,
+                },
+            )
+            .unwrap();
+            let now = Utc::now();
+            let delivery = host
+                .runtime_db()
+                .transitions()
+                .commit_delivery_admission(
+                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                        agent_id: child_id.into(),
+                        operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                            crate::types::QueueEntryRecord {
+                                message_id: prepared.message.id.clone(),
+                                agent_id: child_id.into(),
+                                priority: Priority::Normal,
+                                status: QueueEntryStatus::Queued,
+                                created_at: now,
+                                updated_at: now,
+                            },
+                        ),
+                        scheduler_claim_work_item: None,
+                        agent_state: None,
+                        message_evidence: vec![prepared.message],
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events: Vec::new(),
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    },
+                    &prepared.record,
+                )
+                .unwrap()
+                .delivery_receipt
+                .unwrap();
+            let identity = host.agent_identity_record(child_id).unwrap().unwrap();
+            let handoff = host.inner.bootstrap_handoff_lock.lock().await;
+            let monitor_host = host.clone();
+            let monitor = tokio::spawn(async move {
+                monitor_host
+                    .await_invocation_delivery_terminal_result(
+                        child_id,
+                        &delivery.delivery_id,
+                        &task.id,
+                        false,
+                    )
+                    .await
+            });
+            // Activation starts only after a successful identity and pending-evidence read.
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while host.inner.runtime_recovery_handle.lock().unwrap().is_none() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            if saturated {
+                let held = saturate_runtime_readers(&host);
+                drop(handoff);
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                assert!(!monitor.is_finished());
+                assert!(
+                    host.runtime_db()
+                        .reader_pool_stats_for_tests()
+                        .checkout_timeouts
+                        > 0
+                );
+                let (deleting_identity, _, _) = host
+                    .runtime_db()
+                    .agent_deletions()
+                    .begin(child_id, identity.revision, "test", false)
+                    .unwrap();
+                host.cache_agent_identity(&deleting_identity).unwrap();
+                drop(held);
+            } else {
+                let (deleting_identity, _, _) = host
+                    .runtime_db()
+                    .agent_deletions()
+                    .begin(child_id, identity.revision, "test", false)
+                    .unwrap();
+                host.cache_agent_identity(&deleting_identity).unwrap();
+                drop(handoff);
+            }
+            let result = tokio::time::timeout(Duration::from_secs(3), monitor)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.status, TaskStatus::Cancelled);
+            assert!(result.text.contains("target agent was deleted"));
+            assert!(host.try_get_loaded_runtime(child_id).await.is_none());
+            host.shutdown_runtime_recovery_coordinator().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_saturation_is_retryable_and_does_not_block_async() {
+        let (_home, host, task) = source_bound_invocation_fixture();
+        let held = saturate_runtime_readers(&host);
+        let read_host = host.clone();
+        let read_task = task.clone();
+        let resolution = tokio::spawn(async move {
+            read_host
+                .resolve_supervised_invocation(&read_task, "source-bound-child", false)
+                .await
+        });
+        let started = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let heartbeat = started.elapsed();
+        let result = tokio::time::timeout(Duration::from_secs(3), resolution).await;
+        drop(held);
+        assert!(heartbeat < Duration::from_millis(150), "{heartbeat:?}");
+        let error = result.unwrap().unwrap().unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                .is_some(),
+            "{error:#}"
+        );
+        assert!(matches!(
+            host.resolve_supervised_invocation(&task, "source-bound-child", false)
+                .await
+                .unwrap(),
+            ChildInvocationResolution::Ready(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn invocation_and_message_monitors_retry_saturated_readers() {
+        let (_home, host, task) = source_bound_invocation_fixture();
+        let held = saturate_runtime_readers(&host);
+        let read_host = host.clone();
+        let invocation = tokio::spawn(async move {
+            read_host
+                .await_invocation_delivery_terminal_result(
+                    "source-bound-child",
+                    "missing-delivery",
+                    &task.id,
+                    false,
+                )
+                .await
+        });
+        let read_host = host.clone();
+        let parent = host.config().default_agent_id.clone();
+        let message = tokio::spawn(async move {
+            read_host
+                .await_agent_message(&parent, "unrelated-sender", 0)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let invocation_pending = !invocation.is_finished();
+        let message_pending = !message.is_finished();
+        drop(held);
+        let result = tokio::time::timeout(Duration::from_secs(3), invocation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        message.abort();
+        let _ = message.await;
+        assert!(invocation_pending && message_pending);
+        // Only the successful ledger read, not saturation, may report missing delivery.
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(result.text.contains("missing from the durable ledger"));
     }
 
     #[tokio::test]
@@ -17903,9 +18999,11 @@ mod tests {
             .scan_legacy_deletion_residue_batch()
             .await
             .expect_err("malformed later job must fail the batch");
-        assert!(error.chain().any(|cause| cause
-            .to_string()
-            .contains("decoding agent deletion job payload")));
+        assert!(error.chain().any(|cause| {
+            cause
+                .to_string()
+                .contains("decoding agent deletion job payload")
+        }));
         let first_job = host
             .runtime_db()
             .agent_deletions()
@@ -18826,6 +19924,25 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_failure_summary_preserves_pending_candidates_and_error() {
+        const CHILD_TEST: &str = "HOLON_STARTUP_SUMMARY_CHILD_TEST";
+        let thread = std::thread::current();
+        let test_name = thread.name().expect("named libtest thread");
+        if std::env::var(CHILD_TEST).as_deref() != Ok(test_name) {
+            // Callsite interest is process-global even with a local subscriber.
+            // Isolate this log assertion from unrelated startup recovery tests.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test_name, "--exact", "--nocapture", "--test-threads=1"])
+                .env(CHILD_TEST, test_name)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated {test_name} failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
         use tracing::instrument::WithSubscriber;
         #[derive(Clone)]
         struct Writer(Arc<Mutex<Vec<u8>>>);
@@ -18883,7 +20000,9 @@ mod tests {
         let summary = output
             .lines()
             .find(|line| line.contains("startup agent recovery summary"))
-            .unwrap();
+            .unwrap_or_else(|| {
+                panic!("startup agent recovery summary missing; captured output:\n{output}")
+            });
         for field in [
             "startup-failure",
             "candidates=3",
@@ -18898,7 +20017,9 @@ mod tests {
         let discovery = output
             .lines()
             .find(|line| line.contains("startup recovery candidates discovered"))
-            .unwrap();
+            .unwrap_or_else(|| {
+                panic!("startup recovery discovery missing; captured output:\n{output}")
+            });
         for field in [
             "tasks=3",
             "timers=3",
@@ -19689,11 +20810,76 @@ mod tests {
         assert_eq!(timer.status, TimerStatus::Completed);
         assert_eq!(timer.fire_count, 1);
         assert_startup_timer_tick_count(&storage, "timer-startup-once-1", 1);
-        drop(storage);
+        let tick = storage
+            .read_recent_messages(200)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                message.kind == MessageKind::TimerTick
+                    && matches!(&message.origin, MessageOrigin::Timer { timer_id } if timer_id == &timer.id)
+            })
+            .expect("the recovered timer should have produced a TimerTick");
+        let recovery_state = || {
+            let db = second_host.runtime_db();
+            (
+                db.timers().pending_wake(&timer.id).unwrap(),
+                storage.latest_queue_entries().unwrap(),
+                db.timers().active_owner_agent_ids().unwrap(),
+                db.tasks().active_owner_agent_ids().unwrap(),
+            )
+        };
+        // Completed records the fire, not consumption of its durable wake.
+        let drained = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (pending_wake, queue, _, _) = recovery_state();
+                if pending_wake.is_none()
+                    && queue.iter().any(|entry| {
+                        entry.message_id == tick.id && entry.status == QueueEntryStatus::Processed
+                    })
+                    && queue.iter().all(|entry| {
+                        !matches!(
+                            entry.status,
+                            QueueEntryStatus::Queued
+                                | QueueEntryStatus::Dequeued
+                                | QueueEntryStatus::Interrupted
+                        )
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            drained.is_ok(),
+            "TimerTick did not drain; (pending_wake, queue, active_timer_owners, active_task_owners)={:?}",
+            recovery_state()
+        );
         tokio::time::timeout(Duration::from_secs(5), second_host.shutdown())
             .await
             .expect("second host shutdown")
             .unwrap();
+        let (pending_wake, queue, timer_owners, task_owners) = recovery_state();
+        assert!(
+            pending_wake.is_none()
+                && queue.iter().any(|entry| {
+                    entry.message_id == tick.id && entry.status == QueueEntryStatus::Processed
+                })
+                && queue.iter().all(|entry| {
+                    !matches!(
+                        entry.status,
+                        QueueEntryStatus::Queued
+                            | QueueEntryStatus::Dequeued
+                            | QueueEntryStatus::Interrupted
+                    )
+                })
+                && !timer_owners.iter().any(|owner| owner == agent_id)
+                && !task_owners.iter().any(|owner| owner == agent_id),
+            "before third recovery: pending_wake={pending_wake:?}, queue={queue:?}, \
+             active_timer_owners={timer_owners:?}, active_task_owners={task_owners:?}"
+        );
+        drop(storage);
         drop(second_host);
 
         let third_host =

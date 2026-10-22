@@ -23,7 +23,7 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord, TaskStatus,
-        TodoItem, TodoItemState, WorkItemState,
+        TodoItem, TodoItemState, WorkItemPlanStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -684,11 +684,23 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     let client = reqwest::Client::new();
     let runtime = host.default_runtime().await?;
 
+    // Exercise control mutations without the autonomous scheduler claiming the
+    // fixtures. The update makes the second item ready and blocked atomically.
     let first = runtime
-        .create_work_item("first queued item".into(), None, None, Vec::new())
+        .create_work_item(
+            "first queued item".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
         .await?;
     let second = runtime
-        .create_work_item("second queued item".into(), None, None, Vec::new())
+        .create_work_item(
+            "second queued item".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
         .await?;
     runtime.pick_work_item(first.id.clone()).await?;
 
@@ -717,7 +729,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     );
     assert_control_audit_event(&runtime, "work_item_pick_requested");
 
-    let update: serde_json::Value = client
+    let update_response = client
         .patch(format!(
             "{base}/api/control/agents/default/work-items/{second_id}",
             second_id = second.id
@@ -734,9 +746,13 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
             "authority_class": "integration_signal"
         }))
         .send()
-        .await?
-        .json()
         .await?;
+    let update_status = update_response.status();
+    let update: serde_json::Value = update_response.json().await?;
+    assert!(
+        update_status.is_success(),
+        "update request failed with {update_status}: {update}"
+    );
     assert_eq!(update["id"], second.id);
     assert_eq!(update["objective"], "refined via HTTP");
     assert_eq!(update["plan_status"], "ready");
@@ -768,7 +784,12 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     assert_control_audit_event(&runtime, "work_item_complete_requested");
 
     let legacy = runtime
-        .create_work_item("legacy completing item".into(), None, None, Vec::new())
+        .create_work_item(
+            "legacy completing item".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
         .await?;
     let legacy = runtime
         .complete_work_item(legacy.id.clone(), Vec::new())

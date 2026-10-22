@@ -547,6 +547,7 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
             .unwrap_or(false))
     })
     .await?;
+    host.shutdown().await?;
     drop(runtime);
     drop(host);
 
@@ -556,7 +557,15 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     let (base2, server2) = spawn_server_for_host(host2.clone()).await?;
 
     let descriptors = runtime2.latest_external_triggers().await?;
-    assert_eq!(descriptors.len(), 1);
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "unexpected trigger states after restart: {:?}",
+        descriptors
+            .iter()
+            .map(|item| (&item.status, item.delivery_count))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(descriptors[0].delivery_count, 1);
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
     let callback_events_before = runtime2

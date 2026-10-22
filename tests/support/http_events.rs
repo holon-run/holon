@@ -22,8 +22,8 @@ use holon::{
         AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, BriefCreatedAuditEvent,
         BriefKind, BriefRecord, CallbackDeliveryMode, CommandTaskSpec, ContinuationClass,
         ControlAction, ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord,
-        TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, Priority, QueueEntryStatus, TaskKind,
+        TaskRecord, TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
         WorkItemState,
     },
 };
@@ -539,12 +539,27 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    client
+    let receipt: serde_json::Value = client
         .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "stable operator event bootstrap" }))
         .send()
+        .await?
+        .error_for_status()?
+        .json()
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    let message_id = receipt["message_id"]
+        .as_str()
+        .expect("bootstrap message id");
+    wait_until(|| {
+        let turns = runtime.storage().read_recent_turns(10)?;
+        let queue = runtime.storage().read_recent_queue_entries(20)?;
+        Ok(turns.iter().any(|turn| {
+            turn.input_message_ids.iter().any(|id| id == message_id) && turn.terminal.is_some()
+        }) && queue.iter().any(|entry| {
+            entry.message_id == message_id && entry.status == QueueEntryStatus::Processed
+        }))
+    })
+    .await?;
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 
@@ -942,12 +957,27 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
-    client
+    let receipt: serde_json::Value = client
         .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({ "text": "assistant round stream bootstrap" }))
         .send()
+        .await?
+        .error_for_status()?
+        .json()
         .await?;
-    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+    let message_id = receipt["message_id"]
+        .as_str()
+        .expect("bootstrap message id");
+    wait_until(|| {
+        let turns = runtime.storage().read_recent_turns(10)?;
+        let queue = runtime.storage().read_recent_queue_entries(20)?;
+        Ok(turns.iter().any(|turn| {
+            turn.input_message_ids.iter().any(|id| id == message_id) && turn.terminal.is_some()
+        }) && queue.iter().any(|entry| {
+            entry.message_id == message_id && entry.status == QueueEntryStatus::Processed
+        }))
+    })
+    .await?;
 
     let after_seq = newest_event_seq(&base, &client, None).await?;
 

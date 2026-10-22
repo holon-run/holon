@@ -377,7 +377,7 @@ pub async fn tool_only_wait_for_persists_turn_without_result_brief() -> Result<(
             .storage()
             .read_recent_turns(10)?
             .iter()
-            .any(|turn| turn.input_message_ids.contains(&message.id)))
+            .any(|turn| turn.input_message_ids.contains(&message.id) && turn.terminal.is_some()))
     })
     .await?;
 
@@ -437,7 +437,7 @@ pub async fn silent_wait_for_with_assistant_text_does_not_publish_brief() -> Res
             .storage()
             .read_recent_turns(10)?
             .iter()
-            .any(|turn| turn.input_message_ids.contains(&message.id)))
+            .any(|turn| turn.input_message_ids.contains(&message.id) && turn.terminal.is_some()))
     })
     .await?;
 
@@ -555,7 +555,6 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model()
         )
     })?;
 
-    assert_eq!(provider.calls().await, 4);
     let task_result = runtime
         .storage()
         .read_recent_messages(20)?
@@ -583,6 +582,7 @@ pub async fn queued_task_result_wait_settles_tool_only_turn_and_reenters_model()
         )
     })?;
 
+    assert_eq!(provider.calls().await, 4);
     let turns = runtime.storage().read_recent_turns(20)?;
     let operator_turn = turns
         .iter()

@@ -31,9 +31,9 @@ use holon::{
         ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
         MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
-        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitingReason,
-        WorkItemState,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
+        QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -930,7 +930,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
     })
     .await?;
 
-    runtime
+    let message = runtime
         .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -951,16 +951,24 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
         eventually_async({
             let runtime = runtime.clone();
             let provider = provider.clone();
+            let message_id = message.id.clone();
             move || {
                 let provider = provider.clone();
                 let runtime = runtime.clone();
+                let message_id = message_id.clone();
                 async move {
                     let requests = provider.captured_requests().await;
                     if requests.len() < 2 {
                         return Ok(false);
                     }
-                    let events = runtime.recent_events(80).await?;
-                    Ok(events.iter().any(|event| event.kind == "turn_terminal"))
+                    let turns = runtime.storage().read_recent_turns(10)?;
+                    let queue = runtime.storage().read_recent_queue_entries(20)?;
+                    Ok(turns.iter().any(|turn| {
+                        turn.input_message_ids.contains(&message_id) && turn.terminal.is_some()
+                    }) && queue.iter().any(|entry| {
+                        entry.message_id == message_id
+                            && entry.status == QueueEntryStatus::Processed
+                    }))
                 }
             }
         }),

@@ -617,11 +617,7 @@ impl RuntimeHandle {
         let mut task_handles = self.inner.task_handles.lock().await;
         if matches!(task_handles.get(&task.id), Some(command_task::ManagedTaskHandle::Async(handle)) if !handle.is_finished())
         {
-            return Ok(self
-                .inner
-                .storage
-                .latest_task_record(&task.id)?
-                .unwrap_or(task));
+            return Ok(self.task_record(&task.id).await?.unwrap_or(task));
         }
         let queued_task = TaskRecord {
             updated_at: Utc::now(),
@@ -1433,9 +1429,21 @@ impl RuntimeHandle {
         };
         let _ = self.enqueue(running_message).await;
 
-        let result = bridge
-            .await_agent_message(&agent_id, &target_agent_id, after_delivery_rowid)
-            .await;
+        let result = loop {
+            match bridge
+                .await_agent_message(&agent_id, &target_agent_id, after_delivery_rowid)
+                .await
+            {
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(TASK_OUTPUT_POLL_INTERVAL_MS)).await;
+                }
+                result => break result,
+            }
+        };
         let (text, status, terminal_detail) = match result {
             Ok(result) => {
                 let mut detail = task_detail;
@@ -1456,9 +1464,26 @@ impl RuntimeHandle {
                 task_detail,
             ),
         };
-        self.finish_agent_message_wait(&task_record, status, terminal_detail, text)
-            .await?;
-        Ok(())
+        loop {
+            match self
+                .finish_agent_message_wait(
+                    &task_record,
+                    status.clone(),
+                    terminal_detail.clone(),
+                    text.clone(),
+                )
+                .await
+            {
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(TASK_OUTPUT_POLL_INTERVAL_MS)).await;
+                }
+                result => return result,
+            }
+        }
     }
 
     pub(super) async fn finish_agent_message_wait(
@@ -1469,10 +1494,8 @@ impl RuntimeHandle {
         failure_text: String,
     ) -> Result<()> {
         let task = self
-            .inner
-            .runtime_db
-            .tasks()
-            .latest(&task.id)?
+            .task_record(&task.id)
+            .await?
             .unwrap_or_else(|| task.clone());
         if task_state_reducer::is_terminal_task_status(&task.status) {
             return Ok(());
@@ -1518,9 +1541,10 @@ impl RuntimeHandle {
         message.id = format!("message:agent-message-wait:{}", task.id);
         message.turn_id = Some(format!("turn:agent-message-wait:{}", task.id));
         message.created_at = if status == TaskStatus::Completed {
-            self.inner
-                .storage
-                .read_message_by_id(response.as_deref().expect("validated reply"))?
+            let storage = self.inner.storage.clone();
+            let response = response.as_deref().expect("validated reply").to_owned();
+            tokio::task::spawn_blocking(move || storage.read_message_by_id(&response))
+                .await??
                 .ok_or_else(|| anyhow!("agent reply evidence is missing"))?
                 .created_at
         } else {
@@ -1547,43 +1571,57 @@ impl RuntimeHandle {
         if !crate::wake_contract::is_agent_message(message) {
             return Ok(ReplyReconciliation::Ready);
         }
-        let Some(delivery) = self
-            .inner
-            .runtime_db
-            .agent_message_deliveries()
-            .latest_for_message(&message.id)?
-        else {
-            return Ok(ReplyReconciliation::Ready);
-        };
+        let db = self.inner.runtime_db.clone();
+        let message_id = message.id.clone();
+        let agent_id = message.agent_id.clone();
+        let (replies, outcome) = tokio::task::spawn_blocking(move || {
+            let mut replies = Vec::new();
+            let outcome = (|| -> Result<ReplyReconciliation> {
+                let Some(delivery) = db
+                    .agent_message_deliveries()
+                    .latest_for_message(&message_id)?
+                else {
+                    return Ok(ReplyReconciliation::Ready);
+                };
+                for task in db.tasks().active_for_agent(&agent_id, i64::MAX as usize)? {
+                    let Some(TaskRecoverySpec::AgentMessageWait {
+                        target_agent_id,
+                        after_delivery_rowid,
+                        ..
+                    }) = &task.recovery
+                    else {
+                        continue;
+                    };
+                    if delivery.caller.caller_agent_id.as_deref() != Some(target_agent_id.as_str())
+                    {
+                        continue;
+                    }
+                    let Some(boundary) = after_delivery_rowid else {
+                        // Invoke has accepted the request but has not attached its receipt yet.
+                        return Ok(ReplyReconciliation::WaitingForReceipt);
+                    };
+                    if let Some(reply) = db
+                        .agent_message_deliveries()
+                        .first_accepted_from_sender_after(&agent_id, target_agent_id, *boundary)?
+                    {
+                        replies.push((task, reply));
+                    }
+                }
+                Ok(ReplyReconciliation::Ready)
+            })();
+            // Earlier matches still settle before a later read error or missing receipt.
+            (replies, outcome)
+        })
+        .await?;
         let mut changed = false;
-        for task in self
-            .inner
-            .runtime_db
-            .tasks()
-            .active_for_agent(&message.agent_id, i64::MAX as usize)?
-        {
+        for (task, reply) in replies {
             let Some(TaskRecoverySpec::AgentMessageWait {
                 target_agent_id,
-                after_delivery_rowid,
+                after_delivery_rowid: Some(boundary),
                 ..
             }) = &task.recovery
             else {
-                continue;
-            };
-            if delivery.caller.caller_agent_id.as_deref() != Some(target_agent_id.as_str()) {
-                continue;
-            }
-            let Some(boundary) = after_delivery_rowid else {
-                // Invoke has accepted the request but has not attached its receipt yet.
-                return Ok(ReplyReconciliation::WaitingForReceipt);
-            };
-            let Some(reply) = self
-                .inner
-                .runtime_db
-                .agent_message_deliveries()
-                .first_accepted_from_sender_after(&message.agent_id, target_agent_id, *boundary)?
-            else {
-                continue;
+                unreachable!("reply snapshot requires an attached receipt");
             };
             let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
             detail["message_wait_satisfied"] = serde_json::json!(true);
@@ -1595,6 +1633,9 @@ impl RuntimeHandle {
             self.finish_agent_message_wait(&task, TaskStatus::Completed, detail, String::new())
                 .await?;
             changed = true;
+        }
+        if matches!(outcome?, ReplyReconciliation::WaitingForReceipt) {
+            return Ok(ReplyReconciliation::WaitingForReceipt);
         }
         Ok(if changed {
             ReplyReconciliation::Changed
@@ -1611,7 +1652,7 @@ impl RuntimeHandle {
         stage: ChildInvocationRecoveryStage,
         retry_attempt: u32,
     ) -> Result<()> {
-        let Some(mut task) = self.inner.storage.latest_task_record(task_id)? else {
+        let Some(mut task) = self.task_record(task_id).await? else {
             return Ok(());
         };
         if task_state_reducer::is_terminal_task_status(&task.status) {
@@ -1713,9 +1754,8 @@ impl RuntimeHandle {
         // Project running state directly: a queued TaskStatus snapshot could
         // otherwise overwrite a newer recovery diagnostic or source binding.
         let latest = self
-            .inner
-            .storage
-            .latest_task_record(&task_record.id)?
+            .task_record(&task_record.id)
+            .await?
             .unwrap_or_else(|| task_record.clone());
         if task_state_reducer::is_terminal_task_status(&latest.status) {
             return Ok(());
@@ -1750,10 +1790,11 @@ impl RuntimeHandle {
             use crate::host::{ChildInvocationReason, ChildInvocationResolution};
             let mut last_diagnostic = None;
             let mut diagnostic_write_failed = false;
+            let mut poll_interval = Duration::from_millis(100);
             loop {
                 let mut bound_task = task_record.clone();
                 bound_task.detail = Some(task_detail_for_result.clone());
-                match self.inner.storage.latest_task_record(&task_record.id) {
+                match self.task_record(&task_record.id).await {
                     Ok(Some(latest)) => {
                         if task_state_reducer::is_terminal_task_status(&latest.status) {
                             return Ok(());
@@ -1761,7 +1802,16 @@ impl RuntimeHandle {
                         bound_task = latest;
                     }
                     Ok(None) => {}
-                    Err(_) => {}
+                    Err(error)
+                        if error
+                            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                            .is_some() =>
+                    {
+                        // A fresh canonical snapshot is required before resolution.
+                        tokio::time::sleep(poll_interval).await;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
                 let (state, reason) = match bridge
                     .resolve_supervised_invocation(&bound_task, &child_agent_id, worktree)
@@ -1798,14 +1848,13 @@ impl RuntimeHandle {
                         tracing::error!(reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(
-                    if state == ChildInvocationRecoveryState::Pending {
+                poll_interval =
+                    Duration::from_millis(if state == ChildInvocationRecoveryState::Pending {
                         100
                     } else {
                         1000
-                    },
-                ))
-                .await;
+                    });
+                tokio::time::sleep(poll_interval).await;
             }
         };
         let (mut text, status, mut task_detail) = match result {
@@ -1821,6 +1870,13 @@ impl RuntimeHandle {
                     }
                 }
                 (result.text, result.status, detail)
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                    .is_some() =>
+            {
+                return Err(error);
             }
             Err(err) => (
                 format!("child agent failed: {err:#}"),
@@ -1846,6 +1902,13 @@ impl RuntimeHandle {
                 task_detail["wait_policy"] = wait_policy;
             }
         }
+
+        let storage = self.inner.storage.clone();
+        let read_child_agent_id = child_agent_id.clone();
+        let delegation = tokio::task::spawn_blocking(move || {
+            storage.open_work_item_delegation_for_child(&read_child_agent_id)
+        })
+        .await??;
 
         if worktree {
             if let Some(worktree) = task_detail.get("worktree").cloned() {
@@ -1890,10 +1953,6 @@ impl RuntimeHandle {
             }
         }
 
-        let delegation = self
-            .inner
-            .storage
-            .open_work_item_delegation_for_child(&child_agent_id)?;
         if let Some(delegation) = delegation.as_ref() {
             let completed = WorkItemDelegationRecord {
                 state: WorkItemDelegationState::Completed,
@@ -2209,7 +2268,8 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_task_records(&self) -> Result<Vec<TaskRecord>> {
-        let mut tasks = self.inner.runtime_db.tasks().latest_all()?;
+        let db = self.inner.runtime_db.clone();
+        let mut tasks = tokio::task::spawn_blocking(move || db.tasks().latest_all()).await??;
         tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(tasks)
     }
@@ -2225,11 +2285,12 @@ impl RuntimeHandle {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskListEntry>> {
-        Ok(self
-            .inner
-            .runtime_db
-            .tasks()
-            .active_for_agent(agent_id, limit)?
+        let db = self.inner.runtime_db.clone();
+        let agent_id = agent_id.to_owned();
+        let tasks =
+            tokio::task::spawn_blocking(move || db.tasks().active_for_agent(&agent_id, limit))
+                .await??;
+        Ok(tasks
             .into_iter()
             .map(|task| {
                 let wait_policy = task.wait_policy();
@@ -2384,7 +2445,9 @@ impl RuntimeHandle {
     }
 
     pub async fn task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
-        self.inner.runtime_db.tasks().latest(task_id)
+        let db = self.inner.runtime_db.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || db.tasks().latest(&task_id)).await?
     }
 
     pub async fn task_status_snapshot(&self, task_id: &str) -> Result<TaskStatusSnapshot> {
@@ -2413,17 +2476,7 @@ impl RuntimeHandle {
             }
         }
         if let Some(projection) = snapshot.child_supervision.take() {
-            snapshot.child_supervision = Some(
-                if let Ok(Some(delegation)) = self
-                    .inner
-                    .storage
-                    .latest_work_item_delegation_for_child(&projection.child_agent_id)
-                {
-                    projection.with_work_item_delegation(&delegation)
-                } else {
-                    projection
-                },
-            );
+            snapshot.child_supervision = Some(self.task_child_supervision(projection).await?);
         }
 
         Ok(snapshot)
@@ -2442,7 +2495,7 @@ impl RuntimeHandle {
                 .task_record(task_id)
                 .await?
                 .ok_or_else(|| task_not_found_error(task_id))?;
-            let status = self.task_output_status(&task)?;
+            let status = self.task_output_status(&task).await?;
             let ready = task_output_ready(&task, &status);
 
             if !ready && block {
@@ -2475,58 +2528,58 @@ impl RuntimeHandle {
     }
 
     async fn task_output_snapshot(&self, task: TaskRecord) -> Result<TaskOutputSnapshot> {
-        let latest_message = self.latest_task_message(&task.id)?;
+        let latest_message = self.latest_task_message(&task.id).await?;
         let status = effective_task_output_status(&task.status, latest_message.as_ref());
         let summary = task.summary.clone();
 
-        let (full_output, output_path, result_summary, exit_status) =
-            if task.kind == TaskKind::CommandTask {
-                let output_path = detail_string(&task.detail, "output_path");
-                let (output, output_path) = self
-                    .read_command_task_output(&task, output_path.as_deref())
-                    .await?;
-                let result_summary = detail_string(&task.detail, "output_summary")
-                    .or_else(|| latest_message.as_ref().map(|message| message.text.clone()));
-                let exit_status = task
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail.get("exit_status"))
-                    .and_then(|value| value.as_i64())
-                    .and_then(|value| i32::try_from(value).ok());
-                (output, output_path, result_summary, exit_status)
-            } else if task.kind == TaskKind::AgentMessageWait
-                && task.status == TaskStatus::Completed
-                && detail_string(&task.detail, "message_id").is_some()
-            {
-                let reply_id =
-                    detail_string(&task.detail, "message_id").expect("checked reply reference");
-                let reply = self
-                    .inner
-                    .storage
-                    .read_message_by_id(&reply_id)?
-                    .filter(|message| message.agent_id == task.agent_id)
-                    .ok_or_else(|| anyhow!("agent reply output evidence is missing"))?;
-                // Retrieval dereferences the original evidence; it does not
-                // publish a second copy into the runtime message stream.
-                (
-                    render_task_message_body(&reply.body),
-                    None,
-                    detail_string(&task.detail, "output_summary"),
-                    None,
-                )
+        let (full_output, output_path, result_summary, exit_status) = if task.kind
+            == TaskKind::CommandTask
+        {
+            let output_path = detail_string(&task.detail, "output_path");
+            let (output, output_path) = self
+                .read_command_task_output(&task, output_path.as_deref())
+                .await?;
+            let result_summary = detail_string(&task.detail, "output_summary")
+                .or_else(|| latest_message.as_ref().map(|message| message.text.clone()));
+            let exit_status = task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("exit_status"))
+                .and_then(|value| value.as_i64())
+                .and_then(|value| i32::try_from(value).ok());
+            (output, output_path, result_summary, exit_status)
+        } else if task.kind == TaskKind::AgentMessageWait
+            && task.status == TaskStatus::Completed
+            && detail_string(&task.detail, "message_id").is_some()
+        {
+            let reply_id =
+                detail_string(&task.detail, "message_id").expect("checked reply reference");
+            let storage = self.inner.storage.clone();
+            let reply = tokio::task::spawn_blocking(move || storage.read_message_by_id(&reply_id))
+                .await??
+                .filter(|message| message.agent_id == task.agent_id)
+                .ok_or_else(|| anyhow!("agent reply output evidence is missing"))?;
+            // Retrieval dereferences the original evidence; it does not
+            // publish a second copy into the runtime message stream.
+            (
+                render_task_message_body(&reply.body),
+                None,
+                detail_string(&task.detail, "output_summary"),
+                None,
+            )
+        } else {
+            let output = latest_message
+                .as_ref()
+                .map(|message| message.text.clone())
+                .or_else(|| detail_string(&task.detail, "output_summary"))
+                .unwrap_or_else(|| summary.clone().unwrap_or_default());
+            let result_summary = if output.trim().is_empty() {
+                None
             } else {
-                let output = latest_message
-                    .as_ref()
-                    .map(|message| message.text.clone())
-                    .or_else(|| detail_string(&task.detail, "output_summary"))
-                    .unwrap_or_else(|| summary.clone().unwrap_or_default());
-                let result_summary = if output.trim().is_empty() {
-                    None
-                } else {
-                    Some(output.clone())
-                };
-                (output, None, result_summary, None)
+                Some(output.clone())
             };
+            (output, None, result_summary, None)
+        };
         let (output_preview, output_truncated) =
             truncate_output_to_char_budget(&full_output, TASK_OUTPUT_PREVIEW_CHAR_BUDGET);
         let (artifacts, output_artifact) = task_output_artifacts(output_path.as_deref());
@@ -2538,18 +2591,13 @@ impl RuntimeHandle {
             exit_status,
         );
 
-        let child_supervision = crate::types::ChildSupervisionProjection::from_task_record(&task)
-            .map(|projection| {
-                if let Ok(Some(delegation)) = self
-                    .inner
-                    .storage
-                    .latest_work_item_delegation_for_child(&projection.child_agent_id)
-                {
-                    projection.with_work_item_delegation(&delegation)
-                } else {
-                    projection
-                }
-            });
+        let child_supervision = if let Some(projection) =
+            crate::types::ChildSupervisionProjection::from_task_record(&task)
+        {
+            Some(self.task_child_supervision(projection).await?)
+        } else {
+            None
+        };
 
         let token_usage = task
             .detail
@@ -2581,22 +2629,41 @@ impl RuntimeHandle {
         })
     }
 
-    fn latest_task_message(&self, task_id: &str) -> Result<Option<TaskMessageSnapshot>> {
-        let recent_messages = self
-            .inner
-            .storage
-            .read_recent_messages(TASK_OUTPUT_MESSAGE_SCAN_LIMIT)?;
-        if let Some(snapshot) = latest_task_message_in(recent_messages, task_id) {
-            return Ok(Some(snapshot));
-        }
-        Ok(latest_task_message_in(
-            self.inner.storage.read_all_messages()?,
-            task_id,
-        ))
+    async fn task_child_supervision(
+        &self,
+        projection: crate::types::ChildSupervisionProjection,
+    ) -> Result<crate::types::ChildSupervisionProjection> {
+        let storage = self.inner.storage.clone();
+        Ok(tokio::task::spawn_blocking(move || {
+            if let Ok(Some(delegation)) =
+                storage.latest_work_item_delegation_for_child(&projection.child_agent_id)
+            {
+                projection.with_work_item_delegation(&delegation)
+            } else {
+                projection
+            }
+        })
+        .await?)
     }
 
-    fn task_output_status(&self, task: &TaskRecord) -> Result<TaskStatus> {
-        let latest_message = self.latest_task_message(&task.id)?;
+    async fn latest_task_message(&self, task_id: &str) -> Result<Option<TaskMessageSnapshot>> {
+        let storage = self.inner.storage.clone();
+        let task_id = task_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let recent_messages = storage.read_recent_messages(TASK_OUTPUT_MESSAGE_SCAN_LIMIT)?;
+            if let Some(snapshot) = latest_task_message_in(recent_messages, &task_id) {
+                return Ok(Some(snapshot));
+            }
+            Ok(latest_task_message_in(
+                storage.read_all_messages()?,
+                &task_id,
+            ))
+        })
+        .await?
+    }
+
+    async fn task_output_status(&self, task: &TaskRecord) -> Result<TaskStatus> {
+        let latest_message = self.latest_task_message(&task.id).await?;
         Ok(effective_task_output_status(
             &task.status,
             latest_message.as_ref(),

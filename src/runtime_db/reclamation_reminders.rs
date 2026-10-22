@@ -233,20 +233,21 @@ impl RuntimeDb {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MessageEnvelope>> {
-        let connection = self.connection()?;
-        let mut stmt = connection.prepare(
-            "SELECT message_json FROM subagent_cleanup_outbox WHERE state='pending' AND \
-            parent_agent_id NOT LIKE 'operator:%' AND parent_agent_id>?1 ORDER BY \
-            parent_agent_id LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![after.unwrap_or(""), limit], |r| {
-                r.get::<_, String>(0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter()
-            .map(|s| Ok(serde_json::from_str(&s)?))
-            .collect()
+        self.with_read(|connection| {
+            let mut stmt = connection.prepare(
+                "SELECT message_json FROM subagent_cleanup_outbox WHERE state='pending' AND \
+                parent_agent_id NOT LIKE 'operator:%' AND parent_agent_id>?1 ORDER BY \
+                parent_agent_id LIMIT ?2",
+            )?;
+            let rows = stmt
+                .query_map(params![after.unwrap_or(""), limit], |r| {
+                    r.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter()
+                .map(|s| Ok(serde_json::from_str(&s)?))
+                .collect()
+        })
     }
     pub(crate) fn subagent_reminder_is_current(&self, message: &MessageEnvelope) -> Result<bool> {
         self.transaction(|tx| {
@@ -288,31 +289,32 @@ impl RuntimeDb {
         parent: &str,
         limit: usize,
     ) -> Result<Vec<SubagentCleanupCandidate>> {
-        let connection = self.connection()?;
-        let tx = connection.unchecked_transaction()?;
-        let children = {
-            let mut stmt = tx.prepare(
-                "SELECT child_agent_id FROM agent_supervisions WHERE supervisor_agent_id=?1 \
-                AND state IN ('active','cleanup_required') ORDER BY child_agent_id LIMIT ?2",
-            )?;
-            let rows = stmt
-                .query_map(params![parent, limit], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
-        };
-        let mut candidates = Vec::new();
-        for child in children {
-            if let Some(fact) = fact_tx(&tx, &child)? {
-                let observed_since=tx.query_row("SELECT observed_since FROM subagent_cleanup_observations WHERE child_agent_id=?1 AND evidence=?2",params![child,fact.evidence],|r| r.get(0)).optional()?;
-                candidates.push(SubagentCleanupCandidate {
-                    agent_id: child,
-                    incarnation: fact.incarnation,
-                    blocker: parent_cleanup_blocker_tx(&tx, &fact.child)?,
-                    observed_since,
-                });
+        self.with_read(|connection| {
+            let tx = connection.unchecked_transaction()?;
+            let children = {
+                let mut stmt = tx.prepare(
+                    "SELECT child_agent_id FROM agent_supervisions WHERE supervisor_agent_id=?1 \
+                    AND state IN ('active','cleanup_required') ORDER BY child_agent_id LIMIT ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![parent, limit], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut candidates = Vec::new();
+            for child in children {
+                if let Some(fact) = fact_tx(&tx, &child)? {
+                    let observed_since=tx.query_row("SELECT observed_since FROM subagent_cleanup_observations WHERE child_agent_id=?1 AND evidence=?2",params![child,fact.evidence],|r| r.get(0)).optional()?;
+                    candidates.push(SubagentCleanupCandidate {
+                        agent_id: child,
+                        incarnation: fact.incarnation,
+                        blocker: parent_cleanup_blocker_tx(&tx, &fact.child)?,
+                        observed_since,
+                    });
+                }
             }
-        }
-        Ok(candidates)
+            Ok(candidates)
+        })
     }
     /// Persist the exact operator brief before publication so retries keep its ID.
     pub(crate) fn orphan_cleanup_notice(

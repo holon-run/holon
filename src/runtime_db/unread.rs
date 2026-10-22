@@ -257,46 +257,48 @@ impl crate::runtime_db::RuntimeDb {
         scope: ReadScope<'_>,
     ) -> Result<Vec<BriefReadState>> {
         let started = Instant::now();
-        let mut connection = self.connection()?;
-        let connected = started.elapsed();
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let scope_started = Instant::now();
-        let visibility_scope_id = scope.resolve(&transaction, principal_id)?;
-        let scope_elapsed = scope_started.elapsed();
-        let query_started = Instant::now();
-        let mut statement = transaction.prepare(
-            "SELECT agent_id FROM agent_identities
-             WHERE status = 'active' AND visibility = 'public'
-             ORDER BY agent_id",
-        )?;
-        let agent_ids: Vec<String> = statement
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(statement);
-        let states = agent_ids
-            .iter()
-            .map(|agent_id| {
-                state_for_connection(
-                    &transaction,
-                    principal_id,
-                    &visibility_scope_id,
-                    agent_id,
-                    false,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let query_elapsed = query_started.elapsed();
-        transaction.commit()?;
-        tracing::debug!(
-            target: "holon::http::unread",
-            connection_us = connected.as_micros() as u64,
-            scope_metadata_us = scope_elapsed.as_micros() as u64,
-            unread_query_us = query_elapsed.as_micros() as u64,
-            db_total_us = started.elapsed().as_micros() as u64,
-            agents = states.len(),
-            "unread batch database phases"
-        );
-        Ok(states)
+        self.with_read(|connection| {
+            let connected = started.elapsed();
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let scope_started = Instant::now();
+            let visibility_scope_id = scope.resolve(&transaction, principal_id)?;
+            let scope_elapsed = scope_started.elapsed();
+            let query_started = Instant::now();
+            let mut statement = transaction.prepare(
+                "SELECT agent_id FROM agent_identities
+                 WHERE status = 'active' AND visibility = 'public'
+                 ORDER BY agent_id",
+            )?;
+            let agent_ids: Vec<String> = statement
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            let states = agent_ids
+                .iter()
+                .map(|agent_id| {
+                    state_for_connection(
+                        &transaction,
+                        principal_id,
+                        &visibility_scope_id,
+                        agent_id,
+                        false,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let query_elapsed = query_started.elapsed();
+            transaction.commit()?;
+            tracing::debug!(
+                target: "holon::http::unread",
+                connection_us = connected.as_micros() as u64,
+                scope_metadata_us = scope_elapsed.as_micros() as u64,
+                unread_query_us = query_elapsed.as_micros() as u64,
+                db_total_us = started.elapsed().as_micros() as u64,
+                agents = states.len(),
+                "unread batch database phases"
+            );
+            Ok(states)
+        })
     }
 
     pub fn mark_brief_read(

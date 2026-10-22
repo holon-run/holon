@@ -55,52 +55,54 @@ impl ConversationRepository<'_> {
             )
             .into());
         }
-        let mut connection = self.db.connection()?;
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = self.snapshot_context(&tx, agent_id, principal, entitlement)? else {
-            return Ok(None);
-        };
-        let binding = context.binding(agent_id);
-        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
-        let before = before
-            .map(|value| codec.decode::<HistoryCursor>(value, &binding))
-            .transpose()
-            .map_err(ConversationReadError::from)?;
-        let after = after
-            .map(|value| codec.decode::<HistoryAfterCursor>(value, &binding))
-            .transpose()
-            .map_err(ConversationReadError::from)?;
-        let page = if let Some(cursor) = after {
-            if cursor.after > cursor.membership_upper_bound {
-                return Err(ConversationReadError::CursorOutsideCoverage.into());
-            }
-            let turns = forward_rows(
-                &tx,
-                agent_id,
-                limit,
-                &cursor.after,
-                &cursor.membership_upper_bound,
-            )?;
-            ConversationSummaryPage {
-                turns,
-                active_turns: active_turn_rows(&tx, agent_id)?,
-                pending_inputs: pending_input_rows(&tx, agent_id)?,
-                membership_upper_bound: Some(cursor.membership_upper_bound),
-                next_before: None,
-                has_more: false,
-            }
-        } else {
-            summary_page_in(
-                &tx,
-                agent_id,
-                limit,
-                before.as_ref().map(|c| &c.before),
-                before.as_ref().map(|c| &c.membership_upper_bound),
-            )?
-        };
-        let snapshot = window_snapshot(&tx, agent_id, context, page)?;
-        tx.commit()?;
-        Ok(Some(snapshot))
+        self.db.with_read(|connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) = self.snapshot_context(&tx, agent_id, principal, entitlement)?
+            else {
+                return Ok(None);
+            };
+            let binding = context.binding(agent_id);
+            let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+            let before = before
+                .map(|value| codec.decode::<HistoryCursor>(value, &binding))
+                .transpose()
+                .map_err(ConversationReadError::from)?;
+            let after = after
+                .map(|value| codec.decode::<HistoryAfterCursor>(value, &binding))
+                .transpose()
+                .map_err(ConversationReadError::from)?;
+            let page = if let Some(cursor) = after {
+                if cursor.after > cursor.membership_upper_bound {
+                    return Err(ConversationReadError::CursorOutsideCoverage.into());
+                }
+                let turns = forward_rows(
+                    &tx,
+                    agent_id,
+                    limit,
+                    &cursor.after,
+                    &cursor.membership_upper_bound,
+                )?;
+                ConversationSummaryPage {
+                    turns,
+                    active_turns: active_turn_rows(&tx, agent_id)?,
+                    pending_inputs: pending_input_rows(&tx, agent_id)?,
+                    membership_upper_bound: Some(cursor.membership_upper_bound),
+                    next_before: None,
+                    has_more: false,
+                }
+            } else {
+                summary_page_in(
+                    &tx,
+                    agent_id,
+                    limit,
+                    before.as_ref().map(|c| &c.before),
+                    before.as_ref().map(|c| &c.membership_upper_bound),
+                )?
+            };
+            let snapshot = window_snapshot(&tx, agent_id, context, page)?;
+            tx.commit()?;
+            Ok(Some(snapshot))
+        })
     }
 
     pub fn locate_source(
@@ -115,135 +117,136 @@ impl ConversationRepository<'_> {
         let source = RuntimeRef::parse(source_ref).map_err(|error| {
             ConversationReadError::InvalidRequest(error.validation_error().into())
         })?;
-        let mut connection = self.db.connection()?;
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let Some(context) = self.snapshot_context(&tx, agent_id, principal, entitlement)? else {
-            return Ok(None);
-        };
-        let mut result = ConversationLocateResult {
-            identity: context.identity.clone(),
-            status: "source_only",
-            source_ref: source.source_ref(),
-            target: None,
-            reason: Some("non_conversation_source"),
-            runtime_id: context.runtime_id.clone(),
-            event_log_epoch: context.event_log_epoch.clone(),
-            visibility_scope_id: context.visibility_scope_id.clone(),
-            window: None,
-        };
-        let (id, brief) = match source {
-            RuntimeRef::Message { id } => (id, false),
-            RuntimeRef::Brief { id } => (id, true),
-            RuntimeRef::Turn { .. } | RuntimeRef::ToolExecution { .. } => {
-                result.reason = Some("unsupported_conversation_source");
-                tx.commit()?;
-                return Ok(Some(result));
-            }
-            _ => {
-                tx.commit()?;
-                return Ok(Some(result));
-            }
-        };
-        // Identity lookup is agent-scoped; never infer turn ownership from event or message sequences.
-        let table = if brief { "briefs" } else { "messages" };
-        let source_turn: Option<Option<String>> = tx
-            .query_row(
-                &format!("SELECT turn_id FROM {table} WHERE agent_id = ?1 AND evidence_id = ?2"),
-                params![agent_id, id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(source_turn) = source_turn else {
-            return Err(ConversationReadError::SourceNotFound.into());
-        };
-        let owner = if brief {
-            source_turn
-        } else {
-            assigned_turn_id_tx(&tx, agent_id, &id)?
-        };
-        result.target = Some(if brief {
-            ConversationLocateTarget::Brief {
-                brief_id: id.clone(),
-                turn_id: owner.clone(),
-            }
-        } else {
-            ConversationLocateTarget::InputMessage {
-                message_id: id.clone(),
-                turn_id: owner.clone(),
-                activity_id: None,
-            }
-        });
-        if !brief && owner.is_none() {
-            let pending: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2 AND status IN ('queued', 'dequeued'))",
-                params![agent_id, id], |row| row.get(0),
-            )?;
-            if pending {
-                result.status = "pending";
-                result.reason = None;
-                let page = summary_page_in_with_pending_target(
-                    &tx,
-                    agent_id,
-                    limit,
-                    None,
-                    None,
-                    Some(&id),
+        self.db.with_read(|connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let Some(context) = self.snapshot_context(&tx, agent_id, principal, entitlement)? else {
+                return Ok(None);
+            };
+            let mut result = ConversationLocateResult {
+                identity: context.identity.clone(),
+                status: "source_only",
+                source_ref: source.source_ref(),
+                target: None,
+                reason: Some("non_conversation_source"),
+                runtime_id: context.runtime_id.clone(),
+                event_log_epoch: context.event_log_epoch.clone(),
+                visibility_scope_id: context.visibility_scope_id.clone(),
+                window: None,
+            };
+            let (id, brief) = match source {
+                RuntimeRef::Message { id } => (id, false),
+                RuntimeRef::Brief { id } => (id, true),
+                RuntimeRef::Turn { .. } | RuntimeRef::ToolExecution { .. } => {
+                    result.reason = Some("unsupported_conversation_source");
+                    tx.commit()?;
+                    return Ok(Some(result));
+                }
+                _ => {
+                    tx.commit()?;
+                    return Ok(Some(result));
+                }
+            };
+            // Identity lookup is agent-scoped; never infer turn ownership from event or message sequences.
+            let table = if brief { "briefs" } else { "messages" };
+            let source_turn: Option<Option<String>> = tx
+                .query_row(
+                    &format!("SELECT turn_id FROM {table} WHERE agent_id = ?1 AND evidence_id = ?2"),
+                    params![agent_id, id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(source_turn) = source_turn else {
+                return Err(ConversationReadError::SourceNotFound.into());
+            };
+            let owner = if brief {
+                source_turn
+            } else {
+                assigned_turn_id_tx(&tx, agent_id, &id)?
+            };
+            result.target = Some(if brief {
+                ConversationLocateTarget::Brief {
+                    brief_id: id.clone(),
+                    turn_id: owner.clone(),
+                }
+            } else {
+                ConversationLocateTarget::InputMessage {
+                    message_id: id.clone(),
+                    turn_id: owner.clone(),
+                    activity_id: None,
+                }
+            });
+            if !brief && owner.is_none() {
+                let pending: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2 AND status IN ('queued', 'dequeued'))",
+                    params![agent_id, id], |row| row.get(0),
                 )?;
-                result.window = Some(window_snapshot(&tx, agent_id, context, page)?);
+                if pending {
+                    result.status = "pending";
+                    result.reason = None;
+                    let page = summary_page_in_with_pending_target(
+                        &tx,
+                        agent_id,
+                        limit,
+                        None,
+                        None,
+                        Some(&id),
+                    )?;
+                    result.window = Some(window_snapshot(&tx, agent_id, context, page)?);
+                    tx.commit()?;
+                    return Ok(Some(result));
+                }
+            }
+            let Some(owner) = owner else {
+                result.reason = Some("unattributed_source");
                 tx.commit()?;
                 return Ok(Some(result));
+            };
+            let Some((target_turn, _)) =
+                turn_summary_by_id_with_input(&tx, agent_id, &owner, (!brief).then_some(id.as_str()))?
+            else {
+                result.reason = Some("owner_turn_unavailable");
+                tx.commit()?;
+                return Ok(Some(result));
+            };
+            if let Some(ConversationLocateTarget::InputMessage {
+                activity_id: target_activity,
+                ..
+            }) = result.target.as_mut()
+            {
+                *target_activity = tx.query_row(
+                    "SELECT source_id FROM conversation_source_revisions WHERE agent_id = ?1 AND turn_id = ?2 AND source_kind = 'operator' AND source_id = ?3",
+                    params![agent_id, owner, id], |row| row.get::<_, String>(0),
+                ).optional()?.map(|id| activity_id(SOURCE_OPERATOR, &id));
             }
-        }
-        let Some(owner) = owner else {
-            result.reason = Some("unattributed_source");
+            let upper = latest_turn_key(&tx, agent_id)?.expect("target turn exists");
+            let older_limit = (limit - 1) / 2;
+            let mut turns = if older_limit > 0 {
+                let mut rows =
+                    history_page_rows(&tx, agent_id, older_limit, Some(&target_turn.key), &upper)?;
+                rows.truncate(older_limit);
+                rows.reverse();
+                rows
+            } else {
+                Vec::new()
+            };
+            let newer_limit = limit - 1 - turns.len();
+            let newer = forward_rows(&tx, agent_id, newer_limit, &target_turn.key, &upper)?;
+            turns.push(target_turn);
+            turns.extend(newer);
+            let page = ConversationSummaryPage {
+                turns,
+                active_turns: active_turn_rows(&tx, agent_id)?,
+                pending_inputs: pending_input_rows(&tx, agent_id)?,
+                membership_upper_bound: Some(upper),
+                next_before: None,
+                has_more: false,
+            };
+            result.status = "located";
+            result.reason = None;
+            result.window = Some(window_snapshot(&tx, agent_id, context, page)?);
             tx.commit()?;
-            return Ok(Some(result));
-        };
-        let Some((target_turn, _)) =
-            turn_summary_by_id_with_input(&tx, agent_id, &owner, (!brief).then_some(id.as_str()))?
-        else {
-            result.reason = Some("owner_turn_unavailable");
-            tx.commit()?;
-            return Ok(Some(result));
-        };
-        if let Some(ConversationLocateTarget::InputMessage {
-            activity_id: target_activity,
-            ..
-        }) = result.target.as_mut()
-        {
-            *target_activity = tx.query_row(
-                "SELECT source_id FROM conversation_source_revisions WHERE agent_id = ?1 AND turn_id = ?2 AND source_kind = 'operator' AND source_id = ?3",
-                params![agent_id, owner, id], |row| row.get::<_, String>(0),
-            ).optional()?.map(|id| activity_id(SOURCE_OPERATOR, &id));
-        }
-        let upper = latest_turn_key(&tx, agent_id)?.expect("target turn exists");
-        let older_limit = (limit - 1) / 2;
-        let mut turns = if older_limit > 0 {
-            let mut rows =
-                history_page_rows(&tx, agent_id, older_limit, Some(&target_turn.key), &upper)?;
-            rows.truncate(older_limit);
-            rows.reverse();
-            rows
-        } else {
-            Vec::new()
-        };
-        let newer_limit = limit - 1 - turns.len();
-        let newer = forward_rows(&tx, agent_id, newer_limit, &target_turn.key, &upper)?;
-        turns.push(target_turn);
-        turns.extend(newer);
-        let page = ConversationSummaryPage {
-            turns,
-            active_turns: active_turn_rows(&tx, agent_id)?,
-            pending_inputs: pending_input_rows(&tx, agent_id)?,
-            membership_upper_bound: Some(upper),
-            next_before: None,
-            has_more: false,
-        };
-        result.status = "located";
-        result.reason = None;
-        result.window = Some(window_snapshot(&tx, agent_id, context, page)?);
-        tx.commit()?;
-        Ok(Some(result))
+            Ok(Some(result))
+        })
     }
 }
 

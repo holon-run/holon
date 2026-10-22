@@ -556,17 +556,18 @@ impl AgentMessageDeliveryRepository<'_> {
     }
 
     pub(crate) fn rowid(&self, delivery_id: &str) -> Result<Option<i64>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT rowid
-                 FROM agent_message_deliveries
-                 WHERE delivery_id = ?1",
-                [delivery_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .context("reading agent message delivery rowid")
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT rowid
+                     FROM agent_message_deliveries
+                     WHERE delivery_id = ?1",
+                    [delivery_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("reading agent message delivery rowid")
+        })
     }
 
     pub(crate) fn first_accepted_from_sender_after(
@@ -575,48 +576,50 @@ impl AgentMessageDeliveryRepository<'_> {
         sender_agent_id: &str,
         after_rowid: i64,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM agent_message_deliveries
-             WHERE rowid > ?1
-               AND target_agent_id = ?2
-               AND outcome = 'accepted'
-             ORDER BY rowid ASC",
-        )?;
-        let rows = statement.query_map(params![after_rowid, target_agent_id], |row| {
-            row.get::<_, String>(0)
-        })?;
-        for payload in rows {
-            let record = decode_delivery(&payload?)?;
-            if record.caller.caller_agent_id.as_deref() == Some(sender_agent_id) {
-                return Ok(Some(record));
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM agent_message_deliveries
+                 WHERE rowid > ?1
+                   AND target_agent_id = ?2
+                   AND outcome = 'accepted'
+                 ORDER BY rowid ASC",
+            )?;
+            let rows = statement.query_map(params![after_rowid, target_agent_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            for payload in rows {
+                let record = decode_delivery(&payload?)?;
+                if record.caller.caller_agent_id.as_deref() == Some(sender_agent_id) {
+                    return Ok(Some(record));
+                }
             }
-        }
-        Ok(None)
+            Ok(None)
+        })
     }
 
     pub fn latest(&self, delivery_id: &str) -> Result<Option<AgentMessageDeliveryRecord>> {
-        let connection = self.db.connection()?;
-        delivery_by_id(&connection, delivery_id)
+        self.db
+            .with_read(|connection| delivery_by_id(connection, delivery_id))
     }
 
     pub fn latest_for_message(
         &self,
         message_id: &str,
     ) -> Result<Option<AgentMessageDeliveryRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json
-                 FROM agent_message_deliveries
-                 WHERE message_id = ?1",
-                [message_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_delivery(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM agent_message_deliveries
+                     WHERE message_id = ?1",
+                    [message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_delivery(&payload))
+                .transpose()
+        })
     }
 
     pub fn receipt(&self, delivery_id: &str) -> Result<Option<AgentMessageDeliveryReceipt>> {

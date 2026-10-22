@@ -144,16 +144,17 @@ impl WorkItemRepository<'_> {
     }
 
     pub fn latest(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
-                [work_item_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_work_item_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+                    [work_item_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_work_item_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<WorkItemRecord>> {
@@ -161,29 +162,32 @@ impl WorkItemRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_items
              WHERE agent_id = ?1
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_payload(&row?)).collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_work_item_payload(&row?)).collect()
+        })
     }
 
     /// All open work items for one agent. Open items are scheduler candidates,
     /// so this set is naturally bounded by live scheduling state.
     pub fn open_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_items
              WHERE agent_id = ?1 AND state = 'open'",
-        )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_payload(&row?)).collect()
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_work_item_payload(&row?)).collect()
+        })
     }
 
     /// Most recent non-open work items for one agent, bounded by `limit`.
@@ -197,16 +201,18 @@ impl WorkItemRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_items
              WHERE agent_id = ?1 AND state != 'open'
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_payload(&row?)).collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_work_item_payload(&row?)).collect()
+        })
     }
 
     /// Batched lookup of work items by id, replacing per-id connections on
@@ -218,32 +224,33 @@ impl WorkItemRepository<'_> {
             let sql = format!(
                 "SELECT payload_json FROM work_items WHERE work_item_id IN ({placeholders})"
             );
-            let connection = self.db.connection()?;
-            let mut statement = connection.prepare(&sql)?;
-            let params: Vec<&dyn rusqlite::ToSql> =
-                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-            let rows = statement.query_map(params.as_slice(), |row| row.get::<_, String>(0))?;
-            records.extend(
+            let chunk_records = self.db.with_read(|connection| {
+                let mut statement = connection.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::ToSql> =
+                    chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+                let rows = statement.query_map(params.as_slice(), |row| row.get::<_, String>(0))?;
                 rows.map(|row| decode_work_item_payload(&row?))
-                    .collect::<Result<Vec<_>>>()?,
-            );
+                    .collect::<Result<Vec<_>>>()
+            })?;
+            records.extend(chunk_records);
         }
         Ok(records)
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkItemRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_items
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn due_blocked_rechecks(
@@ -252,9 +259,9 @@ impl WorkItemRepository<'_> {
         now: DateTime<Utc>,
     ) -> Result<Vec<WorkItemRecord>> {
         let now_str = timestamp(now);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_items
              WHERE agent_id = ?1
                AND state = 'open'
@@ -263,31 +270,33 @@ impl WorkItemRepository<'_> {
                AND recheck_at <= ?2
                AND (recheck_consumed_at IS NULL OR recheck_consumed_at < recheck_at)
              ORDER BY recheck_at ASC",
-        )?;
-        let rows =
-            statement.query_map(params![agent_id, now_str], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_payload(&row?)).collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, now_str], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_work_item_payload(&row?)).collect()
+        })
     }
 
     pub fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
-        let connection = self.db.connection()?;
-        let result: Option<String> = connection
-            .query_row(
-                "SELECT MIN(recheck_at)
+        self.db.with_read(|connection| {
+            let result: Option<String> = connection
+                .query_row(
+                    "SELECT MIN(recheck_at)
                  FROM work_items
                  WHERE agent_id = ?1
                    AND state = 'open'
                    AND blocked_by IS NOT NULL
                    AND recheck_at IS NOT NULL
                    AND (recheck_consumed_at IS NULL OR recheck_consumed_at < recheck_at)",
-                [agent_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        result
-            .map(|s| parse_timestamp(&s).context("parsing recheck_at from work_items query"))
-            .transpose()
+                    [agent_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            result
+                .map(|s| parse_timestamp(&s).context("parsing recheck_at from work_items query"))
+                .transpose()
+        })
     }
 }
 
@@ -310,25 +319,27 @@ impl AgentStateRepository<'_> {
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentState>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_agent_state_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_agent_state_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<AgentState>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare("SELECT payload_json FROM agent_states")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_agent_state_payload(&row?))
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading all agent states: {e}"))
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare("SELECT payload_json FROM agent_states")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_agent_state_payload(&row?))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading all agent states: {e}"))
+        })
     }
 }
 
@@ -367,18 +378,19 @@ impl WorkspaceEntryRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkspaceEntry>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM workspace_entries
              ORDER BY updated_at DESC, created_at DESC, workspace_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_workspace_entry_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_workspace_entry_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -406,18 +418,19 @@ impl WorkspaceOccupancyRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM workspace_occupancies
              ORDER BY acquired_at DESC, occupancy_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_workspace_occupancy_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_workspace_occupancy_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -429,17 +442,18 @@ impl ExecutionRootEntryRepository<'_> {
 
     /// Look up an execution root entry by its `execution_root_id`.
     pub fn get(&self, execution_root_id: &str) -> Result<Option<ExecutionRootEntry>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM execution_root_entries
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM execution_root_entries
                  WHERE execution_root_id = ?1",
-                [execution_root_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_execution_root_entry_payload(&payload))
-            .transpose()
+                    [execution_root_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_execution_root_entry_payload(&payload))
+                .transpose()
+        })
     }
 
     /// Soft-delete: mark an execution root entry as removed.
@@ -475,27 +489,29 @@ impl ExecutionRootEntryRepository<'_> {
 
     /// Return all non-removed entries for a workspace.
     pub fn active_for_workspace(&self, workspace_id: &str) -> Result<Vec<ExecutionRootEntry>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json FROM execution_root_entries
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM execution_root_entries
                  WHERE workspace_id = ?1 AND removed_at IS NULL
                  ORDER BY created_at ASC",
-        )?;
-        let rows = statement.query_map([workspace_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_execution_root_entry_payload(&row?))
-            .collect()
+            )?;
+            let rows = statement.query_map([workspace_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_execution_root_entry_payload(&row?))
+                .collect()
+        })
     }
 
     /// Return all entries, including removed tombstones, in stable order.
     pub fn latest_all(&self) -> Result<Vec<ExecutionRootEntry>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json FROM execution_root_entries
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM execution_root_entries
              ORDER BY created_at ASC, execution_root_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_execution_root_entry_payload(&row?))
-            .collect()
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_execution_root_entry_payload(&row?))
+                .collect()
+        })
     }
 }
 
@@ -734,18 +750,19 @@ impl AgentIdentityRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<AgentIdentityRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM agent_identities
              ORDER BY updated_at DESC, created_at DESC, agent_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_agent_identity_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_agent_identity_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub(crate) fn next_legacy_deletion_scan_batch(
@@ -845,16 +862,17 @@ impl AgentIdentityRepository<'_> {
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_agent_identity_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_agent_identity_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn rename(
@@ -924,18 +942,19 @@ impl AgentBootstrapRepository<'_> {
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentBootstrapRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM agent_bootstraps WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| {
-                serde_json::from_str(&payload).context("decoding agent bootstrap payload")
-            })
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM agent_bootstraps WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| {
+                    serde_json::from_str(&payload).context("decoding agent bootstrap payload")
+                })
+                .transpose()
+        })
     }
 }
 
@@ -1289,18 +1308,19 @@ pub(crate) fn ensure_agent_deletion_tx(
 
 impl AgentDeletionRepository<'_> {
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Option<AgentDeletionJob>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| {
-                serde_json::from_str(&payload).context("decoding agent deletion job payload")
-            })
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| {
+                    serde_json::from_str(&payload).context("decoding agent deletion job payload")
+                })
+                .transpose()
+        })
     }
 
     pub fn begin(
@@ -1554,9 +1574,9 @@ impl AgentDeletionRepository<'_> {
 
     /// Find pending jobs and retries whose persisted deadline has elapsed.
     pub fn due_jobs(&self, now: DateTime<Utc>, limit: usize) -> Result<Vec<AgentDeletionJob>> {
-        let connection = self.db.connection()?;
-        let mut stmt = connection.prepare(
-            "SELECT payload_json FROM agent_deletion_jobs
+        self.db.with_read(|connection| {
+            let mut stmt = connection.prepare(
+                "SELECT payload_json FROM agent_deletion_jobs
              WHERE status = 'pending'
                 OR (
                     status = 'retryable_failed'
@@ -1564,27 +1584,31 @@ impl AgentDeletionRepository<'_> {
                 )
              ORDER BY COALESCE(next_attempt_at, created_at) ASC, created_at ASC
              LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(
-            params![timestamp(now), i64::try_from(limit).unwrap_or(i64::MAX)],
-            |row| row.get::<_, String>(0),
-        )?;
-        rows.map(|row| serde_json::from_str(&row?).context("decoding agent deletion job payload"))
+            )?;
+            let rows = stmt.query_map(
+                params![timestamp(now), i64::try_from(limit).unwrap_or(i64::MAX)],
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.map(|row| {
+                serde_json::from_str(&row?).context("decoding agent deletion job payload")
+            })
             .collect()
+        })
     }
 
     pub fn earliest_retry_at(&self) -> Result<Option<DateTime<Utc>>> {
-        let connection = self.db.connection()?;
-        let value = connection.query_row(
-            "SELECT MIN(next_attempt_at)
+        self.db.with_read(|connection| {
+            let value = connection.query_row(
+                "SELECT MIN(next_attempt_at)
              FROM agent_deletion_jobs
              WHERE status = 'retryable_failed' AND next_attempt_at IS NOT NULL",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        )?;
-        value
-            .map(|value| parse_timestamp(&value).context("parsing deletion retry deadline"))
-            .transpose()
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
+            value
+                .map(|value| parse_timestamp(&value).context("parsing deletion retry deadline"))
+                .transpose()
+        })
     }
 
     /// Recover jobs whose process-local owner disappeared before completion.
@@ -1650,18 +1674,19 @@ impl WorkItemDelegationRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkItemDelegationRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_delegations
              ORDER BY updated_at DESC, created_at DESC, delegation_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_delegation_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_delegation_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<WorkItemDelegationRecord>> {
@@ -1669,19 +1694,20 @@ impl WorkItemDelegationRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_delegations
              ORDER BY updated_at DESC, created_at DESC, delegation_id ASC
              LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_delegation_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_delegation_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent_for_agent(
@@ -1693,40 +1719,43 @@ impl WorkItemDelegationRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_delegations
              WHERE parent_agent_id = ?1 OR child_agent_id = ?1
              ORDER BY updated_at DESC, created_at DESC, delegation_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_delegation_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_delegation_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn latest_for_child(
         &self,
         child_agent_id: &str,
     ) -> Result<Option<WorkItemDelegationRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json
                  FROM work_item_delegations
                  WHERE child_agent_id = ?1
                  ORDER BY updated_at DESC, created_at DESC, delegation_id ASC
                  LIMIT 1",
-                [child_agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_work_item_delegation_payload(&payload))
-            .transpose()
+                    [child_agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_work_item_delegation_payload(&payload))
+                .transpose()
+        })
     }
 }
 
@@ -1756,19 +1785,20 @@ impl WorkItemContinuationRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_continuations
              ORDER BY updated_at DESC, created_at DESC, continuation_id ASC
              LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_continuation_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_continuation_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent_for_agent(
@@ -1780,48 +1810,52 @@ impl WorkItemContinuationRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_continuations
              WHERE agent_id = ?1
              ORDER BY updated_at DESC, created_at DESC, continuation_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_continuation_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_continuation_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemContinuationFrame>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_continuations
              WHERE agent_id = ?1 AND state = 'active'
              ORDER BY updated_at DESC, created_at DESC, continuation_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_continuation_payload(&row?))
-            .collect()
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_work_item_continuation_payload(&row?))
+                .collect()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkItemContinuationFrame>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM work_item_continuations
              ORDER BY updated_at DESC, created_at DESC, continuation_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_work_item_continuation_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_work_item_continuation_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -1864,19 +1898,20 @@ impl ContextEpisodeRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM context_episode_anchors
              ORDER BY ended_at DESC, started_at DESC, episode_id ASC
              LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_context_episode_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_context_episode_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent_for_agent(
@@ -1888,20 +1923,22 @@ impl ContextEpisodeRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM context_episode_anchors
              WHERE agent_id = ?1
              ORDER BY ended_at DESC, started_at DESC, episode_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_context_episode_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_context_episode_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -2002,29 +2039,31 @@ impl ExternalTriggerRepository<'_> {
     }
 
     pub fn latest(&self, external_trigger_id: &str) -> Result<Option<ExternalTriggerRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM external_triggers WHERE external_trigger_id = ?1",
-                [external_trigger_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_external_trigger_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM external_triggers WHERE external_trigger_id = ?1",
+                    [external_trigger_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_external_trigger_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<ExternalTriggerRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM external_triggers
              WHERE target_agent_id = ?1
              ORDER BY created_at DESC, external_trigger_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_external_trigger_payload(&row?))
-            .collect()
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_external_trigger_payload(&row?))
+                .collect()
+        })
     }
 
     pub fn latest_for_agent_limit(
@@ -2036,68 +2075,73 @@ impl ExternalTriggerRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM external_triggers
              WHERE target_agent_id = ?1
              ORDER BY created_at DESC, external_trigger_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_external_trigger_payload(&row?))
-            .collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_external_trigger_payload(&row?))
+                .collect()
+        })
     }
 
     pub fn active_default_for_agent(
         &self,
         agent_id: &str,
     ) -> Result<Option<ExternalTriggerRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json
                  FROM external_triggers
                  WHERE target_agent_id = ?1 AND status = 'active'
                  ORDER BY created_at DESC, external_trigger_id ASC
                  LIMIT 1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_external_trigger_payload(&payload))
-            .transpose()
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_external_trigger_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn active_by_token_hash(&self, token_hash: &str) -> Result<Option<ExternalTriggerRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json
                  FROM external_triggers
                  WHERE token_hash = ?1 AND status = 'active'
                  LIMIT 1",
-                [token_hash],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_external_trigger_payload(&payload))
-            .transpose()
+                    [token_hash],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_external_trigger_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<ExternalTriggerRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM external_triggers
              ORDER BY created_at DESC, external_trigger_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_external_trigger_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_external_trigger_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -2116,17 +2160,19 @@ impl OperatorNotificationRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_notifications
              WHERE agent_id = ?1
              ORDER BY created_at DESC, notification_id DESC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_operator_notification_payload(&row?))
-            .collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_operator_notification_payload(&row?))
+                .collect()
+        })
     }
 }
 
@@ -2137,19 +2183,20 @@ impl OperatorTransportBindingRepository<'_> {
     }
 
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<OperatorTransportBinding>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_transport_bindings
              WHERE target_agent_id = ?1
              ORDER BY created_at DESC, binding_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_operator_transport_binding_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_operator_transport_binding_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn read_recent_for_agent(
@@ -2161,32 +2208,35 @@ impl OperatorTransportBindingRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_transport_bindings
              WHERE target_agent_id = ?1
              ORDER BY created_at DESC, binding_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_operator_transport_binding_payload(&row?))
-            .collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_operator_transport_binding_payload(&row?))
+                .collect()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<OperatorTransportBinding>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_transport_bindings
              ORDER BY created_at DESC, binding_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_operator_transport_binding_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_operator_transport_binding_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -2197,19 +2247,20 @@ impl OperatorDeliveryRepository<'_> {
     }
 
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<OperatorDeliveryRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_delivery_records
              WHERE agent_id = ?1
              ORDER BY created_at DESC, delivery_intent_id DESC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_operator_delivery_record_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_operator_delivery_record_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn read_recent_for_agent(
@@ -2221,32 +2272,35 @@ impl OperatorDeliveryRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_delivery_records
              WHERE agent_id = ?1
              ORDER BY created_at DESC, delivery_intent_id DESC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_operator_delivery_record_payload(&row?))
-            .collect()
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_operator_delivery_record_payload(&row?))
+                .collect()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<OperatorDeliveryRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM operator_delivery_records
              ORDER BY created_at DESC, delivery_intent_id DESC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_operator_delivery_record_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_operator_delivery_record_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -2289,31 +2343,33 @@ impl TaskRepository<'_> {
     }
 
     pub fn latest(&self, task_id: &str) -> Result<Option<TaskRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM tasks WHERE task_id = ?1",
-                [task_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_task_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                    [task_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_task_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<TaskRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM tasks
              ORDER BY updated_at DESC, created_at DESC, task_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_task_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_task_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn latest_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
@@ -2325,55 +2381,57 @@ impl TaskRepository<'_> {
         agent_id: &str,
         message_id: &str,
     ) -> Result<Vec<TaskRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json FROM tasks
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM tasks
              WHERE owner_agent_id = ?1 AND kind = 'agent_message_wait' AND status = 'completed'
                AND json_extract(payload_json, '$.detail.message_id') = ?2
              ORDER BY created_at ASC, task_id ASC",
-        )?;
-        let rows =
-            statement.query_map(params![agent_id, message_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_task_payload(&row?)).collect()
+            )?;
+            let rows = statement
+                .query_map(params![agent_id, message_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_task_payload(&row?)).collect()
+        })
     }
 
     pub fn activity_watermark_for_agent(&self, agent_id: Option<&str>) -> Result<(u64, u128)> {
-        let connection = self.db.connection()?;
-        let mut hasher = Sha256::new();
-        let mut count = 0u64;
-        if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut hasher = Sha256::new();
+            let mut count = 0u64;
+            if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM tasks
                  WHERE owner_agent_id = ?1
                  ORDER BY task_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-            for row in rows {
-                let payload = row?;
-                count += 1;
-                hasher.update(payload.as_bytes());
-                hasher.update(b"\n");
-            }
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+                for row in rows {
+                    let payload = row?;
+                    count += 1;
+                    hasher.update(payload.as_bytes());
+                    hasher.update(b"\n");
+                }
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM tasks
                  ORDER BY task_id ASC",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            for row in rows {
-                let payload = row?;
-                count += 1;
-                hasher.update(payload.as_bytes());
-                hasher.update(b"\n");
+                )?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                for row in rows {
+                    let payload = row?;
+                    count += 1;
+                    hasher.update(payload.as_bytes());
+                    hasher.update(b"\n");
+                }
             }
-        }
 
-        let digest = hasher.finalize();
-        let mut marker_bytes = [0u8; 16];
-        marker_bytes.copy_from_slice(&digest[..16]);
-        Ok((count, u128::from_be_bytes(marker_bytes)))
+            let digest = hasher.finalize();
+            let mut marker_bytes = [0u8; 16];
+            marker_bytes.copy_from_slice(&digest[..16]);
+            Ok((count, u128::from_be_bytes(marker_bytes)))
+        })
     }
 
     pub fn active_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
@@ -2395,19 +2453,20 @@ impl TaskRepository<'_> {
     }
 
     pub fn active_owner_agent_ids(&self) -> Result<Vec<String>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT DISTINCT t.owner_agent_id
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT t.owner_agent_id
              FROM tasks t
              JOIN agent_identities i
                ON i.agent_id = t.owner_agent_id
               AND i.status = 'active'
              WHERE t.status IN ('queued', 'running', 'cancelling')
              ORDER BY t.owner_agent_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
     }
 
     fn query_for_agent(
@@ -2421,17 +2480,18 @@ impl TaskRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let sql = format!(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let sql = format!(
+                "SELECT payload_json
              FROM tasks
              WHERE {where_clause}
              ORDER BY updated_at DESC, created_at DESC, task_id ASC
              LIMIT {limit}",
-        );
-        let mut statement = connection.prepare(&sql)?;
-        let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_task_payload(&row?)).collect()
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_task_payload(&row?)).collect()
+        })
     }
 }
 
@@ -2460,20 +2520,21 @@ impl WaitConditionRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              ORDER BY wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+            )?;
+            let rows = statement.query_map([], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+        })
     }
 
     /// All wait conditions for one agent, in the same id order as
@@ -2481,33 +2542,35 @@ impl WaitConditionRepository<'_> {
     /// `find` selections keep identical semantics while skipping the
     /// full-table decode of every other agent's rows.
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1
              ORDER BY wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+            )?;
+            let rows = statement.query_map([agent_id], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+        })
     }
 
     /// Preserve payload timestamp precision for full-record transition guards.
     pub(crate) fn snapshot_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json FROM wait_conditions
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM wait_conditions
              WHERE agent_id = ?1 ORDER BY wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        rows.map(|payload| decode_wait_condition_payload(&payload?))
-            .collect()
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|payload| decode_wait_condition_payload(&payload?))
+                .collect()
+        })
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
@@ -2515,24 +2578,25 @@ impl WaitConditionRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC
              LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        let mut records: Vec<_> = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([limit], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            let mut records: Vec<_> = rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent_for_agent(
@@ -2544,9 +2608,9 @@ impl WaitConditionRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
@@ -2554,93 +2618,99 @@ impl WaitConditionRepository<'_> {
              WHERE agent_id = ?1
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        let mut records: Vec<_> = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map(params![agent_id, limit], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            let mut records: Vec<_> = rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn for_turn(&self, agent_id: &str, turn_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1 AND last_turn_id = ?2
              ORDER BY created_at ASC, wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map(params![agent_id, turn_id], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions for turn: {e}"))
+            )?;
+            let rows = statement.query_map(params![agent_id, turn_id], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions for turn: {e}"))
+        })
     }
 
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1 AND status = 'active'
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+            )?;
+            let rows = statement.query_map([agent_id], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+        })
     }
 
     pub fn unresolved_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1 AND status IN ('active', 'triggered')
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([agent_id], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
+            )?;
+            let rows = statement.query_map([agent_id], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
+        })
     }
 
     pub fn active_all(&self) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE status = 'active'
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+            )?;
+            let rows = statement.query_map([], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+        })
     }
 
     pub fn recheck_owner_agent_ids(&self) -> Result<Vec<String>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT DISTINCT w.agent_id
+        // Return owned candidates before the per-agent repository reads acquire a lease.
+        let rows = self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT w.agent_id
              FROM wait_conditions w
              JOIN agent_identities i
                ON i.agent_id = w.agent_id
@@ -2648,10 +2718,12 @@ impl WaitConditionRepository<'_> {
              WHERE w.status = 'active'
                AND w.work_item_id IS NULL
              ORDER BY w.agent_id ASC",
-        )?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            )?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })?;
         let mut owners = BTreeMap::new();
         for agent_id in rows {
             let has_recheck = self
@@ -2666,21 +2738,22 @@ impl WaitConditionRepository<'_> {
     }
 
     pub fn unresolved_all(&self) -> Result<Vec<WaitConditionRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
                 subject_ref, waiting_for, created_at, updated_at, expires_at,
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE status IN ('active', 'triggered')
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| {
-            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
+            )?;
+            let rows = statement.query_map([], |row| {
+                decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
+        })
     }
 
     pub fn cancel_unresolved_for_agent(
@@ -2740,31 +2813,33 @@ impl QueueEntryRepository<'_> {
     }
 
     pub fn latest(&self, message_id: &str) -> Result<Option<QueueEntryRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
-                [message_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_queue_entry_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+                    [message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_queue_entry_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<QueueEntryRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM queue_entries
              ORDER BY updated_at DESC, created_at DESC, message_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_queue_entry_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<QueueEntryRecord>> {
@@ -2772,102 +2847,108 @@ impl QueueEntryRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut records = if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut records = if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM queue_entries
                  WHERE agent_id = ?1
                  ORDER BY updated_at DESC, created_at DESC, message_id ASC
                  LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_queue_entry_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows =
+                    statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_queue_entry_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM queue_entries
                  ORDER BY updated_at DESC, created_at DESC, message_id ASC
                  LIMIT ?1",
-            )?;
-            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_queue_entry_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        };
-        records.reverse();
-        Ok(records)
+                )?;
+                let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_queue_entry_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            };
+            records.reverse();
+            Ok(records)
+        })
     }
 
     /// Returns true if the given agent has any messages currently queued.
     pub fn has_queued_for_agent(&self, agent_id: &str) -> Result<bool> {
-        let connection = self.db.connection()?;
-        let status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
-        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
-        let exists: Option<i64> = connection
-            .query_row(
-                "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status IN (?2, ?3) LIMIT 1",
-                params![agent_id, status, interrupted_status],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        Ok(exists.is_some())
+        self.db.with_read(|connection| {
+            let status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
+            let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+            let exists: Option<i64> = connection
+                .query_row(
+                    "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status IN (?2, ?3) LIMIT 1",
+                    params![agent_id, status, interrupted_status],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            Ok(exists.is_some())
+        })
     }
 
     pub fn recovery_candidate_agent_ids(&self) -> Result<Vec<String>> {
-        let connection = self.db.connection()?;
-        let dequeued_status = enum_string(&crate::types::QueueEntryStatus::Dequeued)?;
-        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
-        let mut statement = connection.prepare(
-            "SELECT DISTINCT q.agent_id
+        self.db.with_read(|connection| {
+            let dequeued_status = enum_string(&crate::types::QueueEntryStatus::Dequeued)?;
+            let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT q.agent_id
              FROM queue_entries q
              JOIN agent_identities i
                ON i.agent_id = q.agent_id
               AND i.status = 'active'
              WHERE q.status IN (?1, ?2)
              ORDER BY q.agent_id ASC",
-        )?;
-        let rows = statement.query_map(params![dequeued_status, interrupted_status], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            )?;
+            let rows = statement
+                .query_map(params![dequeued_status, interrupted_status], |row| {
+                    row.get::<_, String>(0)
+                })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
     }
 
     pub fn has_interrupted_for_agent(&self, agent_id: &str) -> Result<bool> {
-        let connection = self.db.connection()?;
-        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
-        let exists: Option<i64> = connection
-            .query_row(
-                "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status = ?2 LIMIT 1",
-                params![agent_id, interrupted_status],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        Ok(exists.is_some())
+        self.db.with_read(|connection| {
+            let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+            let exists: Option<i64> = connection
+                .query_row(
+                    "SELECT 1 FROM queue_entries WHERE agent_id = ?1 AND status = ?2 LIMIT 1",
+                    params![agent_id, interrupted_status],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            Ok(exists.is_some())
+        })
     }
 
     /// Returns only entries currently queued for a specific agent.
     pub fn queued_for_agent(&self, agent_id: &str) -> Result<Vec<QueueEntryRecord>> {
-        let connection = self.db.connection()?;
-        let queued_status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
-        let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let queued_status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
+            let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM queue_entries
              WHERE agent_id = ?1 AND status IN (?2, ?3)
              ORDER BY updated_at DESC, created_at DESC, message_id ASC",
-        )?;
-        let rows = statement.query_map(
-            params![agent_id, queued_status, interrupted_status],
-            |row| row.get::<_, String>(0),
-        )?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_queue_entry_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map(
+                params![agent_id, queued_status, interrupted_status],
+                |row| row.get::<_, String>(0),
+            )?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     /// Abort all pending (Queued or Interrupted) queue entries for an agent.
@@ -2952,61 +3033,62 @@ impl TimerRepository<'_> {
     }
 
     pub fn pending_wake(&self, timer_id: &str) -> Result<Option<TimerWakeRecord>> {
-        let connection = self.db.connection()?;
-        let row = connection
-            .query_row(
-                "SELECT timer_id, message_id, fire_count, status, created_at, updated_at,
+        self.db.with_read(|connection| {
+            let row = connection
+                .query_row(
+                    "SELECT timer_id, message_id, fire_count, status, created_at, updated_at,
                         incorporated_at, cancelled_at
                  FROM timer_wakes
                  WHERE timer_id = ?1 AND status = 'pending'",
-                [timer_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                    ))
-                },
-            )
-            .optional()?;
-        row.map(
-            |(
-                timer_id,
-                message_id,
-                fire_count,
-                created_at,
-                updated_at,
-                incorporated_at,
-                cancelled_at,
-            )| {
-                Ok(TimerWakeRecord {
+                    [timer_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            row.map(
+                |(
                     timer_id,
                     message_id,
-                    fire_count: u64::try_from(fire_count)
-                        .context("timer wake fire_count is negative")?,
-                    status: TimerWakeStatus::Pending,
-                    created_at: parse_timestamp(&created_at)?,
-                    updated_at: parse_timestamp(&updated_at)?,
-                    incorporated_at: incorporated_at
-                        .map(|value| parse_timestamp(&value))
-                        .transpose()?,
-                    cancelled_at: cancelled_at
-                        .map(|value| parse_timestamp(&value))
-                        .transpose()?,
-                })
-            },
-        )
-        .transpose()
+                    fire_count,
+                    created_at,
+                    updated_at,
+                    incorporated_at,
+                    cancelled_at,
+                )| {
+                    Ok(TimerWakeRecord {
+                        timer_id,
+                        message_id,
+                        fire_count: u64::try_from(fire_count)
+                            .context("timer wake fire_count is negative")?,
+                        status: TimerWakeStatus::Pending,
+                        created_at: parse_timestamp(&created_at)?,
+                        updated_at: parse_timestamp(&updated_at)?,
+                        incorporated_at: incorporated_at
+                            .map(|value| parse_timestamp(&value))
+                            .transpose()?,
+                        cancelled_at: cancelled_at
+                            .map(|value| parse_timestamp(&value))
+                            .transpose()?,
+                    })
+                },
+            )
+            .transpose()
+        })
     }
 
     pub fn active_owner_agent_ids(&self) -> Result<Vec<String>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT DISTINCT t.agent_id
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT t.agent_id
              FROM timers t
              JOIN agent_identities i
                ON i.agent_id = t.agent_id
@@ -3021,10 +3103,11 @@ impl TimerRepository<'_> {
               AND i.status = 'active'
              WHERE w.status = 'pending'
              ORDER BY 1 ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into)
+        })
     }
 
     pub fn normalize_wakes_for_recovery(
@@ -3483,31 +3566,33 @@ impl TimerRepository<'_> {
     }
 
     pub fn latest(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT payload_json FROM timers WHERE timer_id = ?1",
-                [timer_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_timer_payload(&payload))
-            .transpose()
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT payload_json FROM timers WHERE timer_id = ?1",
+                    [timer_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_timer_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<TimerRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM timers
              ORDER BY updated_at DESC, created_at DESC, timer_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_timer_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_timer_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<TimerRecord>> {
@@ -3515,19 +3600,20 @@ impl TimerRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM timers
              ORDER BY updated_at DESC, created_at DESC, timer_id ASC
              LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_timer_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_timer_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TimerRecord>> {
@@ -3535,20 +3621,22 @@ impl TimerRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM timers
              WHERE agent_id = ?1
              ORDER BY updated_at DESC, created_at DESC, timer_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_timer_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            let mut records: Vec<_> = rows
+                .map(|row| decode_timer_payload(&row?))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -3719,33 +3807,34 @@ impl TurnRecordRepository<'_> {
     }
 
     pub fn by_id(&self, agent_id: Option<&str>, turn_id: &str) -> Result<Option<TurnRecord>> {
-        let connection = self.db.connection()?;
-        let payload = if let Some(agent_id) = agent_id {
-            connection
-                .query_row(
-                    "SELECT payload_json
+        self.db.with_read(|connection| {
+            let payload = if let Some(agent_id) = agent_id {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM turn_records
                      WHERE agent_id = ?1 AND turn_id = ?2
                      LIMIT 1",
-                    params![agent_id, turn_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-        } else {
-            connection
-                .query_row(
-                    "SELECT payload_json
+                        params![agent_id, turn_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+            } else {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM turn_records
                      WHERE turn_id = ?1
                      LIMIT 1",
-                    [turn_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-        };
-        payload
-            .map(|payload| decode_turn_record_payload(&payload))
-            .transpose()
+                        [turn_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+            };
+            payload
+                .map(|payload| decode_turn_record_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn recent_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TurnRecord>> {
@@ -3753,20 +3842,22 @@ impl TurnRecordRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM turn_records
              WHERE agent_id = ?1
              ORDER BY turn_index DESC, created_at DESC, turn_id ASC
              LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records = rows
-            .map(|row| decode_turn_record_payload(&row?))
-            .collect::<Result<Vec<_>>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            let mut records = rows
+                .map(|row| decode_turn_record_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent_for_owner(
@@ -3780,24 +3871,26 @@ impl TurnRecordRepository<'_> {
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let (owner_kind, owner_id) = owner.index_parts();
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM turn_records
              WHERE agent_id = ?1
                AND owner_kind = ?2
                AND owner_id IS ?3
              ORDER BY turn_index DESC, created_at DESC, turn_id ASC
              LIMIT ?4",
-        )?;
-        let rows = statement.query_map(params![agent_id, owner_kind, owner_id, limit], |row| {
-            row.get::<_, String>(0)
-        })?;
-        let mut records = rows
-            .map(|row| decode_turn_record_payload(&row?))
-            .collect::<Result<Vec<_>>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement
+                .query_map(params![agent_id, owner_kind, owner_id, limit], |row| {
+                    row.get::<_, String>(0)
+                })?;
+            let mut records = rows
+                .map(|row| decode_turn_record_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<TurnRecord>> {
@@ -3805,19 +3898,20 @@ impl TurnRecordRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM turn_records
              ORDER BY turn_index DESC, created_at DESC, turn_id ASC
              LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records = rows
-            .map(|row| decode_turn_record_payload(&row?))
-            .collect::<Result<Vec<_>>>()?;
-        records.reverse();
-        Ok(records)
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            let mut records = rows
+                .map(|row| decode_turn_record_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 }
 
@@ -3889,32 +3983,33 @@ impl MessageRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut records = if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut records = if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
                  ORDER BY message_seq IS NULL ASC, message_seq DESC, created_at DESC, message_id ASC
                  LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_message_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows =
+                    statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_message_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  ORDER BY message_seq IS NULL ASC, message_seq DESC, created_at DESC, message_id ASC
                  LIMIT ?1",
-            )?;
-            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_message_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        };
-        records.reverse();
-        Ok(records)
+                )?;
+                let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_message_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            };
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn from(
@@ -3927,34 +4022,35 @@ impl MessageRepository<'_> {
             return Ok(Vec::new());
         }
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut records = if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut records = if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
                  ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC
                  LIMIT -1 OFFSET ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, offset], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_message_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows = statement
+                    .query_map(params![agent_id, offset], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_message_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC
                  LIMIT -1 OFFSET ?1",
-            )?;
-            let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_message_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        };
-        if records.len() > limit {
-            records.drain(0..(records.len() - limit));
-        }
-        Ok(records)
+                )?;
+                let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_message_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            };
+            if records.len() > limit {
+                records.drain(0..(records.len() - limit));
+            }
+            Ok(records)
+        })
     }
 
     pub fn supervised_invocation_sources(
@@ -3962,41 +4058,43 @@ impl MessageRepository<'_> {
         child_agent_id: &str,
         task_id: &str,
     ) -> Result<Vec<MessageEnvelope>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
              FROM messages
              WHERE agent_id = ?1
                AND json_extract(payload_json, '$.origin.kind') = 'task'
                AND json_extract(payload_json, '$.origin.task_id') = ?2
              LIMIT 2",
-        )?;
-        let rows = statement.query_map(params![child_agent_id, task_id], |row| {
-            row.get::<_, String>(0)
-        })?;
-        rows.map(|row| decode_message_payload(&row?)).collect()
+            )?;
+            let rows = statement.query_map(params![child_agent_id, task_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.map(|row| decode_message_payload(&row?)).collect()
+        })
     }
 
     pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<MessageEnvelope>> {
-        let connection = self.db.connection()?;
-        if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
                  ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_message_payload(&row?)).collect()
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_message_payload(&row?)).collect()
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_message_payload(&row?)).collect()
-        }
+                )?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_message_payload(&row?)).collect()
+            }
+        })
     }
 
     pub fn all_values(&self, agent_id: Option<&str>) -> Result<Vec<serde_json::Value>> {
@@ -4011,33 +4109,34 @@ impl MessageRepository<'_> {
         agent_id: Option<&str>,
         message_id: &str,
     ) -> Result<Option<MessageEnvelope>> {
-        let connection = self.db.connection()?;
-        let payload = if let Some(agent_id) = agent_id {
-            connection
-                .query_row(
-                    "SELECT payload_json
+        self.db.with_read(|connection| {
+            let payload = if let Some(agent_id) = agent_id {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM messages
                      WHERE agent_id = ?1 AND message_id = ?2
                      LIMIT 1",
-                    params![agent_id, message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-        } else {
-            connection
-                .query_row(
-                    "SELECT payload_json
+                        params![agent_id, message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+            } else {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM messages
                      WHERE message_id = ?1
                      LIMIT 1",
-                    [message_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-        };
-        payload
-            .map(|payload| decode_message_payload(&payload))
-            .transpose()
+                        [message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+            };
+            payload
+                .map(|payload| decode_message_payload(&payload))
+                .transpose()
+        })
     }
 
     /// Loads the newest trusted operator input for `agent_id` (or for any
@@ -4050,11 +4149,11 @@ impl MessageRepository<'_> {
         &self,
         agent_id: Option<&str>,
     ) -> Result<Option<MessageEnvelope>> {
-        let connection = self.db.connection()?;
-        let payload = if let Some(agent_id) = agent_id {
-            connection
-                .query_row(
-                    "SELECT payload_json
+        self.db.with_read(|connection| {
+            let payload = if let Some(agent_id) = agent_id {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM messages
                      WHERE agent_id = ?1
                        AND message_seq IS NOT NULL
@@ -4068,14 +4167,14 @@ impl MessageRepository<'_> {
                        AND json_extract(payload_json, '$.origin.kind') = 'operator'
                      ORDER BY message_seq DESC, created_at DESC, message_id DESC
                      LIMIT 1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-        } else {
-            connection
-                .query_row(
-                    "SELECT payload_json
+                        [agent_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+            } else {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM messages
                      WHERE message_seq IS NOT NULL
                        AND (
@@ -4088,14 +4187,15 @@ impl MessageRepository<'_> {
                        AND json_extract(payload_json, '$.origin.kind') = 'operator'
                      ORDER BY message_seq DESC, created_at DESC, message_id DESC
                      LIMIT 1",
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-        };
-        payload
-            .map(|payload| decode_message_payload(&payload))
-            .transpose()
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+            };
+            payload
+                .map(|payload| decode_message_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn for_turn(
@@ -4104,10 +4204,10 @@ impl MessageRepository<'_> {
         turn_id: &str,
         source_message_id: Option<&str>,
     ) -> Result<Vec<MessageEnvelope>> {
-        let connection = self.db.connection()?;
-        let mut records = if let Some(source_message_id) = source_message_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut records = if let Some(source_message_id) = source_message_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
                    AND (turn_id = ?2 OR message_id = ?3)
@@ -4115,62 +4215,65 @@ impl MessageRepository<'_> {
                           message_seq ASC,
                           created_at ASC,
                           message_id ASC",
-            )?;
-            let records = statement
-                .query_map(params![agent_id, turn_id, source_message_id], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .map(|row| decode_message_payload(&row?))
-                .collect::<Result<Vec<_>>>()?;
-            records
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let records = statement
+                    .query_map(params![agent_id, turn_id, source_message_id], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .map(|row| decode_message_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?;
+                records
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1 AND turn_id = ?2
                  ORDER BY message_seq IS NULL DESC,
                           message_seq ASC,
                           created_at ASC,
                           message_id ASC",
-            )?;
-            let records = statement
-                .query_map(params![agent_id, turn_id], |row| row.get::<_, String>(0))?
-                .map(|row| decode_message_payload(&row?))
-                .collect::<Result<Vec<_>>>()?;
-            records
-        };
-        records.dedup_by(|left, right| left.id == right.id);
-        Ok(records)
+                )?;
+                let records = statement
+                    .query_map(params![agent_id, turn_id], |row| row.get::<_, String>(0))?
+                    .map(|row| decode_message_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?;
+                records
+            };
+            records.dedup_by(|left, right| left.id == right.id);
+            Ok(records)
+        })
     }
 
     pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
-        let connection = self.db.connection()?;
-        let count: i64 = if let Some(agent_id) = agent_id {
-            connection.query_row(
-                "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?
-        } else {
-            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
-        };
-        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+        self.db.with_read(|connection| {
+            let count: i64 = if let Some(agent_id) = agent_id {
+                connection.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?
+            } else {
+                connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
+            };
+            Ok(usize::try_from(count).unwrap_or(usize::MAX))
+        })
     }
 
     pub fn max_message_seq(&self, agent_id: Option<&str>) -> Result<u64> {
-        let connection = self.db.connection()?;
-        let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
-            connection.query_row(
-                "SELECT MAX(message_seq) FROM messages WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?
-        } else {
-            connection.query_row("SELECT MAX(message_seq) FROM messages", [], |row| {
-                row.get(0)
-            })?
-        };
-        Ok(max_seq.unwrap_or_default().max(0) as u64)
+        self.db.with_read(|connection| {
+            let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
+                connection.query_row(
+                    "SELECT MAX(message_seq) FROM messages WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?
+            } else {
+                connection.query_row("SELECT MAX(message_seq) FROM messages", [], |row| {
+                    row.get(0)
+                })?
+            };
+            Ok(max_seq.unwrap_or_default().max(0) as u64)
+        })
     }
 }
 
@@ -4217,56 +4320,58 @@ impl TranscriptRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut records = if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut records = if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM transcript_entries
                  WHERE agent_id = ?1
                  ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
                  LIMIT ?2",
-            )?;
-            let rows =
-                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_transcript_entry_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows =
+                    statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_transcript_entry_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM transcript_entries
                  ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
                  LIMIT ?1",
-            )?;
-            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_transcript_entry_payload(&row?))
-                .collect::<Result<Vec<_>>>()?
-        };
-        records.reverse();
-        Ok(records)
+                )?;
+                let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_transcript_entry_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?
+            };
+            records.reverse();
+            Ok(records)
+        })
     }
 
     pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<TranscriptEntry>> {
-        let connection = self.db.connection()?;
-        if let Some(agent_id) = agent_id {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            if let Some(agent_id) = agent_id {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM transcript_entries
                  WHERE agent_id = ?1
                  ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
-            )?;
-            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_transcript_entry_payload(&row?))
-                .collect()
-        } else {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
+                )?;
+                let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_transcript_entry_payload(&row?))
+                    .collect()
+            } else {
+                let mut statement = connection.prepare(
+                    "SELECT payload_json
                  FROM transcript_entries
                  ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_transcript_entry_payload(&row?))
-                .collect()
-        }
+                )?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                rows.map(|row| decode_transcript_entry_payload(&row?))
+                    .collect()
+            }
+        })
     }
 
     pub fn for_turn_ids(
@@ -4280,70 +4385,75 @@ impl TranscriptRepository<'_> {
         let placeholders = std::iter::repeat_n("?", turn_ids.len())
             .collect::<Vec<_>>()
             .join(", ");
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(&format!(
-            "SELECT payload_json
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT payload_json
              FROM transcript_entries
              WHERE agent_id = ?
                AND turn_id IN ({placeholders})
              ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC,
                       created_at ASC,
                       evidence_id ASC"
-        ))?;
-        let rows = statement.query_map(
-            params_from_iter(std::iter::once(agent_id).chain(turn_ids.iter().map(String::as_str))),
-            |row| row.get::<_, String>(0),
-        )?;
-        rows.map(|row| decode_transcript_entry_payload(&row?))
-            .collect()
+            ))?;
+            let rows = statement.query_map(
+                params_from_iter(
+                    std::iter::once(agent_id).chain(turn_ids.iter().map(String::as_str)),
+                ),
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect()
+        })
     }
 
     pub fn by_id(&self, agent_id: Option<&str>, entry_id: &str) -> Result<Option<TranscriptEntry>> {
-        let connection = self.db.connection()?;
-        let payload: Option<String> = if let Some(agent_id) = agent_id {
-            connection
-                .query_row(
-                    "SELECT payload_json
+        self.db.with_read(|connection| {
+            let payload: Option<String> = if let Some(agent_id) = agent_id {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM transcript_entries
                      WHERE agent_id = ?1 AND evidence_id = ?2
                      LIMIT 1",
-                    params![agent_id, entry_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-        } else {
-            connection
-                .query_row(
-                    "SELECT payload_json
+                        params![agent_id, entry_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+            } else {
+                connection
+                    .query_row(
+                        "SELECT payload_json
                      FROM transcript_entries
                      WHERE evidence_id = ?1
                      LIMIT 1",
-                    [entry_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-        };
-        payload
-            .map(|payload| decode_transcript_entry_payload(&payload))
-            .transpose()
+                        [entry_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+            };
+            payload
+                .map(|payload| decode_transcript_entry_payload(&payload))
+                .transpose()
+        })
     }
 
     pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
-        let connection = self.db.connection()?;
-        let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
-            connection.query_row(
-                "SELECT MAX(transcript_seq) FROM transcript_entries WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?
-        } else {
-            connection.query_row(
-                "SELECT MAX(transcript_seq) FROM transcript_entries",
-                [],
-                |row| row.get(0),
-            )?
-        };
-        Ok(max_seq.unwrap_or_default().max(0) as u64)
+        self.db.with_read(|connection| {
+            let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
+                connection.query_row(
+                    "SELECT MAX(transcript_seq) FROM transcript_entries WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?
+            } else {
+                connection.query_row(
+                    "SELECT MAX(transcript_seq) FROM transcript_entries",
+                    [],
+                    |row| row.get(0),
+                )?
+            };
+            Ok(max_seq.unwrap_or_default().max(0) as u64)
+        })
     }
 }
 
@@ -4488,21 +4598,22 @@ impl EvidenceRepository<'_> {
             where_clause,
             limit
         );
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(&sql)?;
-        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok(EvidenceRow {
-                evidence_id: row.get(0)?,
-                agent_id: row.get(1)?,
-                turn_id: row.get(2)?,
-                message_id: row.get(3)?,
-                task_id: row.get(4)?,
-                work_item_id: row.get(5)?,
-                created_at: row.get(6)?,
-                preview: row.get(7)?,
-            })
-        })?;
-        rows.map(|row| row.map_err(Into::into)).collect()
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok(EvidenceRow {
+                    evidence_id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    turn_id: row.get(2)?,
+                    message_id: row.get(3)?,
+                    task_id: row.get(4)?,
+                    work_item_id: row.get(5)?,
+                    created_at: row.get(6)?,
+                    preview: row.get(7)?,
+                })
+            })?;
+            rows.map(|row| row.map_err(Into::into)).collect()
+        })
     }
 
     pub fn recent_payloads(
@@ -4523,18 +4634,19 @@ impl EvidenceRepository<'_> {
              LIMIT ?2",
             kind.table_name()
         );
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(&sql)?;
-        let rows = statement.query_map(params![agent_id, limit], |row| {
-            Ok(EvidencePayloadRow {
-                payload_json: row.get(0)?,
-            })
-        })?;
-        let mut records: Vec<_> = rows
-            .map(|row| row.map_err(Into::into))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(&sql)?;
+            let rows = statement.query_map(params![agent_id, limit], |row| {
+                Ok(EvidencePayloadRow {
+                    payload_json: row.get(0)?,
+                })
+            })?;
+            let mut records: Vec<_> = rows
+                .map(|row| row.map_err(Into::into))
+                .collect::<Result<_>>()?;
+            records.reverse();
+            Ok(records)
+        })
     }
 
     fn payloads_for_turn(
@@ -4550,14 +4662,15 @@ impl EvidenceRepository<'_> {
              ORDER BY created_at ASC, evidence_id ASC",
             kind.table_name()
         );
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(&sql)?;
-        let rows = statement.query_map(params![agent_id, turn_id], |row| {
-            Ok(EvidencePayloadRow {
-                payload_json: row.get(0)?,
-            })
-        })?;
-        rows.map(|row| row.map_err(Into::into)).collect()
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(&sql)?;
+            let rows = statement.query_map(params![agent_id, turn_id], |row| {
+                Ok(EvidencePayloadRow {
+                    payload_json: row.get(0)?,
+                })
+            })?;
+            rows.map(|row| row.map_err(Into::into)).collect()
+        })
     }
 
     pub fn payload_by_id(
@@ -4573,15 +4686,16 @@ impl EvidenceRepository<'_> {
              LIMIT 1",
             kind.table_name()
         );
-        let connection = self.db.connection()?;
-        connection
-            .query_row(&sql, params![agent_id, evidence_id], |row| {
-                Ok(EvidencePayloadRow {
-                    payload_json: row.get(0)?,
+        self.db.with_read(|connection| {
+            connection
+                .query_row(&sql, params![agent_id, evidence_id], |row| {
+                    Ok(EvidencePayloadRow {
+                        payload_json: row.get(0)?,
+                    })
                 })
-            })
-            .optional()
-            .map_err(Into::into)
+                .optional()
+                .map_err(Into::into)
+        })
     }
 
     pub fn payloads_by_ids(
@@ -4604,20 +4718,21 @@ impl EvidenceRepository<'_> {
             kind.table_name(),
             placeholders
         );
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(&sql)?;
-        let mut all_params: Vec<Box<dyn ToSql>> = Vec::with_capacity(1 + evidence_ids.len());
-        all_params.push(Box::new(agent_id.to_string()));
-        for id in evidence_ids {
-            all_params.push(Box::new(id.clone()));
-        }
-        let param_refs: Vec<&dyn ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
-        let rows = statement.query_map(param_refs.as_slice(), |row| {
-            Ok(EvidencePayloadRow {
-                payload_json: row.get(0)?,
-            })
-        })?;
-        rows.map(|row| row.map_err(Into::into)).collect()
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(&sql)?;
+            let mut all_params: Vec<Box<dyn ToSql>> = Vec::with_capacity(1 + evidence_ids.len());
+            all_params.push(Box::new(agent_id.to_string()));
+            for id in evidence_ids {
+                all_params.push(Box::new(id.clone()));
+            }
+            let param_refs: Vec<&dyn ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+            let rows = statement.query_map(param_refs.as_slice(), |row| {
+                Ok(EvidencePayloadRow {
+                    payload_json: row.get(0)?,
+                })
+            })?;
+            rows.map(|row| row.map_err(Into::into)).collect()
+        })
     }
 
     pub fn recent_briefs(&self, agent_id: &str, limit: usize) -> Result<Vec<BriefRecord>> {
@@ -4695,31 +4810,33 @@ impl EvidenceRepository<'_> {
         agent_id: &str,
         work_item_id: &str,
     ) -> Result<Option<DeliverySummaryRecord>> {
-        let connection = self.db.connection()?;
-        let payload = connection
-            .query_row(
-                "SELECT payload_json
+        self.db.with_read(|connection| {
+            let payload = connection
+                .query_row(
+                    "SELECT payload_json
                  FROM delivery_summaries
                  WHERE agent_id = ?1 AND work_item_id = ?2
                  ORDER BY created_at DESC, evidence_id DESC
                  LIMIT 1",
-                params![agent_id, work_item_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        payload
-            .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-            .transpose()
+                    params![agent_id, work_item_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            payload
+                .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+                .transpose()
+        })
     }
 
     pub fn count_briefs(&self, agent_id: &str) -> Result<usize> {
-        let connection = self.db.connection()?;
-        let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM briefs WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?;
-        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+        self.db.with_read(|connection| {
+            let count: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM briefs WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?;
+            Ok(usize::try_from(count).unwrap_or(usize::MAX))
+        })
     }
 }
 
@@ -4733,15 +4850,16 @@ impl AuditEventSink<'_> {
 
     /// Check whether an audit event with the given id already exists.
     pub fn has_event_by_id(&self, event_id: &str) -> Result<bool> {
-        let connection = self.db.connection()?;
-        Ok(connection
-            .query_row(
-                "SELECT 1 FROM audit_events WHERE audit_event_id = ?1",
-                [event_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
+        self.db.with_read(|connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT 1 FROM audit_events WHERE audit_event_id = ?1",
+                    [event_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some())
+        })
     }
 
     pub fn append_many(
@@ -4779,50 +4897,52 @@ impl AuditEventSink<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut sql = String::from("SELECT data_json FROM audit_events");
-        if agent_id.is_some() {
-            sql.push_str(" WHERE agent_id = ?1");
-        }
-        sql.push_str(" ORDER BY event_seq DESC, created_at DESC LIMIT ?");
-        let mut statement = connection.prepare(&sql)?;
-        let mut events = if let Some(agent_id) = agent_id {
-            statement
-                .query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?
-                .map(|row| {
-                    let payload = row?;
-                    serde_json::from_str(&payload).map_err(Into::into)
-                })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            statement
-                .query_map(params![limit], |row| row.get::<_, String>(0))?
-                .map(|row| {
-                    let payload = row?;
-                    serde_json::from_str(&payload).map_err(Into::into)
-                })
-                .collect::<Result<Vec<_>>>()?
-        };
-        events.reverse();
-        Ok(events)
+        self.db.with_read(|connection| {
+            let mut sql = String::from("SELECT data_json FROM audit_events");
+            if agent_id.is_some() {
+                sql.push_str(" WHERE agent_id = ?1");
+            }
+            sql.push_str(" ORDER BY event_seq DESC, created_at DESC LIMIT ?");
+            let mut statement = connection.prepare(&sql)?;
+            let mut events = if let Some(agent_id) = agent_id {
+                statement
+                    .query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?
+                    .map(|row| {
+                        let payload = row?;
+                        serde_json::from_str(&payload).map_err(Into::into)
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                statement
+                    .query_map(params![limit], |row| row.get::<_, String>(0))?
+                    .map(|row| {
+                        let payload = row?;
+                        serde_json::from_str(&payload).map_err(Into::into)
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            events.reverse();
+            Ok(events)
+        })
     }
 
     pub fn latest_event_seq(&self, agent_id: Option<&str>) -> Result<Option<u64>> {
-        let connection = self.db.connection()?;
-        let value = if let Some(agent_id) = agent_id {
-            connection.query_row(
-                "SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get::<_, Option<i64>>(0),
-            )?
-        } else {
-            connection.query_row("SELECT MAX(event_seq) FROM audit_events", [], |row| {
-                row.get::<_, Option<i64>>(0)
-            })?
-        };
-        value
-            .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
-            .transpose()
+        self.db.with_read(|connection| {
+            let value = if let Some(agent_id) = agent_id {
+                connection.query_row(
+                    "SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1",
+                    [agent_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )?
+            } else {
+                connection.query_row("SELECT MAX(event_seq) FROM audit_events", [], |row| {
+                    row.get::<_, Option<i64>>(0)
+                })?
+            };
+            value
+                .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
+                .transpose()
+        })
     }
 
     pub fn max_event_seq(&self, agent_id: Option<&str>) -> Result<u64> {
@@ -4848,41 +4968,43 @@ impl AuditEventSink<'_> {
             })
             .transpose()?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut sql = String::from("SELECT data_json FROM audit_events WHERE event_seq > ?1");
-        if upper.is_some() {
-            sql.push_str(" AND event_seq < ?2");
-        }
-        if agent_id.is_some() {
-            let param_index = if upper.is_some() { 3 } else { 2 };
-            sql.push_str(&format!(" AND agent_id = ?{param_index}"));
-        }
-        if descending {
-            sql.push_str(" ORDER BY event_seq DESC, created_at DESC");
-        } else {
-            sql.push_str(" ORDER BY event_seq ASC, created_at ASC");
-        }
-        let limit_param_index = 2 + usize::from(upper.is_some()) + usize::from(agent_id.is_some());
-        sql.push_str(&format!(" LIMIT ?{limit_param_index}"));
-        let mut statement = connection.prepare(&sql)?;
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(lower)];
-        if let Some(upper) = upper {
-            params.push(Box::new(upper));
-        }
-        if let Some(agent_id) = agent_id {
-            params.push(Box::new(agent_id.to_owned()));
-        }
-        params.push(Box::new(limit));
-        let events = statement
-            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                row.get::<_, String>(0)
-            })?
-            .map(|row| {
-                let payload = row?;
-                serde_json::from_str(&payload).map_err(Into::into)
-            })
-            .collect();
-        events
+        self.db.with_read(|connection| {
+            let mut sql = String::from("SELECT data_json FROM audit_events WHERE event_seq > ?1");
+            if upper.is_some() {
+                sql.push_str(" AND event_seq < ?2");
+            }
+            if agent_id.is_some() {
+                let param_index = if upper.is_some() { 3 } else { 2 };
+                sql.push_str(&format!(" AND agent_id = ?{param_index}"));
+            }
+            if descending {
+                sql.push_str(" ORDER BY event_seq DESC, created_at DESC");
+            } else {
+                sql.push_str(" ORDER BY event_seq ASC, created_at ASC");
+            }
+            let limit_param_index =
+                2 + usize::from(upper.is_some()) + usize::from(agent_id.is_some());
+            sql.push_str(&format!(" LIMIT ?{limit_param_index}"));
+            let mut statement = connection.prepare(&sql)?;
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(lower)];
+            if let Some(upper) = upper {
+                params.push(Box::new(upper));
+            }
+            if let Some(agent_id) = agent_id {
+                params.push(Box::new(agent_id.to_owned()));
+            }
+            params.push(Box::new(limit));
+            let events = statement
+                .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .map(|row| {
+                    let payload = row?;
+                    serde_json::from_str(&payload).map_err(Into::into)
+                })
+                .collect();
+            events
+        })
     }
 
     pub fn page_after(
@@ -4895,39 +5017,41 @@ impl AuditEventSink<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut sql = String::from("SELECT data_json FROM audit_events WHERE event_seq > ?1");
-        if agent_id.is_some() {
-            sql.push_str(" AND agent_id = ?2");
-        }
-        let limit_param_index = if agent_id.is_some() { 3 } else { 2 };
-        sql.push_str(&format!(
-            " ORDER BY event_seq ASC, created_at ASC LIMIT ?{limit_param_index}"
-        ));
-        let mut statement = connection.prepare(&sql)?;
-        if let Some(agent_id) = agent_id {
-            let after_event_seq = i64::try_from(after_event_seq)
-                .context("audit event cursor exceeds SQLite integer range")?;
-            let rows = statement.query_map(params![after_event_seq, agent_id, limit], |row| {
-                row.get::<_, String>(0)
-            })?;
-            rows.map(|row| {
-                let payload = row?;
-                serde_json::from_str(&payload).map_err(Into::into)
-            })
-            .collect()
-        } else {
-            let after_event_seq = i64::try_from(after_event_seq)
-                .context("audit event cursor exceeds SQLite integer range")?;
-            let rows = statement.query_map(params![after_event_seq, limit], |row| {
-                row.get::<_, String>(0)
-            })?;
-            rows.map(|row| {
-                let payload = row?;
-                serde_json::from_str(&payload).map_err(Into::into)
-            })
-            .collect()
-        }
+        self.db.with_read(|connection| {
+            let mut sql = String::from("SELECT data_json FROM audit_events WHERE event_seq > ?1");
+            if agent_id.is_some() {
+                sql.push_str(" AND agent_id = ?2");
+            }
+            let limit_param_index = if agent_id.is_some() { 3 } else { 2 };
+            sql.push_str(&format!(
+                " ORDER BY event_seq ASC, created_at ASC LIMIT ?{limit_param_index}"
+            ));
+            let mut statement = connection.prepare(&sql)?;
+            if let Some(agent_id) = agent_id {
+                let after_event_seq = i64::try_from(after_event_seq)
+                    .context("audit event cursor exceeds SQLite integer range")?;
+                let rows = statement
+                    .query_map(params![after_event_seq, agent_id, limit], |row| {
+                        row.get::<_, String>(0)
+                    })?;
+                rows.map(|row| {
+                    let payload = row?;
+                    serde_json::from_str(&payload).map_err(Into::into)
+                })
+                .collect()
+            } else {
+                let after_event_seq = i64::try_from(after_event_seq)
+                    .context("audit event cursor exceeds SQLite integer range")?;
+                let rows = statement.query_map(params![after_event_seq, limit], |row| {
+                    row.get::<_, String>(0)
+                })?;
+                rows.map(|row| {
+                    let payload = row?;
+                    serde_json::from_str(&payload).map_err(Into::into)
+                })
+                .collect()
+            }
+        })
     }
 }
 

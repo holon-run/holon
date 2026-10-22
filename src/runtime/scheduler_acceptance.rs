@@ -473,19 +473,20 @@ fn queue_entries_for_agent(
 }
 
 fn execution_claim_row_counts(runtime: &RuntimeHandle, agent_id: &str) -> Result<(i64, i64)> {
-    let connection = runtime.inner.runtime_db.connection()?;
-    Ok((
-        connection.query_row(
-            "SELECT COUNT(*) FROM execution_protocol_attempts WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?,
-        connection.query_row(
-            "SELECT COUNT(*) FROM execution_protocol_outcomes WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?,
-    ))
+    runtime.inner.runtime_db.with_read(|connection| {
+        Ok((
+            connection.query_row(
+                "SELECT COUNT(*) FROM execution_protocol_attempts WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?,
+            connection.query_row(
+                "SELECT COUNT(*) FROM execution_protocol_outcomes WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?,
+        ))
+    })
 }
 
 fn execution_slot_state(

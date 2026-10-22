@@ -1401,48 +1401,49 @@ impl crate::runtime_db::RuntimeDb {
     /// Loads the durable observer-sync verification results. Missing rows
     /// read as false; load errors should degrade, not fail, the caller.
     pub fn observer_sync_foundations(&self) -> Result<ObserverSyncFoundationVerification> {
-        let connection = self.connection()?;
-        let verified = |capability: &str| -> bool {
-            match connection
-                .query_row(
-                    "SELECT verified FROM observer_sync_capability_verifications
-                     WHERE capability = ?1",
-                    [capability],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-            {
-                Ok(value) => value.is_some_and(|value| value != 0),
-                Err(error) => {
-                    tracing::debug!(
-                        capability,
-                        %error,
-                        "failed to load observer sync capability verification"
-                    );
-                    false
+        self.with_read(|connection| {
+            let verified = |capability: &str| -> bool {
+                match connection
+                    .query_row(
+                        "SELECT verified FROM observer_sync_capability_verifications
+                         WHERE capability = ?1",
+                        [capability],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()
+                {
+                    Ok(value) => value.is_some_and(|value| value != 0),
+                    Err(error) => {
+                        tracing::debug!(
+                            capability,
+                            %error,
+                            "failed to load observer sync capability verification"
+                        );
+                        false
+                    }
                 }
-            }
-        };
-        let event_projection_effect_complete = read_metadata(&connection, "event_log_epoch")
-            .and_then(|event_log_epoch| {
-                reusable_event_projection_effect_verification(&connection, &event_log_epoch)
+            };
+            let event_projection_effect_complete = read_metadata(connection, "event_log_epoch")
+                .and_then(|event_log_epoch| {
+                    reusable_event_projection_effect_verification(connection, &event_log_epoch)
+                })
+                .unwrap_or_else(|error| {
+                    tracing::debug!(
+                        %error,
+                        "failed to load observer sync event projection verification proof"
+                    );
+                    None
+                })
+                .unwrap_or(false);
+            Ok(ObserverSyncFoundationVerification {
+                runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE),
+                agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED),
+                roster_snapshot_verified: verified(ROSTER_SNAPSHOT_VERIFIED),
+                projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED),
+                event_projection_effect_complete,
+                brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED),
+                conversation_read_verified: verified(CONVERSATION_READ_VERIFIED),
             })
-            .unwrap_or_else(|error| {
-                tracing::debug!(
-                    %error,
-                    "failed to load observer sync event projection verification proof"
-                );
-                None
-            })
-            .unwrap_or(false);
-        Ok(ObserverSyncFoundationVerification {
-            runtime_identity_stable: verified(RUNTIME_IDENTITY_STABLE),
-            agent_identity_reserved: verified(AGENT_IDENTITY_RESERVED),
-            roster_snapshot_verified: verified(ROSTER_SNAPSHOT_VERIFIED),
-            projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED),
-            event_projection_effect_complete,
-            brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED),
-            conversation_read_verified: verified(CONVERSATION_READ_VERIFIED),
         })
     }
 
@@ -1451,11 +1452,13 @@ impl crate::runtime_db::RuntimeDb {
     /// Briefs, and the runtime identity metadata — inside one deferred read
     /// transaction, so all values share one committed database view.
     pub fn agent_roster_snapshot_rows(&self) -> Result<AgentRosterSnapshotRows> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let rows = collect_agent_roster_rows(&transaction)?;
-        transaction.commit()?;
-        Ok(rows)
+        self.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let rows = collect_agent_roster_rows(&transaction)?;
+            transaction.commit()?;
+            Ok(rows)
+        })
     }
 
     /// Reads one Agent's canonical projection anchors — membership,
@@ -1468,11 +1471,13 @@ impl crate::runtime_db::RuntimeDb {
         &self,
         agent_id: &str,
     ) -> Result<AgentProjectionSnapshotRows> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let rows = collect_agent_projection_anchors(&transaction, agent_id)?;
-        transaction.commit()?;
-        Ok(rows)
+        self.with_read(|connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+            let rows = collect_agent_projection_anchors(&transaction, agent_id)?;
+            transaction.commit()?;
+            Ok(rows)
+        })
     }
 
     /// Reads one Agent's committed event recovery window — epoch, oldest
@@ -1484,28 +1489,29 @@ impl crate::runtime_db::RuntimeDb {
         &self,
         agent_id: Option<&str>,
     ) -> Result<AgentEventRecoveryWindow> {
-        let connection = self.connection()?;
-        let scope_key = crate::runtime_db::evidence::audit_event_sequence_scope(agent_id);
-        let (epoch, oldest, head): (String, i64, i64) = connection.query_row(
-            "SELECT
-               (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
-               COALESCE((
-                 SELECT oldest_retained_seq FROM audit_event_retention_watermarks
-                 WHERE scope_key = ?1
-               ), 0),
-               COALESCE((
-                 SELECT last_value FROM runtime_sequences
-                 WHERE domain = 'audit_event' AND scope_key = ?1
-               ), 0)",
-            [scope_key],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        Ok(AgentEventRecoveryWindow {
-            event_log_epoch: epoch,
-            oldest_retained_seq: u64::try_from(oldest)
-                .context("stored audit retention watermark is negative")?,
-            event_head_seq: u64::try_from(head)
-                .context("stored audit event sequence is negative")?,
+        self.with_read(|connection| {
+            let scope_key = crate::runtime_db::evidence::audit_event_sequence_scope(agent_id);
+            let (epoch, oldest, head): (String, i64, i64) = connection.query_row(
+                "SELECT
+                   (SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'),
+                   COALESCE((
+                     SELECT oldest_retained_seq FROM audit_event_retention_watermarks
+                     WHERE scope_key = ?1
+                   ), 0),
+                   COALESCE((
+                     SELECT last_value FROM runtime_sequences
+                     WHERE domain = 'audit_event' AND scope_key = ?1
+                   ), 0)",
+                [scope_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            Ok(AgentEventRecoveryWindow {
+                event_log_epoch: epoch,
+                oldest_retained_seq: u64::try_from(oldest)
+                    .context("stored audit retention watermark is negative")?,
+                event_head_seq: u64::try_from(head)
+                    .context("stored audit event sequence is negative")?,
+            })
         })
     }
 }

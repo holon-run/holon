@@ -233,18 +233,19 @@ impl DestructiveOperationRepository<'_> {
     }
 
     pub fn by_id(&self, operation_id: &str) -> Result<Option<DestructiveOperationRecord>> {
-        let connection = self.db.connection()?;
-        connection
-            .query_row(
-                "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                        verification_target, recovery_policy, command_digest,
-                        created_at, updated_at
-                 FROM destructive_operations WHERE operation_id = ?1",
-                [operation_id],
-                decode_operation,
-            )
-            .optional()
-            .map_err(Into::into)
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
+                            verification_target, recovery_policy, command_digest,
+                            created_at, updated_at
+                     FROM destructive_operations WHERE operation_id = ?1",
+                    [operation_id],
+                    decode_operation,
+                )
+                .optional()
+                .map_err(Into::into)
+        })
     }
 
     /// CAS transition used immediately before the executor leaves this daemon.
@@ -270,19 +271,20 @@ impl DestructiveOperationRepository<'_> {
     }
 
     pub fn pending_verification(&self) -> Result<Vec<DestructiveOperationRecord>> {
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                    verification_target, recovery_policy, command_digest,
-                    created_at, updated_at
-             FROM destructive_operations
-             WHERE phase = 'daemon_interrupted' AND recovery_policy = 'verify_only'
-             ORDER BY updated_at, operation_id",
-        )?;
-        let operations = statement
-            .query_map([], decode_operation)?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(operations)
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
+                        verification_target, recovery_policy, command_digest,
+                        created_at, updated_at
+                 FROM destructive_operations
+                 WHERE phase = 'daemon_interrupted' AND recovery_policy = 'verify_only'
+                 ORDER BY updated_at, operation_id",
+            )?;
+            let operations = statement
+                .query_map([], decode_operation)?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(operations)
+        })
     }
 }
 
