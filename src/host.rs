@@ -7240,10 +7240,17 @@ impl RuntimeHost {
                                 return Ok(None);
                             }
                             if !tasks.is_empty() {
-                                let task_ids = tasks
-                                    .iter()
-                                    .map(|task| task.id.as_str())
-                                    .collect::<HashSet<_>>();
+                                let turn = storage.read_turn_by_id(turn_id)?;
+                                let mut task_ids = HashSet::new();
+                                for task in &tasks {
+                                    if !self.invocation_task_result_consumed_in_turn(
+                                        task,
+                                        turn.as_ref(),
+                                        &attempt.attempt_id,
+                                    )? {
+                                        task_ids.insert(task.id.as_str());
+                                    }
+                                }
                                 let continuations = execution
                                     .attempts
                                     .values()
@@ -7257,14 +7264,14 @@ impl RuntimeHost {
                                         )
                                     })
                                     .collect::<Vec<_>>();
-                                if tasks.iter().any(|task| {
+                                if task_ids.iter().any(|id| {
                                     !continuations.iter().any(|candidate| {
                                         matches!(
                                             &candidate.source.identity,
                                             ExecutionSourceIdentity::TaskResult {
                                                 task_id,
                                                 ..
-                                            } if task_id == &task.id
+                                            } if task_id == *id
                                         )
                                     })
                                 }) {
@@ -7482,6 +7489,50 @@ impl RuntimeHost {
             }
         }
         Err(ChildInvocationReason::CyclicContinuation.into())
+    }
+
+    fn invocation_task_result_consumed_in_turn(
+        &self,
+        task: &TaskRecord,
+        turn: Option<&crate::types::TurnRecord>,
+        activation_id: &str,
+    ) -> Result<bool> {
+        use crate::runtime_db::task_result_settlement::{
+            TaskResultSettlementDisposition, TaskResultSettlementState,
+        };
+
+        let (Some(turn), Some(message_id), Ok(fence)) =
+            (turn, task.parent_message_id.as_deref(), task.rejoin_fence())
+        else {
+            return Ok(false);
+        };
+        let Some(record) = self
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(message_id)?
+        else {
+            return Ok(false);
+        };
+        // Attachment alone is admission, not consumption. Only this execution's
+        // settled model delivery can discharge its nested result obligation.
+        Ok(record.agent_id == task.agent_id
+            && turn.agent_id == task.agent_id
+            && record.task_id == task.id
+            && record.work_item_id == task.work_item_id
+            && record.parent_turn_id == fence.parent_turn_id
+            && record.parent_turn_id == turn.turn_id
+            && record.rejoin_generation == fence.generation
+            && record.state == TaskResultSettlementState::Settled
+            && record.disposition == Some(TaskResultSettlementDisposition::ModelDelivered)
+            && record.activation_id.as_deref() == Some(activation_id)
+            && turn.live_input_batches.iter().any(|batch| {
+                batch.activation_id == activation_id
+                    && batch.result_identities.contains(&record.result_identity)
+                    && batch
+                        .items
+                        .iter()
+                        .any(|item| item.message_id == record.message_id)
+            }))
     }
 
     fn invocation_terminal_evidence_for_turn(
@@ -10761,6 +10812,317 @@ mod tests {
             .latest_for_agent(&created.agent_id)
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_settles_after_same_turn_command_consumption() {
+        use crate::provider::{ConversationMessage, ModelBlock, ModelToolCallKind};
+        use crate::runtime_db::task_result_settlement::{
+            TaskResultSettlementDisposition, TaskResultSettlementState,
+        };
+
+        #[derive(Default)]
+        struct ReproProvider {
+            parent: AsyncMutex<Option<RuntimeHandle>>,
+            parent_calls: AtomicU64,
+            child_calls: AtomicU64,
+            child_after_command: Notify,
+            release_child: Notify,
+            saw_live_result: AtomicBool,
+        }
+
+        #[async_trait]
+        impl AgentProvider for ReproProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> Result<ProviderTurnResponse> {
+                let parent_request =
+                    format!("{:?}", request.conversation).contains("repro-3678-parent");
+                let tool = |id: &str, name: &str, input: Value| ModelBlock::ToolUse {
+                    id: id.into(),
+                    name: name.into(),
+                    input,
+                    kind: ModelToolCallKind::Function,
+                    provider_data: None,
+                };
+                let blocks = if parent_request {
+                    match self.parent_calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => vec![tool(
+                            "repro-invoke",
+                            "InvokeAgent",
+                            json!({
+                                "target": {"kind": "new_subagent", "workspace_mode": "inherit"},
+                                "initial_message": "repro-3678-child"
+                            }),
+                        )],
+                        1 => {
+                            let parent = self.parent.lock().await.clone().unwrap();
+                            let task = parent
+                                .runtime_db()
+                                .tasks()
+                                .latest_for_agent("default", 20)?
+                                .into_iter()
+                                .find(|task| task.kind == TaskKind::ActorInvocation)
+                                .expect("InvokeAgent must create a real supervised task");
+                            vec![tool(
+                                "repro-wait",
+                                "WaitFor",
+                                json!({
+                                    "wake": "task_result",
+                                    "resource": task.id,
+                                    "delivery": "silent",
+                                    "reason": "wait for the original child invocation"
+                                }),
+                            )]
+                        }
+                        _ => vec![ModelBlock::Text {
+                            text: "repro parent resumed".into(),
+                        }],
+                    }
+                } else {
+                    match self.child_calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => vec![tool(
+                            "repro-command",
+                            "ExecCommand",
+                            json!({
+                                "cmd": "sleep 0.1; printf repro-nested-result",
+                                "shell": "sh",
+                                "login": false,
+                                "yield_time_ms": 0
+                            }),
+                        )],
+                        1 => {
+                            self.child_after_command.notify_one();
+                            self.release_child.notified().await;
+                            vec![ModelBlock::Text {
+                                text: "repro child before live result".into(),
+                            }]
+                        }
+                        _ => {
+                            self.saw_live_result.store(
+                                request.conversation.iter().any(|message| {
+                                    matches!(message, ConversationMessage::UserText(text)
+                                        if text.contains("Current live input batch")
+                                            && text.contains("repro-nested-result"))
+                                }),
+                                Ordering::SeqCst,
+                            );
+                            vec![ModelBlock::Text {
+                                text: "repro child consumed command result".into(),
+                            }]
+                        }
+                    }
+                };
+                let mut response = StubProvider::new("unused").complete_turn(request).await?;
+                response.blocks = blocks;
+                Ok(response)
+            }
+        }
+
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        config.default_agent_id = "default".into();
+        let provider = Arc::new(ReproProvider::default());
+        let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+        *provider.parent.lock().await = Some(parent.clone());
+        parent
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "repro-3678-parent".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            provider.child_after_command.notified(),
+        )
+        .await
+        .expect("child must execute the real background command tool");
+        let invocation = parent
+            .runtime_db()
+            .tasks()
+            .latest_for_agent("default", 20)
+            .unwrap()
+            .into_iter()
+            .find(|task| task.kind == TaskKind::ActorInvocation)
+            .unwrap();
+        let child_id = invocation.target().unwrap().agent_id;
+        let child = host.get_or_create_agent(&child_id).await.unwrap();
+        let command = child
+            .runtime_db()
+            .tasks()
+            .latest_for_agent(&child_id, 20)
+            .unwrap()
+            .into_iter()
+            .find(|task| task.kind == TaskKind::CommandTask)
+            .expect("ExecCommand must promote to a real command task");
+        let command = wait_for_terminal_task(&child, &command.id).await;
+        assert_eq!(command.status, TaskStatus::Completed);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while parent
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap()
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("parent must actually register its task-result wait before child final");
+        provider.release_child.notify_one();
+        wait_for_agent_inputs_settled(&child).await;
+        let state = child.agent_state().await.unwrap();
+        let terminal = state.last_turn_terminal.unwrap();
+        assert_eq!(
+            terminal.last_assistant_message.as_deref(),
+            Some("repro child consumed command result")
+        );
+        assert!(provider.saw_live_result.load(Ordering::SeqCst));
+        let turn_id = command.detail.as_ref().unwrap()["parent_turn_id"]
+            .as_str()
+            .unwrap();
+        let turn = child.storage().read_turn_by_id(turn_id).unwrap().unwrap();
+        let result = child
+            .storage()
+            .read_recent_messages(30)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                message.kind == MessageKind::TaskResult
+                    && matches!(&message.origin, MessageOrigin::Task { task_id }
+                        if task_id == &command.id)
+            })
+            .unwrap();
+        assert!(turn
+            .live_input_batches
+            .iter()
+            .any(|batch| batch.items.iter().any(|item| item.message_id == result.id)));
+        let settlement = child
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(&result.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(settlement.state, TaskResultSettlementState::Settled);
+        assert_eq!(
+            settlement.disposition,
+            Some(TaskResultSettlementDisposition::ModelDelivered)
+        );
+        let execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&child_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            execution.attempts.len(),
+            1,
+            "result must stay in the original execution"
+        );
+        assert!(!execution.attempts.values().any(|attempt| matches!(
+            &attempt.source.identity,
+            ExecutionSourceIdentity::TaskResult { task_id, .. } if task_id == &command.id
+        )));
+        let completed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = parent
+                    .storage()
+                    .latest_task_record(&invocation.id)
+                    .unwrap()
+                    .unwrap();
+                if task.status == TaskStatus::Completed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        if completed {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while provider.parent_calls.load(Ordering::SeqCst) < 3 {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the original parent wait must resume");
+            wait_for_agent_inputs_settled(&parent).await;
+        }
+        let task = parent
+            .storage()
+            .latest_task_record(&invocation.id)
+            .unwrap()
+            .unwrap();
+        let resolution = host
+            .resolve_supervised_invocation(&task, &child_id, false)
+            .await
+            .unwrap();
+        let waits = parent
+            .storage()
+            .active_wait_conditions_for_agent("default")
+            .unwrap();
+        let parent_calls = provider.parent_calls.load(Ordering::SeqCst);
+        eprintln!(
+            "repro-3678: command={:?}, settlement={:?}/{:?}, child_final={:?}, \
+             child_attempts={}, resolver={resolution:?}, invocation={:?}, \
+             parent_active_waits={}, parent_provider_calls={parent_calls}",
+            command.status,
+            settlement.state,
+            settlement.disposition,
+            terminal.last_assistant_message,
+            execution.attempts.len(),
+            task.status,
+            waits.len()
+        );
+        host.shutdown().await.unwrap();
+        assert!(
+            completed,
+            "child final and canonical same-turn ModelDelivered must settle the invocation; \
+             actual={:?}, resolver={resolution:?}, parent_active_waits={}, \
+             parent_provider_calls={parent_calls}",
+            task.status,
+            waits.len()
+        );
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert!(waits.is_empty());
+        assert_eq!(parent_calls, 3, "parent must resume exactly once");
+        let results = parent
+            .storage()
+            .read_recent_messages(30)
+            .unwrap()
+            .into_iter()
+            .filter(|message| {
+                message.kind == MessageKind::TaskResult
+                    && matches!(&message.origin, MessageOrigin::Task { task_id }
+                        if task_id == &invocation.id)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 1, "publish exactly one invocation result");
+        let settlement = parent
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(&results[0].id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(settlement.state, TaskResultSettlementState::Settled);
+        assert_eq!(
+            settlement.disposition,
+            Some(TaskResultSettlementDisposition::ModelDelivered)
+        );
     }
 
     #[tokio::test]
@@ -14583,6 +14945,191 @@ mod tests {
                 .unwrap(),
             ChildInvocationResolution::Ready(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_inline_consumption_requires_exact_settled_delivery() {
+        use crate::runtime_db::task_result_settlement::TaskResultSettlementDisposition;
+        use crate::types::{IdleInputBatchItem, LiveInputBatchRecord, LiveInputSafePoint};
+
+        for disposition in [
+            TaskResultSettlementDisposition::ModelDelivered,
+            TaskResultSettlementDisposition::ReplyConsumedElsewhere,
+            TaskResultSettlementDisposition::OwnerClosed,
+            TaskResultSettlementDisposition::OwnerMissing,
+            TaskResultSettlementDisposition::InvalidOrStale,
+            TaskResultSettlementDisposition::InterruptedReplaySourceFinal,
+        ] {
+            let (_home, host, invocation) = source_bound_invocation_fixture();
+            let child_id = "source-bound-child";
+            let storage = host.agent_storage(child_id).unwrap();
+            let mut turn = storage
+                .read_turn_by_id("original-source-turn")
+                .unwrap()
+                .unwrap();
+            let execution = host
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(child_id)
+                .unwrap()
+                .unwrap();
+            let activation_id = &execution.attempts.values().next().unwrap().attempt_id;
+            let message = MessageEnvelope::new(
+                child_id,
+                MessageKind::TaskResult,
+                MessageOrigin::Task {
+                    task_id: "nested-command".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "nested result".into(),
+                },
+            );
+            let nested = TaskRecord {
+                id: "nested-command".into(),
+                agent_id: child_id.into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(message.id.clone()),
+                work_item_id: None,
+                summary: None,
+                detail: Some(json!({
+                    "parent_turn_id": turn.turn_id,
+                    "rejoin_obligation_id": "nested-command",
+                    "rejoin_generation": 1
+                })),
+                recovery: None,
+            };
+            storage.append_task(&nested).unwrap();
+            storage.append_message(&message).unwrap();
+            let settlements = host.runtime_db().task_result_settlements();
+            let record = settlements
+                .ensure_pending(&nested, &message, Utc::now())
+                .unwrap()
+                .unwrap();
+            turn.live_input_batches.push(LiveInputBatchRecord {
+                activation_id: activation_id.clone(),
+                safe_point: LiveInputSafePoint::new(activation_id, 1),
+                cutoff: Utc::now(),
+                max_items: 1,
+                max_bytes: 1024,
+                rendered_bytes: 0,
+                result_identities: vec![record.result_identity],
+                ordinary_message_ids: Vec::new(),
+                items: vec![IdleInputBatchItem {
+                    message_id: message.id.clone(),
+                    source_ref: format!("message:{}", message.id),
+                    rendered: "nested result".into(),
+                }],
+            });
+            host.runtime_db().turn_records().upsert(&turn).unwrap();
+            // Both a terminal task and an attachment are insufficient until
+            // the canonical delivery actually settles for this execution.
+            for admitted in [false, true] {
+                if admitted {
+                    settlements
+                        .admit_message(child_id, &message.id, activation_id, Utc::now())
+                        .unwrap()
+                        .unwrap();
+                }
+                assert!(matches!(
+                    host.resolve_supervised_invocation(&invocation, child_id, false)
+                        .await
+                        .unwrap(),
+                    ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+                ));
+            }
+            assert_eq!(
+                settlements
+                    .settle_activation(child_id, activation_id, disposition, Utc::now())
+                    .unwrap(),
+                1
+            );
+            let resolution = host
+                .resolve_supervised_invocation(&invocation, child_id, false)
+                .await
+                .unwrap();
+            if disposition != TaskResultSettlementDisposition::ModelDelivered {
+                assert!(matches!(
+                    resolution,
+                    ChildInvocationResolution::Pending(ChildInvocationReason::AwaitingContinuation)
+                ));
+                continue;
+            }
+            assert!(matches!(
+                resolution,
+                ChildInvocationResolution::Ready(result) if result.text == "original-source-result"
+            ));
+            let rebound_activation = "recovered-activation";
+            let mut rebound_turn = turn.clone();
+            rebound_turn.live_input_batches[0].activation_id = rebound_activation.into();
+            for candidate_turn in [&turn, &rebound_turn] {
+                assert!(
+                    !host
+                        .invocation_task_result_consumed_in_turn(
+                            &nested,
+                            Some(candidate_turn),
+                            rebound_activation,
+                        )
+                        .unwrap(),
+                    "an old settlement cannot prove delivery for a rebound activation"
+                );
+            }
+            for mismatch in 0..10 {
+                let mut changed_turn = turn.clone();
+                let mut changed_task = nested.clone();
+                match mismatch {
+                    0 => changed_turn.live_input_batches.clear(),
+                    1 => changed_turn.live_input_batches[0].activation_id = "unrelated".into(),
+                    2 => changed_turn.live_input_batches[0].result_identities.clear(),
+                    3 => {
+                        changed_turn.live_input_batches[0].items[0].message_id = "unrelated".into()
+                    }
+                    4 => changed_task.work_item_id = Some("unrelated-owner".into()),
+                    5 => changed_task.detail.as_mut().unwrap()["rejoin_generation"] = json!(2),
+                    6 => changed_task.parent_message_id = Some("unrelated-result".into()),
+                    7 => {
+                        changed_task.detail.as_mut().unwrap()["parent_turn_id"] = json!("unrelated")
+                    }
+                    8 => changed_task.agent_id = "unrelated-agent".into(),
+                    9 => changed_task.id = "unrelated-task".into(),
+                    _ => unreachable!(),
+                }
+                if mismatch >= 4 {
+                    // Terminal task ownership/fences are immutable; exercise
+                    // rejection without attempting an illegal task transition.
+                    assert!(
+                        !host
+                            .invocation_task_result_consumed_in_turn(
+                                &changed_task,
+                                Some(&turn),
+                                activation_id,
+                            )
+                            .unwrap(),
+                        "mismatch {mismatch} must not prove consumption"
+                    );
+                    continue;
+                }
+                host.runtime_db()
+                    .turn_records()
+                    .upsert(&changed_turn)
+                    .unwrap();
+                assert!(
+                    matches!(
+                        host.resolve_supervised_invocation(&invocation, child_id, false)
+                            .await
+                            .unwrap(),
+                        ChildInvocationResolution::Pending(
+                            ChildInvocationReason::AwaitingContinuation
+                        )
+                    ),
+                    "mismatch {mismatch} must remain pending"
+                );
+            }
+        }
     }
 
     #[tokio::test]
