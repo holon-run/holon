@@ -98,6 +98,18 @@ pub struct DebugPromptResponse {
     pub dump: String,
 }
 
+/// Response of `POST /control/agents/{id}/repair`. The detail is a snapshot
+/// taken when the background bootstrap reconcile was kicked; `job_id` is set
+/// when a reconcile is running and can be polled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairAgentResponse {
+    #[serde(default)]
+    pub ok: bool,
+    pub detail: AgentDetail,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsResponse {
     #[serde(default)]
@@ -830,12 +842,42 @@ impl LocalClient {
         .await
     }
 
-    pub async fn repair_agent(&self, agent_id: &str) -> Result<AgentDetail> {
+    pub async fn repair_agent(&self, agent_id: &str) -> Result<RepairAgentResponse> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/repair"),
             &serde_json::json!({}),
         )
         .await
+    }
+
+    pub async fn get_job(&self, job_id: &str) -> Result<serde_json::Value> {
+        self.get_json(&format!("/jobs/{job_id}")).await
+    }
+
+    /// Poll an `agent.bootstrap` job until it reaches a terminal state and
+    /// return the final agent detail. `None` when the job disappears (for
+    /// example after a daemon restart); the durable bootstrap record remains
+    /// the source of truth in that case.
+    pub async fn wait_for_agent_bootstrap_job(
+        &self,
+        agent_id: &str,
+        job_id: &str,
+    ) -> Result<Option<AgentDetail>> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        loop {
+            let payload = match self.get_job(job_id).await {
+                Ok(payload) => payload,
+                Err(_) => return Ok(None),
+            };
+            let status = payload["job"]["status"].as_str().unwrap_or("unknown");
+            if status == "completed" || status == "failed" {
+                return self.agent_detail(agent_id).await.map(Some);
+            }
+            if std::time::Instant::now() >= deadline {
+                return self.agent_detail(agent_id).await.map(Some);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
     }
 
     /// Rename a public self-owned agent. Only the display name changes; the

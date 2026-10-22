@@ -801,3 +801,180 @@ fn skill_install_summary(kind: &crate::types::SkillInstallKind) -> String {
         },
     }
 }
+
+const BOOTSTRAP_POLL_INTERVAL_MS: u64 = 400;
+
+fn bootstrap_step_job_status(status: &crate::types::AgentBootstrapStepStatus) -> JobStatus {
+    match status {
+        crate::types::AgentBootstrapStepStatus::Pending => JobStatus::Queued,
+        crate::types::AgentBootstrapStepStatus::Succeeded => JobStatus::Completed,
+        crate::types::AgentBootstrapStepStatus::Failed => JobStatus::Failed,
+    }
+}
+
+fn bootstrap_job_items(
+    bootstrap: &crate::types::AgentBootstrapRecord,
+) -> (Vec<JobItem>, JobProgress) {
+    let steps = [
+        ("template", &bootstrap.template),
+        ("runtime", &bootstrap.runtime),
+        ("workspace", &bootstrap.workspace),
+        ("model", &bootstrap.model),
+        ("initial_message", &bootstrap.initial_message),
+    ];
+    let mut items = Vec::with_capacity(steps.len());
+    let mut succeeded = 0usize;
+    for (id, step) in steps {
+        if step.status == crate::types::AgentBootstrapStepStatus::Succeeded {
+            succeeded += 1;
+        }
+        items.push(JobItem {
+            id: id.to_string(),
+            status: bootstrap_step_job_status(&step.status),
+            summary: match &step.last_error {
+                Some(error) => format!("{id}: {error}"),
+                None => id.to_string(),
+            },
+            error: step.last_error.clone(),
+        });
+    }
+    (
+        items,
+        JobProgress {
+            current: succeeded,
+            total: steps.len(),
+        },
+    )
+}
+
+fn apply_bootstrap_snapshot(
+    jobs: &JobRegistry,
+    job_id: &str,
+    agent_id: &str,
+    snapshot: &crate::types::AgentBootstrapRecord,
+) {
+    let (items, progress) = bootstrap_job_items(snapshot);
+    jobs.update(job_id, |job| {
+        job.items = items;
+        job.progress = progress;
+        job.summary = format!(
+            "Bootstrapping agent {agent_id}: {} of {} steps complete",
+            job.progress.current, job.progress.total
+        );
+    });
+}
+
+/// Register a job that projects the background bootstrap reconcile of one
+/// agent. The job is a discardable progress view: the durable
+/// `agent_bootstraps` record remains the source of truth, and losing the job
+/// (for example a daemon restart) never loses bootstrap state.
+pub(super) fn spawn_agent_bootstrap_job(
+    state: &AppState,
+    agent_id: &str,
+    receiver: tokio::sync::oneshot::Receiver<
+        std::result::Result<crate::types::AgentBootstrapRecord, String>,
+    >,
+) -> String {
+    let id = format!("job_{}", Uuid::new_v4().simple());
+    let now = Utc::now();
+    let snapshot = state
+        .host
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .ok()
+        .flatten();
+    let (items, progress) = snapshot
+        .as_ref()
+        .map(|snapshot| bootstrap_job_items(snapshot))
+        .unwrap_or_default();
+    let job = JobSnapshot {
+        id: id.clone(),
+        kind: "agent.bootstrap".into(),
+        status: JobStatus::Running,
+        phase: "bootstrapping".into(),
+        progress,
+        summary: format!("Bootstrapping agent {agent_id}"),
+        items,
+        result: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    state.jobs.insert(job);
+
+    let jobs = state.jobs.clone();
+    let host = state.host.clone();
+    let job_id = id.clone();
+    let agent_id = agent_id.to_string();
+    tokio::spawn(async move {
+        let mut receiver = receiver;
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(BOOTSTRAP_POLL_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                result = &mut receiver => {
+                    match result {
+                        Ok(Ok(record)) => {
+                            let (items, progress) = bootstrap_job_items(&record);
+                            let summary = record.summary();
+                            jobs.update(&job_id, |job| {
+                                job.status = JobStatus::Completed;
+                                job.phase = "completed".into();
+                                job.progress = progress;
+                                job.items = items;
+                                job.summary = format!(
+                                    "Agent {} bootstrap finished: {}",
+                                    agent_id,
+                                    serde_json::to_value(&summary)
+                                        .ok()
+                                        .and_then(|value| value.get("status").cloned())
+                                        .and_then(|value| value.as_str().map(str::to_string))
+                                        .unwrap_or_else(|| "unknown".into())
+                                );
+                                job.result = Some(json!({
+                                    "agent_id": agent_id,
+                                    "bootstrap": summary,
+                                }));
+                            });
+                        }
+                        Ok(Err(message)) => {
+                            let message = message.clone();
+                            jobs.update(&job_id, |job| {
+                                job.status = JobStatus::Failed;
+                                job.phase = "failed".into();
+                                job.summary = format!("Agent {agent_id} bootstrap reconcile failed");
+                                job.error = Some(message);
+                            });
+                        }
+                        Err(_) => {
+                            jobs.update(&job_id, |job| {
+                                job.status = JobStatus::Failed;
+                                job.phase = "failed".into();
+                                job.summary = format!(
+                                    "Agent {agent_id} bootstrap reconcile ended without a result"
+                                );
+                                job.error = Some(
+                                    "bootstrap reconcile task ended without a result (runtime shutdown?)"
+                                        .into(),
+                                );
+                            });
+                        }
+                    }
+                    break;
+                }
+                _ = interval.tick() => {
+                    if let Ok(Some(snapshot)) = host
+                        .runtime_db()
+                        .agent_bootstraps()
+                        .latest(&agent_id)
+                    {
+                        apply_bootstrap_snapshot(&jobs, &job_id, &agent_id, &snapshot);
+                    }
+                }
+            }
+        }
+    });
+    id
+}

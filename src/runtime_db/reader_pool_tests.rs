@@ -6,9 +6,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use super::{
-    RuntimeDb, RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbRetryableError,
-};
+use super::{RuntimeDb, RuntimeDbRetryableError};
+// Only the protection-loss regression test below exercises these types, and
+// it runs on Linux where the WAL sidecar can be removed underneath the pool.
+#[cfg(target_os = "linux")]
+use super::{RuntimeDbProtectionError, RuntimeDbProtectionState};
 
 fn fixture(capacity: u32) -> Result<(tempfile::TempDir, RuntimeDb)> {
     let directory = tempfile::tempdir()?;

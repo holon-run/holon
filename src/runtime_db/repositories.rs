@@ -956,6 +956,31 @@ impl AgentBootstrapRepository<'_> {
                 .transpose()
         })
     }
+
+    /// Bootstrap records whose frontier step never recorded a result, i.e.
+    /// installs interrupted by a request cancellation or a process restart.
+    /// The startup sweep re-kicks these; records whose frontier already
+    /// recorded a failure stay untouched until an explicit repair.
+    pub fn pending_frontier(&self) -> Result<Vec<AgentBootstrapRecord>> {
+        self.db.with_read(|connection| {
+            let mut statement = connection
+                .prepare("SELECT payload_json FROM agent_bootstraps")
+                .context("preparing agent bootstrap pending scan")?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .context("querying agent bootstrap pending scan")?;
+            let mut records = Vec::new();
+            for payload in rows {
+                let payload = payload?;
+                let record: AgentBootstrapRecord = serde_json::from_str(&payload)
+                    .with_context(|| "decoding agent bootstrap payload")?;
+                if record.frontier_step_pending() {
+                    records.push(record);
+                }
+            }
+            Ok(records)
+        })
+    }
 }
 
 /// Used before filesystem inspection and again in the fenced admission transaction.

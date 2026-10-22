@@ -764,6 +764,16 @@ interface JobDto {
   error?: string | null;
 }
 
+interface AgentCreateReceiptDto {
+  stage?: string;
+  job_id?: string;
+  bootstrap?: { status?: string };
+}
+
+interface AgentCreateResponseDto {
+  receipt?: AgentCreateReceiptDto;
+}
+
 interface WorkspaceDirectoryEntryDto {
   name: string;
   type: string;
@@ -1257,11 +1267,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       return jobId;
     },
-    async createAgentFromTemplate(agentId: string, template: string): Promise<void> {
+    async createAgentFromTemplate(
+      agentId: string,
+      template: string,
+    ): Promise<AgentCreateResponseDto> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(
+      return postJson<AgentCreateResponseDto>(
         fetchImpl,
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/create`,

@@ -792,7 +792,7 @@ pub async fn create_agent(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
-    let created = state
+    let mut created = state
         .host
         .create_public_named_agent_with_name(
             &agent_id,
@@ -800,9 +800,23 @@ pub async fn create_agent(
             None,
             None,
             request.name.as_deref(),
+            crate::host::AgentBootstrapExecution::Background,
         )
         .await
         .map_err(error_response)?;
+    // Attach a job projection to the background bootstrap so clients can poll
+    // progress; the durable bootstrap record stays the source of truth.
+    let mut status = StatusCode::OK;
+    if created.receipt.stage == crate::types::AgentCreateStage::Provisioning {
+        status = StatusCode::ACCEPTED;
+        if let Ok(crate::host::AgentBootstrapKick::Started(receiver)) =
+            state.host.kick_agent_bootstrap(&agent_id)
+        {
+            created.receipt.job_id = Some(super::jobs::spawn_agent_bootstrap_job(
+                &state, &agent_id, receiver,
+            ));
+        }
+    }
     let audit = crate::types::AuditEvent::legacy(
         "agent_created",
         json!({
@@ -825,7 +839,7 @@ pub async fn create_agent(
             "agent core commit succeeded but agent_created audit append failed"
         );
     }
-    Ok(Json(created))
+    Ok((status, Json(created)))
 }
 
 pub async fn agent_detail(
@@ -861,12 +875,28 @@ pub async fn repair_agent(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let detail = state
+    let (detail, receiver) = state
         .host
-        .repair_public_agent(&agent_id)
+        .repair_public_agent_background(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    Ok(Json(detail))
+    match receiver {
+        Some(receiver) => {
+            // A background reconcile was kicked: return the current snapshot
+            // plus a job id clients can poll for completion.
+            let job_id = super::jobs::spawn_agent_bootstrap_job(&state, &agent_id, receiver);
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "ok": true,
+                    "detail": detail,
+                    "job_id": job_id,
+                })),
+            )
+                .into_response())
+        }
+        None => Ok(Json(json!({ "ok": true, "detail": detail })).into_response()),
+    }
 }
 
 pub async fn rename_agent(

@@ -4,13 +4,14 @@ use std::{
     fs::{self, File},
     io::{self, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use anyhow::Context;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use flate2::read::GzDecoder;
 use reqwest::Url;
+use serde_json::Value as JsonValue;
 use tar::Archive;
 use tempfile::{NamedTempFile, TempDir};
 
@@ -20,6 +21,12 @@ const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ENTRIES: usize = 100_000;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const SHA_RESOLVE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Total extracted size kept in the archive cache before oldest entries are
+/// evicted. Entries younger than `ARCHIVE_CACHE_MIN_AGE` are never evicted so
+/// an in-flight install cannot lose files under its reader.
+const MAX_ARCHIVE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const ARCHIVE_CACHE_MIN_AGE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug)]
 pub(crate) struct ArchiveHttpFailure {
@@ -63,7 +70,7 @@ impl std::error::Error for ArchiveHttpFailure {}
 #[derive(Debug)]
 pub(crate) struct GitHubArchive {
     #[allow(dead_code)]
-    temp_dir: TempDir,
+    temp_dir: Option<TempDir>,
     root: PathBuf,
     rejected_entries: Vec<PathBuf>,
 }
@@ -73,7 +80,7 @@ impl GitHubArchive {
     pub(crate) fn from_test_root(temp_dir: TempDir) -> Self {
         let root = temp_dir.path().to_path_buf();
         Self {
-            temp_dir,
+            temp_dir: Some(temp_dir),
             root,
             rejected_entries: Vec::new(),
         }
@@ -258,8 +265,98 @@ impl GitHubArchive {
         let root_name = root_name.ok_or_else(|| anyhow::anyhow!("GitHub archive is empty"))?;
         let root = temp_dir.path().join(root_name);
         Ok(Self {
-            temp_dir,
+            temp_dir: Some(temp_dir),
             root,
+            rejected_entries,
+        })
+    }
+
+    /// `fetch_blocking` with a content-addressed on-disk cache.
+    ///
+    /// Floating references (branches, `HEAD`) resolve to a commit SHA first
+    /// with one lightweight API request, so cache entries are immutable and
+    /// cannot go stale. When resolution fails for a non-rate-limit reason the
+    /// fetch proceeds without caching (previous behavior); a rate-limited
+    /// resolution stops like any other GitHub rate limit.
+    pub(crate) fn fetch_blocking_cached(
+        client: &crate::github::BlockingClient,
+        owner: &str,
+        repo: &str,
+        reference: &str,
+        archive_base: &str,
+        cache_root: &Path,
+    ) -> anyhow::Result<Self> {
+        let Some(commit_sha) = resolve_commit_sha(client, owner, repo, reference)? else {
+            return Self::fetch_blocking(client, owner, repo, reference, archive_base);
+        };
+        let cache_key = format!("{owner}__{repo}__{commit_sha}");
+        let cache_dir = cache_root.join(&cache_key);
+        if cache_dir.is_dir() {
+            tracing::debug!(archive = %cache_key, "github_archive_cache_hit");
+            return Ok(Self::from_cache_root(cache_dir));
+        }
+        let archive = Self::fetch_blocking(client, owner, repo, &commit_sha, archive_base)?;
+        let archive = archive.move_into_cache(&cache_dir)?;
+        evict_archive_cache(cache_root);
+        Ok(archive)
+    }
+
+    fn from_cache_root(root: PathBuf) -> Self {
+        Self {
+            temp_dir: None,
+            root,
+            rejected_entries: Vec::new(),
+        }
+    }
+
+    /// Move a freshly extracted archive into its cache slot. A concurrent
+    /// writer for the same immutable key wins the rename; a loser discards
+    /// its copy and shares the installed entry.
+    fn move_into_cache(self, cache_dir: &Path) -> anyhow::Result<Self> {
+        let rejected_entries = self.rejected_entries.clone();
+        if let Some(parent) = cache_dir.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create archive cache root {}", parent.display())
+            })?;
+        }
+        match fs::rename(&self.root, cache_dir) {
+            Ok(()) => {}
+            Err(rename_error) if cache_dir.is_dir() => {
+                tracing::debug!(
+                    cache = %cache_dir.display(),
+                    error = %rename_error,
+                    "github_archive_cache_race: keeping existing entry"
+                );
+            }
+            Err(_) => {
+                // Cross-device rename: copy the extracted tree, then swap in.
+                let staging =
+                    cache_dir.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
+                if let Err(error) = copy_dir_recursive(&self.root, &staging) {
+                    let _ = fs::remove_dir_all(&staging);
+                    return Err(error.context(format!(
+                        "failed to stage archive cache entry {}",
+                        cache_dir.display()
+                    )));
+                }
+                match fs::rename(&staging, cache_dir) {
+                    Ok(()) => {}
+                    Err(_) if cache_dir.is_dir() => {
+                        let _ = fs::remove_dir_all(&staging);
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&staging);
+                        return Err(anyhow::Error::new(error).context(format!(
+                            "failed to install archive cache entry {}",
+                            cache_dir.display()
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            temp_dir: None,
+            root: cache_dir.to_path_buf(),
             rejected_entries,
         })
     }
@@ -516,6 +613,126 @@ pub(crate) fn is_directory_not_found(error: &anyhow::Error) -> bool {
         .any(|cause| cause.is::<ArchiveDirectoryNotFound>())
 }
 
+/// Resolve a Git reference (branch, tag, `HEAD`, or short SHA) to a full
+/// commit SHA using one GitHub API request. Returns `Ok(None)` when the
+/// reference cannot be resolved so callers can fall back to an uncached
+/// fetch instead of failing the install.
+fn resolve_commit_sha(
+    client: &crate::github::BlockingClient,
+    owner: &str,
+    repo: &str,
+    reference: &str,
+) -> anyhow::Result<Option<String>> {
+    let normalized = reference.trim();
+    if normalized.len() == 40 && normalized.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(Some(normalized.to_ascii_lowercase()));
+    }
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/commits/{normalized}");
+    let api_url = client.api_url(&url)?;
+    let response = client.get(&api_url).timeout(SHA_RESOLVE_TIMEOUT).send()?;
+    if !response.status().is_success() {
+        let error = blocking_http_error(client, response);
+        // A rate-limited resolution must stop like any other GitHub rate
+        // limit; unrelated failures fall back to an uncached fetch.
+        if error.downcast_ref::<crate::github::RateLimit>().is_some() {
+            return Err(error);
+        }
+        tracing::debug!(
+            error = %format!("{error:#}"),
+            "github archive sha resolution failed; fetching without cache"
+        );
+        return Ok(None);
+    }
+    let payload: JsonValue = response.json()?;
+    Ok(payload["sha"]
+        .as_str()
+        .filter(|sha| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|sha| sha.to_ascii_lowercase()))
+}
+
+fn evict_archive_cache(cache_root: &Path) {
+    let entries = match fs::read_dir(cache_root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let mut total: u64 = 0;
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let modified = metadata.modified().unwrap_or_else(|_| SystemTime::now());
+        let size = directory_size(&path).unwrap_or(0);
+        total = total.saturating_add(size);
+        candidates.push((modified, size, path));
+    }
+    if total <= MAX_ARCHIVE_CACHE_BYTES {
+        return;
+    }
+    candidates.sort_by_key(|(modified, _, _)| *modified);
+    let cutoff = SystemTime::now()
+        .checked_sub(ARCHIVE_CACHE_MIN_AGE)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    for (modified, size, path) in candidates {
+        if total <= MAX_ARCHIVE_CACHE_BYTES {
+            break;
+        }
+        if modified >= cutoff {
+            // Never evict young entries: an in-flight install may still be
+            // reading from them.
+            break;
+        }
+        tracing::debug!(cache = %path.display(), "evicting github archive cache entry");
+        if fs::remove_dir_all(&path).is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
+}
+
+fn directory_size(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0_u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(&current)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target).with_context(|| {
+                format!(
+                    "failed to copy {} -> {}",
+                    entry.path().display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,7 +919,8 @@ mod tests {
             assert_eq!(fs::read(snapshot.root().join("two.txt")).unwrap(), b"two");
             assert_eq!(snapshot.directory("").unwrap(), snapshot.root());
             assert!(snapshot.rejected_entries.is_empty());
-            assert!(!snapshot.temp_dir.path().join("pax_global_header").exists());
+            let temp_root = snapshot.temp_dir.as_ref().unwrap().path();
+            assert!(!temp_root.join("pax_global_header").exists());
         }
     }
 
@@ -739,7 +957,8 @@ mod tests {
         assert_eq!(fs::read(snapshot.root().join("ok.txt")).unwrap(), b"ok");
         assert_eq!(snapshot.root().file_name().unwrap(), "root");
         assert!(snapshot.rejected_entries.is_empty());
-        assert_eq!(fs::read_dir(snapshot.temp_dir.path()).unwrap().count(), 1);
+        let temp_root = snapshot.temp_dir.as_ref().unwrap().path();
+        assert_eq!(fs::read_dir(temp_root).unwrap().count(), 1);
         assert_eq!(fs::read_dir(snapshot.root()).unwrap().count(), 1);
     }
 

@@ -468,6 +468,9 @@ pub enum AgentCreateStage {
     Resolved,
     Degraded,
     Bootstrapped,
+    /// Bootstrap was submitted and runs in the background; poll the agent
+    /// detail or the create receipt job for the terminal state.
+    Provisioning,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -628,6 +631,23 @@ impl AgentBootstrapRecord {
         }
     }
 
+    /// True when the frontier (first not-yet-succeeded) step never recorded
+    /// a result. This identifies bootstraps interrupted before the current
+    /// step was attempted; steps that already recorded a failure are left
+    /// for an explicit repair instead of a startup sweep.
+    pub fn frontier_step_pending(&self) -> bool {
+        [
+            &self.template,
+            &self.runtime,
+            &self.workspace,
+            &self.model,
+            &self.initial_message,
+        ]
+        .into_iter()
+        .find(|step| step.status != AgentBootstrapStepStatus::Succeeded)
+        .is_some_and(|step| step.status == AgentBootstrapStepStatus::Pending)
+    }
+
     pub fn legacy_ready(agent_id: impl Into<String>) -> Self {
         let now = Utc::now();
         Self {
@@ -661,6 +681,11 @@ pub struct AgentCreateReceipt {
     pub stage: AgentCreateStage,
     pub lifecycle: AgentRegistryStatus,
     pub created: bool,
+    /// Background job observing the bootstrap when the receipt is returned
+    /// in the `Provisioning` stage. Absent for terminal stages and for
+    /// callers that bootstrap inline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
     pub bootstrap: AgentBootstrapSummary,
 }
 

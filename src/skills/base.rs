@@ -457,7 +457,7 @@ fn first_body_paragraph(content: &str) -> String {
 const SKILL_ROOT_SUFFIX_AGENT: &str = "skills";
 const SKILL_ROOT_SUFFIX_USER_LIBRARY: &str = ".agents/skills";
 
-fn agent_skills_root(agent_home: &Path) -> PathBuf {
+pub(crate) fn agent_skills_root(agent_home: &Path) -> PathBuf {
     // Prefer an existing skill root if one already exists (e.g. .agents/skills, .codex/skills).
     // This avoids creating a new `skills/` root that would shadow legacy roots.
     if let Some(existing) = select_skill_root(Some(agent_home), &SKILL_ROOT_SUFFIXES) {
@@ -957,8 +957,14 @@ fn install_github_remote_skill_with_client_and_archive_base(
     archive_base: &str,
 ) -> Result<String> {
     let reference = archive_reference(&source.reference);
+    // Local-first check: an already-installed skill skips the network
+    // round-trip entirely instead of paying for the archive download.
+    if skip_installed_github_skill(user_home, &source.skill_name)? {
+        return Ok(source.path.clone());
+    }
     let archive = fetch_github_archive(
         client,
+        &github_archive_cache_root(user_home),
         &source.owner,
         &source.repo,
         reference,
@@ -1088,6 +1094,7 @@ fn install_github_remote_skill_set_with_client_and_archive_base(
     let reference = archive_reference(&source.reference);
     let archive = fetch_github_archive(
         client,
+        &github_archive_cache_root(user_home),
         &source.owner,
         &source.repo,
         reference,
@@ -1141,6 +1148,98 @@ fn install_github_remote_skill_set_with_client_and_archive_base(
     Ok(installed)
 }
 
+/// A GitHub skill install request, typically sourced from an agent template:
+/// a package reference plus an optional explicit skill selector.
+#[derive(Debug, Clone)]
+pub struct GithubSkillInstallRequest {
+    pub package: String,
+    pub skill: Option<String>,
+}
+
+/// Install several GitHub skills into the user skill library in one pass.
+///
+/// - Skills already present in the library are skipped with zero network
+///   traffic (the local check runs before any download).
+/// - Requests that share a repository download its archive once, via the
+///   content-addressed archive cache, instead of once per skill.
+///
+/// Returns the resolved skill names in request order (including skipped
+/// ones) and syncs the remote skill lock for every resolved skill.
+pub fn add_github_remote_skills_to_library(
+    user_home: &Path,
+    requests: &[GithubSkillInstallRequest],
+) -> Result<Vec<String>> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sources = Vec::with_capacity(requests.len());
+    for request in requests {
+        validate_remote_package(&request.package)?;
+        if let Some(skill) = request.skill.as_deref() {
+            validate_skill_name(skill)?;
+        }
+        sources.push(RemoteSkillSource::parse(
+            &request.package,
+            request.skill.as_deref(),
+        )?);
+    }
+    let mut resolved_names: Vec<Option<String>> = vec![None; sources.len()];
+    // Group pending installs by (owner, repo, reference) so each repository
+    // archive is fetched once; BTreeMap keeps group order deterministic.
+    let mut groups: std::collections::BTreeMap<(String, String, String), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, source) in sources.iter().enumerate() {
+        if skip_installed_github_skill(user_home, &source.skill_name)? {
+            resolved_names[index] = Some(source.skill_name.clone());
+            continue;
+        }
+        groups
+            .entry((
+                source.owner.clone(),
+                source.repo.clone(),
+                archive_reference(&source.reference).to_string(),
+            ))
+            .or_default()
+            .push(index);
+    }
+    if !groups.is_empty() {
+        let client = remote_skill_client()?;
+        for ((owner, repo, reference), indexes) in groups {
+            let package_label = format!("{owner}/{repo}@{reference}");
+            let archive = fetch_github_archive(
+                &client,
+                &github_archive_cache_root(user_home),
+                &owner,
+                &repo,
+                &reference,
+                DEFAULT_ARCHIVE_BASE,
+                &package_label,
+            )?;
+            for index in indexes {
+                let source = &sources[index];
+                install_github_remote_skill_from_archive(
+                    user_home,
+                    &package_label,
+                    source,
+                    &archive,
+                )?;
+                resolved_names[index] = Some(source.skill_name.clone());
+            }
+        }
+    }
+    let mut installs = Vec::with_capacity(sources.len());
+    let mut names = Vec::with_capacity(sources.len());
+    for (index, source) in sources.iter().enumerate() {
+        let skill_name = resolved_names[index]
+            .clone()
+            .unwrap_or_else(|| source.skill_name.clone());
+        installs.push(RemoteSkillInstall::from_source(source, source.path.clone()));
+        names.push(skill_name);
+    }
+    sync_remote_skill_lock_entries(user_home, &installs)?;
+    Ok(names)
+}
+
 fn remote_skill_client() -> Result<BlockingClient> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS))
@@ -1164,22 +1263,50 @@ fn archive_reference(reference: &str) -> &str {
 
 fn fetch_github_archive(
     client: &BlockingClient,
+    cache_root: &Path,
     owner: &str,
     repo: &str,
     reference: &str,
     archive_base: &str,
     package: &str,
 ) -> Result<GitHubArchive> {
-    GitHubArchive::fetch_blocking(client, owner, repo, reference, archive_base).map_err(|error| {
-        if error
-            .chain()
-            .any(|cause| cause.is::<ArchiveHttpFailure>() || cause.is::<RateLimit>())
-        {
-            return error.context(format!("failed to fetch remote skill archive '{package}'"));
+    GitHubArchive::fetch_blocking_cached(client, owner, repo, reference, archive_base, cache_root)
+        .map_err(|error| {
+            if error
+                .chain()
+                .any(|cause| cause.is::<ArchiveHttpFailure>() || cause.is::<RateLimit>())
+            {
+                return error.context(format!("failed to fetch remote skill archive '{package}'"));
+            }
+            let context = RemoteSkillArchiveFetchFailed::new(package, &error);
+            error.context(context)
+        })
+}
+
+/// Content-addressed cache root for downloaded GitHub skill archives.
+fn github_archive_cache_root(user_home: &Path) -> PathBuf {
+    user_home
+        .join(".holon")
+        .join("cache")
+        .join("github-archives")
+}
+
+/// Whether the skill is already installed in the user library, so the caller
+/// can keep the existing skip semantics without any network traffic.
+fn skip_installed_github_skill(user_home: &Path, skill_name: &str) -> Result<bool> {
+    let skills_root = user_library_skills_root(user_home);
+    match install_destination(&skills_root, skill_name) {
+        Ok(_) => Ok(false),
+        Err(err) if err.downcast_ref::<SkillInstallConflict>().is_some() => {
+            tracing::info!(
+                skill_name = %skill_name,
+                destination = %skills_root.join(skill_name).display(),
+                "skill already installed globally; skipping re-install"
+            );
+            Ok(true)
         }
-        let context = RemoteSkillArchiveFetchFailed::new(package, &error);
-        error.context(context)
-    })
+        Err(err) => Err(err),
+    }
 }
 
 fn discover_skills_via_archive(
@@ -1904,7 +2031,7 @@ pub fn update_library_skills_with_progress(
     name_filter: Option<&str>,
     on_progress: impl FnMut(SkillLibraryUpdateProgress),
 ) -> Result<SkillLibraryUpdateResult> {
-    let mut updater = GithubSkillRemoteUpdater::default();
+    let mut updater = GithubSkillRemoteUpdater::new(user_home);
     update_library_skills_with_remote_updater(user_home, name_filter, &mut updater, on_progress)
 }
 
@@ -1923,6 +2050,16 @@ struct GithubArchiveKey {
 #[derive(Default)]
 struct GithubSkillRemoteUpdater {
     archives: HashMap<GithubArchiveKey, GitHubArchive>,
+    archive_cache_root: PathBuf,
+}
+
+impl GithubSkillRemoteUpdater {
+    fn new(user_home: &Path) -> Self {
+        Self {
+            archives: HashMap::new(),
+            archive_cache_root: github_archive_cache_root(user_home),
+        }
+    }
 }
 
 impl SkillRemoteUpdater for GithubSkillRemoteUpdater {
@@ -1968,6 +2105,7 @@ impl GithubSkillRemoteUpdater {
             let package = format!("{}/{}", source.owner, source.repo);
             let archive = fetch_github_archive(
                 &client,
+                &self.archive_cache_root,
                 &source.owner,
                 &source.repo,
                 &key.reference,
@@ -2928,8 +3066,19 @@ mod tests {
             &base,
         )
         .unwrap();
-        let error = fetch_github_archive(&client, "owner", "repo", "main", &base, "owner/repo")
-            .unwrap_err();
+        // A full commit SHA skips SHA resolution so the single mock request is
+        // the archive download itself; the cache root stays empty on failure.
+        let cache_root = tempfile::tempdir().unwrap();
+        let error = fetch_github_archive(
+            &client,
+            cache_root.path(),
+            "owner",
+            "repo",
+            "1111111111111111111111111111111111111111",
+            &base,
+            "owner/repo",
+        )
+        .unwrap_err();
         server.join().unwrap();
         let context = error
             .downcast_ref::<RemoteSkillArchiveFetchFailed>()
@@ -3013,6 +3162,12 @@ mod tests {
     #[test]
     fn github_skill_404_fallback_preserves_tree_rate_limit_and_stops() {
         let home = tempdir().unwrap();
+        // A pinned commit skips SHA resolution, so the queued responses map
+        // to the archive request and its REST fallback directly.
+        let source = RemoteSkillSource {
+            reference: "1111111111111111111111111111111111111111".into(),
+            ..mock_source("skills/demo")
+        };
         let (client, server, archive_base) = github_mock_with_base(
             vec![
                 (404, "", r#"{"message":"Not Found"}"#.into()),
@@ -3028,7 +3183,7 @@ mod tests {
         let error = install_github_remote_skill_with_client_and_archive_base(
             home.path(),
             "owner/repo",
-            &mock_source("skills/demo"),
+            &source,
             &client,
             &archive_base,
         )
@@ -3134,7 +3289,7 @@ mod tests {
             skill_path: "skills/demo".into(),
             skill_folder_hash: "hash".into(),
         };
-        let mut updater = GithubSkillRemoteUpdater::default();
+        let mut updater = GithubSkillRemoteUpdater::new(tempdir().unwrap().path());
         let mut fetches = 0;
         let archive_root = |fetches: &mut usize| {
             *fetches += 1;
