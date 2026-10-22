@@ -100,7 +100,7 @@ pub(crate) async fn execute(
                 "work_item_id": work_item_id,
                 "completed_transition": false,
                 "completion_mode": completion_mode_name(settlement),
-                "expected_output": "final_text_only",
+                "expected_output": "non_empty_final_text",
                 "warnings": warnings_json(&warnings),
             }),
             Some("Awaiting the final operator-facing completion report.".into()),

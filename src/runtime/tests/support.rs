@@ -584,16 +584,108 @@ pub(crate) struct WaitForFinalReportProvider {
     pub(crate) calls: Mutex<usize>,
     pub(crate) scenario: WaitForFinalReportScenario,
     pub(crate) silent_progress: Option<bool>,
+    pub(crate) report_path: std::path::PathBuf,
+    pub(crate) report_runtime: Mutex<Option<RuntimeHandle>>,
     pub(crate) saw_settlement_error_follow_up: Mutex<bool>,
-    pub(crate) invalid_final_result_count: Mutex<usize>,
+    pub(crate) settlement_result_count: Mutex<usize>,
     pub(crate) settlement_timer: Mutex<Option<(RuntimeHandle, String)>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportCheckpointOutput {
+    Text,
+    Empty,
+    ReasoningOnly,
+}
+
+pub(crate) struct ReportCompactionProvider {
+    pub(crate) inner: Arc<dyn AgentProvider>,
+    pub(crate) checkpoint_output: ReportCheckpointOutput,
+    pub(crate) checkpoint_calls: Mutex<usize>,
+    pub(crate) response_calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for ReportCompactionProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut result_ids = std::collections::HashSet::new();
+        for (index, message) in request.conversation.iter().enumerate() {
+            if let ConversationMessage::UserToolResults(results) = message {
+                let Some(ConversationMessage::AssistantBlocks(blocks)) = index
+                    .checked_sub(1)
+                    .and_then(|i| request.conversation.get(i))
+                else {
+                    panic!("checkpoint projection must preserve adjacent tool uses and results");
+                };
+                for result in results {
+                    assert!(blocks.iter().any(|block| matches!(
+                        block, ModelBlock::ToolUse { id, .. } if id == &result.tool_use_id
+                    )));
+                    assert!(result_ids.insert(&result.tool_use_id));
+                }
+            }
+        }
+        if request.conversation.iter().any(|message| {
+            matches!(
+                message,
+                ConversationMessage::UserText(text) if text.contains("progress checkpoint request")
+            )
+        }) {
+            *self.checkpoint_calls.lock().await += 1;
+            return Ok(ProviderTurnResponse {
+                blocks: match self.checkpoint_output {
+                    ReportCheckpointOutput::Text => vec![ModelBlock::Text {
+                        text:
+                            "Private checkpoint: cleanup remains; deliver a separate final report."
+                                .into(),
+                    }],
+                    ReportCheckpointOutput::Empty => Vec::new(),
+                    ReportCheckpointOutput::ReasoningOnly => vec![ModelBlock::ReasoningText {
+                        text: "Private reasoning about unfinished cleanup.".into(),
+                    }],
+                },
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 10,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            });
+        }
+        let mut calls = self.response_calls.lock().await;
+        *calls += 1;
+        let mut response = self.inner.complete_turn(request).await?;
+        // Text alongside the initial lifecycle call would satisfy its report
+        // immediately, without entering the pending-report continuation.
+        if *calls == 2 {
+            response.blocks.insert(
+                0,
+                ModelBlock::Text {
+                    text: "Pending report context that may be compacted. ".repeat(1000),
+                },
+            );
+        }
+        Ok(response)
+    }
+}
+
+pub(crate) fn report_compaction_context_config(workspace: &TempDir) -> ContextConfig {
+    let config = continuation_ready_context_config(workspace, 65536);
+    ContextConfig {
+        // Leave room for the ordinary runtime prompt and the checkpoint request,
+        // but not for the long pending-report round as well.
+        compaction_trigger_estimated_tokens: config.prompt_budget_estimated_tokens - 65536 + 28000,
+        compaction_keep_recent_estimated_tokens: 2048,
+        ..config
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaitForFinalReportScenario {
     Direct,
-    DisallowedToolCorrective,
-    AllowedToolBudget,
+    NestedLifecycleCorrective,
+    CleanupTools,
     SettlementErrorRecovery,
 }
 
@@ -1071,6 +1163,73 @@ impl AgentProvider for WaitForFinalReportProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
+        if *calls > 1
+            && self.silent_progress.is_none()
+            && matches!(
+                self.scenario,
+                WaitForFinalReportScenario::CleanupTools
+                    | WaitForFinalReportScenario::NestedLifecycleCorrective
+            )
+        {
+            for name in ["ExecCommand", "ApplyPatch", "CreateWorkItem", "GetAgent"] {
+                assert!(
+                    request.tools.iter().any(|tool| tool.name == name),
+                    "ordinary tool {name} must remain available during the wait report"
+                );
+            }
+            for name in ["WaitFor", "CompleteWorkItem", "PickWorkItem", "Sleep"] {
+                assert!(
+                    request.tools.iter().all(|tool| tool.name != name),
+                    "nested lifecycle tool {name} must not be exposed"
+                );
+            }
+            let runtime = self.report_runtime.lock().await.clone().unwrap();
+            assert!(
+                runtime
+                    .storage()
+                    .active_wait_conditions_for_agent("default")?
+                    .is_empty(),
+                "text accompanying cleanup tools must not register the wait"
+            );
+            assert!(runtime
+                .recent_briefs(10)
+                .await?
+                .iter()
+                .all(|brief| brief.kind != BriefKind::Result));
+            if self.scenario == WaitForFinalReportScenario::CleanupTools && *calls > 2 {
+                let mut previous_ids = vec![format!("cleanup-wait-tool-{}", *calls - 1)];
+                if *calls == 3 {
+                    previous_ids.push("cleanup-wait-batch-check".into());
+                }
+                for previous_id in previous_ids {
+                    let results = request
+                        .conversation
+                        .iter()
+                        .filter_map(|message| match message {
+                            ConversationMessage::UserToolResults(results) => Some(results),
+                            _ => None,
+                        })
+                        .flatten()
+                        .filter(|result| result.tool_use_id == previous_id)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        results.len(),
+                        1,
+                        "cleanup tool {previous_id} must have exactly one result"
+                    );
+                    assert!(!results[0].is_error, "{}", results[0].content);
+                }
+            }
+            if self.scenario == WaitForFinalReportScenario::NestedLifecycleCorrective && *calls == 3
+            {
+                assert!(request.conversation.iter().all(|message| match message {
+                    ConversationMessage::AssistantBlocks(blocks) => blocks.iter().all(|block| {
+                        !matches!(block, ModelBlock::ToolUse { id, .. } if id.starts_with("nested-"))
+                    }),
+                    _ => true,
+                }));
+            }
+        }
         let blocks = if let Some(prior_round) = self.silent_progress {
             let progress_round = prior_round && *calls == 1;
             assert!(*calls <= if prior_round { 2 } else { 1 });
@@ -1158,53 +1317,125 @@ impl AgentProvider for WaitForFinalReportProvider {
                         .filter(|result| result.tool_use_id == "wait-for-invalid-final")
                         .count();
                     *self.saw_settlement_error_follow_up.lock().await = follow_up;
-                    *self.invalid_final_result_count.lock().await = result_count;
+                    *self.settlement_result_count.lock().await = result_count;
                     vec![ModelBlock::Text {
                         text: "The timer wait failed and no wait was registered.".into(),
                     }]
                 }
-                2 if self.scenario == WaitForFinalReportScenario::DisallowedToolCorrective => {
-                    vec![ModelBlock::ToolUse {
-                        id: "forbidden-follow-up-tool".into(),
-                        name: "ExecCommand".into(),
-                        input: serde_json::json!({"cmd": "echo should-not-run"}),
-                        kind: crate::provider::ModelToolCallKind::Function,
-                        provider_data: None,
-                    }]
+                2 if self.scenario == WaitForFinalReportScenario::NestedLifecycleCorrective => {
+                    vec![
+                        ModelBlock::Text {
+                            text: "This text must not commit a recursive wait.".into(),
+                        },
+                        ModelBlock::ToolUse {
+                            id: "nested-wait".into(),
+                            name: "WaitFor".into(),
+                            input: serde_json::json!({
+                                "wake": "operator_input",
+                                "reason": "must not replace pending wait",
+                                "delivery": "silent"
+                            }),
+                            kind: crate::provider::ModelToolCallKind::Function,
+                            provider_data: None,
+                        },
+                        ModelBlock::ToolUse {
+                            id: "nested-completion".into(),
+                            name: "CompleteWorkItem".into(),
+                            input: serde_json::json!({"work_item_id": "must-not-complete"}),
+                            kind: crate::provider::ModelToolCallKind::Function,
+                            provider_data: None,
+                        },
+                    ]
                 }
-                2 | 3 if self.scenario == WaitForFinalReportScenario::AllowedToolBudget => {
-                    assert!(
-                        request.tools.iter().any(|tool| tool.name == "GetAgent"),
-                        "allowed report tools should remain available within the budget"
-                    );
-                    vec![ModelBlock::ToolUse {
-                        id: format!("allowed-report-tool-{}", *calls),
-                        name: "GetAgent".into(),
-                        input: serde_json::json!({}),
-                        kind: crate::provider::ModelToolCallKind::Function,
-                        provider_data: None,
-                    }]
+                2..=6 if self.scenario == WaitForFinalReportScenario::CleanupTools => {
+                    let path = self.report_path.display();
+                    let (name, input) = match *calls {
+                        2 => (
+                            "ExecCommand",
+                            serde_json::json!({
+                                "cmd": format!("printf 'before\\n' > '{path}'"),
+                                "yield_time_ms": 30000
+                            }),
+                        ),
+                        3 => {
+                            assert_eq!(std::fs::read_to_string(&self.report_path)?, "before\n");
+                            let patch_tool = request
+                                .tools
+                                .iter()
+                                .find(|tool| tool.name == "ApplyPatch")
+                                .unwrap();
+                            (
+                                "ApplyPatch",
+                                if patch_tool.freeform_grammar.is_some() {
+                                    serde_json::json!(format!(
+                                        "*** Begin Patch\n*** Update File: {path}\n@@\n-before\n+after\n*** End Patch\n"
+                                    ))
+                                } else {
+                                    serde_json::json!({
+                                        "patch": format!("--- {path}\n+++ {path}\n@@ -1,1 +1,1 @@\n-before\n+after\n")
+                                    })
+                                },
+                            )
+                        }
+                        4 | 5 => {
+                            assert_eq!(std::fs::read_to_string(&self.report_path)?, "after\n");
+                            (
+                                "ExecCommand",
+                                serde_json::json!({
+                                    "cmd": if *calls == 4 {
+                                        format!("cat '{path}'")
+                                    } else {
+                                        format!("rm '{path}'")
+                                    },
+                                    "yield_time_ms": 30000
+                                }),
+                            )
+                        }
+                        6 => {
+                            assert!(!self.report_path.exists());
+                            (
+                                "ExecCommand",
+                                serde_json::json!({
+                                    "cmd": format!("test ! -e '{path}'"),
+                                    "yield_time_ms": 30000
+                                }),
+                            )
+                        }
+                        _ => unreachable!(),
+                    };
+                    let mut blocks = vec![
+                        ModelBlock::Text {
+                            text: "Cleanup is in progress; this is not the final wait report."
+                                .into(),
+                        },
+                        ModelBlock::ToolUse {
+                            id: format!("cleanup-wait-tool-{}", *calls),
+                            name: name.into(),
+                            kind: if name == "ApplyPatch" && input.is_string() {
+                                crate::provider::ModelToolCallKind::Custom
+                            } else {
+                                crate::provider::ModelToolCallKind::Function
+                            },
+                            input,
+                            provider_data: None,
+                        },
+                    ];
+                    if *calls == 2 {
+                        blocks.push(ModelBlock::ToolUse {
+                            id: "cleanup-wait-batch-check".into(),
+                            name: "ExecCommand".into(),
+                            input: serde_json::json!({
+                                "cmd": format!("test -s '{path}'"),
+                                "yield_time_ms": 30000
+                            }),
+                            kind: crate::provider::ModelToolCallKind::Function,
+                            provider_data: None,
+                        });
+                    }
+                    blocks
                 }
-                4 if self.scenario == WaitForFinalReportScenario::AllowedToolBudget => {
-                    assert!(
-                        request.tools.is_empty(),
-                        "the report request after two tool rounds must be text-only"
-                    );
-                    let last_user_text = request
-                        .conversation
-                        .iter()
-                        .rev()
-                        .find_map(|message| match message {
-                            ConversationMessage::UserText(text) => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .expect("text-only fallback request must follow a user text notice");
-                    assert!(
-                        last_user_text.contains("Report tool budget exhausted.")
-                            && last_user_text
-                                .contains("Tool calls are now disabled at the API layer"),
-                        "text-only fallback request must be preceded by the fallback notice, got: {last_user_text}"
-                    );
+                7 if self.scenario == WaitForFinalReportScenario::CleanupTools => {
+                    assert!(!self.report_path.exists());
                     vec![ModelBlock::Text {
                         text: "Waiting for final verification; I will resume when it changes."
                             .into(),
