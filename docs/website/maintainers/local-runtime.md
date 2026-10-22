@@ -59,8 +59,8 @@ with throwaway scripts for final validation.
 ## Web GUI development
 
 Release binaries embed the GUI; the development server is for changing its
-source. Use Node.js 24 or newer. From the repository root, install and build
-the shared conversation SDK before starting the GUI:
+source. Use Node.js 24.22.1 or newer in the 24.x release line. From the repository
+root, install and build the shared conversation SDK before starting the GUI:
 
 ```bash
 npm ci --prefix packages/conversation-sdk

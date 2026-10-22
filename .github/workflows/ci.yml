@@ -277,7 +277,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
           cache-dependency-path: |
             web-gui/app/package-lock.json
@@ -315,7 +315,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
           cache-dependency-path: web-gui/openapi-tools/package-lock.json
       - name: Set up Java
@@ -435,7 +435,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
           cache-dependency-path: packages/conversation-sdk/package-lock.json
 
@@ -513,7 +513,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
 
       - name: Build web GUI
         run: make web
@@ -689,7 +689,7 @@ jobs:
         if: needs.changes.outputs.full_sweep != 'true' && needs.changes.outputs.conversation_sdk != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
           cache-dependency-path: packages/conversation-sdk/package-lock.json
 
@@ -773,7 +773,7 @@ jobs:
         if: matrix.shard == 'misc'
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
 
       - name: Build App SDK for embedded asset tests
         if: matrix.shard == 'misc'
@@ -849,7 +849,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.22.1'
           cache: npm
           cache-dependency-path: |
             web-gui/app/package-lock.json
