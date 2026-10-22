@@ -1299,7 +1299,7 @@ function SessionLogout() {
         headers: { Accept: "application/json" },
       });
       if (!response.ok) throw new Error("Logout failed");
-      await clearConversationCaches();
+      await clearConversationCaches({ notifySiblingTabs: true });
       clearStoredRuntimeConnectionToken();
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
       window.location.replace(`/login?return_to=${encodeURIComponent(returnTo || "/")}`);

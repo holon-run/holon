@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LoginPage } from "./LoginPage";
+import { clearConversationCaches } from "../../runtime/conversation-cache-lifecycle";
 
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../runtime/conversation-cache-lifecycle", () => ({
@@ -17,6 +18,7 @@ let root: Root | undefined;
 let container: HTMLDivElement;
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   vi.spyOn(window.location, "replace").mockImplementation(() => {});
@@ -59,12 +61,14 @@ describe("login completion destinations", () => {
         container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       });
       expect(window.location.replace).toHaveBeenCalledWith(new URL(expected, window.location.origin).href);
+      expect(clearConversationCaches).toHaveBeenCalledExactlyOnceWith({ notifySiblingTabs: true });
     });
 
     it(`uses a same-origin destination after pairing: ${name}`, async () => {
       await renderLogin("static", `/login?return_to=${encodeURIComponent(requested)}#pair=test-ticket`);
       expect(window.location.replace).toHaveBeenCalledWith(new URL(expected, window.location.origin).href);
       expect(window.location.hash).toBe("");
+      expect(clearConversationCaches).toHaveBeenCalledExactlyOnceWith({ notifySiblingTabs: true });
     });
 
     it(`passes the validated destination to OIDC: ${name}`, async () => {
@@ -72,6 +76,7 @@ describe("login completion destinations", () => {
       expect(window.location.replace).toHaveBeenCalledWith(
         `/api/auth/oidc/start?return_to=${encodeURIComponent(expected)}`,
       );
+      expect(clearConversationCaches).toHaveBeenCalledExactlyOnceWith();
     });
   }
 
