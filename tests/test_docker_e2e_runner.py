@@ -758,6 +758,39 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(scenario.status()["extra_requests"], 1)
         self.assertFalse(scenario.status()["complete"])
 
+    def test_openai_stub_answers_default_bootstrap_intro_without_phase(self) -> None:
+        scenario = stub.Scenario("scheduler-task-wait")
+        status, response = scenario.consume(
+            {
+                "input": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "## current_input\nCurrent input:\n"
+                                    "- [system][runtime_system][runtime_owned]"
+                                    "[trigger:internal_followup]"
+                                    "[runtime_instruction][InternalFollowup]\n"
+                                    "  This agent was just created without an "
+                                    "initial message. Perform a one-time "
+                                    "initialization turn."
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            response["output"][0]["content"][0]["text"],
+            "Agent bootstrap initialization complete.",
+        )
+        self.assertEqual(response["id"], "resp_agent_bootstrap_intro")
+        self.assertEqual(scenario.phase, 0)
+
     def test_openai_stub_upgrade_v030_echoes_current_marker_not_history(self) -> None:
         scenario = stub.Scenario("runtime-upgrade-v030")
         old_prompt = {
