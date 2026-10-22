@@ -201,6 +201,7 @@ internal class HolonViewModel(
     private val draftSaveJobs = mutableMapOf<String, Job>()
     private val composerSaveJobs = mutableMapOf<String, Job>()
     private var draftRevision = 0L
+    private var attachmentRevision = 0L
     @Volatile private var liveSyncGeneration = 0L
     private var briefScope: String? = null
     private val readingCache = linkedMapOf<String, ConversationReadingState>()
@@ -1081,6 +1082,7 @@ internal class HolonViewModel(
                 error = null,
             )
         }
+        val loadComposerRevision = ComposerRevision(draftRevision, attachmentRevision)
         conversationJob =
             viewModelScope.launch {
                 runCatching {
@@ -1097,11 +1099,12 @@ internal class HolonViewModel(
                             historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
                             hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
                             outbox = bundle.outbox,
-                            draft = if (sameAgentBeforeLoad) it.draft else bundle.draft,
-                            attachments = if (sameAgentBeforeLoad) it.attachments else bundle.attachments,
                             busy = false,
                             conversationSyncState = ConversationSyncState.Reconnecting,
                             conversationLastSyncedAt = System.currentTimeMillis(),
+                        ).withRestoredComposer(
+                            bundle, loadComposerRevision, ComposerRevision(draftRevision, attachmentRevision),
+                            preserveExisting = sameAgentBeforeLoad,
                         )
                     }
                     hydrateBriefs(agent, bundle.snapshot)
@@ -1125,11 +1128,12 @@ internal class HolonViewModel(
                             it.copy(
                                 conversation = cached.snapshot,
                                 outbox = cached.outbox,
-                                draft = cached.draft,
-                                attachments = cached.attachments,
                                 busy = false,
                                 conversationSyncState = ConversationSyncState.Cached,
                                 conversationLastSyncedAt = System.currentTimeMillis(),
+                            ).withRestoredComposer(
+                                cached, loadComposerRevision, ComposerRevision(draftRevision, attachmentRevision),
+                                preserveExisting = sameAgentBeforeLoad,
                             )
                         }
                         if (foreground) startConversationStream(agent, cached.snapshot.snapshotCursor)
@@ -1395,6 +1399,7 @@ internal class HolonViewModel(
                     attachment
                 }
             }.onSuccess { attachment ->
+                attachmentRevision++
                 mutableState.update {
                     it.copy(
                         attachments = if (it.selectedAgent?.id == agent.id) it.attachments + attachment else it.attachments,
@@ -1410,6 +1415,7 @@ internal class HolonViewModel(
         if (state.value.stagingAttachment || state.value.enqueueing) return
         val agentId = state.value.selectedAgent?.id ?: return
         val removed = state.value.attachments.getOrNull(index)
+        attachmentRevision++
         mutableState.update { current ->
             current.copy(attachments = current.attachments.filterIndexed { i, _ -> i != index })
         }
@@ -1436,13 +1442,15 @@ internal class HolonViewModel(
         val pendingComposerSave = composerSaveJobs[agent.id]
         val sentDraftRevision = draftRevision
         val sentScope = current.session?.scopeKey
+        val sendLease = repository.sessions.capture()
+        if (sendLease.session.scopeKey != sentScope) return
         mutableState.update { it.copy(enqueueing = true, error = null) }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
                     pendingDraftSave?.join()
                     pendingComposerSave?.join()
-                    repository.enqueue(agent.id, text, attachments, requestId)
+                    repository.enqueue(agent.id, text, attachments, requestId, lease = sendLease)
                 }
             }.onSuccess { pending ->
                 if (draftSaveJobs[agent.id] === pendingDraftSave) {
@@ -1451,22 +1459,10 @@ internal class HolonViewModel(
                 if (composerSaveJobs[agent.id] === pendingComposerSave) {
                     composerSaveJobs.remove(agent.id)
                 }
-                mutableState.update { value ->
-                    value.copy(
-                        draft =
-                            if (
-                                value.selectedAgent?.id == agent.id &&
-                                draftRevision == sentDraftRevision
-                            ) {
-                                ""
-                            } else {
-                                value.draft
-                            },
-                        attachments = removeSentAttachments(value.attachments, attachments),
-                        outbox = value.outbox + pending,
-                        enqueueing = false,
-                        error = null,
-                    )
+                if (repository.sessions.current === sendLease) {
+                    mutableState.update { value ->
+                        value.withEnqueuedMessage(pending, draftRevision == sentDraftRevision, attachments)
+                    }
                 }
                 runCatching {
                     withContext(Dispatchers.IO) { repository.deliverOutbox(pending) }
@@ -1484,7 +1480,9 @@ internal class HolonViewModel(
                     }
                 }.onFailure(::handleRuntimeFailure)
             }.onFailure { error ->
-                mutableState.update { it.copy(enqueueing = false, error = humanError(error)) }
+                if (repository.sessions.current === sendLease) {
+                    mutableState.update { it.withEnqueueFailure(sentScope, agent.id, error) }
+                }
             }
         }
     }
@@ -1539,6 +1537,7 @@ internal class HolonViewModel(
                 withContext(Dispatchers.IO) { repository.editFailedOutbox(message) }
             }.onSuccess { attachments ->
                 draftRevision++
+                attachmentRevision++
                 mutableState.update {
                     it.copy(
                         draft = message.text,
@@ -1567,14 +1566,6 @@ internal class HolonViewModel(
                 }
             }.onFailure { error -> mutableState.update { it.copy(error = humanError(error)) } }
         }
-    }
-
-    private fun removeSentAttachments(
-        current: List<StagedAttachment>,
-        sent: List<StagedAttachment>,
-    ): List<StagedAttachment> {
-        val sentPaths = sent.mapTo(mutableSetOf(), StagedAttachment::localPath)
-        return current.filterNot { it.localPath in sentPaths }
     }
 
     fun openBrief(briefId: String) {

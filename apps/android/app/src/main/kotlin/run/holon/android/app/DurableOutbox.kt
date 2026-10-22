@@ -15,6 +15,8 @@ internal class DurableOutbox(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     suspend fun deliver(entry: OutboxEntity): OutboxEntity {
+        // A receipt is terminal for transport, even before the conversation echoes it.
+        if (entry.state == "received") return entry
         val sending = entry.copy(state = "sending", error = null, updatedAt = now())
         store.put(sending)
         val result = try {

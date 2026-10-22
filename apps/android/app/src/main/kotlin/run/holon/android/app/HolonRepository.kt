@@ -477,7 +477,26 @@ internal class HolonRepository(
                 }.getOrNull()
             }
         val snapshot = mergeConversationSnapshots(cached.takeUnless { freshWindow }, incoming)
-        return acceptConversation(agent, snapshot, lease)
+        val bundle = acceptConversation(agent, snapshot, lease)
+        // A bounded conversation window is not a delivery receipt ledger. Look up
+        // older receipts independently, without adding network reads to SSE commits.
+        reconcileReceivedOutbox(
+            entries = bundle.outbox,
+            scopeKey = session.scopeKey,
+            agentId = agent.id,
+            lookup = { ids ->
+                sessions.read(lease) { it.messageBatch(agent.id, ids) }.also {
+                    validateReadScope(it.runtimeId, it.visibilityScopeId, lease)
+                }
+            },
+            remove = {
+                sessions.requireCurrent(lease)
+                dao.deleteOutbox(it.requestId)
+                deleteOutboxFiles(it)
+            },
+        )
+        sessions.requireCurrent(lease)
+        return bundle.copy(outbox = dao.outbox(session.scopeKey, agent.id))
     }
 
     suspend fun acceptConversation(agent: AgentSummary, snapshot: HolonConversationSnapshot, lease: SessionLease): ConversationBundle {
@@ -504,12 +523,17 @@ internal class HolonRepository(
                 ),
         )
         val authoritativeMessageIds = (snapshot.turns.flatMap { turn -> turn.inputs.map { it.messageId } } + snapshot.pendingInputs.map { it.messageId }).toSet()
-        dao.outbox(session.scopeKey, agent.id)
-            .filter { it.state == "received" && it.messageId in authoritativeMessageIds }
-            .forEach {
+        reconcileReceivedOutbox(
+            entries = dao.outbox(session.scopeKey, agent.id),
+            scopeKey = session.scopeKey,
+            agentId = agent.id,
+            visibleMessageIds = authoritativeMessageIds,
+            remove = {
+                sessions.requireCurrent(lease)
                 dao.deleteOutbox(it.requestId)
                 deleteOutboxFiles(it)
-            }
+            },
+        )
         return ConversationBundle(
             snapshot = snapshot,
             outbox = dao.outbox(session.scopeKey, agent.id),
@@ -720,8 +744,10 @@ internal class HolonRepository(
         attachments: List<StagedAttachment>,
         requestId: String = UUID.randomUUID().toString(),
         clearComposer: Boolean = true,
+        lease: SessionLease = sessions.capture(),
     ): OutboxEntity {
-        val session = requireSession()
+        sessions.requireCurrent(lease)
+        val session = lease.session
         session.validatePromptBody(text, attachments, requestId)
         val now = System.currentTimeMillis()
         val entry =
@@ -740,10 +766,13 @@ internal class HolonRepository(
         // Persist the retryable request before removing any composer state. If the
         // process stops between these writes, recovery keeps both the outbox entry
         // and the old draft instead of losing the user's message.
+        sessions.requireCurrent(lease)
         dao.putOutbox(entry)
         if (clearComposer) {
+            sessions.requireCurrent(lease)
             dao.putDraft(DraftEntity(session.scopeKey, agentId, "", now))
-            saveComposerAttachments(agentId, emptyList())
+            sessions.requireCurrent(lease)
+            dao.putComposerAttachments(ComposerAttachmentsEntity(session.scopeKey, agentId, "[]", now))
         }
         return entry
     }

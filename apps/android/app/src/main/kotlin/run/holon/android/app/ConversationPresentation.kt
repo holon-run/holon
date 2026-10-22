@@ -129,6 +129,9 @@ internal fun localDate(timestamp: String, zone: ZoneId = ZoneId.systemDefault())
 internal fun localTimestamp(timestamp: String, zone: ZoneId = ZoneId.systemDefault()): String =
     runCatching { DateTimeFormatter.ofPattern("MM-dd HH:mm").format(Instant.parse(timestamp).atZone(zone)) }.getOrDefault(timestamp)
 
+internal fun outboxTimestamp(createdAt: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").format(Instant.ofEpochMilli(createdAt).atZone(zone))
+
 internal fun readingAnchorIndex(keys: List<String>, anchor: String, fallback: Int): Int =
     keys.indexOf(anchor).takeIf { it >= 0 } ?: fallback.coerceIn(0, keys.lastIndex.coerceAtLeast(0))
 
