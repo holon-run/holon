@@ -100,6 +100,9 @@ class TemplateCatalogTests(unittest.TestCase):
     def output_catalog(self):
         return json.loads((self.output / "assets/agent-templates.json").read_text())
 
+    def detail(self, template_id="role-1", locale=""):
+        return (self.output / locale / "templates" / template_id / "README.md").read_text()
+
     def snapshot(self, directory):
         """Record contents and link targets without following symlinks."""
         return {
@@ -162,7 +165,7 @@ class TemplateCatalogTests(unittest.TestCase):
             page = (self.output / locale / "templates/README.md").read_text()
             self.assertIn(fields["name"], page)
             self.assertIn(fields["summary"], page)
-            self.assertIn(entry["createSelector"], page)
+            self.assertIn(entry["createSelector"], self.detail(template_id, locale))
             self.assertNotIn(template_id,
                              (self.output / locale / "README.md").read_text())
 
@@ -174,6 +177,7 @@ class TemplateCatalogTests(unittest.TestCase):
         for locale in ("", "zh-CN/"):
             page = self.output / locale / "templates/README.md"
             self.assertIn("Original nonfeatured role", page.read_text())
+            self.assertIn("Original nonfeatured role", self.detail("added-role", locale))
             self.assertNotIn("added-role", (self.output / locale / "README.md").read_text())
         self.add_template("added-role", summary="Changed nonfeatured role")
         self.build()
@@ -183,12 +187,14 @@ class TemplateCatalogTests(unittest.TestCase):
             page = (self.output / locale / "templates/README.md").read_text()
             self.assertIn("Changed nonfeatured role", page)
             self.assertNotIn("Original nonfeatured role", page)
+            self.assertIn("Changed nonfeatured role", self.detail("added-role", locale))
         shutil.rmtree(directory)
         self.build()
         self.assertNotIn("added-role", [e["id"] for e in self.output_catalog()["templates"]])
         for locale in ("", "zh-CN/"):
             self.assertNotIn("added-role",
                              (self.output / locale / "templates/README.md").read_text())
+            self.assertFalse((self.output / locale / "templates/added-role").exists())
 
     def test_catalog_sort_is_stable_and_featured_rank_controls_home_order(self):
         for template_id in ("z-role", "a-role", "middle-role"):
@@ -202,7 +208,7 @@ class TemplateCatalogTests(unittest.TestCase):
         expected = ["role-6", "role-2", "role-3", "role-4", "role-5", "role-1"]
         for locale in ("", "zh-CN/"):
             home = (self.output / locale / "README.md").read_text()
-            self.assertEqual(re.findall(r'/templates/#([^"]+)', home), expected)
+            self.assertEqual(re.findall(r'/templates/([^/"]+)/', home), expected)
             self.assertEqual(home.count('<article class="template-card">'), 6)
         directory = (self.output / "templates/README.md").read_text()
         self.assertEqual(re.findall(r'<article class="template-entry" id="([^"]+)">',
@@ -290,9 +296,9 @@ class TemplateCatalogTests(unittest.TestCase):
                 self.assertIn('data-template-results hidden', page)
                 self.assertIn('data-template-empty hidden', page)
                 self.assertIn('<script src="/assets/template-catalog.js" defer></script>', page)
-                self.assertEqual(page.count('<details class="template-details">'), 6)
+                self.assertNotIn('<details class="template-details">', page)
                 self.assertNotIn('<details open', page)
-                self.assertEqual(page.count('data-template-copy hidden'), 6)
+                self.assertNotIn('data-template-copy', page)
                 overviews = re.findall(
                     r'<div class="template-overview"[\s\S]*?</p></div>', page,
                 )
@@ -301,29 +307,25 @@ class TemplateCatalogTests(unittest.TestCase):
                     self.assertIn('class="template-summary"', overview)
                     self.assertNotIn("holon agent create", overview)
                     self.assertNotIn(SHA, overview)
-                details = re.findall(
-                    r'<details class="template-details">([\s\S]*?)</details>', page,
-                )
-                self.assertEqual(len(details), 6)
-                for detail in details:
+                for template_id in self.ids:
+                    detail = self.detail(template_id, locale)
                     self.assertIn("holon agent create", detail)
                     self.assertIn(SHA, detail)
                     self.assertIn("AGENTS.md", detail)
                     self.assertIn("Holon", detail)
-                self.assertIn(
-                    "检查角色契约、技能依赖、环境与权限" if locale else
-                    "check the role contract, skills, environment and permissions", page,
-                )
+                self.assertIn("检查角色契约" if locale else "review the role contract", page)
 
     def test_gallery_controls_are_localized_and_snapshot_is_secondary(self):
         catalog = self.catalog()
         for locale, labels in (
-            ("en", ("Search roles", "View details", "Copy command", "About this catalog and snapshot")),
-            ("zh-CN", ("搜索角色", "查看详情", "复制命令", "关于目录与构建快照")),
+            ("en", ("Search roles", "View details", "About this catalog and snapshot")),
+            ("zh-CN", ("搜索角色", "查看详情", "关于目录与构建快照")),
         ):
             page = BUILDER.render_directory(catalog, locale)
             for label in labels:
                 self.assertIn(label, page)
+            detail = BUILDER.render_detail(catalog["templates"][0], locale)
+            self.assertIn("复制命令" if locale == "zh-CN" else "Copy command", detail)
             self.assertGreater(page.index(SHA), page.index('class="template-catalog"'))
             source = page.split('<details class="template-source">')[1]
             self.assertIn(SHA, source)
@@ -349,8 +351,8 @@ class TemplateCatalogTests(unittest.TestCase):
         skill = self.entry(self.build())["skills"][0]
         self.assertEqual(skill, {"kind": "local", "path": reference, "reference": reference})
         self.assertFalse((self.repo / reference).exists())
-        self.assertIn("local path", (self.output / "templates/README.md").read_text())
-        self.assertIn("本地路径", (self.output / "zh-CN/templates/README.md").read_text())
+        self.assertIn("local path", self.detail())
+        self.assertIn("本地路径", self.detail(locale="zh-CN"))
 
     def test_structured_skill_missing_ref_stays_unpinned(self):
         self.set_skills([{"kind": "github", "repo": "acme/tools", "path": "skills/audit"}])
@@ -359,9 +361,9 @@ class TemplateCatalogTests(unittest.TestCase):
         self.assertEqual(skill["reference"], "acme/tools/skills/audit")
         self.assertNotIn(SHA, skill["reference"])
         self.assertIn("follows default reference",
-                      (self.output / "templates/README.md").read_text())
+                      self.detail())
         self.assertIn("跟随默认引用",
-                      (self.output / "zh-CN/templates/README.md").read_text())
+                      self.detail(locale="zh-CN"))
 
     def test_structured_skill_explicit_ref_is_preserved(self):
         self.set_skills([{
@@ -435,27 +437,61 @@ class TemplateCatalogTests(unittest.TestCase):
         catalog = self.build()
         self.assertEqual(self.entry(catalog)["name"], name)
         for locale in ("", "zh-CN/"):
-            for relative in ("README.md", "templates/README.md"):
+            for relative in ("README.md", "templates/README.md", "templates/role-1/README.md"):
                 with self.subTest(locale=locale, page=relative):
                     page = (self.output / locale / relative).read_text()
                     for value in (name, summary):
                         self.assertIn(html.escape(value, quote=True), page)
                         self.assertNotIn(value, page)
-            page = (self.output / locale / "templates/README.md").read_text()
+            page = self.detail(locale=locale).split("---", 2)[-1]
             self.assertIn("&lt;img src=x onerror=", page)
             self.assertNotIn('<img src=x onerror=', page)
 
     def test_create_commands_use_exact_snapshot_sha_in_both_locales(self):
         self.build()
         for locale in ("", "zh-CN/"):
-            page = (self.output / locale / "templates/README.md").read_text()
-            commands = re.findall(r"<pre><code>(.*?)</code></pre>", page)
-            self.assertEqual(len(commands), 6)
-            for template_id, command in zip(self.ids, commands):
+            for template_id in self.ids:
+                page = self.detail(template_id, locale)
+                commands = re.findall(r"<pre><code>(.*?)</code></pre>", page)
+                self.assertEqual(len(commands), 1)
+                command = commands[0]
                 self.assertEqual(shlex.split(html.unescape(command)), [
                     "holon", "agent", "create", template_id, "--template",
                     f"https://github.com/holon-run/holon/tree/{SHA}/agent_templates/{template_id}",
                 ])
+
+    def test_cards_link_to_bilingual_detail_pages_without_expanding(self):
+        self.set_skills([{"kind": "github", "repo": "acme/tools", "path": "skills/audit"}])
+        catalog = self.build()
+        for locale in ("", "zh-CN"):
+            base = f"/{locale}" if locale else ""
+            directory = (self.output / locale / "templates/README.md").read_text()
+            self.assertNotIn('class="template-details"', directory)
+            self.assertNotIn("<pre>", directory)
+            self.assertIn('data-template-keywords="acme/tools/skills/audit"', directory)
+            for entry in catalog["templates"]:
+                self.assertIn(f'href="{base}/templates/{entry["id"]}/"', directory)
+                page = self.detail(entry["id"], locale)
+                self.assertIn(f'href="{base}/templates/"', page)
+                self.assertIn(f'href="{base}/getting-started/"', page)
+                self.assertIn(entry["contractUrl"], page)
+                self.assertIn(entry["sourceUrl"], page)
+                self.assertIn('data-template-copy hidden', page)
+                self.assertIn('src="/assets/template-catalog.js"', page)
+                self.assertEqual(page.count("<h1>"), 1)
+
+    def test_detail_skill_links_preserve_refs_and_do_not_link_local_paths(self):
+        self.set_skills([
+            {"kind": "github", "repo": "acme/tools", "path": "skills/audit", "ref": "release/v1"},
+            {"kind": "github", "repo": "acme/tools", "path": "skills/default"},
+            {"kind": "local", "path": "../skills/private"},
+        ])
+        self.build()
+        page = self.detail()
+        self.assertIn('href="https://github.com/acme/tools/tree/release%2Fv1/skills/audit"', page)
+        self.assertIn('href="https://github.com/acme/tools/tree/HEAD/skills/default"', page)
+        self.assertIn("<code>../skills/private</code>", page)
+        self.assertNotIn('href="../skills/private"', page)
 
     def test_new_role_without_display_override_uses_other_category_and_manifest_text(self):
         self.add_template("new-role", name="New role", summary="New summary")

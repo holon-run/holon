@@ -73,24 +73,42 @@ for (const prefix of ["", "/zh-CN"]) {
   assert.ok(directory.includes(catalog.source.sha), "directory must show source SHA");
   assert.ok(directory.includes('src="/assets/template-catalog.js"'),
     "directory must load progressive enhancement from a CSP-compatible asset");
-  assert.equal((directory.match(/class="template-details"/g) ?? []).length,
-    catalog.templates.length, "each role must retain native expandable details");
+  assert.ok(!directory.includes('class="template-details"'),
+    "directory cards must not expand inline");
   assert.ok(directory.includes('id="template-query"'), "directory must include search control");
+  let details = "";
   for (const entry of catalog.templates) {
     assert.ok(directory.includes(`id="${entry.id}"`), `${locale}: missing ${entry.id}`);
     assert.ok(directoryText.includes(entry.localized[locale].name), `${locale}: missing name for ${entry.id}`);
     assert.ok(directoryText.includes(entry.localized[locale].summary), `${locale}: missing summary for ${entry.id}`);
     assert.ok(indexedText.includes(entry.localized[locale].name), `${locale}: unindexed ${entry.id}`);
-    assert.ok(directory.includes(entry.createSelector), "creation selector must match snapshot");
-    assert.ok(directory.includes(entry.contractUrl), "role contract link must match snapshot");
+    const route = `${prefix}/templates/${entry.id}/`;
+    assert.ok(directory.includes(`href="${route}"`), "card must link to its detail page");
+    const detail = await fetchText(route);
+    checked.set(route, detail);
+    details += detail.match(/<div class="template-detail">[\s\S]*?<\/main>/)?.[0] ?? detail;
+    assert.ok(detail.includes(entry.createSelector), "creation selector must match snapshot");
+    assert.ok(detail.includes(entry.contractUrl), "role contract link must match snapshot");
+    assert.ok(detail.includes(`href="${prefix}/templates/"`), "detail must link back to catalog");
+    assert.ok(detail.includes('data-template-copy'), "detail must offer command copy");
+    assert.ok(detail.includes('src="/assets/template-catalog.js"'), "detail must load command enhancement");
+    const detailDocument = documents.find((item) => item.docId === route);
+    assert.ok(detailDocument?.chunkCount > 0, `${route}: detail page must be indexed`);
+    const detailText = visibleText(chunks.filter((item) => item.docId === route)
+      .map((item) => item.chunkText).join("\n"));
+    assert.ok(detailText.includes(entry.localized[locale].name), `${route}: indexed name`);
+    assert.ok(detailText.includes(entry.localized[locale].summary), `${route}: indexed summary`);
+    const otherPrefix = prefix ? "" : "/zh-CN";
+    assert.ok(detail.includes(`href="${otherPrefix}/templates/${entry.id}/?lang=${otherPrefix ? "zh-CN" : "en"}"`),
+      "language switch must target the same template");
     if (entry.featuredRank) {
-      assert.ok(home.includes(`${prefix}/templates/#${entry.id}`));
+      assert.ok(home.includes(route));
       assert.ok(homeText.includes(entry.localized[locale].name));
     }
   }
   const section = home.match(/<section class="home-templates"[\s\S]*?<\/section>/)?.[0];
   assert.ok(section, "homepage must contain the rendered section without client-side fetch");
-  for (const match of (section + directory).matchAll(/href="(\/[^"]*)"/g)) {
+  for (const match of (section + directory + details).matchAll(/href="(\/[^"]*)"/g)) {
     const url = new URL(match[1], "https://holon.invalid");
     // Validate generated section links and the directory's navigation, including anchors.
     if (!checked.has(url.pathname)) {
@@ -110,4 +128,4 @@ assert.equal(await fetchText("/assets/template-catalog.js", "text/javascript"),
   "gallery interaction script must be served unchanged");
 assert.ok(checked.has("/reference/agent-templates"), "English usage entry point must resolve");
 assert.ok(checked.has("/zh-CN/reference/agent-templates"), "Chinese usage entry point must resolve");
-console.log(`Template bundle: bilingual homepages, ${catalog.templates.length} roles, links, anchors, search and JSON verified at ${catalog.source.sha}.`);
+console.log(`Template bundle: bilingual homepages, ${catalog.templates.length} role detail pages per locale, links, anchors, search and JSON verified at ${catalog.source.sha}.`);
