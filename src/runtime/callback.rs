@@ -40,8 +40,13 @@ impl RuntimeHandle {
         _delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
         let _admission = self.execution_admission_lease()?;
+        // Serialize capability creation and cache publication with Stop.
+        let guard = self.inner.agent.lock().await;
+        if guard.state.status == AgentStatus::Stopped {
+            bail!("cannot ensure default external ingress for stopped agent");
+        }
         let delivery_mode = CallbackDeliveryMode::WakeHint;
-        let agent_id = self.agent_id().await?;
+        let agent_id = guard.state.id.clone();
         let now = Utc::now();
         let external_trigger_id = crate::ids::external_trigger_id();
         let token = generate_callback_token();

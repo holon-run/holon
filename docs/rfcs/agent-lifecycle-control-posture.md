@@ -197,6 +197,12 @@ It should:
 Stop is stronger than the old pause concept. It is the operator's way to say
 "this agent should not continue owning execution resources".
 
+Stop revokes active external ingress capabilities. Ensuring the default external
+ingress must serialize its lifecycle check, durable creation, and cache
+publication with the transition to `Stopped`. Context preparation admitted before
+Stop must not mint a new capability after revocation. A stopped, still-loaded
+instance rejects this operation; `Start` permits provisioning a fresh capability.
+
 ## Queue And Message Behavior
 
 Queued messages are durable scheduler inputs. `Stop` must not delete them.

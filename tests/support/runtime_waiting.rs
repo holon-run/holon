@@ -1267,7 +1267,7 @@ pub async fn stopped_agent_ignores_wake_hint() -> Result<()> {
 }
 
 pub async fn multi_session_state_is_isolated() -> Result<()> {
-    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(DelayedTextProvider))?;
     host.create_named_agent("alpha", None).await?;
     host.create_named_agent("beta", None).await?;
     let a = host.get_or_create_agent("alpha").await?;
@@ -1277,7 +1277,18 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
     a.enqueue(alpha_message.clone()).await?;
     let beta_message = admitted_operator_prompt("beta", "beta");
     b.enqueue(beta_message.clone()).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    for (runtime, message) in [(&a, &alpha_message), (&b, &beta_message)] {
+        wait_until(|| {
+            let turns = runtime.storage().read_recent_turns(10)?;
+            let queue = runtime.storage().read_recent_queue_entries(10)?;
+            Ok(turns.iter().any(|turn| {
+                turn.input_message_ids.contains(&message.id) && turn.terminal.is_some()
+            }) && queue.iter().any(|entry| {
+                entry.message_id == message.id && entry.status == QueueEntryStatus::Processed
+            }))
+        })
+        .await?;
+    }
 
     let alpha_briefs = a.recent_briefs(10).await?;
     let beta_briefs = b.recent_briefs(10).await?;
@@ -1593,6 +1604,43 @@ pub async fn agent_summary_last_turn_token_usage_survives_transcript_windowing()
         summary.token_usage.last_turn,
         Some(TokenUsage::new(100, 50))
     );
+    Ok(())
+}
+
+pub async fn stopped_agent_cannot_recreate_default_external_ingress() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    let runtime = host.default_runtime().await?;
+    let capability = runtime
+        .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        .await?;
+
+    // Keep the instance loaded so rejection must come from lifecycle posture,
+    // not host unload closing execution admission.
+    runtime.control(ControlAction::Stop).await?;
+    assert_eq!(runtime.agent_state().await?.status, AgentStatus::Stopped);
+    let error = runtime
+        .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        .await
+        .expect_err("stopped agent must not mint another ingress capability");
+    assert!(error.to_string().contains("stopped"));
+
+    let descriptors = runtime.latest_external_triggers().await?;
+    assert_eq!(descriptors.len(), 1);
+    assert_eq!(
+        descriptors[0].external_trigger_id,
+        capability.external_trigger_id
+    );
+    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
+
+    runtime.control(ControlAction::Start).await?;
+    let restarted = runtime
+        .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        .await?;
+    assert_ne!(
+        restarted.external_trigger_id,
+        capability.external_trigger_id
+    );
+    host.shutdown().await?;
     Ok(())
 }
 
