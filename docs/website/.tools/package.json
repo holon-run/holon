@@ -17,7 +17,7 @@
     "deploy": "wrangler deploy --config ../wrangler.jsonc"
   },
   "devDependencies": {
-    "mdorigin": "^0.6.0",
+    "mdorigin": "^0.7.0",
     "wrangler": "4.102.0"
   }
 }
