@@ -126,7 +126,7 @@
 "reading.cache.saved" = "Showing cached content";
 "reading.cache.noAgents" = "No agents cached for this connection. Reconnect to load them.";
 "reading.cache.noConversation" = "This conversation is not cached. Reconnect to load it.";
-"reading.cache.readOnly" = "Reconnect to send messages or use controls.";
+"reading.cache.readOnly" = "Drafts are saved. Reconnect to send messages or use controls.";
 "reading.status.permissionDenied" = "Permission denied";
 "reading.status.sessionExpired" = "Session expired · sign in again";
 "reading.status.incompatible" = "Unsupported conversation protocol";
@@ -162,6 +162,8 @@
 "sending.receipt.explanation" = "Received means the server accepted the message. It does not mean the agent completed its work.";
 "sending.unknown.explanation" = "The server may have accepted this message. Retry uses the same request ID and frozen payload; do not create a duplicate.";
 "sending.retry.same" = "Retry same request";
+"sending.delete.unknown.confirm" = "Delete this message?";
+"sending.delete.unknown.explanation" = "The server may have accepted this message. Deleting removes the local record and the retry handle; it does not undo any server-side effect.";
 "sending.retry" = "Retry";
 "sending.delete" = "Delete local entry";
 "common.cancel" = "Cancel";

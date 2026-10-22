@@ -1594,9 +1594,12 @@ final class HolonUITests: XCTestCase {
         assertRestoredPosition()
         XCTAssertTrue(body.waitForExistence(timeout: 10), "Cold offline launch must retain the fetched brief body")
         XCTAssertFalse(app.staticTexts["conversation.notCached"].exists)
-        XCTAssertFalse(editor.exists)
-        XCTAssertFalse(app.otherElements["sending.composer"].exists)
-        XCTAssertFalse(app.buttons["sending.enqueue"].exists)
+        // Offline keeps the composer available: input and local drafts work without a connection.
+        XCTAssertTrue(editor.waitForExistence(timeout: 10), "Offline must not block input")
+        XCTAssertTrue(app.otherElements["sending.composer"].exists)
+        XCTAssertTrue(app.buttons["sending.enqueue"].exists)
+        editor.tap()
+        editor.typeText("offline draft")
         XCTAssertEqual(app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "brief.load.")).count, 0,
                        "Uncached offline briefs must not offer a network load action")

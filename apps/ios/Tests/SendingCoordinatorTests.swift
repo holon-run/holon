@@ -75,6 +75,28 @@ final class SendingCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.entries.isEmpty)
     }
 
+    func testComposerInputPersistsOnlyWhileConnected() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let suite = "CanPersistDraft.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let consent = SharingConsent(defaults: defaults)
+        consent.approve(URL(string: "https://example.test")!)
+        let transport = SendingMockTransport()
+        let coordinator = SendingCoordinator(store: try makeStore(directory: folder), consent: consent)
+        defer { coordinator.disconnect() }
+        coordinator.activate(transport: transport, identity: identity(), apiBaseURL: URL(string: "https://example.test")!)
+        coordinator.selectAgent("A")
+        XCTAssertTrue(coordinator.canPersistDraft)
+        coordinator.editDraft(text: "saved", modelID: nil)
+        XCTAssertEqual(coordinator.draft.text, "saved")
+        coordinator.disconnect()
+        XCTAssertFalse(coordinator.canPersistDraft)
+        coordinator.editDraft(text: "dropped", modelID: nil)
+        XCTAssertEqual(coordinator.draft.text, "")
+    }
+
     func testWithdrawalDuringUploadBlocksRemainingUploadAndPost() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try FileManager.default.removeItem(at: folder) }

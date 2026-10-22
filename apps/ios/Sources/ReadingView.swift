@@ -342,13 +342,22 @@ struct ConversationReadingView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if reader.status != .live {
-                Text("reading.cache.readOnly").font(.caption).foregroundStyle(.secondary).padding()
-                    .accessibilityIdentifier("conversation.readOnly")
-            } else if let sender {
-                SendingView(sender: sender, currentRunID: currentRunID, commonModels: reader.agents.compactMap(\.effectiveModel))
-            } else {
-                Text("status.storageError").font(.caption).padding()
+            VStack(spacing: 0) {
+                if reader.status != .live, sender?.canPersistDraft == true {
+                    // Offline keeps the composer available: drafts are saved
+                    // locally and delivery fails with an explicit per-message
+                    // retry. A disconnected sender (session expired) cannot
+                    // persist input, so the promise only shows while true.
+                    Text("reading.cache.readOnly").font(.caption).foregroundStyle(.secondary)
+                        .padding(.top, 6)
+                        .accessibilityIdentifier("conversation.readOnly")
+                }
+                if let sender {
+                    SendingView(sender: sender, currentRunID: currentRunID,
+                                commonModels: reader.agents.compactMap(\.effectiveModel))
+                } else {
+                    Text("status.storageError").font(.caption).padding()
+                }
             }
         }
         .toolbar {
