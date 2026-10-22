@@ -60,7 +60,7 @@ order: 1
 
 打开 `http://localhost:7878`，或运行 `holon tui`，创建第一个助手并安排任务。
 
-<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.53.0">v0.53.0</a></p>
+<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.54.0">v0.54.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南 · 各平台</a>
@@ -132,7 +132,7 @@ holon daemon start
 <div class="home-actions">
 <a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
 <a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · 加入测试 ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">下载 Android APK ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.54.0/holon-android-v0.54.0.apk">下载 Android APK ↗</a>
 </div>
 </div>
 </section>
