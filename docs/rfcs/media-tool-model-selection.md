@@ -59,6 +59,14 @@ Execution rechecks its own current route/configuration snapshot. Discovery and
 execution share generation contract resolution. No second provider registry,
 arbitrary JSON passthrough, or dynamic plugin mechanism is introduced.
 
+System media guidance reports only fixed default-candidate availability and
+discovery instructions for visible tools. Concrete provider/endpoint/model
+identifiers, including remote catalog names, stay in discovery/tool results;
+configuring a provider does not make its catalog text trusted instructions.
+The system prompt and its cache identity change with candidate availability,
+not candidate names. Actual routing and media result cache identity remain
+route-specific and unchanged.
+
 ## Generation semantics
 
 The stable tool schema describes the union of supported runtime inputs, not a
