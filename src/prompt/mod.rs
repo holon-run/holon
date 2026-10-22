@@ -128,16 +128,26 @@ impl EffectivePrompt {
         let mut lines = vec![
             "Media model overrides are optional and single-call only; omission preserves configured/default routing. Exact overrides do not silently fall back. Discover operation-specific candidates with ListModelProviders/ListProviderModels.".to_string(),
         ];
+        // Route identifiers may come from remote catalogs, not trusted instructions.
+        // Keep concrete candidates in discovery/tool results, out of system text.
         if view {
             lines.push(format!(
                 "ViewImage default candidate: {} (automatic health/availability checks still apply).",
-                defaults.view_image.as_deref().unwrap_or("unavailable; configure or discover a vision route"),
+                if defaults.view_image.is_some() {
+                    "available"
+                } else {
+                    "unavailable; configure or discover a vision route"
+                },
             ));
         }
         if generate {
             lines.push(format!(
                 "GenerateImage default candidate: {}. Final output_format defaults to PNG; runtime converts locally when needed. Omit size/background/aspect_ratio/resolution to use route-specific defaults; consult the selected model's generation contract before explicitly setting them.",
-                defaults.generate_image.as_deref().unwrap_or("unavailable; configure or select an image generation route"),
+                if defaults.generate_image.is_some() {
+                    "available"
+                } else {
+                    "unavailable; configure or select an image generation route"
+                },
             ));
         }
         self.system_sections
@@ -2936,7 +2946,7 @@ mod tests {
     }
 
     #[test]
-    fn media_defaults_are_tool_scoped_and_refresh_the_cache_prefix() {
+    fn media_defaults_keep_route_identifiers_out_of_system_and_cache_scope() {
         let prompt = EffectivePrompt {
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
@@ -2957,9 +2967,9 @@ mod tests {
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
         };
-        let mut defaults = crate::provider::media::MediaToolDefaults {
+        let defaults = crate::provider::media::MediaToolDefaults {
             view_image: Some("test@default/vision-a".into()),
-            generate_image: Some("test@default/image".into()),
+            generate_image: Some("test@default/image-a".into()),
             output_format: "png".into(),
         };
         assert!(prompt
@@ -2967,42 +2977,100 @@ mod tests {
             .with_media_tool_defaults(&defaults, &[])
             .system_sections
             .is_empty());
-        let tools = crate::tool::ToolRegistry::new(".".into())
+        let media_tools = crate::tool::ToolRegistry::new(".".into())
             .tool_specs()
             .unwrap()
             .into_iter()
-            .filter(|tool| tool.name == crate::tool::names::VIEW_IMAGE)
+            .filter(|tool| {
+                tool.name == crate::tool::names::VIEW_IMAGE
+                    || tool.name == crate::tool::names::GENERATE_IMAGE
+            })
             .collect::<Vec<_>>();
-        let first = prompt.clone().with_media_tool_defaults(&defaults, &tools);
-        assert!(first
-            .rendered_system_prompt
-            .contains("test@default/vision-a"));
-        assert!(!first.rendered_system_prompt.contains("test@default/image"));
-        assert!(first.context_sections.is_empty());
-        defaults.view_image = Some("test@plan/vision-b".into());
-        let second = first.clone().with_media_tool_defaults(&defaults, &tools);
-        assert_eq!(second.system_sections.len(), 1);
-        assert!(second.rendered_system_prompt.contains("test@plan/vision-b"));
-        assert!(!second
-            .rendered_system_prompt
-            .contains("test@default/vision-a"));
-        assert_ne!(
-            first.cache_identity.prompt_cache_key,
-            second.cache_identity.prompt_cache_key
-        );
-        assert_ne!(
-            first.cache_identity.context_fingerprint,
-            second.cache_identity.context_fingerprint
-        );
-        let repeated = second.clone().with_media_tool_defaults(&defaults, &tools);
-        assert_eq!(
-            second.cache_identity.context_fingerprint,
-            repeated.cache_identity.context_fingerprint
-        );
-        assert_eq!(
-            second.cache_identity.prompt_cache_key,
-            repeated.cache_identity.prompt_cache_key
-        );
+        assert_eq!(media_tools.len(), 2);
+        for visible_tools in [
+            vec![crate::tool::names::VIEW_IMAGE],
+            vec![crate::tool::names::GENERATE_IMAGE],
+            vec![
+                crate::tool::names::VIEW_IMAGE,
+                crate::tool::names::GENERATE_IMAGE,
+            ],
+        ] {
+            let tools = media_tools
+                .iter()
+                .filter(|tool| visible_tools.contains(&tool.name.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let first = prompt.clone().with_media_tool_defaults(&defaults, &tools);
+            assert!(!first.rendered_system_prompt.contains("vision-a"));
+            assert!(!first.rendered_system_prompt.contains("image-a"));
+            assert!(first.context_sections.is_empty());
+            assert!(first
+                .rendered_system_prompt
+                .contains("omission preserves configured/default routing"));
+            assert!(first
+                .rendered_system_prompt
+                .contains("Exact overrides do not silently fall back"));
+            assert!(first
+                .rendered_system_prompt
+                .contains("ListModelProviders/ListProviderModels"));
+            for (name, label) in [
+                (crate::tool::names::VIEW_IMAGE, "ViewImage"),
+                (crate::tool::names::GENERATE_IMAGE, "GenerateImage"),
+            ] {
+                assert_eq!(
+                    first
+                        .rendered_system_prompt
+                        .contains(&format!("{label} default candidate: available")),
+                    visible_tools.contains(&name),
+                );
+            }
+            if visible_tools.contains(&crate::tool::names::GENERATE_IMAGE) {
+                assert!(first
+                    .rendered_system_prompt
+                    .contains("Final output_format defaults to PNG"));
+            }
+            let renamed = crate::provider::media::MediaToolDefaults {
+                view_image: Some("test@plan/vision-b".into()),
+                generate_image: Some("test@plan/image-b".into()),
+                ..defaults.clone()
+            };
+            let second = first.clone().with_media_tool_defaults(&renamed, &tools);
+            assert_eq!(second.system_sections.len(), 1);
+            assert_eq!(first.rendered_system_prompt, second.rendered_system_prompt);
+            assert_eq!(
+                first.cache_identity.prompt_cache_key,
+                second.cache_identity.prompt_cache_key
+            );
+            assert_eq!(
+                first.cache_identity.context_fingerprint,
+                second.cache_identity.context_fingerprint
+            );
+            let unavailable = crate::provider::media::MediaToolDefaults::default();
+            let third = second
+                .clone()
+                .with_media_tool_defaults(&unavailable, &tools);
+            assert_eq!(third.system_sections.len(), 1);
+            assert!(third
+                .rendered_system_prompt
+                .contains("default candidate: unavailable; configure or"));
+            assert_ne!(
+                second.cache_identity.prompt_cache_key,
+                third.cache_identity.prompt_cache_key
+            );
+            assert_ne!(
+                second.cache_identity.context_fingerprint,
+                third.cache_identity.context_fingerprint
+            );
+            let repeated = third.clone().with_media_tool_defaults(&unavailable, &tools);
+            assert_eq!(
+                third.cache_identity.context_fingerprint,
+                repeated.cache_identity.context_fingerprint
+            );
+            assert_eq!(
+                third.cache_identity.prompt_cache_key,
+                repeated.cache_identity.prompt_cache_key
+            );
+        }
     }
 
     #[test]
