@@ -208,6 +208,19 @@ class Scenario:
                 return 200, response(
                     [text_item("Deterministic Holon test runtime ready.")], "resp_intro"
                 )
+            if (
+                "[trigger:internal_followup][runtime_instruction][InternalFollowup]"
+                in current_input
+                and "This agent was just created without an initial message"
+                in current_input
+            ):
+                # #2795: agents created without an explicit initial_message run
+                # one runtime-owned bootstrap initialization turn. Answer it
+                # deterministically without consuming a scripted phase.
+                return 200, response(
+                    [text_item("Agent bootstrap initialization complete.")],
+                    "resp_agent_bootstrap_intro",
+                )
             if self.name == "runtime-upgrade-v030":
                 # Serialized history carries the earlier phase marker, so the
                 # current prompt's marker is the last occurrence in the payload.

@@ -1014,6 +1014,9 @@ pub async fn create_agent(
             None,
             request.name.as_deref(),
             crate::host::AgentBootstrapExecution::Background,
+            // User-initiated creation without an initial_message field:
+            // request the default bootstrap initialization turn (#2795).
+            true,
         )
         .await
         .map_err(error_response)?;

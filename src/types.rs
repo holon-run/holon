@@ -550,6 +550,17 @@ pub struct AgentBootstrapDesiredState {
     pub model_resolution: Option<AgentModelResolution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_message: Option<AgentBootstrapInitialMessage>,
+    /// User-initiated creation requested the default bootstrap
+    /// initialization message because no explicit `initial_message` was
+    /// provided. The bootstrap executor synthesizes it; legacy and repair
+    /// records never set it, so reconciles of pre-existing agents cannot
+    /// invent initialization turns.
+    #[serde(default, skip_serializing_if = "is_default_initial_message_unset")]
+    pub default_initial_message: bool,
+}
+
+fn is_default_initial_message_unset(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -595,6 +606,8 @@ impl AgentBootstrapRecord {
                 AgentBootstrapStep::succeeded(now)
             },
             initial_message: if desired.initial_message.is_some() {
+                AgentBootstrapStep::pending(now)
+            } else if desired.default_initial_message {
                 AgentBootstrapStep::pending(now)
             } else {
                 AgentBootstrapStep::succeeded(now)
@@ -658,6 +671,7 @@ impl AgentBootstrapRecord {
                 workspace: None,
                 model_resolution: None,
                 initial_message: None,
+                default_initial_message: false,
             },
             template: AgentBootstrapStep::succeeded(now),
             runtime: AgentBootstrapStep::succeeded(now),
