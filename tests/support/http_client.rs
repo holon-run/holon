@@ -752,6 +752,27 @@ pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue(
     Ok(())
 }
 
+pub async fn local_client_resolves_configured_default_over_http() -> Result<()> {
+    let mut config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(
+        config.clone(),
+        Arc::new(StubProvider::new("default lookup")),
+    )?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    config.http_addr = base.trim_start_matches("http://").to_string();
+    let client = LocalClient::new(config)?;
+    assert_eq!(client.configured_default_agent_id().await?, None);
+    host.default_runtime().await?;
+    assert_eq!(
+        client.configured_default_agent_id().await?.as_deref(),
+        Some("default")
+    );
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()> {
     let mut config = test_config();

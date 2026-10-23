@@ -78,6 +78,13 @@ Existing commands that accept an agent target use these rules:
 - `--agent B` selects target `B` and does not change the caller;
 - self and cross-agent operations are evaluated by the same admission policy.
 
+For commands that resolve a target through the daemon, agent-mode omission
+uses the parsed caller directly, without looking up an operator default.
+Operator-mode default lookup uses the JSON API root (`GET /api`); an absent
+default produces an explicit no-default-agent error rather than inventing an
+identity. Malformed caller context is rejected before target lookup, including
+when a target is explicit.
+
 The initial CLI surface uses `holon context` for the current non-sensitive
 claims and `holon commands` for machine-readable command discovery. It does
 not add a separate `holon self` namespace.
