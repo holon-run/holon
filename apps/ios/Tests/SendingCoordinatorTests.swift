@@ -97,6 +97,43 @@ final class SendingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.draft.text, "")
     }
 
+    func testOfflineActivationKeepsDraftScopeWhileNodeUnreachable() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try FileManager.default.removeItem(at: folder) }
+        let suite = "OfflineScope.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let consent = SharingConsent(defaults: defaults)
+        let transport = SendingMockTransport()
+        let coordinator = SendingCoordinator(store: try makeStore(directory: folder), consent: consent)
+        defer { coordinator.disconnect() }
+        let url = URL(string: "https://example.test")!
+        let partition = try XCTUnwrap(ReadingPartition(apiBaseURL: url, identity: identity()))
+        coordinator.activate(transport: transport, identity: identity(), apiBaseURL: url)
+        coordinator.selectAgent("A")
+        coordinator.editDraft(text: "saved", modelID: nil)
+        // Cold launch with the node unreachable: bootstrap fails, and the offline
+        // scope must keep local drafts alive instead of fully disconnecting.
+        coordinator.activateOffline(partition: partition)
+        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertTrue(coordinator.canPersistDraft)
+        XCTAssertEqual(coordinator.draft.text, "saved")
+        coordinator.editDraft(text: "still saving", modelID: nil)
+        XCTAssertEqual(coordinator.draft.text, "still saving")
+        // A different partition resets local input instead of leaking it.
+        let other = try XCTUnwrap(ReadingPartition(apiBaseURL: URL(string: "https://other.test")!,
+                                                   identity: identity("user2")))
+        coordinator.activateOffline(partition: other)
+        XCTAssertEqual(coordinator.draft.text, "")
+        XCTAssertTrue(coordinator.canPersistDraft)
+        // Returning to the original partition restores its persisted draft.
+        coordinator.activateOffline(partition: partition)
+        XCTAssertEqual(coordinator.draft.text, "still saving")
+        // A revoked identity still fully disconnects and drops the persistence promise.
+        coordinator.disconnect()
+        XCTAssertFalse(coordinator.canPersistDraft)
+    }
+
     func testWithdrawalDuringUploadBlocksRemainingUploadAndPost() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try FileManager.default.removeItem(at: folder) }
