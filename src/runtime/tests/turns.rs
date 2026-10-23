@@ -1423,6 +1423,23 @@ impl AgentProvider for StablePrefixDiagnosticsProvider {
             request_diagnostics: Some(
                 serde_json::from_value(serde_json::json!({
                     "request_lowering_mode": "full_replay",
+                    "anthropic_cache": {
+                        "explicit_cache_control_enabled": false,
+                        "cache_control_source": "route_override",
+                        "model_route": "dashscope@token-plan/deepseek-v4.1-flash",
+                        "tools_count": 0,
+                        "tools_hash": "tools-fingerprint",
+                        "system_hash": "system-fingerprint",
+                        "system_block_count": 1,
+                        "estimated_system_tokens": 100,
+                        "context_hash_by_stability": {},
+                        "conversation_message_count": 1,
+                        "conversation_content_block_count": 1,
+                        "cache_breakpoints": [],
+                        "tokens_before_last_breakpoint": 0,
+                        "tokens_after_last_breakpoint": 110,
+                        "automatic_cache_control_requested": false
+                    },
                     "stable_prefix": {
                         "schema_version": 1,
                         "algorithm": "sha256",
@@ -1891,10 +1908,27 @@ async fn provider_round_records_secret_safe_stable_prefix_diagnostics() {
         stable_prefix["components"][0]["name"].as_str(),
         Some("tools")
     );
-    let serialized = serde_json::to_string(&provider_event.data).unwrap();
-    assert!(!serialized.contains("system_prompt"));
-    assert!(!serialized.contains("conversation"));
-    assert!(!serialized.contains("tool_arguments"));
+    let transcript = runtime.storage().read_recent_transcript(10).unwrap();
+    let assistant_round = transcript
+        .iter()
+        .find(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
+        .expect("missing assistant round transcript");
+    for data in [&provider_event.data, &assistant_round.data] {
+        let cache = &data["provider_request_diagnostics"]["anthropic_cache"];
+        assert_eq!(cache["explicit_cache_control_enabled"], false);
+        assert_eq!(cache["cache_control_source"], "route_override");
+        assert_eq!(
+            cache["model_route"],
+            "dashscope@token-plan/deepseek-v4.1-flash"
+        );
+        assert_eq!(cache["system_cache_control_count"], 0);
+        assert_eq!(cache["message_cache_control_count"], 0);
+        let serialized = serde_json::to_string(data).unwrap();
+        assert!(!serialized.contains("system_prompt"));
+        // Count-only diagnostics are safe; raw conversation payloads are not.
+        assert!(!serialized.contains("\"conversation\""));
+        assert!(!serialized.contains("tool_arguments"));
+    }
 }
 
 #[tokio::test]

@@ -176,6 +176,12 @@ fn build_anthropic_provider(
     home_dir: &Path,
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
+    let cache_policy = route.capabilities.endpoint.anthropic_cache.ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing resolved Anthropic cache policy for {}",
+            route.route_ref.as_string()
+        )
+    })?;
     Ok(Arc::new(
         AnthropicProvider::from_runtime_config_with_context_window(
             route.provider_config(),
@@ -184,7 +190,8 @@ fn build_anthropic_provider(
             route.policy.context_window_tokens,
             home_dir,
             route.policy.capabilities.supports_reasoning,
-        )?,
+        )?
+        .with_cache_policy(cache_policy, route.route_ref.as_string()),
     ))
 }
 

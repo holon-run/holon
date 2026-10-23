@@ -1,11 +1,16 @@
 use super::*;
 use crate::model_catalog::{
-    ModelMetadataConstraint, ModelMetadataConstraintKind, ModelMetadataConstraintSource,
-    ModelMetadataField, ReasoningEffortValidationError,
+    AnthropicCacheControlSource, ModelMetadataConstraint, ModelMetadataConstraintKind,
+    ModelMetadataConstraintSource, ModelMetadataField, ReasoningEffortValidationError,
+    ResolvedAnthropicCachePolicy,
 };
 use std::collections::HashSet;
 
 pub(crate) const VIEW_IMAGE_CONTRACT_VERSION: &str = "view_image.v2";
+
+#[cfg(test)]
+#[path = "route_cache_tests.rs"]
+mod route_cache_tests;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedViewImageVisionSelection {
@@ -250,6 +255,7 @@ impl ResolvedModelCapabilities {
         let intrinsic = policy.capabilities.intrinsic();
         let endpoint = crate::model_catalog::EndpointModelPolicy {
             accepted_parameters: resolved_parameter_contracts(policy),
+            anthropic_cache: None,
         };
         let transport = transport.capabilities();
         let image_input = constrain_transport_capability(
@@ -422,6 +428,8 @@ pub struct RuntimeModelCatalog {
     pub built_in_catalog: BuiltInModelCatalog,
     pub discovered_models: HashMap<ModelRef, BuiltInModelMetadata>,
     pub model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
+    pub model_route_overrides: HashMap<ModelRouteRef, ModelRouteRuntimeOverride>,
+    pub provider_cache_overrides: HashMap<ProviderId, bool>,
     pub unknown_model_fallback: Option<ModelRuntimeOverride>,
     pub configured_runtime_max_output_tokens: u32,
 }
@@ -434,14 +442,7 @@ impl RuntimeModelCatalog {
     }
 
     pub(crate) fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
-        let canonical_model_ref = self
-            .built_in_catalog
-            .canonicalize_model_ref(&route_ref.model_ref());
-        ModelRouteRef::new(
-            route_ref.provider.clone(),
-            route_ref.endpoint.clone(),
-            canonical_model_ref.model,
-        )
+        canonicalize_route_ref(&self.built_in_catalog, route_ref)
     }
 
     pub fn from_config(config: &AppConfig) -> Self {
@@ -479,6 +480,9 @@ impl RuntimeModelCatalog {
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
             model_overrides: config.validated_model_overrides.clone(),
+            model_route_overrides: resolve_model_route_overrides(&config.stored_config)
+                .expect("model route overrides were validated when loading config"),
+            provider_cache_overrides: explicit_provider_cache_overrides(&config.stored_config),
             unknown_model_fallback: config.validated_unknown_model_fallback.clone(),
             configured_runtime_max_output_tokens: config.runtime_max_output_tokens,
         }
@@ -540,14 +544,8 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
     ) -> Option<ResolvedModelRouteMetadata> {
-        let canonical_model_ref = self
-            .built_in_catalog
-            .canonicalize_model_ref(&route_ref.model_ref());
-        let canonical_route_ref = ModelRouteRef::new(
-            route_ref.provider.clone(),
-            route_ref.endpoint.clone(),
-            canonical_model_ref.model.clone(),
-        );
+        let canonical_route_ref = self.canonicalize_model_route_ref(route_ref);
+        let canonical_model_ref = canonical_route_ref.model_ref();
         let endpoint = self.provider_endpoints.iter().find(|endpoint| {
             endpoint.provider == canonical_route_ref.provider
                 && endpoint.endpoint == canonical_route_ref.endpoint
@@ -556,6 +554,11 @@ impl RuntimeModelCatalog {
             self.resolved_model_policy_for_route(base_context_config, &canonical_route_ref);
         let mut capabilities =
             ResolvedModelCapabilities::resolve(&mut policy, endpoint.runtime_config.transport);
+        if endpoint.runtime_config.transport == ProviderTransportKind::AnthropicMessages {
+            capabilities.endpoint.anthropic_cache = Some(
+                self.resolve_anthropic_cache_policy(&canonical_route_ref, &endpoint.runtime_config),
+            );
+        }
         if service_tier_supported(&canonical_route_ref, &endpoint.runtime_config) {
             capabilities.endpoint.accepted_parameters.push(
                 crate::model_catalog::ModelParameterSupport {
@@ -592,6 +595,48 @@ impl RuntimeModelCatalog {
             policy,
             capabilities,
         })
+    }
+
+    fn resolve_anthropic_cache_policy(
+        &self,
+        route: &ModelRouteRef,
+        endpoint: &ProviderRuntimeConfig,
+    ) -> ResolvedAnthropicCachePolicy {
+        let (cache_control, source) = self
+            .model_route_overrides
+            .get(route)
+            .and_then(ModelRouteRuntimeOverride::anthropic_cache_control)
+            .map(|value| (value, AnthropicCacheControlSource::RouteOverride))
+            .or_else(|| {
+                self.provider_cache_overrides
+                    .get(&endpoint.id)
+                    .copied()
+                    .map(|value| (value, AnthropicCacheControlSource::ProviderOverride))
+            })
+            .or_else(|| {
+                self.built_in_catalog
+                    .get_route(route)
+                    .and_then(|policy| policy.cache_capabilities.as_ref())
+                    .and_then(|cache| cache.cache_control)
+                    .map(|value| (value, AnthropicCacheControlSource::RouteBuiltin))
+            })
+            .unwrap_or_else(|| {
+                if crate::provider::provider_definition(endpoint.id.as_str()).is_some()
+                    || crate::provider::provider_definition(endpoint.route_provider.as_str())
+                        .is_some()
+                {
+                    (
+                        endpoint.context_management.cache_capabilities.cache_control,
+                        AnthropicCacheControlSource::EndpointBuiltin,
+                    )
+                } else {
+                    (true, AnthropicCacheControlSource::CompatibilityDefault)
+                }
+            });
+        ResolvedAnthropicCachePolicy {
+            cache_control,
+            source,
+        }
     }
 
     /// Resolve the provider endpoint config for a (possibly canonical) model ref.
@@ -1077,6 +1122,8 @@ impl Default for RuntimeModelCatalog {
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: HashMap::new(),
             model_overrides: HashMap::new(),
+            model_route_overrides: HashMap::new(),
+            provider_cache_overrides: HashMap::new(),
             unknown_model_fallback: None,
             configured_runtime_max_output_tokens: 8192,
         }
@@ -1150,6 +1197,76 @@ pub(crate) fn resolve_model_catalog(
             ))
         })
         .collect()
+}
+
+fn canonicalize_route_ref(catalog: &BuiltInModelCatalog, route: &ModelRouteRef) -> ModelRouteRef {
+    let model = catalog.canonicalize_model_ref(&route.model_ref());
+    let (provider, legacy_endpoint) = built_in_provider_endpoint_identity(&route.provider)
+        .expect("valid built-in route identity");
+    let endpoint =
+        if provider != route.provider && route.endpoint == ProviderEndpointId::default_endpoint() {
+            legacy_endpoint
+        } else {
+            route.endpoint.clone()
+        };
+    ModelRouteRef::new(provider, endpoint, model.model)
+}
+
+pub(crate) fn resolve_model_route_overrides(
+    stored_config: &HolonConfigFile,
+) -> Result<HashMap<ModelRouteRef, ModelRouteRuntimeOverride>> {
+    let catalog = BuiltInModelCatalog::default();
+    let mut resolved: HashMap<ModelRouteRef, ModelRouteRuntimeOverride> = HashMap::new();
+    for (key, policy) in &stored_config.models.routes {
+        let route = ModelRouteRef::parse(key)
+            .with_context(|| format!("invalid models.routes key {key}"))?;
+        if route
+            .model
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '*' | '?' | '[' | ']' | '{' | '}'))
+        {
+            return Err(anyhow!(
+                "invalid models.routes key {key}; expected an exact model id, not a pattern"
+            ));
+        }
+        let route = canonicalize_route_ref(&catalog, &route);
+        if let Some(previous) = resolved.get(&route) {
+            if previous.anthropic_cache_control() != policy.anthropic_cache_control() {
+                return Err(anyhow!(
+                    "conflicting models.routes aliases for {}",
+                    route.as_string()
+                ));
+            }
+        } else {
+            resolved.insert(route, policy.clone());
+        }
+    }
+    Ok(resolved)
+}
+
+fn explicit_provider_cache_overrides(config: &HolonConfigFile) -> HashMap<ProviderId, bool> {
+    let mut overrides = HashMap::new();
+    for (id, provider) in &config.providers {
+        if let Some(cache) = provider.cache_capabilities {
+            overrides.insert(id.clone(), cache.cache_control);
+        }
+    }
+    // Plan aliases materialize after explicit provider ids, inheriting their base policy.
+    for (id, provider) in &config.providers {
+        let inherited_cache_control = overrides.get(id).copied();
+        for (plan_id, plan) in &provider.plans {
+            if plan.endpoint.is_some() {
+                if let Ok(alias) = ProviderId::parse(&format!("{}-{plan_id}", id.as_str())) {
+                    if let Some(cache_control) = inherited_cache_control {
+                        overrides.insert(alias, cache_control);
+                    } else {
+                        overrides.remove(&alias);
+                    }
+                }
+            }
+        }
+    }
+    overrides
 }
 
 pub(crate) fn validate_optional_model_runtime_override(
@@ -1749,6 +1866,22 @@ pub(crate) fn parse_model_catalog_value(
         validated.insert(model_ref, validate_model_runtime_override(override_config)?);
     }
     Ok(validated)
+}
+
+pub(crate) fn parse_model_route_overrides_value(
+    raw_value: &str,
+) -> Result<BTreeMap<String, ModelRouteRuntimeOverride>> {
+    let routes: BTreeMap<String, ModelRouteRuntimeOverride> =
+        serde_json::from_str(raw_value).context("models.routes expects a JSON object")?;
+    let config = HolonConfigFile {
+        models: ModelsConfigFile {
+            routes,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    resolve_model_route_overrides(&config)?;
+    Ok(config.models.routes)
 }
 
 pub(crate) fn parse_optional_model_runtime_override(

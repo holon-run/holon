@@ -335,6 +335,12 @@ pub struct AnthropicPromptCacheDiagnostics {
     pub cache_strategy: String,
     #[serde(default)]
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_cache_control_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control_source: Option<crate::model_catalog::AnthropicCacheControlSource>,
     #[serde(default)]
     pub betas: Vec<String>,
     pub tools_count: usize,

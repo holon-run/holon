@@ -103,6 +103,36 @@ holon config migrate-model-routes --write  # 经校验的规范化重写
 写入会创建一次性配置备份，并在一个 SQLite 事务中更新所有 Agent 状态。无效或有歧义的
 引用会阻止部分写入。
 
+#### 精确路由缓存覆盖（`models.routes`）
+
+`models.routes` 将精确的 `provider@endpoint/model` 引用映射到端点／模型政策。
+与 `models.catalog` 不同，必须明确写出 endpoint。例如，仅关闭一条路由的
+Anthropic 显式缓存断点，不影响同端点的其他模型：
+
+```json
+{
+  "models": {
+    "routes": {
+      "dashscope@token-plan/deepseek-v4.1-flash": {
+        "cache_capabilities": { "cache_control": false }
+      }
+    }
+  }
+}
+```
+
+这是手动覆盖示例，不是对该路由服务端缓存支持的断言。缺省／null 继承；优先级为：
+用户精确路由 > 用户显式 provider 配置 > 内置精确路由 > 端点默认 > 兼容默认
+（`true`）。显式 `true` 和 `false` 都可覆盖较宽配置；非 Anthropic transport
+不消费此政策。
+
+通过 `holon config get/set/unset models.routes` 查看、替换或移除整个对象；
+设置时保留无关条目。非法字段、格式错误的路由和冲突别名会报错；移除覆盖后恢复继承。
+关闭显式控制也会关闭依赖缓存的 Claude Code 请求伪装，但不关闭服务端隐式缓存，
+也不保证降低费用。每轮 `provider_request_diagnostics.anthropic_cache` 分别记录
+实际开关、来源、精确路由与 wire 断点数；服务端缓存 usage 仍单独记录在
+`provider_cache_usage`。旧记录缺失的新字段表示未知。
+
 ### 认证与 Session 设置
 
 Holon 控制平面支持基于 Cookie 的 Session 认证（适用于浏览器和 Web UI 客户端）以及 Bearer Token 认证。

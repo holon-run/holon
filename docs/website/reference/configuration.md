@@ -94,6 +94,41 @@ holon config migrate-model-routes --write  # validated canonical rewrite
 The write creates a one-time config backup and updates all agent state in a
 SQLite transaction. Invalid or ambiguous refs prevent partial writes.
 
+#### Exact Route Cache Overrides (`models.routes`)
+
+`models.routes` maps exact `provider@endpoint/model` refs to endpoint/model
+policy overrides. Unlike `models.catalog`, an endpoint is required. For example,
+to suppress explicit Anthropic cache breakpoints on one route without changing
+other models on the same endpoint:
+
+```json
+{
+  "models": {
+    "routes": {
+      "dashscope@token-plan/deepseek-v4.1-flash": {
+        "cache_capabilities": { "cache_control": false }
+      }
+    }
+  }
+}
+```
+
+This is a manual override example, not a claim about that route's server-side
+cache support. Omitted/null values inherit. Precedence is explicit user route >
+explicit user provider > built-in route > endpoint default > compatibility
+default (`true`). Both `true` and `false` can override a broader setting.
+Other transports ignore this Anthropic-only policy.
+
+Use `holon config get/set/unset models.routes` to inspect, replace or remove the
+object; preserve unrelated entries when setting it. Invalid fields, malformed
+route refs and conflicting aliases are rejected. Removing an override restores
+inheritance. Disabling explicit control also suppresses cache-dependent Claude
+Code mimicry, but does not disable server-side implicit caching or guarantee
+lower costs. Per-round `provider_request_diagnostics.anthropic_cache` records
+the effective gate, its source, exact route and wire marker counts.
+Provider-reported cache usage remains separate in `provider_cache_usage`.
+Missing historical fields mean unknown.
+
 ### Authentication & Session Settings
 
 Holon supports session-based authentication for browser and Web UI clients alongside bearer token authentication.

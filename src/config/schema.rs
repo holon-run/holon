@@ -408,6 +408,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "models.routes",
+            kind: "json_object",
+            description: "Exact provider@endpoint/model cache policy overrides. Missing or null cache_control inherits; setting this object replaces all route entries.",
+            default: json!({}),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "model.unknown_fallback",
             kind: "json_object",
             description: "Explicit runtime policy fallback used for unknown models.",
@@ -1078,6 +1085,7 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null)),
         "models.catalog" => Ok(serde_json::to_value(&config.models.catalog)?),
+        "models.routes" => Ok(serde_json::to_value(&config.models.routes)?),
         "model.unknown_fallback" => Ok(config
             .model
             .unknown_fallback
@@ -1635,6 +1643,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "models.catalog" => {
             config.models.catalog = parse_model_catalog_value(raw_value)?;
         }
+        "models.routes" => {
+            config.models.routes = parse_model_route_overrides_value(raw_value)?;
+        }
         "model.unknown_fallback" => {
             config.model.unknown_fallback = parse_optional_model_runtime_override(raw_value)?;
         }
@@ -2084,6 +2095,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "vision.default" => config.vision.default = None,
         "image_generation.default" => config.image_generation.default = None,
         "models.catalog" => config.models.catalog.clear(),
+        "models.routes" => config.models.routes.clear(),
         "model.unknown_fallback" => config.model.unknown_fallback = None,
         "model.unknown_fallback.context_window_tokens" => {
             clear_unknown_model_fallback_field(config, |value| value.context_window_tokens = None);
