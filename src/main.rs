@@ -224,6 +224,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
     }
 
     if let Commands::Tui {
+        agent,
         no_alt_screen,
         connect: Some(connect),
         token,
@@ -240,7 +241,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         )?;
         let client = LocalClient::remote(config.clone(), connect.clone(), token)?;
         client.handshake().await?;
-        return run_tui(config, *no_alt_screen, Some(client)).await;
+        return run_tui(config, *no_alt_screen, Some(client), agent.clone()).await;
     }
 
     let config = if runtime_command_uses_config_inspection(&command) {
@@ -344,10 +345,11 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Skills { command } => handle_skills_command(&config, command).await,
         Commands::Workspace { command } => handle_workspace_command(&config, command).await,
         Commands::Tui {
+            agent,
             no_alt_screen,
             connect: None,
             ..
-        } => run_tui(config, no_alt_screen, None).await,
+        } => run_tui(config, no_alt_screen, None, agent).await,
         Commands::Tui {
             connect: Some(_), ..
         } => unreachable!("remote tui is handled before runtime config load"),

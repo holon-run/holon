@@ -66,6 +66,7 @@ pub async fn run_tui(
     config: AppConfig,
     no_alt_screen: bool,
     client: Option<LocalClient>,
+    agent: Option<String>,
 ) -> Result<()> {
     let client = match client {
         Some(client) => client,
@@ -73,7 +74,7 @@ pub async fn run_tui(
     };
     let log_writer = TuiLogWriter::new(config.log_root_dir())?;
     let mut app = TuiApp::new(client, log_writer);
-    app.initialize().await;
+    app.initialize_with_agent(agent).await?;
 
     let mut terminal_guard = TerminalCleanupGuard::new();
     enable_raw_mode()?;
@@ -132,6 +133,9 @@ async fn run_event_loop(
 ) -> Result<()> {
     loop {
         if let Err(err) = app.tick().await {
+            if app.initial_agent_id.is_some() {
+                return Err(err);
+            }
             app.status_line = format!("TUI runtime update failed: {err}");
         }
         terminal.draw(|frame| draw(frame, app))?;

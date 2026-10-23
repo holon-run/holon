@@ -43,6 +43,8 @@ use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use serde_json::json;
 use std::{path::PathBuf, time::Instant};
 
+mod startup;
+
 pub(super) fn test_config() -> AppConfig {
     let temp = tempfile::tempdir().unwrap().keep();
     AppConfig {

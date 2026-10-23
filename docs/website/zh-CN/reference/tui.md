@@ -14,6 +14,19 @@ Holon 的终端 UI（`holon tui`）是日常工作的主要交互界面。它运
 holon tui
 ```
 
+为本次会话指定准确的 public Agent ID，本地与远端均支持：
+
+```bash
+holon tui --agent worker
+holon tui --connect https://your-server:8787 --token-profile my-profile --agent worker
+```
+
+`--agent` 优先于记忆和默认选择；进入 raw mode 或备用屏幕之前先检查 public
+roster 与 compact status。目标不可用或无权访问时明确失败，不静默切换到其他
+Agent。查看未加载或已停止的 public Agent 不会启动它。首次状态 bootstrap 成功后，
+启动约束解除，允许正常手动切换和运行期 fallback。整个显式会话（包括之后手动切换）
+都不会更新共享的上次选择；不带此参数时，原有记忆行为不变。
+
 禁用备用屏幕启动（终端渲染异常时有用）：
 
 ```bash
@@ -30,6 +43,7 @@ holon tui --connect https://your-server:8787 --token-profile my-profile
 
 | 选项 | 说明 |
 |--------|-------------|
+| `--agent <AGENT_ID>` | 选择准确的 public Agent ID；本次会话所有选择变更均不写入共享记忆 |
 | `--no-alt-screen` | 禁用备用屏幕缓冲区 |
 | `--connect <URL>` | 连接远程 daemon |
 | `--token <TOKEN>` | 远程连接的 Bearer token |
