@@ -842,6 +842,15 @@ impl TuiApp {
     pub(super) fn process_runtime_messages(&mut self) -> bool {
         let mut disconnected = false;
         loop {
+            // A failed explicit startup must reach tick before another message can retry it.
+            if self.initial_agent_id.is_some()
+                && matches!(
+                    self.connection_state,
+                    TuiConnectionState::Disconnected { .. }
+                )
+            {
+                break;
+            }
             let message = match self.runtime_messages.try_recv() {
                 Ok(message) => Some(message),
                 Err(mpsc::error::TryRecvError::Empty) => None,

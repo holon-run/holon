@@ -415,6 +415,56 @@ async fn startup_bootstrap_failure_is_fatal_without_fallback_or_memory_write() {
 }
 
 #[tokio::test]
+async fn startup_failure_is_not_overwritten_by_queued_roster_refresh() {
+    for bootstrap_failure in [true, false] {
+        let mut app = explicit_app(LocalClient::new(test_config()).unwrap());
+        app.apply_agent_list(vec![
+            sample_agent_summary("default"),
+            sample_agent_summary("beta"),
+        ]);
+        app.snapshot_refresh_request_id = 7;
+        app.snapshot_refresh_in_flight = true;
+        app.agent_list_refresh_in_flight = true;
+        let failure = if bootstrap_failure {
+            TuiRuntimeMessage::SnapshotLoaded {
+                request_id: 7,
+                target_index: 1,
+                agent_id: "beta".into(),
+                checkpoint: None,
+                result: Err("agent_deleted".into()),
+            }
+        } else {
+            TuiRuntimeMessage::AgentListLoaded(Ok(vec![AgentListEntry::from_summary(
+                &sample_agent_summary("default"),
+            )]))
+        };
+        app.runtime_tx.send(failure).unwrap();
+        app.runtime_tx
+            .send(TuiRuntimeMessage::AgentListLoaded(Ok(["default", "beta"]
+                .iter()
+                .map(|id| AgentListEntry::from_summary(&sample_agent_summary(id)))
+                .collect())))
+            .unwrap();
+
+        let err = app.tick().await.unwrap_err().to_string();
+        let expected = if bootstrap_failure {
+            "failed to bootstrap startup agent beta from /state: agent_deleted"
+        } else {
+            "startup agent beta is no longer in the selectable public roster"
+        };
+        assert_eq!(err, expected);
+        let request_id = app.snapshot_refresh_request_id;
+        assert_eq!(app.tick().await.unwrap_err().to_string(), expected);
+        assert_eq!(app.snapshot_refresh_request_id, request_id);
+        assert!(!app.snapshot_refresh_in_flight);
+        assert!(app.refresh_deadline.is_none());
+        assert!(app.projection.is_none());
+        assert_eq!(app.initial_agent_id.as_deref(), Some("beta"));
+        assert!(!app.state_path.exists());
+    }
+}
+
+#[tokio::test]
 async fn successful_startup_consumes_constraint_but_entire_session_remains_unpersisted() {
     for remote in [false, true] {
         let config = test_config();
