@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 import importlib.util
 import io
 import inspect
@@ -125,6 +126,81 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertEqual(harness.evidence, stale_evidence)
             self.assertTrue(stale_evidence.is_dir())
             self.assertFalse((stale_evidence / "failure.txt").exists())
+
+    @staticmethod
+    def _agent_state(
+        status: str, *, turn_index: int, run_id: str | None = None
+    ) -> dict:
+        return {
+            "agent": {
+                "agent": {
+                    "status": status,
+                    "current_run_id": run_id,
+                    "turn_index": turn_index,
+                }
+            },
+            "session": {"pending_count": 0},
+        }
+
+    def _settle_harness(self, evidence_root: Path) -> runner.CaseHarness:
+        harness = runner.CaseHarness(
+            case_id="bootstrap-settle",
+            image="holon:test",
+            model="test/model",
+            requires_model=False,
+            credential_envs=[],
+            env_file=None,
+            runtime_env={},
+            evidence_root=evidence_root,
+            timeout_seconds=10,
+            keep=False,
+        )
+        harness.agent_id = "main"
+        return harness
+
+    def test_wait_default_bootstrap_turn_returns_after_first_turn_settles(self) -> None:
+        states = [
+            self._agent_state("awake_running", turn_index=1, run_id="run_1"),
+            self._agent_state("awake_idle", turn_index=1),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            harness = self._settle_harness(Path(directory))
+            with (
+                patch.object(harness, "request", side_effect=states) as request,
+                patch.object(runner.time, "sleep"),
+            ):
+                harness.wait_default_bootstrap_turn_settled(settle_timeout=5)
+            self.assertEqual(request.call_count, 2)
+
+    def test_wait_default_bootstrap_turn_skips_when_none_scheduled(self) -> None:
+        state = self._agent_state("awake_idle", turn_index=0)
+        with tempfile.TemporaryDirectory() as directory:
+            harness = self._settle_harness(Path(directory))
+            with (
+                patch.object(harness, "request", return_value=state),
+                patch.object(runner.time, "sleep"),
+            ):
+                harness.wait_default_bootstrap_turn_settled(
+                    settle_timeout=5, missing_grace=0.0
+                )
+            skipped = json.loads(
+                (harness.evidence / "bootstrap-settle-skipped.json").read_text()
+            )
+            self.assertEqual(skipped["turn_index"], 0)
+            self.assertEqual(skipped["reason"], "no default bootstrap turn was scheduled")
+
+    def test_wait_default_bootstrap_turn_times_out_when_never_settling(self) -> None:
+        state = self._agent_state("awake_running", turn_index=1, run_id="run_1")
+        with tempfile.TemporaryDirectory() as directory:
+            harness = self._settle_harness(Path(directory))
+            with (
+                patch.object(harness, "request", return_value=state),
+                patch.object(runner.time, "sleep"),
+                patch.object(harness, "capture_logs") as capture,
+            ):
+                with self.assertRaises(TimeoutError):
+                    harness.wait_default_bootstrap_turn_settled(settle_timeout=0.0)
+            capture.assert_called_once()
 
     def setUp(self) -> None:
         self.manifest = json.loads(runner.DEFAULT_MANIFEST.read_text())
