@@ -2486,6 +2486,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "minimax-cn/MiniMax-M3",
+      "display_name": "MiniMax M3",
+      "description": "Holon built-in runtime metadata for the minimax-cn/MiniMax-M3 compatible provider model.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 524288,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "minimax-cn/MiniMax-M3.1-Flash",
       "display_name": "MiniMax M3.1 Flash",
       "description": "MiniMax M3.1 Flash supports general API access; M Plan and existing Token Plan access use separate subscription credentials.",
@@ -2539,69 +2560,6 @@
         "xhigh",
         "max"
       ],
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2",
-      "display_name": "MiniMax M2",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2 compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.1",
-      "display_name": "MiniMax M2.1",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2.1 compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.1-highspeed",
-      "display_name": "MiniMax M2.1 Highspeed",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2.1-highspeed compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
       "source": "built_in_catalog"
     },
     {
@@ -3979,6 +3937,27 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/kimi-k3.1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "OpenCode Go and Go Plus Chat route; token limits, modalities, and reasoning controls are unconfirmed for this endpoint.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -6409,6 +6388,27 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "volcengine/deepseek-latest",
+      "display_name": "DeepSeek Latest",
+      "description": "volcengine coding subscription DeepSeek Latest; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/deepseek-v3-2-251201",
       "display_name": "DeepSeek V3.2",
       "description": "Holon built-in runtime metadata for the volcengine/deepseek-v3-2-251201 compatible provider model.",
@@ -6808,27 +6808,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "volcengine/kimi-k2.6",
-      "display_name": "Kimi K2.6",
-      "description": "Holon built-in runtime metadata for the volcengine-coding/kimi-k2.6 compatible provider model.",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
       "model_ref": "volcengine/kimi-k2.7-code",
       "display_name": "Kimi K2.7 Code",
       "description": "Holon built-in runtime metadata for the volcengine-coding/kimi-k2.7-code compatible provider model.",
@@ -6887,6 +6866,48 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/kimi-latest",
+      "display_name": "Kimi Latest",
+      "description": "volcengine coding subscription Kimi Latest; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/minimax-latest",
+      "display_name": "MiniMax Latest",
+      "description": "volcengine coding subscription MiniMax Latest; exact token limits unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -9076,8 +9097,24 @@
       }
     },
     {
+      "route_ref": "minimax-cn@default/MiniMax-M3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "minimax-cn@default/MiniMax-M3.1-Flash",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9088,6 +9125,9 @@
     {
       "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9098,36 +9138,9 @@
     {
       "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash-Preview",
       "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "minimax@default/MiniMax-M2",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "minimax@default/MiniMax-M2.1",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "minimax@default/MiniMax-M2.1-highspeed",
-      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9178,6 +9191,9 @@
     {
       "route_ref": "minimax@default/MiniMax-M3",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9188,6 +9204,9 @@
     {
       "route_ref": "minimax@default/MiniMax-M3.1-Flash",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9198,6 +9217,9 @@
     {
       "route_ref": "minimax@m-plan/MiniMax-M3.1-Flash",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9208,6 +9230,9 @@
     {
       "route_ref": "minimax@m-plan/MiniMax-M3.1-Flash-Preview",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -9747,6 +9772,16 @@
     },
     {
       "route_ref": "opencode-go@default/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/kimi-k3.1-pro",
       "policy": {
         "display_name": null,
         "description": null,
@@ -11739,6 +11774,16 @@
       }
     },
     {
+      "route_ref": "volcengine@coding/deepseek-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@coding/deepseek-v3-2-251201",
       "policy": {
         "display_name": null,
@@ -11862,7 +11907,7 @@
       "route_ref": "volcengine@coding/glm-5.2",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Legacy GLM-5.2 subscription ID forwards to GLM-5.3; not original GLM-5.2 service.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -11899,16 +11944,6 @@
       }
     },
     {
-      "route_ref": "volcengine@coding/kimi-k2.6",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "volcengine@coding/kimi-k2.7-code",
       "policy": {
         "display_name": null,
@@ -11930,6 +11965,26 @@
     },
     {
       "route_ref": "volcengine@coding/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/kimi-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@coding/minimax-latest",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12020,6 +12075,16 @@
     },
     {
       "route_ref": "volcengine@plan/ark-code-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/deepseek-latest",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12152,7 +12217,7 @@
       "route_ref": "volcengine@plan/glm-5.2",
       "policy": {
         "display_name": null,
-        "description": null,
+        "description": "Legacy GLM-5.2 subscription ID forwards to GLM-5.3; not original GLM-5.2 service.",
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
@@ -12189,16 +12254,6 @@
       }
     },
     {
-      "route_ref": "volcengine@plan/kimi-k2.6",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "volcengine@plan/kimi-k2.7-code",
       "policy": {
         "display_name": null,
@@ -12222,6 +12277,26 @@
     },
     {
       "route_ref": "volcengine@plan/kimi-k3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/kimi-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@plan/minimax-latest",
       "policy": {
         "display_name": null,
         "description": null,
@@ -13043,6 +13118,10 @@
       "target": "volcengine/ark-code-latest"
     },
     {
+      "alias": "volcengine-agent/deepseek-latest",
+      "target": "volcengine/deepseek-latest"
+    },
+    {
       "alias": "volcengine-agent/deepseek-v4-flash",
       "target": "volcengine/deepseek-v4-flash"
     },
@@ -13107,10 +13186,6 @@
       "target": "volcengine/glm-latest"
     },
     {
-      "alias": "volcengine-agent/kimi-k2.6",
-      "target": "volcengine/kimi-k2.6"
-    },
-    {
       "alias": "volcengine-agent/kimi-k2.7-code",
       "target": "volcengine/kimi-k2.7-code"
     },
@@ -13121,6 +13196,14 @@
     {
       "alias": "volcengine-agent/kimi-k3",
       "target": "volcengine/kimi-k3"
+    },
+    {
+      "alias": "volcengine-agent/kimi-latest",
+      "target": "volcengine/kimi-latest"
+    },
+    {
+      "alias": "volcengine-agent/minimax-latest",
+      "target": "volcengine/minimax-latest"
     },
     {
       "alias": "volcengine-agent/minimax-m3",
@@ -13161,10 +13244,6 @@
     {
       "alias": "volcengine-coding/glm-5.3",
       "target": "volcengine/glm-5.3"
-    },
-    {
-      "alias": "volcengine-coding/kimi-k2.6",
-      "target": "volcengine/kimi-k2.6"
     },
     {
       "alias": "volcengine-coding/kimi-k2.7-code",
@@ -14001,24 +14080,16 @@
       "route_ref": "kilocode@default/kilo-auto/small"
     },
     {
+      "model_ref": "minimax-cn/MiniMax-M3",
+      "route_ref": "minimax-cn@default/MiniMax-M3"
+    },
+    {
       "model_ref": "minimax-cn/MiniMax-M3.1-Flash",
       "route_ref": "minimax-cn@default/MiniMax-M3.1-Flash"
     },
     {
       "model_ref": "minimax-cn/MiniMax-M3.1-Flash-Preview",
       "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash-Preview"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2",
-      "route_ref": "minimax@default/MiniMax-M2"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.1",
-      "route_ref": "minimax@default/MiniMax-M2.1"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.1-highspeed",
-      "route_ref": "minimax@default/MiniMax-M2.1-highspeed"
     },
     {
       "model_ref": "minimax/MiniMax-M2.5",
@@ -14279,6 +14350,10 @@
     {
       "model_ref": "opencode-go/kimi-k3",
       "route_ref": "opencode-go@default/kimi-k3"
+    },
+    {
+      "model_ref": "opencode-go/kimi-k3.1-pro",
+      "route_ref": "opencode-go@default/kimi-k3.1-pro"
     },
     {
       "model_ref": "opencode-go/longcat-2.0",
@@ -14741,6 +14816,10 @@
       "route_ref": "volcengine@coding/ark-code-latest"
     },
     {
+      "model_ref": "volcengine/deepseek-latest",
+      "route_ref": "volcengine@coding/deepseek-latest"
+    },
+    {
       "model_ref": "volcengine/deepseek-v3-2-251201",
       "route_ref": "volcengine@default/deepseek-v3-2-251201"
     },
@@ -14817,10 +14896,6 @@
       "route_ref": "volcengine@coding/glm-latest"
     },
     {
-      "model_ref": "volcengine/kimi-k2.6",
-      "route_ref": "volcengine@coding/kimi-k2.6"
-    },
-    {
       "model_ref": "volcengine/kimi-k2.7-code",
       "route_ref": "volcengine@coding/kimi-k2.7-code"
     },
@@ -14831,6 +14906,14 @@
     {
       "model_ref": "volcengine/kimi-k3",
       "route_ref": "volcengine@coding/kimi-k3"
+    },
+    {
+      "model_ref": "volcengine/kimi-latest",
+      "route_ref": "volcengine@coding/kimi-latest"
+    },
+    {
+      "model_ref": "volcengine/minimax-latest",
+      "route_ref": "volcengine@coding/minimax-latest"
     },
     {
       "model_ref": "volcengine/minimax-m3",

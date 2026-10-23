@@ -564,9 +564,9 @@ fn minimax_m31_model(provider: &str) -> BuiltInModelMetadata {
     entry
 }
 
-fn minimax_m3_model() -> BuiltInModelMetadata {
+fn minimax_m3_model(provider: &str) -> BuiltInModelMetadata {
     let mut entry = catalog_model(
-        "minimax",
+        provider,
         "MiniMax-M3",
         "MiniMax M3",
         1_000_000,
@@ -610,25 +610,45 @@ fn minimax_m_plan_model(provider: &str) -> BuiltInModelMetadata {
 }
 
 pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
-    [
+    let mut definitions = Vec::new();
+    for (provider, subscription_provider) in [
         ("minimax", "minimax-m-plan"),
         ("minimax-cn", "minimax-cn-m-plan"),
-    ]
-    .into_iter()
-    .map(|(provider, legacy_provider)| BuiltInModelRouteDefinition {
-        legacy_provider: provider_id(legacy_provider),
-        model_ref: ModelRef::new(provider_id(provider), "MiniMax-M3.1-Flash"),
-        endpoint: ProviderEndpointId::parse("m-plan").expect("valid endpoint"),
-        policy: BuiltInModelRoutePolicy::default(),
-    })
-    .collect()
+    ] {
+        for (endpoint, legacy_provider, model) in [
+            ("default", provider, "MiniMax-M3"),
+            ("default", provider, "MiniMax-M3.1-Flash"),
+            ("m-plan", subscription_provider, "MiniMax-M3.1-Flash"),
+            (
+                "m-plan",
+                subscription_provider,
+                "MiniMax-M3.1-Flash-Preview",
+            ),
+        ] {
+            definitions.push(BuiltInModelRouteDefinition {
+                legacy_provider: provider_id(legacy_provider),
+                model_ref: ModelRef::new(provider_id(provider), model),
+                endpoint: ProviderEndpointId::parse(endpoint).expect("valid endpoint"),
+                policy: BuiltInModelRoutePolicy {
+                    // M3/M3.1 do not support explicit cache_control. The legacy
+                    // Preview ID forwards to M3.1; implicit caching is separate.
+                    cache_capabilities: Some(ModelRouteCacheCapabilities {
+                        cache_control: Some(false),
+                    }),
+                    ..BuiltInModelRoutePolicy::default()
+                },
+            });
+        }
+    }
+    definitions
 }
 
 pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
     vec![
         minimax_m31_model("minimax"),
         minimax_m31_model("minimax-cn"),
-        minimax_m3_model(),
+        minimax_m3_model("minimax"),
+        minimax_m3_model("minimax-cn"),
         catalog_model(
             "minimax",
             "MiniMax-M2.7",
@@ -660,33 +680,6 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
             "minimax",
             "MiniMax-M2.5-highspeed",
             "MiniMax M2.5 Highspeed",
-            204_800,
-            128_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "minimax",
-            "MiniMax-M2.1",
-            "MiniMax M2.1",
-            204_800,
-            128_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "minimax",
-            "MiniMax-M2.1-highspeed",
-            "MiniMax M2.1 Highspeed",
-            204_800,
-            128_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "minimax",
-            "MiniMax-M2",
-            "MiniMax M2",
             204_800,
             128_000,
             true,

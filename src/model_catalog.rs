@@ -3497,9 +3497,6 @@ mod tests {
                 .map(|entry| entry.model_ref.model.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "MiniMax-M2",
-                "MiniMax-M2.1",
-                "MiniMax-M2.1-highspeed",
                 "MiniMax-M2.5",
                 "MiniMax-M2.5-highspeed",
                 "MiniMax-M2.7",
@@ -3529,6 +3526,41 @@ mod tests {
             assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
             assert!(model.capabilities.supports_reasoning);
             assert!(!model.capabilities.image_input);
+        }
+    }
+
+    #[test]
+    fn minimax_m3_api_eligibility_and_retirements_are_region_scoped() {
+        for catalog in [
+            legacy_builtin_catalog().unwrap(),
+            BuiltInModelCatalog::new(),
+        ] {
+            for provider in ["minimax", "minimax-cn"] {
+                let route =
+                    ModelRouteRef::parse(&format!("{provider}@default/MiniMax-M3")).unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let metadata = catalog.get(&route.model_ref()).unwrap();
+                assert_eq!(metadata.context_window_tokens, Some(1_000_000));
+                assert_eq!(metadata.default_max_output_tokens, Some(131_072));
+                assert_eq!(metadata.max_output_tokens_upper_limit, Some(524_288));
+                assert!(metadata.capabilities.image_input);
+                assert!(!metadata.reasoning_effort_options.contains(&"max".into()));
+                for endpoint in ["m-plan", "responses", "token-plan"] {
+                    let route =
+                        ModelRouteRef::parse(&format!("{provider}@{endpoint}/MiniMax-M3")).unwrap();
+                    assert!(catalog.get_route(&route).is_none());
+                }
+            }
+            for model in ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed"] {
+                assert!(catalog
+                    .get(&ModelRef::new(provider_id("minimax"), model))
+                    .is_none());
+            }
+            for model in ["MiniMax-M2.5", "MiniMax-M2.7"] {
+                assert!(catalog
+                    .get_route(&ModelRouteRef::parse(&format!("minimax@default/{model}")).unwrap())
+                    .is_some());
+            }
         }
     }
 
@@ -4443,10 +4475,7 @@ mod tests {
             );
         }
 
-        for route_ref in [
-            "volcengine@coding/kimi-k2.6",
-            "volcengine@plan/kimi-k2.7-code",
-        ] {
+        for route_ref in ["volcengine@plan/kimi-k2.7-code"] {
             let policy = catalog.resolve_route_policy(
                 &ModelRouteRef::parse(route_ref).unwrap(),
                 &HashMap::new(),
@@ -4674,6 +4703,49 @@ mod tests {
     }
 
     #[test]
+    fn moonshot_k3_1_supplement_resolves_documented_default_and_explicit_override() {
+        let catalog = BuiltInModelCatalog::new();
+        for model in ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
+            let route = ModelRouteRef::parse(&format!("moonshot@default/{model}")).unwrap();
+            let policy = catalog.resolve_route_policy(
+                &route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(policy.context_window_tokens, Some(1_048_576));
+            assert_eq!(policy.runtime_max_output_tokens, 131_072);
+            assert_eq!(policy.max_output_tokens_upper_limit, Some(1_048_576));
+            assert_eq!(policy.reasoning_effort_options, ["low", "high", "max"]);
+            let overrides = HashMap::from([(
+                ModelRef::new(provider_id("moonshot"), model),
+                ModelRuntimeOverride {
+                    runtime_max_output_tokens: Some(65_536),
+                    ..Default::default()
+                },
+            )]);
+            let overridden = catalog.resolve_route_policy(
+                &route,
+                &overrides,
+                &HashMap::new(),
+                None,
+                &base_context(),
+                8192,
+            );
+            assert_eq!(overridden.runtime_max_output_tokens, 65_536);
+            for endpoint in ["code-plan", "coding-plan"] {
+                assert!(catalog
+                    .get_route(
+                        &ModelRouteRef::parse(&format!("moonshot@{endpoint}/{model}")).unwrap()
+                    )
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
     fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         let catalog = curated_catalog();
         let provider = provider_id("opencode-go");
@@ -4683,9 +4755,12 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 39);
+        assert_eq!(models.len(), 40);
         for model in &models {
-            assert!(model.capabilities.supports_reasoning);
+            assert_eq!(
+                model.capabilities.supports_reasoning,
+                model.model_ref.model != "kimi-k3.1-pro"
+            );
             assert!(model.reasoning_effort_options.is_empty());
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
         }
@@ -4699,6 +4774,7 @@ mod tests {
             "glm-5.2",
             "glm-5.1",
             "kimi-k3",
+            "kimi-k3.1-pro",
             "kimi-k2.7-code",
             "kimi-k2.6",
             "longcat-2.0",
@@ -4799,6 +4875,33 @@ mod tests {
             assert!(catalog.get(&older_ref).is_some(), "{older_id}");
             assert_eq!(catalog.canonicalize_model_ref(&older_ref), older_ref);
             assert_ne!(older_ref, model_ref);
+        }
+    }
+
+    #[test]
+    fn opencode_go_k31_is_chat_only_without_inheriting_native_specs() {
+        for catalog in [
+            legacy_builtin_catalog().unwrap(),
+            BuiltInModelCatalog::new(),
+        ] {
+            let route = ModelRouteRef::parse("opencode-go@default/kimi-k3.1-pro").unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert_eq!(metadata.auto_compact_token_limit, None);
+            assert!(!metadata.capabilities.image_input);
+            assert!(!metadata.capabilities.supports_reasoning);
+            assert!(metadata.reasoning_effort_options.is_empty());
+            for endpoint in ["messages", "responses"] {
+                assert!(catalog
+                    .get_route(
+                        &ModelRouteRef::parse(&format!("opencode-go@{endpoint}/kimi-k3.1-pro"))
+                            .unwrap()
+                    )
+                    .is_none());
+            }
         }
     }
 

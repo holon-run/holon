@@ -481,6 +481,11 @@ pub fn generate(
     if let Some(previous) = previous {
         for route in &previous.routes {
             if current_model_refs.contains(&route.model_ref())
+                // Both subscriptions retired this exact ID on 2026-08-18.
+                // This does not establish retirement on the ordinary API.
+                && !(route.provider.as_str() == "volcengine"
+                    && matches!(route.endpoint.as_str(), "coding" | "plan")
+                    && route.model.as_str() == "kimi-k2.6")
                 && route_keys.insert(route.as_string())
             {
                 routes.push(route.clone());
@@ -531,6 +536,17 @@ fn supplement_model_supported_by_provider(
     // Native Chat IDs retired on 2026-10-21; aggregator and audio IDs are separate.
     // https://mimo.mi.com/docs/en-US/updates/deprecate
     if provider == "xiaomi" && matches!(model_id, "mimo-v2.5-pro" | "mimo-v2.5") {
+        return false;
+    }
+    // Explicitly retired on the international API; M2.5/M2.7 remain available
+    // to existing API users until 2026-11-18 despite the FAQ's conflicting table.
+    // https://platform.minimax.io/docs/faq/models.md
+    if provider == "minimax"
+        && matches!(
+            model_id,
+            "MiniMax-M2" | "MiniMax-M2.1" | "MiniMax-M2.1-highspeed"
+        )
+    {
         return false;
     }
     if provider != "openai-codex" {
@@ -998,6 +1014,94 @@ mod tests {
                 .iter()
                 .any(|model| { model.model_ref.as_string() == "xiaomi/mimo-v2.5-pro-ultraspeed" }));
         }
+    }
+
+    #[test]
+    fn excludes_retired_minimax_api_ids_without_retiring_peers_or_future_ids() {
+        let legacy = legacy();
+        let ids = ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed"];
+        let mut parsed: ModelsDevSnapshot =
+            serde_json::from_str(r#"{"minimax":{"id":"minimax","models":{}}}"#).unwrap();
+        let mut previous = ModelsDevSupplement::empty();
+        for id in ids {
+            let model = serde_json::from_value(serde_json::json!({
+                "id": id, "release_date": "2026-10-01",
+                "modalities": {"input": ["text"], "output": ["text"]}
+            }))
+            .unwrap();
+            for provider in ["minimax-cn", "tencent-tokenhub", "openrouter"] {
+                assert!(supplement_model_supported_by_provider(provider, id, &model));
+            }
+            parsed
+                .providers
+                .get_mut("minimax")
+                .unwrap()
+                .models
+                .insert(id.into(), model);
+            previous
+                .models
+                .push(supplement_metadata(&format!("minimax/{id}"), id));
+        }
+        for previous in [None, Some(&previous)] {
+            let update = generate(&parsed, previous, &legacy, "2026-10-23", "rev", "ver").unwrap();
+            assert!(update.supplement.models.is_empty());
+            for id in ids {
+                let model_ref = format!("minimax/{id}");
+                if previous.is_some() {
+                    assert!(update.removed.iter().any(|removed| {
+                        removed.model_ref == model_ref
+                            && removed.reason == RemovalReason::UnsupportedByProvider
+                    }));
+                } else {
+                    assert!(update.deferred.iter().any(|deferred| {
+                        deferred.model_ref == model_ref
+                            && deferred.reason == DeferredReason::UnsupportedByProvider
+                    }));
+                }
+            }
+        }
+        let model = parsed.providers["minimax"].models.values().next().unwrap();
+        for id in ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"] {
+            assert!(supplement_model_supported_by_provider("minimax", id, model));
+        }
+    }
+
+    #[test]
+    fn retired_volcengine_subscription_routes_do_not_retire_the_api_model() {
+        let legacy = legacy();
+        let parsed: ModelsDevSnapshot = serde_json::from_str(
+            r#"{
+            "volcengine":{"id":"volcengine","models":{
+                "kimi-k2.6":{"id":"kimi-k2.6","release_date":"2026-10-01",
+                    "modalities":{"input":["text"],"output":["text"]}}
+            }}
+        }"#,
+        )
+        .unwrap();
+        let mut previous = ModelsDevSupplement::empty();
+        previous
+            .models
+            .push(supplement_metadata("volcengine/kimi-k2.6", "Kimi K2.6"));
+        previous.routes = ["default", "coding", "plan"]
+            .into_iter()
+            .map(|endpoint| {
+                ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k2.6")).unwrap()
+            })
+            .collect();
+        let update = generate(
+            &parsed,
+            Some(&previous),
+            &legacy,
+            "2026-10-23",
+            "rev",
+            "ver",
+        )
+        .unwrap();
+        assert_eq!(update.supplement.models.len(), 1);
+        assert_eq!(
+            update.supplement.routes,
+            [ModelRouteRef::parse("volcengine@default/kimi-k2.6").unwrap()]
+        );
     }
 
     #[test]

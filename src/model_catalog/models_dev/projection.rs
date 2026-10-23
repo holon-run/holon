@@ -210,12 +210,17 @@ pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> Bui
         .as_ref()
         .and_then(|l| l.context)
         .filter(|v| *v > 0);
-    let default_max_output_tokens = model
+    let max_output_tokens_upper_limit = model
         .limit
         .as_ref()
         .and_then(|l| l.output)
         .filter(|v| *v > 0);
-    let max_output_tokens_upper_limit = default_max_output_tokens;
+    // Moonshot documents a 128K default separately from its 1M output ceiling.
+    // Do not turn the upstream capability ceiling into the request budget.
+    let default_max_output_tokens = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+        ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed") => Some(131_072),
+        _ => max_output_tokens_upper_limit,
+    };
 
     let auto_compact_token_limit = context_window_tokens
         .map(|ctx| ctx * DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT as u64 / 100);
@@ -322,6 +327,25 @@ mod tests {
             }
         }"#;
         serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn moonshot_k3_1_default_output_is_not_the_capability_ceiling() {
+        let model: ModelsDevModel = serde_json::from_str(
+            r#"{"id":"kimi-k3.1-pro","limit":{"context":1048576,"output":1048576}}"#,
+        )
+        .unwrap();
+        for model_ref in ["moonshot/kimi-k3.1-pro", "moonshot/kimi-k3.1-pro-highspeed"] {
+            let metadata = project_model(&ModelRef::parse(model_ref).unwrap(), &model);
+            assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+            assert_eq!(metadata.default_max_output_tokens, Some(131_072));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(1_048_576));
+        }
+        for model_ref in ["opencode-go/kimi-k3.1-pro", "moonshot/k3.1-pro"] {
+            let metadata = project_model(&ModelRef::parse(model_ref).unwrap(), &model);
+            assert_eq!(metadata.default_max_output_tokens, Some(1_048_576));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(1_048_576));
+        }
     }
 
     #[test]
