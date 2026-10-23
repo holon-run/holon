@@ -8,6 +8,7 @@ use crate::types::{
 
 mod recovery_batching;
 mod recovery_diagnostics;
+mod task_rejoin_recovery;
 
 #[derive(Default)]
 struct BatchProvider {

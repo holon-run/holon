@@ -216,7 +216,13 @@ Context deduplication uses that immutable identity, and the four-batch, 32-ident
 Bootstrap closes the canonical attached turn with the interrupted queue/attempt
 transition, not an ingress turn selected by its envelope ID. Retained queue
 claims recover the validated interrupted lineage leaf rather than the original
-attempt. Direct predecessor selection accepts canonical live or idle attachment;
+attempt. An `ExactTaskRejoin` admission's `recovery_of_attempt_id` selects that
+predecessor independently of the legacy queue status: exact-task bootstrap recovery may
+requeue its input as `Queued` rather than `Interrupted`. The selected source must
+be shared by the claim selector and the persisted successor replay edge.
+Provider fallback recovery is a distinct scenario and does not become an
+interrupted task replay merely because it has a canonical predecessor.
+Direct predecessor selection accepts canonical live or idle attachment;
 invalid or ambiguous attachment cannot fall back to an ingress turn. Only a
 predecessor without any attachment retains the older P1 envelope fallback.
 An attached recovery ancestor requires an explicit interrupted turn terminal.
