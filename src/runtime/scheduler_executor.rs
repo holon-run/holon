@@ -876,21 +876,28 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Err(error);
             }
         };
-        let replay_source_turn_id = if queue_entry
-            .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted)
-        {
-            let prior_id = canonical_claim.as_ref().and_then(|plan| {
-                plan.execution_protocol.commands.iter().find_map(|command| {
-                    if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(
-                        admission,
-                    ) = command
-                    {
-                        admission.attempt.recovery_of_attempt_id.as_deref()
-                    } else {
-                        None
-                    }
-                })
+        let prior_id = canonical_claim.as_ref().and_then(|plan| {
+            plan.execution_protocol.commands.iter().find_map(|command| {
+                if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(
+                    admission,
+                ) = command
+                {
+                    admission.attempt.recovery_of_attempt_id.as_deref()
+                } else {
+                    None
+                }
+            })
+        });
+        // Exact-task bootstrap recovery requeues the input as Queued, but its
+        // canonical predecessor still owns the replay source.
+        let canonical_task_replay = prior_id.is_some()
+            && canonical_claim.as_ref().is_some_and(|plan| {
+                plan.scenario_class
+                    == crate::domain::scheduler::SchedulerScenarioClass::ExactTaskRejoin
             });
+        let replay_source_turn_id = if canonical_task_replay
+            || queue_entry.is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted)
+        {
             let attached_turn_id = if let Some(prior_id) = prior_id {
                 match self
                     .runtime
