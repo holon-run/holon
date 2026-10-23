@@ -566,6 +566,9 @@ fn is_default_initial_message_unset(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentBootstrapRecord {
     pub agent_id: String,
+    /// Absent only on legacy bootstrap records; never infer their generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incarnation: Option<u64>,
     pub desired: AgentBootstrapDesiredState,
     pub template: AgentBootstrapStep,
     pub runtime: AgentBootstrapStep,
@@ -593,6 +596,7 @@ impl AgentBootstrapRecord {
         let now = Utc::now();
         Self {
             agent_id: agent_id.into(),
+            incarnation: None,
             template: AgentBootstrapStep::pending(now),
             runtime: AgentBootstrapStep::pending(now),
             workspace: if desired.workspace.is_some() {
@@ -616,6 +620,24 @@ impl AgentBootstrapRecord {
             revision: 0,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    pub fn for_incarnation(mut self, incarnation: u64) -> Self {
+        self.incarnation = Some(incarnation);
+        let message_id = self.initial_message_id();
+        if let Some(initial) = &mut self.desired.initial_message {
+            initial.message_id = message_id;
+        }
+        self
+    }
+
+    pub fn initial_message_id(&self) -> String {
+        match self.incarnation {
+            Some(incarnation) => {
+                format!("agent_bootstrap_message:{}:{incarnation}", self.agent_id)
+            }
+            None => format!("agent_bootstrap_message:{}", self.agent_id),
         }
     }
 
@@ -665,6 +687,7 @@ impl AgentBootstrapRecord {
         let now = Utc::now();
         Self {
             agent_id: agent_id.into(),
+            incarnation: None,
             desired: AgentBootstrapDesiredState {
                 template: None,
                 catalog_agent_home: None,
@@ -926,6 +949,7 @@ pub enum AgentDeletionPhase {
     Ingress,
     Scheduler,
     Workspace,
+    Archive,
     Index,
     Home,
     Finalize,
@@ -933,12 +957,13 @@ pub enum AgentDeletionPhase {
 
 impl AgentDeletionPhase {
     /// All phases in execution order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Fence,
         Self::Quiesce,
         Self::Ingress,
         Self::Scheduler,
         Self::Workspace,
+        Self::Archive,
         Self::Index,
         Self::Home,
         Self::Finalize,
@@ -962,6 +987,9 @@ pub struct AgentDeletionJob {
     pub requested_by: String,
     pub expected_identity_revision: u64,
     pub cascade_private_children: bool,
+    /// Explicit user-retained export, outside the deleted AgentHome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<PathBuf>,
     pub attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,

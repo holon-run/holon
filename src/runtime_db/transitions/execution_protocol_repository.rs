@@ -1186,7 +1186,7 @@ pub(super) fn validate_agent_deletion_retirement_tx(
 
 /// Terminal-safe cleanup, not execution admission. Keep historical attempts and
 /// outcomes, but remove every live scheduling reference in the same lifecycle tx.
-pub(super) fn retire_agent_execution_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
+pub(crate) fn retire_agent_execution_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
     validate_agent_deletion_retirement_tx(tx, agent_id)?;
     if !partition_exists_tx(tx, agent_id)? {
         return Ok(false);

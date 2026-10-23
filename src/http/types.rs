@@ -26,6 +26,8 @@ pub struct RenameAgentRequest {
 pub struct DeleteAgentRequest {
     #[serde(default)]
     pub cascade_private_children: bool,
+    #[serde(default)]
+    pub archive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

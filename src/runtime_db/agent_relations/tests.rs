@@ -919,6 +919,18 @@ fn deletion_fence_and_finalize_transition_supervision_atomically() -> Result<()>
         deleting.revision
     );
 
+    crate::runtime_db::agent_deletion_cleanup::settle_execution(
+        &db,
+        &child.agent_id,
+        child.incarnation,
+        Utc::now(),
+    )?;
+    crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+        &db,
+        &child.agent_id,
+        child.incarnation,
+        Utc::now(),
+    )?;
     let (deleted, completed_job) = db.agent_deletions().finalize(&job)?;
     assert_eq!(deleted.status, AgentRegistryStatus::Deleted);
     assert_eq!(

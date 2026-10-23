@@ -7,6 +7,22 @@ post-commit bootstrap reconciliation.
 This RFC defines the contract shared by `SpawnAgent` and operator/control plane
 creation entrypoints.
 
+## Per-incarnation initialization (2026-10-23)
+
+User creation initializes each new incarnation, including a replacement for a
+fully deleted id. The canonical creation transaction binds its bootstrap intent
+and message id (`agent_bootstrap_message:{agent_id}:{incarnation}`) to that
+identity. Explicit initial text takes precedence over the default introduction.
+Arbitrary conversation history is not an initialization-completion marker.
+Admission is idempotent within the incarnation, including a crash before the
+bootstrap step receipt is saved. A succeeded step means admission, not successful
+model execution. No-ready-provider and duplicate-create behavior is unchanged.
+
+Reconciliation may neither enqueue into a replacement nor overwrite its
+bootstrap. Step writes compare the current identity, bootstrap revision and
+creation record. Legacy records do not acquire a guessed incarnation; already
+succeeded legacy steps are not replayed.
+
 ## 1. Terms and invariants
 
 - `agent_id` is the stable technical identity used by scheduling, permissions,
