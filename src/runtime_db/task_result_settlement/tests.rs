@@ -241,16 +241,21 @@ fn admitted_result_can_be_rebound_after_restart() {
 fn mark_deferred_preserves_admission_state_on_recheck_rewrites() {
     let (_dir, db) = runtime_db();
     insert(&db, &pending_record(0));
+    let now = Utc.timestamp_opt(1_700_000_100, 0).single().unwrap();
     let admitted = db
         .task_result_settlements()
-        .admit_unsettled("agent-a", Some("work-a"), "activation-1", Utc::now())
+        .admit_unsettled(
+            "agent-a",
+            Some("work-a"),
+            "activation-1",
+            now - Duration::seconds(1),
+        )
         .unwrap();
     assert_eq!(admitted.len(), 1);
 
     // The recovery loop re-defers due rows on every recheck interval. The
     // narrowed defer UPDATE must leave admission columns untouched so a
     // recheck rewrite cannot silently drop the record back to pending.
-    let now = Utc::now();
     let deferred = db
         .task_result_settlements()
         .mark_deferred(
@@ -286,6 +291,45 @@ fn mark_deferred_preserves_admission_state_on_recheck_rewrites() {
     assert_eq!(reread.deferred_at, Some(now));
     assert_eq!(reread.next_recheck_at, Some(now + Duration::seconds(30)));
     assert_eq!(reread, deferred);
+
+    let stored_columns = db
+        .with_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT deferred_reason, deferred_at, next_recheck_at, updated_at
+                 FROM task_result_settlements
+                 WHERE result_identity = ?1",
+                [&deferred.result_identity],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        stored_columns,
+        (
+            "owner_has_unresolved_wait".to_owned(),
+            timestamp(now),
+            timestamp(now + Duration::seconds(30)),
+            timestamp(now),
+        )
+    );
+    assert!(db
+        .task_result_settlements()
+        .due_deferred("agent-a", now + Duration::seconds(29), 8)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.task_result_settlements()
+            .due_deferred("agent-a", now + Duration::seconds(30), 8)
+            .unwrap(),
+        vec![deferred]
+    );
 }
 
 #[test]
