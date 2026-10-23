@@ -835,6 +835,7 @@ with fixture_directory(repo) as root:
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
                          ("testOfflineReadingCacheColdLaunchAndRetry", "large"),
+                         ("testLiveInterruptionRecoversInPlace", "large"),
                          ("testVisibleBriefAutomaticallyUpdatesHomeUnreadCount", "large"),
                          ("testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored", "large"),
                          ("testChineseDiagnosticsDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
@@ -985,6 +986,7 @@ with fixture_directory(repo) as root:
                             if method in {"testAuthenticatedNativeWorkflow", "testPrivacyConsentCanBeWithdrawnAndExplicitlyRestored",
                                           "testDirectAgentShareWorkflow", "testNetworkManagementWorkflow",
                                           "testOfflineReadingCacheColdLaunchAndRetry",
+                                         "testLiveInterruptionRecoversInPlace",
                                           "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount",
                                           "testOfflineReadingCacheSignOutBoundary",
                                           "testTaskResultProcessWorkflow",

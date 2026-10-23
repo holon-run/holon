@@ -51,6 +51,7 @@ struct SendingView: View {
     @State private var cameraErrorKey: String?
     @State private var showCamera = false
     @State private var cameraContext: SendingAttachmentImportContext?
+    @State private var pendingQueueDeleteID: UUID?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -104,6 +105,7 @@ struct SendingView: View {
                 .lineLimit(1...5)
                 .focused($focused)
                 .id(sender.selectedAgentID)
+                .disabled(!sender.canPersistDraft)
                 .padding(.vertical, 10)
                 .accessibilityLabel(Text("sending.text"))
                 .accessibilityIdentifier("sending.text")
@@ -328,8 +330,14 @@ struct SendingView: View {
                                 .disabled(!sender.canRetry(requestID: entry.requestID))
                                 .accessibilityIdentifier("sending.retry." + entry.requestID.uuidString)
                             }
-                            Button("sending.delete", role: .destructive) { sender.delete(requestID: entry.requestID) }
-                                .disabled(entry.state == .sending)
+                            Button("sending.delete", role: .destructive) {
+                                // Match LocalMessageView: an unknown receipt may
+                                // have been accepted server-side; dropping its
+                                // retry handle deserves an explicit confirm.
+                                if entry.state == .unknown { pendingQueueDeleteID = entry.requestID }
+                                else { sender.delete(requestID: entry.requestID) }
+                            }
+                            .disabled(entry.state == .sending)
                         }
                         .buttonStyle(.borderless)
                     }
@@ -337,6 +345,18 @@ struct SendingView: View {
             }
             .navigationTitle("sending.queue")
             .toolbar { Button("sending.close") { showQueue = false } }
+        }
+        .confirmationDialog("sending.delete.unknown.confirm", isPresented: Binding(
+            get: { pendingQueueDeleteID != nil },
+            set: { if !$0 { pendingQueueDeleteID = nil } }
+        ), titleVisibility: .visible) {
+            Button("sending.delete", role: .destructive) {
+                if let pendingQueueDeleteID { sender.delete(requestID: pendingQueueDeleteID) }
+                pendingQueueDeleteID = nil
+            }
+            Button("common.cancel", role: .cancel) { pendingQueueDeleteID = nil }
+        } message: {
+            Text("sending.delete.unknown.explanation")
         }
     }
 

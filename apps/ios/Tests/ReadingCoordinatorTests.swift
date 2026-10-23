@@ -66,6 +66,10 @@ private final class ReadingFakeStream: @unchecked Sendable {
         lock.withLock { closed = true }
         continuation.finish()
     }
+    func fail(_ error: any Error) {
+        lock.withLock { closed = true }
+        continuation.finish(throwing: error)
+    }
 }
 
 /// Intentionally ignores task cancellation at the gate, to model already-delivered replies.
@@ -107,6 +111,7 @@ private actor ReadingFakeTransport: ReadingTransport {
     private var overlapOlderActivity = false
     private(set) var activityDetailCalls = 0
     private(set) var activityCursors: [String?] = []
+    private var streamFailure: (any Error)?
     private var expansionWaiters: [CheckedContinuation<Void, Never>] = []
     private var activeExpansions = 0
     private var connections: [UUID: (String, ReadingFakeStream)] = [:]
@@ -136,6 +141,7 @@ private actor ReadingFakeTransport: ReadingTransport {
         pendingFailure = failure
     }
     func setOffline(_ offline: Bool) { rosterFailure = offline }
+    func setStreamFailure(_ error: (any Error)?) { streamFailure = error }
     func setRosterError(_ error: (any Error)?) { rosterError = error }
     func setConversationFailure(_ error: (any Error)?) { conversationFailure = error }
     func setLiveTurns(_ turns: [JSONValue]) { liveTurns = turns }
@@ -291,6 +297,7 @@ private actor ReadingFakeTransport: ReadingTransport {
         return response
     }
     func stream(agentID: String?, after: String?) async throws -> ReadingStream {
+        if let streamFailure { throw streamFailure }
         let id = UUID(), key = agentID ?? "roster"
         let (events, continuation) = AsyncThrowingStream<HolonSSEEvent, any Error>.makeStream()
         connections = connections.filter { !$0.value.1.isClosed }
@@ -309,8 +316,11 @@ private actor ReadingFakeTransport: ReadingTransport {
     }
     func overflow(agentID: String) {
         for value in connections.values where value.0 == agentID {
-            value.1.continuation.finish(throwing: HolonClientError.streamLimitExceeded)
+            value.1.fail(HolonClientError.streamLimitExceeded)
         }
+    }
+    func endStreams(key: String) {
+        for value in connections.values where value.0 == key { value.1.close() }
     }
     func close() {
         closes += 1
@@ -787,7 +797,14 @@ final class ReadingCoordinatorTests: XCTestCase {
         for overflow in [false, true] {
             let (coordinator, fake, _) = try await start()
             await fake.replaceEpoch()
-            if overflow { await fake.overflow(agentID: "A") }
+            if overflow {
+                // A single stream overflow now resumes silently; a stream that keeps
+                // dying without events (three consecutive reopens) escalates to bootstrap.
+                for _ in 0..<4 {
+                    try await wait { await fake.counts().1 == 1 }
+                    await fake.overflow(agentID: "A")
+                }
+            }
             else {
                 await fake.send(try readingEvent("reset_required", raw: .object([
                     "type": .string("reset_required")
@@ -798,6 +815,33 @@ final class ReadingCoordinatorTests: XCTestCase {
             XCTAssertEqual(coordinator.status, .live)
             coordinator.disconnect()
         }
+    }
+
+    func testIsolatedLongLivedStreamDeathsDoNotEscalate() async throws {
+        let (coordinator, fake, _) = try await start()
+        coordinator.quietStreamSurvivalReset = 0.5
+        let conversationsBefore = await fake.conversationCalls
+        // Deaths of streams that stayed open past the survival window are
+        // isolated lifecycle ends: they never accumulate into an escalation,
+        // so no bootstrap (conversation pull) happens and status stays live.
+        for _ in 0..<4 {
+            try await wait { await fake.counts().1 == 1 }
+            try await Task.sleep(nanoseconds: 600_000_000)
+            await fake.overflow(agentID: "A")
+        }
+        try await wait { await fake.counts().1 == 1 }
+        XCTAssertEqual(coordinator.status, .live)
+        let isolatedConversations = await fake.conversationCalls
+        XCTAssertEqual(isolatedConversations, conversationsBefore)
+        // Four consecutive quick deaths (reopen, die immediately) still
+        // escalate to a full recovery bootstrap.
+        for _ in 0..<4 {
+            try await wait { await fake.counts().1 == 1 }
+            await fake.overflow(agentID: "A")
+        }
+        try await wait { await fake.conversationCalls == isolatedConversations + 1 }
+        XCTAssertEqual(coordinator.status, .live)
+        coordinator.disconnect()
     }
 
     func testConnectionGenerationReplacementRejectsLate401() async throws {
@@ -914,7 +958,7 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
-    func testActivityReaderKeyChangesAfterQuietForegroundBootstrap() async throws {
+    func testActivityReaderKeySurvivesQuietSameEpochForegroundBootstrap() async throws {
         let (coordinator, fake, _) = try await start()
         await coordinator.loadActivities("turn")
         let cursor = coordinator.snapshot?.snapshotCursor
@@ -924,12 +968,15 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.setForeground(true)
         try await wait { coordinator.status == .live }
         XCTAssertEqual(coordinator.snapshot?.snapshotCursor, cursor)
+        // A same-epoch quiet bootstrap preserves the loaded panel and its reader key.
+        XCTAssertNotNil(coordinator.activities["turn"])
+        XCTAssertEqual(coordinator.activityReadKey, loadedKey)
+        // An epoch replacement clears the panel and rotates the reader key.
+        await fake.replaceEpoch()
+        await coordinator.refresh()
+        try await wait { coordinator.snapshot?.eventLogEpoch == "replacement" }
         XCTAssertNil(coordinator.activities["turn"])
         XCTAssertNotEqual(coordinator.activityReadKey, loadedKey)
-        await coordinator.loadActivities("turn")
-        XCTAssertNotNil(coordinator.activities["turn"])
-        let calls = await fake.expansionCalls
-        XCTAssertEqual(calls, 2)
         coordinator.disconnect()
     }
 
@@ -1547,7 +1594,7 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
-    func testDetailCacheHonorsAlreadyFetchedRevisionAndIsClearedAcrossBootstrap() async throws {
+    func testDetailCacheHonorsFetchedRevisionAndSameEpochBootstrapKeepsPanels() async throws {
         let (coordinator, fake, _) = try await start()
         await fake.setDetailRevision(3)
         await coordinator.loadActivities("turn")
@@ -1556,10 +1603,17 @@ final class ReadingCoordinatorTests: XCTestCase {
         try await commitDetailBatch(fake, sequence: 8)
         try await wait { coordinator.snapshot?.snapshotCursor == "live-8" }
         XCTAssertEqual(coordinator.activities["turn"], fresh)
+        // A same-epoch bootstrap keeps expanded activity panels whose turn did not
+        // change instead of collapsing everything the reader had open.
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.activities["turn"], fresh)
+        // An epoch replacement invalidates confirmed history and clears the panels.
+        await fake.replaceEpoch()
         await coordinator.refresh()
         XCTAssertNil(coordinator.activities["turn"])
         await coordinator.loadActivities("turn")
-        XCTAssertEqual(coordinator.activities["turn"], fresh)
+        XCTAssertEqual(coordinator.activities["turn"]?["detail_revision"], fresh["detail_revision"])
+        XCTAssertEqual(coordinator.activities["turn"]?["turn_id"], fresh["turn_id"])
         let calls = await fake.expansionCalls
         XCTAssertEqual(calls, 2)
         coordinator.disconnect()
@@ -1609,19 +1663,81 @@ final class ReadingCoordinatorTests: XCTestCase {
         coordinator.disconnect()
     }
 
-    func testUnknownControlBootstrapsAndRecoveryIsBounded() async throws {
+    func testUnknownControlMarksIncompatibleWithoutRecoveryLoop() async throws {
         let (coordinator, fake, _) = try await start()
         let previous = await fake.rosterCalls
         let unknown = try readingEvent("new_control", raw: .object(["type": .string("new_control")]))
         await fake.setOffline(true)
         await fake.send(unknown, to: "A")
-        try await wait { await fake.rosterCalls == previous + 3 }
-        // No unbounded reconnect loop after the three explicit delayed recoveries.
-        try await Task.sleep(nanoseconds: 800_000_000)
+        // A protocol-level mismatch is incompatible immediately; it never heals by retrying.
+        try await wait { coordinator.status == .incompatible }
         let calls = await fake.rosterCalls
-        XCTAssertEqual(calls, previous + 3)
-        XCTAssertEqual(coordinator.status, .offline)
+        XCTAssertEqual(calls, previous)
         try await wait { await fake.counts() == (0, 0) }
+        coordinator.disconnect()
+    }
+
+    func testOfflineRecoveryRetriesWithGrowingBackoffAndNoBound() async throws {
+        let (coordinator, fake, _) = try await start()
+        let previous = await fake.rosterCalls
+        await fake.setOffline(true)
+        await coordinator.refresh()
+        XCTAssertEqual(coordinator.status, .offline)
+        // Recovery retries without a count limit (0.5s, 1s, 2s, 4s, ...) while foregrounded;
+        // the old implementation silently stopped after three attempts.
+        try await wait { await fake.rosterCalls >= previous + 4 }
+        XCTAssertEqual(coordinator.status, .offline)
+        await fake.setOffline(false)
+        try await wait { coordinator.status == .live }
+        coordinator.disconnect()
+    }
+
+    func testStreamEndKeepsLiveAndResumesConversationFromCursor() async throws {
+        let (coordinator, fake, _) = try await start()
+        let rosterCallsBefore = await fake.rosterCalls
+        try await wait { await fake.openedAfter == ["live-1"] }
+        await fake.endStreams(key: "A")
+        try await wait { await fake.openedAfter == ["live-1", "live-1"] }
+        XCTAssertEqual(coordinator.status, .live)
+        try await wait { await fake.counts() == (1, 1) }
+        let rosterCalls = await fake.rosterCalls
+        XCTAssertEqual(rosterCalls, rosterCallsBefore)
+        coordinator.disconnect()
+    }
+
+    func testRosterStreamEndResumesSilentlyWithCompensatingRefresh() async throws {
+        let (coordinator, fake, _) = try await start()
+        let rosterCallsBefore = await fake.rosterCalls
+        try await wait { await fake.openedAfter == ["live-1"] }
+        await fake.endStreams(key: "roster")
+        try await wait {
+            guard await fake.counts() == (1, 1) else { return false }
+            return await fake.rosterCalls == rosterCallsBefore + 1
+        }
+        XCTAssertEqual(coordinator.status, .live)
+        let openedAfter = await fake.openedAfter
+        XCTAssertEqual(openedAfter, ["live-1"])
+        coordinator.disconnect()
+    }
+
+    func testRepeatedEventlessStreamDeathEscalatesToFullRecovery() async throws {
+        let (coordinator, fake, _) = try await start()
+        let conversationCallsBefore = await fake.conversationCalls
+        try await wait { await fake.openedAfter == ["live-1"] }
+        await fake.endStreams(key: "A")
+        try await wait { await fake.openedAfter == ["live-1", "live-1"] }
+        await fake.endStreams(key: "A")
+        try await wait { await fake.openedAfter.count == 3 }
+        await fake.endStreams(key: "A")
+        try await wait { await fake.openedAfter.count == 4 }
+        await fake.endStreams(key: "A")
+        // The fourth consecutive eventless death escalates: streams stop, status goes
+        // offline, and the delayed bootstrap restores the live session.
+        try await wait { coordinator.status == .offline }
+        try await wait {
+            guard coordinator.status == .live else { return false }
+            return await fake.conversationCalls == conversationCallsBefore + 1
+        }
         coordinator.disconnect()
     }
 
@@ -2277,7 +2393,12 @@ final class ReadingCoordinatorTests: XCTestCase {
         let (coordinator, fake, _) = try await start()
         try await wait { await fake.counts().0 == 1 && coordinator.isRosterCurrent && !coordinator.isRefreshing }
         let snapshot = coordinator.snapshot
-        await fake.overflow(agentID: "roster")
+        // A single roster-stream death resumes silently; a roster stream that keeps
+        // dying without delivering hints (three consecutive reopens) escalates offline.
+        for _ in 0..<4 {
+            try await wait { await fake.counts().0 == 1 }
+            await fake.overflow(agentID: "roster")
+        }
         try await wait { coordinator.status == .offline }
         XCTAssertFalse(coordinator.isRosterCurrent)
         coordinator.setForeground(false)

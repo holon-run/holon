@@ -63,10 +63,18 @@ final class ReadingCoordinator {
     private var foreground = true
     @ObservationIgnored private var revision = 0
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
-    @ObservationIgnored private var streams: [ReadingStream] = []
+    @ObservationIgnored private var streams: [UUID: ReadingStream] = [:]
     @ObservationIgnored private var reducer: HolonConversationReducer?
     @ObservationIgnored private var before: String?
     @ObservationIgnored private var recoveryAttempts = 0
+    // Per-stream-role consecutive eventless reconnects; normal SSE lifecycle ends one
+    // stream, not the whole session (see resumeStreamSilently).
+    @ObservationIgnored private var silentRosterReconnects = 0
+    @ObservationIgnored private var silentConversationReconnects = 0
+    // A stream that stayed open at least this long before dying was healthy:
+    // its death is an isolated SSE lifecycle end, so it restarts the quiet-death
+    // streak instead of accumulating toward escalation.
+    @ObservationIgnored var quietStreamSurvivalReset: TimeInterval = 10
     private var rosterRefreshing = false
     private var conversationRefreshing = false
     private var rosterIsCached = false
@@ -327,8 +335,10 @@ final class ReadingCoordinator {
         isRosterCurrent = false
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
-        for stream in streams { stream.close() }
+        for stream in streams.values { stream.close() }
         streams.removeAll()
+        silentRosterReconnects = 0
+        silentConversationReconnects = 0
         rosterRefreshing = false
         conversationRefreshing = false
         rosterRefreshPending = false
@@ -409,6 +419,22 @@ final class ReadingCoordinator {
         }
         guard (try JSONEncoder().encode(value.raw)).count <= 262_144 else {
             throw HolonConversationError.bootstrapRequired
+        }
+    }
+
+    /// Keep expanded activity panels whose turn exists in both windows with the same
+    /// revision. A stream gap invalidates execution detail, not confirmed reading history.
+    private func preservedActivities(old: HolonConversationSnapshot?, new: HolonConversationSnapshot,
+                                     invalidations: [String: Int64]) -> [String: JSONValue] {
+        activities.filter { id, _ in
+            guard case .array(let oldTurns) = old?.raw["turns"],
+                  case .array(let newTurns) = new.raw["turns"] else { return false }
+            let oldTurn = oldTurns.first { $0["turn_id"]?.readingString == id }
+            let newTurn = newTurns.first { $0["turn_id"]?.readingString == id }
+            guard oldTurn != nil, newTurn != nil,
+                  oldTurn?["revision"] == newTurn?["revision"] else { return false }
+            guard let invalidated = invalidations[id] else { return true }
+            return (activities[id]?["detail_revision"]?.readingInteger ?? -1) >= invalidated
         }
     }
 
@@ -546,20 +572,29 @@ final class ReadingCoordinator {
                         case .roster(let result):
                             self.rosterRefreshing = false
                             self.applyRoster(try result.get())
-                            if agentID == nil { self.status = .live }
+                            if agentID == nil {
+                                self.status = .live
+                                self.recoveryAttempts = 0
+                            }
                             self.watch(agentID: nil, after: nil)
                         case .conversation(let result):
                             self.conversationRefreshing = false
                             let value = try result.get()
                             try self.validate(value)
+                            let previousActivities = self.activities
+                            let displayed = try ReadingSnapshotWindow.merging(value, history: self.snapshot)
                             if let old = self.snapshot, old.eventLogEpoch != value.eventLogEpoch {
                                 self.clearBriefCache()
                                 self.readingPosition = nil
                             }
-                            let displayed = try ReadingSnapshotWindow.merging(value, history: self.snapshot)
-                            // A stream gap invalidates execution detail, not confirmed reading history.
-                            self.activities.removeAll()
-                            self.clearActivityDetails()
+                            // A same-epoch refresh keeps expanded activity panels whose turn
+                            // did not change; only an epoch replacement clears confirmed history.
+                            if let old = self.snapshot, old.eventLogEpoch == value.eventLogEpoch {
+                                self.activities = self.preservedActivities(old: old, new: displayed, invalidations: [:])
+                            } else {
+                                self.activities.removeAll()
+                            }
+                            if previousActivities != self.activities { self.clearActivityDetails() }
                             self.snapshot = displayed
                             self.reducer = HolonConversationReducer(snapshot: value, maximumTurns: 180)
                             self.before = displayed.nextBeforeCursor
@@ -567,6 +602,7 @@ final class ReadingCoordinator {
                             self.conversationSavedAt = Date()
                             self.conversationIsCached = false
                             self.status = .live
+                            self.recoveryAttempts = 0
                             self.watch(agentID: agentID, after: value.snapshotCursor)
                             self.prefetchBriefs()
                             await self.persist()?.value
@@ -596,46 +632,52 @@ final class ReadingCoordinator {
 
     private func watch(agentID: String?, after: String?) {
         guard let transport else { return }
+        let streamID = UUID()
         launch { [weak self] token in
             guard let self else { return }
+            var openedAt: Date?
             do {
                 let opened = try await transport.stream(agentID: agentID, after: after)
                 guard self.current(token) else { opened.close(); return }
-                self.streams.append(opened)
-                defer { opened.close() }
+                openedAt = Date()
+                self.streams[streamID] = opened
+                defer {
+                    opened.close()
+                    self.streams[streamID] = nil
+                }
                 for try await event in opened.events {
                     guard self.current(token) else { return }
                     if agentID == nil {
                         guard event.event == "agent_roster_hint" else {
                             throw HolonConversationError.bootstrapRequired
                         }
+                        self.silentRosterReconnects = 0
+                        self.recoveryAttempts = 0
                         self.refreshRoster(token: token)
                     } else if var reducer = self.reducer {
                         let commit = try reducer.acceptCommit(event)
                         self.reducer = reducer
+                        self.silentConversationReconnects = 0
+                        self.recoveryAttempts = 0
                         if let commit {
                             let previousActivities = self.activities
                             let updated = commit.snapshot
                             try self.validate(updated)
                             let previous = self.snapshot
-                            if let displayed = previous {
-                                self.snapshot = try ReadingSnapshotWindow.merging(updated, history: displayed)
-                            } else { self.snapshot = updated }
+                            let displayed: HolonConversationSnapshot
+                            if let previous {
+                                displayed = try ReadingSnapshotWindow.merging(updated, history: previous)
+                            } else {
+                                displayed = updated
+                            }
+                            self.snapshot = displayed
                             if previous?.eventLogEpoch != updated.eventLogEpoch {
                                 self.clearBriefCache()
                                 self.activities.removeAll()
                                 self.readingPosition = nil
                             } else {
-                                self.activities = self.activities.filter { id, _ in
-                                    guard case .array(let oldTurns) = previous?.raw["turns"],
-                                          case .array(let newTurns) = self.snapshot?.raw["turns"] else { return false }
-                                    let old = oldTurns.first { $0["turn_id"]?.readingString == id }
-                                    let new = newTurns.first { $0["turn_id"]?.readingString == id }
-                                    guard old != nil && new != nil,
-                                          old?["revision"] == new?["revision"] else { return false }
-                                    guard let invalidated = commit.detailInvalidations[id] else { return true }
-                                    return (self.activities[id]?["detail_revision"]?.readingInteger ?? -1) >= invalidated
-                                }
+                                self.activities = self.preservedActivities(
+                                    old: previous, new: displayed, invalidations: commit.detailInvalidations)
                             }
                             if previousActivities != self.activities { self.clearActivityDetails() }
                             self.conversationSavedAt = Date()
@@ -647,9 +689,55 @@ final class ReadingCoordinator {
                 throw HolonClientError.streamEnded
             } catch {
                 guard self.current(token) else { return }
+                let lived = openedAt.map { Date().timeIntervalSince($0) } ?? 0
+                if self.resumeStreamSilently(agentID: agentID, lived: lived, error: error) { return }
                 self.failed(error, token: token, recover: true)
             }
         }
+    }
+
+    /// Normal SSE lifecycle (the server closes lagged streams, proxies time out,
+    /// Wi-Fi switches briefly) ends one stream, not the whole session. Reopen the
+    /// failed stream role silently; a fourth consecutive quick death without
+    /// delivering any event escalates to full recovery. A death of a stream that
+    /// stayed open for at least `quietStreamSurvivalReset` restarts the streak:
+    /// occasional hours-apart disconnects must not accumulate into an escalation.
+    private func resumeStreamSilently(agentID: String?, lived: TimeInterval, error: any Error) -> Bool {
+        guard streamFailureIsTransient(error) else { return false }
+        let isolated = lived >= quietStreamSurvivalReset
+        if agentID == nil {
+            silentRosterReconnects = isolated ? 1 : silentRosterReconnects + 1
+            guard silentRosterReconnects < 4 else { return false }
+        } else {
+            silentConversationReconnects = isolated ? 1 : silentConversationReconnects + 1
+            guard silentConversationReconnects < 4 else { return false }
+        }
+        launch { [weak self] token in
+            do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+            guard let self, self.current(token) else { return }
+            if agentID == nil {
+                self.watch(agentID: nil, after: nil)
+                // Compensate roster hints missed while the global stream was down.
+                self.refreshRoster(token: token)
+            } else {
+                let cursor = self.reducer?.snapshot.snapshotCursor ?? self.snapshot?.snapshotCursor
+                self.watch(agentID: agentID, after: cursor)
+            }
+        }
+        return true
+    }
+
+    private func streamFailureIsTransient(_ error: any Error) -> Bool {
+        if error is CancellationError || error is HolonHTTPFailure { return false }
+        let clientError = error as? HolonClientError
+        if clientError == .streamEnded || clientError == .streamLimitExceeded { return true }
+        // Transport-level failures (connection lost, timeouts, socket resets) are
+        // normal stream lifecycle. The CFNetwork domain literal avoids a CFNetwork
+        // import; NSError domains compare as plain strings.
+        let domain = (error as NSError).domain
+        return domain == NSURLErrorDomain
+            || domain == NSPOSIXErrorDomain
+            || domain == "kCFErrorDomainCFNetwork"
     }
 
     private func refreshRoster(token: Int) {
@@ -693,17 +781,19 @@ final class ReadingCoordinator {
         guard recover else { return }
         stop()
         markCached()
-        status = .offline
-        guard recoveryAttempts < 3 else {
-            if error as? HolonConversationError == .malformedProtocol ||
-                error as? HolonClientError == .malformedResponse ||
-                error as? HolonClientError == .unexpectedContentType {
-                status = .incompatible
-            }
+        // A protocol-level mismatch never heals by retrying; surface it directly.
+        if error as? HolonConversationError == .malformedProtocol ||
+            error as? HolonClientError == .malformedResponse ||
+            error as? HolonClientError == .unexpectedContentType {
+            status = .incompatible
             return
         }
+        status = .offline
         recoveryAttempts += 1
-        let delay = UInt64(recoveryAttempts) * 500_000_000
+        // Unlimited exponential backoff (0.5s, 1s, 2s, ... capped at 30s) keeps
+        // retrying while the app stays foregrounded; success resets the ladder.
+        let shift = UInt64(min(recoveryAttempts - 1, 6))
+        let delay = min(UInt64(30_000_000_000), UInt64(500_000_000) << shift)
         launch { [weak self] captured in
             do { try await Task.sleep(nanoseconds: delay) } catch { return }
             guard let self, self.current(captured) else { return }

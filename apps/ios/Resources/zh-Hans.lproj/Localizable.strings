@@ -126,7 +126,7 @@
 "reading.cache.saved" = "正在显示缓存内容";
 "reading.cache.noAgents" = "此连接尚无缓存的 Agent，重新连接后可加载。";
 "reading.cache.noConversation" = "此会话尚未缓存，重新连接后可加载。";
-"reading.cache.readOnly" = "重新连接后可发送消息或使用控制操作。";
+"reading.cache.readOnly" = "草稿已保存。重新连接后可发送消息或使用控制操作。";
 "reading.status.permissionDenied" = "权限不足";
 "reading.status.sessionExpired" = "会话已过期，请重新登录";
 "reading.status.incompatible" = "不支持此会话协议";
@@ -162,6 +162,8 @@
 "sending.receipt.explanation" = "已接收仅表示服务端接受消息，不表示 Agent 已完成工作。";
 "sending.unknown.explanation" = "服务端可能已接受此消息。重试使用相同请求 ID 和固定载荷，请勿另建重复消息。";
 "sending.retry.same" = "以相同请求重试";
+"sending.delete.unknown.confirm" = "删除这条消息？";
+"sending.delete.unknown.explanation" = "服务端可能已接受此消息。删除将移除本地记录和重试入口，不会撤销服务端已发生的处理。";
 "sending.retry" = "重试";
 "sending.delete" = "删除本地条目";
 "common.cancel" = "取消";

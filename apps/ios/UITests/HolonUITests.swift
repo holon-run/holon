@@ -1594,9 +1594,12 @@ final class HolonUITests: XCTestCase {
         assertRestoredPosition()
         XCTAssertTrue(body.waitForExistence(timeout: 10), "Cold offline launch must retain the fetched brief body")
         XCTAssertFalse(app.staticTexts["conversation.notCached"].exists)
-        XCTAssertFalse(editor.exists)
-        XCTAssertFalse(app.otherElements["sending.composer"].exists)
-        XCTAssertFalse(app.buttons["sending.enqueue"].exists)
+        // Offline keeps the composer available: input and local drafts work without a connection.
+        XCTAssertTrue(editor.waitForExistence(timeout: 10), "Offline must not block input")
+        XCTAssertTrue(app.otherElements["sending.composer"].exists)
+        XCTAssertTrue(app.buttons["sending.enqueue"].exists)
+        editor.tap()
+        editor.typeText("offline draft")
         XCTAssertEqual(app.buttons.matching(NSPredicate(
             format: "identifier BEGINSWITH %@", "brief.load.")).count, 0,
                        "Uncached offline briefs must not offer a network load action")
@@ -1621,6 +1624,48 @@ final class HolonUITests: XCTestCase {
         XCTAssertFalse(app.buttons["onboarding.scan"].exists)
         XCTAssertTrue(body.waitForExistence(timeout: 10))
         capture(app, "offline-cache-explicit-ui-retry-live")
+    }
+
+    func testLiveInterruptionRecoversInPlace() async throws {
+        try connectForSharing()
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+        reveal(agent, in: app); agent.tap()
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 30), "The live session must open before the interruption")
+        let turnTime = app.staticTexts.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "conversation.time.")).firstMatch
+        XCTAssertTrue(turnTime.waitForExistence(timeout: 10),
+                      "A visible turn must anchor the reading position before the interruption")
+        XCTAssertFalse(app.staticTexts["conversation.readOnly"].exists,
+                       "A live session shows no offline caption")
+        capture(app, "live-interruption-before")
+
+        // Cut both ends of every established stream while the session is being
+        // read live. A sustained outage must degrade honestly to offline while
+        // keeping the conversation the reader is looking at.
+        try await changeFixtureNodeAvailability(false)
+        XCTAssertTrue(app.staticTexts["Cached content · offline"].waitForExistence(timeout: 10),
+                      "A sustained outage must surface the offline state")
+        XCTAssertTrue(turnTime.exists,
+                      "The interruption must not clear the conversation being read")
+        capture(app, "live-interruption-offline")
+
+        // Unbounded recovery backoff reconnects on its own once the node
+        // returns, and the session recovers in place: no onboarding fallback,
+        // no roster bounce, no rebuilding of the conversation being read.
+        try await changeFixtureNodeAvailability(true)
+        let liveAgain = XCTNSPredicateExpectation(predicate: NSPredicate(
+            format: "exists == false"), object: app.staticTexts["conversation.readOnly"])
+        XCTAssertEqual(XCTWaiter.wait(for: [liveAgain], timeout: 45), .completed,
+                       "Unbounded recovery must return the session to live without user action")
+        XCTAssertFalse(app.staticTexts["Cached content · offline"].exists)
+        XCTAssertFalse(app.buttons["onboarding.scan"].exists, "Recovery must not fall back to onboarding")
+        XCTAssertTrue(turnTime.waitForExistence(timeout: 10),
+                      "The recovered session must keep the conversation in place")
+        XCTAssertTrue(editor.waitForExistence(timeout: 10), "The composer must return with the live session")
+        capture(app, "live-interruption-recovered")
     }
 
     func testOfflineReadingCacheSignOutBoundary() async throws {

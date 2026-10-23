@@ -53,6 +53,11 @@ final class SendingCoordinator {
         return SendingScope(partition: partition, agentID: selectedAgentID)
     }
 
+    /// True while composer input persists. After disconnect() (session expired
+    /// or permission denied) editDraft drops input silently and the draft is
+    /// cleared, so the composer disables itself instead of implying saves.
+    var canPersistDraft: Bool { scope != nil }
+
     var attachmentImportContext: SendingAttachmentImportContext? {
         guard let scope else { return nil }
         return SendingAttachmentImportContext(scope: scope, revision: attachmentRevision)
