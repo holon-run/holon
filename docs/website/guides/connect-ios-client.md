@@ -48,7 +48,7 @@ If your camera is unavailable or permission is denied, paste the pairing link in
 1. Type or paste the full API base URL (e.g. `https://holon.example.com/api` or `http://192.168.1.50:7878/api`) into the address field on the welcome screen.
 2. Tap **Next**; the app probes the host's sign-in method automatically.
 3. Token hosts show an access-token field: enter your bearer token or bootstrap secret and tap **Sign in with token**.
-4. After sign-in, review the data-sharing disclosure and tap **Continue** before any agent data appears.
+4. After sign-in, review the data-sharing disclosure—which explicitly lists configured host AI data recipients—and tap **Continue** before any agent data appears.
 
 The app calls `POST /api/auth/session/exchange/native`, stores the revocable session credential in the Keychain, and clears the raw token from memory.
 
@@ -82,6 +82,7 @@ runtime rather than left in a local sending queue.
 - **Result-First Timeline:** Conversations display operator requests alongside final Markdown completion briefs. Detailed execution traces and tool outputs collapse into expandable turn rows so you can review deliverables without scrolling through internal logs.
 - **Background Task Visibility:** Ongoing background runs and child-agent invocations appear as compact status cards that reflect current execution state.
 - **Model Selection & Stopping:** Inspect or override the active model route directly from the conversation composer. You can also stop an active run with one tap.
+- **Identity-Bound In-App Browser:** Local App routes and web links open in an identity-bound browser sheet that preserves session authentication without exposing credentials to external apps.
 
 ## Native File and Artifact Workflows
 

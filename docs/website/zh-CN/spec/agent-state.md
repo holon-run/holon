@@ -95,6 +95,8 @@ WorkItem、任务和等待状态派生姿态，而不能读取摘要字段。
 
 **关键契约：**
 
+- 创建时若未指定显式 initial message，Agent 会在进入空闲前先执行默认引导初始化轮次（`bootstrap_default=true`）。单次命令运行（`run_once`）跳过该轮次。
+
 - `Asleep` 是运行时姿态，只在调度器于轮次 closure 后接受休息时到达。
   它不是权威的“空闲”声明。
 - `WaitFor` 在让出前记录显式等待状态；当 WorkItem 或 Agent 等待任务、外部

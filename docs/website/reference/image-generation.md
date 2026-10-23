@@ -31,7 +31,10 @@ When an agent calls GenerateImage, the runtime:
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `prompt` | yes | Detailed image-generation prompt |
+| `model` | no | Explicit route ref (`provider@endpoint/model`) for this call |
 | `size` | no | One of `1024x1024`, `1536x1024`, or `1024x1536` |
+| `aspect_ratio` | no | Native aspect ratio (e.g., `1:1`, `3:2`); do not combine with `size` |
+| `resolution` | no | Native resolution (e.g., `1k`, `2k`); do not combine with `size` |
 | `background` | no | One of `auto`, `transparent`, or `opaque` |
 | `output_format` | no | One of `png`, `jpeg`, or `webp` |
 | `name` | no | Filename stem for the saved image |
@@ -77,6 +80,12 @@ endpoint for unambiguous routing:
 ```bash
 holon config set image_generation.default "volcengine@image-openai/doubao-seedream-5.0-lite"
 ```
+
+### Per-call route selection
+
+Agents can specify `model` (e.g., `"volcengine@image-openai/doubao-seedream-5.0-lite"`)
+to select an exact endpoint route for a single call. Explicit per-call selection
+never falls back and does not alter global configuration.
 
 ### Auto-discovery
 
@@ -149,6 +158,10 @@ saved file extension matches the image bytes.
 Generated images are saved under `agent_home/media/generated/` with
 timestamped filenames. When a `name` is provided, the filename uses that
 stem; otherwise it defaults to `generated_<timestamp>`.
+Image delivery enforces bounded decoding limits: 32 MiB source and output sizes,
+8,192 pixels per edge, 16,777,216 total pixels, and 192 MiB decoder allocation
+limits. If conversion fails, the original downloaded image is retained on disk
+for local recovery.
 
 The returned absolute path can be used in agent markdown output for
 in-conversation rendering. Images are accessible through the Web GUI file

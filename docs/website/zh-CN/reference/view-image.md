@@ -26,6 +26,7 @@ Agent 调用 ViewImage 时，运行时会：
 |-----------|----------|-------------|
 | `path` | 是 | workspace 相对路径或绝对路径的图片路径 |
 | `prompt` | 是 | 要在图片中检查或描述的内容 |
+| `model` | 否 | 本次调用的显式模型路由（`provider@endpoint/model`） |
 
 支持的图片格式：PNG、JPEG、GIF、WebP，以及所选视觉模型支持的其他格式。
 
@@ -72,6 +73,10 @@ holon config set vision.default "anthropic/claude-sonnet-4-6"
 ```
 
 配置了 `vision.default` 时，ViewImage 对所有图片观察都用该模型。这是生产环境的推荐做法。
+
+### 按调用指定模型
+
+Agent 可通过传递 `model`（例如 `"anthropic@direct/claude-sonnet-4-6"`）为单次检查指定特定模型路由。显式按调用指定绝不触发回退，也不会修改 `vision.default`。若所选模型不支持图片输入，调用将直接报错，而不会静默替换为其他候选模型。
 
 ### 自动发现
 

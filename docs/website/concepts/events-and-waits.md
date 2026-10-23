@@ -85,6 +85,9 @@ revoke a callback for each ordinary wait cycle.
 A timer schedules a future wake; creating it does not pause the current turn.
 If the current work must wait for that timer, the agent records a timer wait.
 Repeating timers remain a scheduling responsibility until cancelled.
+Cancelling an active timer atomically settles any unadmitted waits dependent on
+it with reason `timer_cancelled`, preventing leaked wait registrations while
+leaving the WorkItem explicitly blocked until new action occurs.
 
 A fallback recheck deadline on a wait serves a different purpose: reconsider
 that specific wait if no matching wake arrives. It is not a substitute for
