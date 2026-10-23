@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -2221,14 +2221,16 @@ impl RuntimeHost {
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
-        let mut tasks = Vec::with_capacity(entries.len());
+        let mut tasks = VecDeque::with_capacity(entries.len());
         for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
-            tasks.push(entry.task);
+            tasks.push_back(entry.task);
         }
         if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async {
-            for task in &mut tasks {
+            while let Some(task) = tasks.front_mut() {
                 let _ = task.await;
+                // Keep only unconsumed handles for timeout abort/join.
+                tasks.pop_front();
             }
         })
         .await
@@ -16437,6 +16439,54 @@ mod tests {
             aborted.load(Ordering::SeqCst),
             "host shutdown should await the aborted runtime task"
         );
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_does_not_repoll_completed_tasks_after_grace_timeout() {
+        let (_home, host) = test_host();
+        host.default_runtime().await.unwrap();
+        append_public_identity(&host, "shutdown-peer");
+        host.get_or_create_agent("shutdown-peer").await.unwrap();
+
+        let completed_task = tokio::spawn(async {});
+        while !completed_task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let aborted = Arc::new(AtomicBool::new(false));
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let pending_task = {
+            let aborted = aborted.clone();
+            tokio::spawn(async move {
+                let _abort_observed = AbortObserved(aborted);
+                started.send(()).unwrap();
+                std::future::pending::<()>().await;
+            })
+        };
+        started_rx.await.unwrap();
+
+        let original_tasks = {
+            let mut registry = host.inner.runtimes.write().await;
+            let mut entries = registry.agents.values_mut();
+            assert_eq!(entries.len(), 2);
+            vec![
+                std::mem::replace(&mut entries.next().unwrap().task, completed_task),
+                std::mem::replace(&mut entries.next().unwrap().task, pending_task),
+            ]
+        };
+        for task in original_tasks {
+            task.abort();
+            let _ = task.await;
+        }
+
+        host.shutdown().await.unwrap();
+
+        assert!(
+            aborted.load(Ordering::SeqCst),
+            "the pending runtime task must be aborted and joined after the grace timeout"
+        );
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert!(registry.agents.is_empty());
     }
 
     #[tokio::test]
