@@ -11,6 +11,14 @@ breakpoints and a reserved rolling history breakpoint leave room within the
 provider's four-breakpoint budget. When cache control is disabled, the context
 still appears once, without an explicit marker.
 
+The gate is resolved for the exact `provider@endpoint/model` route using
+the [endpoint/model cache policy](model-capability-resolution.md), not just
+the endpoint's materialized default. The same gate controls system,
+turn-scoped and rolling-history breakpoints and cache-dependent Claude Code
+mimicry. Request diagnostics retain the resolved boolean, winning source and
+exact route separately from actual marker counts and provider-reported usage.
+Missing fields in historical diagnostics mean unknown, not disabled.
+
 All provider rounds in one turn must have identical wire content through this
 context boundary, even as later history and its rolling marker advance. The
 next turn must use its own context, not a stale context from prior requests.

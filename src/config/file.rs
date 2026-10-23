@@ -353,6 +353,8 @@ pub struct ModelConfigFile {
 pub struct ModelsConfigFile {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub catalog: BTreeMap<String, ModelRuntimeOverride>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub routes: BTreeMap<String, ModelRouteRuntimeOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -711,7 +713,7 @@ impl ModelConfigFile {
 
 impl ModelsConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
-        self.catalog.is_empty()
+        self.catalog.is_empty() && self.routes.is_empty()
     }
 }
 

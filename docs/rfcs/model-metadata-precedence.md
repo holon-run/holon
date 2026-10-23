@@ -19,6 +19,13 @@ Built-in route metadata is sparse. The canonical model entry owns intrinsic
 metadata, while an exact endpoint route stores only values that differ from or
 constrain that model entry.
 
+Explicit Anthropic cache-control policy follows the endpoint/model resolution
+contract in [Model Capability Resolution](model-capability-resolution.md).
+Its exact `models.routes` keys are separate from logical `models.catalog`
+metadata overrides: explicit user route > explicit user provider >
+built-in route > endpoint default > compatibility default. It is not
+canonical model metadata, and remote discovery cannot infer it.
+
 The resolver produces:
 
 - one runtime policy used by provider construction and runtime context policy;

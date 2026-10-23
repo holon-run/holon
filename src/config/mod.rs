@@ -16,7 +16,8 @@ use crate::{
     authentication::{AuthConfig, AuthenticationMode, OidcProviderConfig, SessionPolicy},
     context::ContextConfig,
     model_catalog::{
-        BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
+        BuiltInModelCatalog, BuiltInModelMetadata, ModelRouteRuntimeOverride, ModelRuntimeOverride,
+        ResolvedRuntimeModelPolicy,
     },
     model_discovery::{discovery_cache_path, load_discovery_cache_at, ModelDiscoveryCacheFile},
     provider::ProviderNativeWebSearchKind,
@@ -309,6 +310,7 @@ impl AppConfig {
         validate_retired_scheduler_selector(&stored_config)?;
         resolve_runtime_db_retention_policy(&stored_config)?;
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
+        resolve_model_route_overrides(&stored_config)?;
         let validated_unknown_model_fallback =
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
         let model_discovery_cache = load_discovery_cache_at(&discovery_cache_path(&home_dir))

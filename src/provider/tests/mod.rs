@@ -23,6 +23,7 @@ use super::{
 };
 
 mod anthropic_messages;
+mod anthropic_route_cache;
 mod gemini_generate_content;
 mod http_timeouts;
 mod openai_chat_completions;

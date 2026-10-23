@@ -199,6 +199,46 @@ pub struct ModelParameterSupport {
 pub struct EndpointModelPolicy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepted_parameters: Vec<ModelParameterSupport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_cache: Option<ResolvedAnthropicCachePolicy>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicCacheControlSource {
+    RouteOverride,
+    ProviderOverride,
+    RouteBuiltin,
+    EndpointBuiltin,
+    CompatibilityDefault,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedAnthropicCachePolicy {
+    pub cache_control: bool,
+    pub source: AnthropicCacheControlSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRouteCacheCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRouteRuntimeOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_capabilities: Option<ModelRouteCacheCapabilities>,
+}
+
+impl ModelRouteRuntimeOverride {
+    pub fn anthropic_cache_control(&self) -> Option<bool> {
+        self.cache_capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.cache_control)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -234,6 +274,8 @@ impl ModelCapabilityOverride {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BuiltInModelRoutePolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_capabilities: Option<ModelRouteCacheCapabilities>,
     display_name: Option<String>,
     description: Option<String>,
     #[serde(
@@ -298,6 +340,7 @@ impl BuiltInModelRoutePolicy {
         model_entry: &BuiltInModelMetadata,
     ) -> Self {
         Self {
+            cache_capabilities: None,
             display_name: field_diff(
                 route_entry.display_name.clone(),
                 model_entry.display_name.clone(),
@@ -875,6 +918,15 @@ impl BuiltInModelCatalog {
 
     pub fn get_route(&self, route_ref: &ModelRouteRef) -> Option<&BuiltInModelRoutePolicy> {
         self.route_entries.get(route_ref)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_route_policy(
+        &mut self,
+        route_ref: ModelRouteRef,
+        policy: BuiltInModelRoutePolicy,
+    ) {
+        self.route_entries.insert(route_ref, policy);
     }
 
     pub fn resolve_route_policy(

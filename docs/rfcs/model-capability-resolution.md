@@ -44,6 +44,27 @@ stored here.
 
 This layer is keyed by `ModelRouteRef`, not only by `ModelRef`.
 
+Anthropic explicit prompt-cache control is an endpoint/model policy, not an
+intrinsic model capability. `models.routes` accepts exact
+`provider@endpoint/model` keys and an optional
+`cache_capabilities.cache_control` boolean. Omitted/null values inherit;
+`false` suppresses explicit cache markers and cache-dependent Claude Code
+request mimicry, not server-side implicit caching. Other transports do not
+consume this setting.
+
+Resolve the effective value once after route canonicalization, in this order:
+explicit user route override, explicit user provider configuration, sparse
+built-in route policy, endpoint built-in default, compatibility default `true`.
+User `true` and `false` both take precedence over built-in defaults. Preserve
+the winning source rather than inferring it from a materialized boolean.
+Conflicting overrides that canonicalize to the same route are invalid.
+
+Provider construction consumes this immutable resolved policy for the selected
+route without modifying shared endpoint configuration. Rebuilding or falling
+back to another route must resolve its own policy. Built-in route defaults
+require exact-endpoint evidence; provider names, model families, generic
+models.dev metadata, and usage counters alone are insufficient.
+
 ### Transport capabilities
 
 `TransportCapabilities` describes what a Holon transport implementation can

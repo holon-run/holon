@@ -16,6 +16,7 @@ use crate::{
         AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, CredentialKind,
         ProviderBuiltinWebSearchConfig, ProviderId, ProviderRuntimeConfig,
     },
+    model_catalog::{AnthropicCacheControlSource, ResolvedAnthropicCachePolicy},
     prompt::PromptStability,
     provider::{
         builtin_web_search_probe_turn_request,
@@ -59,6 +60,8 @@ pub struct AnthropicProvider {
     reasoning_effort: Option<String>,
     supports_reasoning: bool,
     context_management: AnthropicContextManagementConfig,
+    cache_control_source: Option<AnthropicCacheControlSource>,
+    model_route: String,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     trace_home_dir: PathBuf,
     #[cfg(test)]
@@ -248,11 +251,44 @@ impl AnthropicProvider {
             reasoning_effort: provider_config.reasoning_effort.clone(),
             supports_reasoning,
             context_management: provider_config.context_management.clone(),
+            cache_control_source: None,
+            model_route: format!(
+                "{}@{}/{}",
+                provider_config.route_provider.as_str(),
+                provider_config.route_endpoint.as_str(),
+                model
+            ),
             builtin_web_search: provider_config.builtin_web_search.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
             #[cfg(test)]
             http_trace_override: None,
         })
+    }
+
+    pub(crate) fn with_cache_policy(
+        mut self,
+        cache_policy: ResolvedAnthropicCachePolicy,
+        model_route: String,
+    ) -> Self {
+        self.context_management.cache_capabilities.cache_control = cache_policy.cache_control;
+        self.cache_control_source = Some(cache_policy.source);
+        self.model_route = model_route;
+        self
+    }
+
+    fn effective_betas(&self) -> Vec<String> {
+        self.context_management
+            .betas
+            .iter()
+            .filter(|beta| {
+                self.context_management.cache_capabilities.cache_control
+                    || !matches!(
+                        beta.as_str(),
+                        "claude-code-20250219" | "prompt-caching-scope-2026-01-05"
+                    )
+            })
+            .cloned()
+            .collect()
     }
 
     #[cfg(test)]
@@ -422,7 +458,7 @@ impl AnthropicProvider {
             messages,
             tools: build_anthropic_tools(request),
             tool_choice: response_format_tool_choice,
-            betas: self.context_management.betas.clone(),
+            betas: self.effective_betas(),
             metadata: build_anthropic_metadata(request, cache_strategy, cache_control),
             temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache
                 && cache_control)
@@ -517,10 +553,7 @@ impl AgentProvider for AnthropicProvider {
             }
         }
         let url = format!("{}/v1/messages", self.base_url);
-        let model_ref = format!(
-            "{}@{}/{}",
-            self.route_provider, self.route_endpoint, self.model
-        );
+        let model_ref = self.model_route.clone();
         if let Some(budget) = overflow {
             return Err(context_budget_overflow_error(
                 &self.route_provider,
@@ -644,12 +677,21 @@ impl AgentProvider for AnthropicProvider {
             self.route_provider.as_str(),
             self.model.as_str(),
             cache_strategy,
-            &self.context_management.betas,
+            &self.effective_betas(),
             &model_ref,
             url.as_str(),
             request_trace.as_ref(),
         )?;
         let parse_completed_at = chrono::Utc::now();
+        let cache_diagnostics = response
+            .request_diagnostics
+            .as_mut()
+            .and_then(|diagnostics| diagnostics.anthropic_cache.as_mut())
+            .expect("Anthropic responses include cache diagnostics");
+        cache_diagnostics.explicit_cache_control_enabled =
+            Some(self.context_management.cache_capabilities.cache_control);
+        cache_diagnostics.cache_control_source = self.cache_control_source;
+        cache_diagnostics.model_route = Some(self.model_route.clone());
         response
             .request_diagnostics
             .as_mut()
@@ -2574,6 +2616,9 @@ fn collect_anthropic_cache_diagnostics(
     AnthropicPromptCacheDiagnostics {
         cache_strategy: cache_strategy.as_str().to_string(),
         model: model.to_string(),
+        model_route: None,
+        explicit_cache_control_enabled: None,
+        cache_control_source: None,
         betas: betas.to_vec(),
         tools_count,
         tools_hash,

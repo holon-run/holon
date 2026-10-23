@@ -3429,6 +3429,7 @@ fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
                     "custom-openai/test-model".to_string(),
                     ModelRuntimeOverride::default(),
                 )]),
+                ..ModelsConfigFile::default()
             },
             providers: BTreeMap::from([(
                 provider_id.clone(),

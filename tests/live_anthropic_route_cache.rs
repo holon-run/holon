@@ -1,0 +1,163 @@
+//! Opt-in, bounded real-provider check of exact-route Anthropic cache control.
+//! Run with HOLON_LIVE_ROUTE_CACHE_ROUTES=provider@endpoint/model[,route...].
+//! This verifies request policy and diagnostics, not guaranteed cache savings.
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{ensure, Context, Result};
+use holon::{
+    config::{
+        AppConfig, ModelRouteCapability, ModelRouteRef, ProviderTransportKind, RuntimeModelCatalog,
+    },
+    context::ContextConfig,
+    prompt::PromptStability,
+    provider::{
+        build_provider_from_model_chain, ConversationMessage, ModelBlock, PromptContentBlock,
+        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
+    },
+};
+use serde_json::json;
+
+#[tokio::test]
+#[ignore = "requires explicit routes, configured credentials and network access; makes paid requests"]
+async fn live_exact_route_cache_control_and_diagnostics() -> Result<()> {
+    let routes = std::env::var("HOLON_LIVE_ROUTE_CACHE_ROUTES")
+        .context("set HOLON_LIVE_ROUTE_CACHE_ROUTES to one to four exact Anthropic routes")?
+        .split(',')
+        .map(|route| {
+            ensure!(
+                route.contains('@'),
+                "live cache probes require an explicit endpoint"
+            );
+            ModelRouteRef::parse_compatible(route.trim())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!((1..=4).contains(&routes.len()), "choose one to four routes");
+
+    let base = AppConfig::load()?;
+    let trace_home = tempfile::tempdir()?;
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let prefix = (0..256)
+        .map(|index| {
+            format!(
+                "Synthetic cache fact {index}: this is public test data; the answer is CACHE_ROUTE_OK.\n"
+            )
+        })
+        .collect::<String>();
+
+    for route in &routes {
+        // Rebuild the real registry path A -> B -> A, never changing user config.
+        for enabled in [false, true, false] {
+            let mut config = base.clone();
+            config.home_dir = trace_home.path().to_path_buf();
+            config.runtime_max_output_tokens = 256;
+            // Keep opposite policies resident on peer routes, including peers
+            // sharing this endpoint, to catch endpoint-global state leakage.
+            for peer in &routes {
+                config.stored_config.models.routes.insert(
+                    peer.as_string(),
+                    serde_json::from_value(json!({
+                        "cache_capabilities": { "cache_control": !enabled }
+                    }))?,
+                );
+            }
+            config.stored_config.models.routes.insert(
+                route.as_string(),
+                serde_json::from_value(json!({
+                    "cache_capabilities": { "cache_control": enabled }
+                }))?,
+            );
+            let resolved = RuntimeModelCatalog::from_config(&config)
+                .resolve_explicit_model_route(
+                    &ContextConfig::default(),
+                    route,
+                    ModelRouteCapability::Turn,
+                )
+                .with_context(|| format!("unavailable route {}", route.as_string()))?;
+            ensure!(
+                resolved.provider_config().transport == ProviderTransportKind::AnthropicMessages,
+                "select an Anthropic Messages route"
+            );
+            ensure!(
+                resolved.provider_config().has_configured_credential(),
+                "the selected route needs an existing credential"
+            );
+            let provider = build_provider_from_model_chain(&config, std::slice::from_ref(route))?;
+            let frame = ProviderPromptFrame::structured(
+                format!("Live route-cache probe {nonce}. Reply only CACHE_ROUTE_OK.\n{prefix}"),
+                vec![],
+                vec![PromptContentBlock {
+                    text: "Current probe answer: CACHE_ROUTE_OK.".into(),
+                    stability: PromptStability::TurnScoped,
+                    cache_breakpoint: true,
+                }],
+                Some(ProviderPromptCache {
+                    agent_id: "live-route-cache".into(),
+                    prompt_cache_key: format!("live-route-cache-{nonce}"),
+                    context_fingerprint: format!("synthetic-prefix-{nonce}"),
+                    compression_epoch: 0,
+                }),
+            );
+            let mut conversation = vec![ConversationMessage::UserText(
+                "What is the current probe answer?".into(),
+            )];
+            for round in 0..2 {
+                let response = tokio::time::timeout(
+                    Duration::from_secs(90),
+                    provider.complete_turn(ProviderTurnRequest {
+                        continuation_scope_id: None,
+                        prompt_frame: frame.clone(),
+                        conversation: conversation.clone(),
+                        tools: vec![],
+                        native_web_search: None,
+                        response_format: None,
+                    }),
+                )
+                .await
+                .context("real cache probe exceeded 90 seconds")??;
+                let text = response
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ModelBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                ensure!(text.contains("CACHE_ROUTE_OK"), "missing live probe answer");
+                let diagnostics = response
+                    .request_diagnostics
+                    .as_ref()
+                    .and_then(|diagnostics| diagnostics.anthropic_cache.as_ref())
+                    .context("missing Anthropic request diagnostics")?;
+                let evidence = serde_json::to_value(diagnostics)?;
+                ensure!(evidence["explicit_cache_control_enabled"] == enabled);
+                ensure!(evidence["cache_control_source"] == "route_override");
+                ensure!(evidence["model_route"] == resolved.route_ref.as_string());
+                let markers = diagnostics.system_cache_control_count
+                    + diagnostics.message_cache_control_count;
+                if enabled {
+                    ensure!(
+                        markers > 0,
+                        "enabled synthetic prompt must request a breakpoint"
+                    );
+                } else {
+                    ensure!(markers == 0, "disabled route emitted cache breakpoints");
+                    ensure!(!diagnostics.automatic_cache_control_requested);
+                }
+                println!(
+                    "route={} enabled={enabled} round={round} source={} markers={markers} input={} output={} cache={:?}",
+                    resolved.route_ref.as_string(),
+                    evidence["cache_control_source"],
+                    response.input_tokens,
+                    response.output_tokens,
+                    response.cache_usage
+                );
+                conversation.push(ConversationMessage::AssistantBlocks(response.blocks));
+                conversation.push(ConversationMessage::UserText(
+                    "Repeat the current probe answer.".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
