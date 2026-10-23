@@ -100,6 +100,10 @@ Current implementation anchors:
 
 **Key contract:**
 
+- When created without an explicit initial message, an agent runs a default
+  bootstrap initialization turn (`bootstrap_default=true`) before going idle.
+  One-shot command runs (`run_once`) bypass this turn.
+
 - `Asleep` is a runtime posture reached only when the scheduler accepts rest
   after turn closure. It is not an authoritative "idle" declaration.
 - `WaitFor` records explicit wait state before yielding; it is the preferred

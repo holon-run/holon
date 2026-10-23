@@ -26,7 +26,10 @@ Agent 调用 GenerateImage 时，运行时会：
 | 参数 | 必填 | 说明 |
 |-----------|----------|-------------|
 | `prompt` | 是 | 详细的图像生成提示词 |
+| `model` | 否 | 本次调用的显式模型路由（`provider@endpoint/model`） |
 | `size` | 否 | `1024x1024`、`1536x1024` 或 `1024x1536` 之一 |
+| `aspect_ratio` | 否 | 原生宽高比（如 `1:1`、`3:2`）；不可与 `size` 混用 |
+| `resolution` | 否 | 原生分辨率级别（如 `1k`、`2k`）；不可与 `size` 混用 |
 | `background` | 否 | `auto`、`transparent` 或 `opaque` 之一 |
 | `output_format` | 否 | `png`、`jpeg` 或 `webp` 之一 |
 | `name` | 否 | 保存图片的文件名主干 |
@@ -71,6 +74,10 @@ holon config set image_generation.default "openai/gpt-image-2"
 ```bash
 holon config set image_generation.default "volcengine@image-openai/doubao-seedream-5.0-lite"
 ```
+
+### 按调用指定模型路由
+
+Agent 可通过传递 `model`（例如 `"volcengine@image-openai/doubao-seedream-5.0-lite"`）为单次生成显式指定端点路由。显式路由绝不触发回退，也不会修改运行时的持久化全局配置。
 
 ### 自动发现
 
@@ -130,6 +137,7 @@ xAI 接口不接受 OpenAI 风格的 `size`、`background` 或 `output_format` �
 
 返回的绝对路径可用于 Agent 的 markdown 输出，在对话中直接渲染。图片可通过 Web GUI
 文件浏览器和 workspace 文件 API 访问。
+图片交付遵循严格的有界解码限制：单文件大小上限 32 MiB、单边最大 8,192 像素、总像素上限 16,777,216，解码内存分配上限 192 MiB。若格式转换失败，下载的原始图片会完整保留在磁盘上以供恢复。
 
 ## Agent 何时使用 GenerateImage
 

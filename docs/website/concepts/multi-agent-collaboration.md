@@ -47,8 +47,13 @@ working copy. Shared directories require explicit, non-overlapping edit scopes.
 
 ## Supervision and cleanup
 
-Use the invocation's task handle to wait for completion. Inspect status or
-output when diagnosis is needed, and stop work when it is no longer useful.
+Use the invocation's task handle to wait for completion. The runtime recognizes
+supervised task results consumed within the same turn without forcing extra wait
+cycles, and restores child settlements by their original invocation context after
+a recovery. In graphical clients, child runs provide direct in-app navigation to
+the child's conversation view with verified return paths to the parent.
+
+Inspect status or output when diagnosis is needed, and stop work when it is no longer useful.
 A terminal handle is historical evidence, not a channel that can restart the
 same invocation.
 

@@ -70,6 +70,8 @@ plan, and acceptance criteria. Inspect its current work in the right panel:
 
 - Read the WorkItem's plan status and checklist to understand the goal.
 - Open a Task detail to inspect a background command or child-agent result.
+  For child agents, use the open-conversation action to navigate directly into
+  the subagent's conversation, with a verified back button to return to the parent.
 - If the agent is waiting, read the wait reason before sending another request.
   It may need operator input, a task result, or an external event.
 - Read the completion brief and check the promised artifacts before accepting
@@ -311,7 +313,9 @@ When viewing an agent or the Dashboard, the right panel shows:
 
 The right panel also hosts contextual detail views. For example, clicking
 a task in the Dashboard opens a **Task Detail** panel showing status,
-kind, command, workdir, and output right alongside the main view.
+kind, command, workdir, and output right alongside the main view. For delegated
+child agents, click the conversation button to switch into the subagent view
+without a full-page reload, then use the return link to resume the parent.
 
 Expand the right panel when you need more room to read a detail view.
 

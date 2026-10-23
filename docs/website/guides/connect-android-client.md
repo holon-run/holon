@@ -107,7 +107,8 @@ already submitted to the runtime is unaffected.
 - **Collapsed Background Activity:** In-progress and queued background messages collapse automatically, keeping the active conversation clean.
 - **Model Selection:** View and override the active model for any agent directly from the mobile interface.
 - **System Share Sheet Integration:** Share text, links, or documents from other Android apps directly into an agent's input composer.
-- **Durable Outbox:** Prompts written while offline queue locally in the outbox and dispatch automatically when connection resumes.
+- **Durable Outbox & Network Resilience:** Prompts written while offline queue locally in the outbox. The app reconciles delivered messages against the runtime, fences stale sends, and tracks transient failures to avoid duplicate submissions on reconnect.
+- **Identity-Bound In-App Browser:** Local App routes and web links open in an identity-bound browser sheet that maintains authenticated session state without leaking credentials.
 - **Single-File Diagnostic Traces:** Export diagnostics saved to a single consolidated file that organizes events by network environment, simplifying troubleshooting and log sharing.
 - **Report AI Content:** Long-press an assistant response to report inaccurate,
   harmful, or inappropriate content. The runtime stores a bounded snapshot of

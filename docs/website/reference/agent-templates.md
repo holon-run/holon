@@ -20,6 +20,20 @@ inspection, installation, creation, and verification. Common selectors include
 own dependencies and boundaries. Explicit selectors must resolve to an
 installed, local-path, or remote template.
 
+## Email operations
+
+`email-assistant` triages incoming mail, flags actionable messages, drafts
+replies for operator approval, and tracks threads to resolution.
+
+- **Triage and drafting, not automatic sending.** The assistant organizes inbox
+  traffic, extracts action items, and prepares response drafts. It never sends
+  emails or modifies external mail accounts without explicit operator confirmation.
+- **Pre-installed workflow skills.** Installs `email-workflow` (handling policy,
+  scenarios, and drafting rules), `uxc`, `agentinbox`, and `sview`.
+- **Hard boundaries.** All outbound email requires operator confirmation.
+  Quoted sender content stays distinct from assistant drafts. Mail credentials
+  and auth tokens stay out of conversation transcripts.
+
 ## Video Production
 
 `video-producer` turns approved scripts, shot lists, and supplied media into
@@ -122,16 +136,34 @@ channel changes require separate explicit authorization.
 ## Security review
 
 `security-reviewer` owns defensive security findings and alert triage. It is
-not a license to implement features, merge, or run exploits.
+not a license to implement features, merge PRs, or run exploits.
 
 - **Findings, not merge readiness.** Review diffs and imported GitHub security
-  alerts. Report only cited findings. Do not write exploits, PoC payloads, or
-  attack steps. An alert is not a merge license.
-- **Methodology skill, not a scanner pack.** The template pre-installs
-  `security-review` from `github/awesome-copilot`, plus `ghx`, `sview`, `uxc`,
-  and `agentinbox`. The role contract overrides that skill's full-repository
-  default, attack examples, and automatic patch proposals. Scanner wrappers
-  stay out of the default install.
+  alerts. Report only cited findings with verifiable file locations. Do not write
+  exploits, PoC payloads, or attack steps. An alert is not a merge license.
+- **GitHub Security workflow.** Follows a structured triage loop:
+  1. *Confirm scope and access:* Identify the repository, reviewed revision, and
+     authorized report channel. Read `SECURITY.md` and check read permissions
+     without exposing credentials.
+  2. *Collect authorized inboxes:* Paginate Dependabot, code scanning, and
+     secret scanning alerts. For private advisories, explicitly query both
+     `state=triage` and `state=draft`.
+  3. *Triage against evidence:* Inspect SARIF traces and code paths. For secret
+     leaks, refer to credentials by alias and request owner revocation; never test
+     or reproduce live keys.
+  4. *Keep disclosure private:* Route vulnerability details to authorized
+     advisory channels. Never disclose findings in public issues or comments.
+  5. *Route authorized fixes, then re-review:* If a defensive patch is approved,
+     delegate it to a supervised child agent in a separate worktree and review the
+     resulting diff before opening a pull request.
+  6. *Record disposition and follow-up:* Mark each item `reportable`,
+     `suppressed`, `deferred`, or `n/a`, with cited evidence and recheck terms.
+- **Skills and audit boundaries.** Installs `security-review` (from
+  `github/awesome-copilot`), `security-audit` (from
+  `cloudflare/security-audit-skill`), `ghx`, `sview`, `uxc`, and `agentinbox`.
+  Broad repository audits with `security-audit` require explicit operator
+  authorization and verified OS sandbox controls (isolated network, read-only
+  targets, and scratch writes).
 - **Project skill, not an official playbook.** The template does not ship a
   `security-reviewer` skill. On first review the agent creates a
   project-specific skill under `agent_home/skills/` and patches it from

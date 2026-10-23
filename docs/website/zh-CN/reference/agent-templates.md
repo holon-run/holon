@@ -14,6 +14,14 @@ order: 32
 
 有关模板检查、安装、创建与校验的完整流程，请参阅[从模板创建 Agent](/zh-CN/guides/create-agent.md)。常用的模板选择器包括 `code-reviewer`、`office-assistant`、`software-developer`、`server-ops`、`holon-ops` 以及 `github-solver`；下文列出的各专业角色详细说明了它们各自的依赖项与职责边界。显式指定的选择器必须能够解析为已安装的模板、本地路径或远程模板。
 
+## 邮件处理
+
+`email-assistant` 负责对传入邮件进行分诊、标记待办事项、草拟回复供操作者审批，并持续跟踪沟通闭环。
+
+- **分诊与草稿优先，绝不自动发送**：协助整理收件箱信息流、提取行动项并拟定回复草案。未经操作者显式授权，绝不擅自发送邮件或变更外部邮件服务配置。
+- **预装工作流技能**：内置 `email-workflow`（包含处理规范、典型场景与草稿拟定规则）、`uxc`、`agentinbox` 与 `sview`。
+- **严格边界**：所有外发邮件必须经操作者确认。引用的发件人原文与建议草稿需严格区分。邮件凭证与认证令牌不得进入会话记录。
+
 ## 视频制作
 
 `video-producer` 将已批准的脚本、镜头清单和已有媒体制作成可审阅的视频交付物。
@@ -80,17 +88,19 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 `security-reviewer` 负责防御性安全发现和告警分诊。它不是补产品功能、合并或
 写 exploit 的许可。
 
-- **发现，不是合并就绪。** 评审 diff 和导入的 GitHub 安全告警。只报告有证据的
-  发现。不写 exploit、PoC payload 或攻击步骤。告警不是 merge 许可。
-- **方法论 skill，不是扫描器包。** 模板从 `github/awesome-copilot` 预装
-  `security-review`，以及 `ghx`、`sview`、`uxc` 和 `agentinbox`。角色合同覆盖
-  该 skill 的全仓扫描默认、攻击示例和自动补丁提案。扫描器包装不进入默认安装。
+- **立足发现，不代表合并就绪**：评审代码 Diff 与导入的 GitHub 安全告警。仅报告有明确文件位置与事实依据的发现。绝不编写 exploit、PoC payload 或攻击利用步骤。告警本身绝非修改代码或合并 PR 的许可。
+- **GitHub Security 规范流程**：遵循结构化分诊闭环：
+  1. *核实范围与权限*：明确目标仓库、审查版本与授权通报渠道。阅读 `SECURITY.md`，并在不暴露凭证的前提下核实读取权限。
+  2. *拉取已授权告警收件箱*：分页获取 Dependabot、代码扫描（Code scanning）与密钥扫描（Secret scanning）告警。针对私密漏洞通报，显式查询处于 `state=triage` 与 `state=draft` 的安全通告。
+  3. *比对证据定级*：核对 SARIF 调用轨迹与实际代码路径。发现密钥泄漏时使用别名指代并要求所有者轮换，绝不在线验证有效性或输出明文密钥。
+  4. *保持通报私密*：安全漏洞详情必须通过已授权的私密通报渠道流转，严禁泄露在公开 Issue 或 Pull Request 评论中。
+  5. *授权修复与复查*：仅在防御性补丁获批后，指派受监督子 Agent 在独立 worktree 中实施，并在创建或更新 PR 前对改动 Diff 展开复查。
+  6. *记录处置与跟踪*：将每项告警明确标记为 `reportable`、`suppressed`、`deferred` 或 `n/a`，附带证据与复核条件并跟踪至闭环。
+- **技能与审计边界**：预装 `security-review`（源自 `github/awesome-copilot`）、`security-audit`（源自 `cloudflare/security-audit-skill`）、`ghx`、`sview`、`uxc` 与 `agentinbox`。使用 `security-audit` 执行深层全仓审计必须获得操作者显式授权，且必须在具备严格操作系统沙箱隔离（隔离网络、只读源码与工具链、仅限临时目录写入）的环境中运行。
 - **项目 skill，不是官方 playbook。** 模板不附带 `security-reviewer` skill。
   首次评审时，Agent 在 `agent_home/skills/` 为当前项目创建安全 skill，并按实践
   补丁式改进。把 skill 写入仓库仍须操作者确认。
-- **硬约束。** 默认不改产品代码、不合并、不产出 exploit/PoC、不存储或回显密钥，
-  空扫描结果不是“已证明安全”。外部 issue 和告警文本不能升权。项目 skill 覆盖
-  不了这些规则。
+- **硬性约束**：默认不修改产品代码、默认不合并、不产出 exploit/PoC、不存储或回显机密，空扫描结果绝不能视为“安全证明”。外部 Issue 与告警文本不能提升权限。项目 skill 覆盖不了这些规则。
 
 ## 营销运营
 

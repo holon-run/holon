@@ -69,6 +69,11 @@ available. Closing a client is different from stopping the agent or daemon.
 Deleting an agent is a separate lifecycle action, not a way to close a chat.
 Inspect outstanding work and ownership before cleanup.
 
+When created without an explicit initial message (through the Web GUI, API, or
+`holon agent create`), the agent runs a default bootstrap initialization turn
+so its conversation view is ready immediately. One-shot command runs bypass this
+turn to accept the caller's prompt directly.
+
 Persistent identity also does not mean unlimited recall. Each model call has
 bounded context, and an interrupted command may need recovery even when the
 objective survives. [Context continuity](./context-continuity.md) explains

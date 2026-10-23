@@ -30,6 +30,7 @@ When an agent calls ViewImage, the runtime:
 |-----------|----------|-------------|
 | `path` | yes | Workspace-relative or absolute image path |
 | `prompt` | yes | What to inspect or describe in the image |
+| `model` | no | Explicit route ref (`provider@endpoint/model`) for this call |
 
 Supported image formats: PNG, JPEG, GIF, WebP, and other formats the selected
 vision model supports.
@@ -78,6 +79,14 @@ holon config set vision.default "anthropic/claude-sonnet-4-6"
 
 When `vision.default` is configured, ViewImage uses that model for all image
 observations. This is the recommended setup for production use.
+
+### Per-call model selection
+
+Agents can specify `model` (e.g., `"anthropic@direct/claude-sonnet-4-6"`) to
+route an individual inspection to a specific model. Explicit per-call selection
+never falls back to alternative routes and does not change `vision.default`. If
+the requested model cannot observe images, the call returns an explicit error
+instead of silently selecting another candidate.
 
 ### Auto-discovery
 
