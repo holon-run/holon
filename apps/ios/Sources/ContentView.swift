@@ -4,13 +4,14 @@ import AuthenticationServices
 struct ContentView: View {
     @Bindable var coordinator: ConnectionCoordinator
     let addConnection: () -> Void
+    @State private var consentProfile: ConnectionProfile?
 
     var body: some View {
         Form {
             Section("profiles.title") {
                 ForEach(coordinator.profiles) { profile in
                     SavedNetworkRow(coordinator: coordinator, profile: profile) {
-                        Task { await coordinator.connect(profile) }
+                        connect(profile)
                     }
                 }
                 Button("connection.add", systemImage: "plus", action: addConnection)
@@ -37,6 +38,22 @@ struct ContentView: View {
             }
         }
         .navigationTitle("settings.connections")
+        .sheet(item: $consentProfile) { profile in
+            LoginConsentSheet(apiBaseURL: profile.apiBaseURL) {
+                consentProfile = nil
+                Task { await coordinator.connect(profile) }
+            }
+        }
+    }
+
+    /// Stored-profile reconnect follows the same consent gate as onboarding:
+    /// unapproved hosts see the sharing prompt before any connection attempt.
+    private func connect(_ profile: ConnectionProfile) {
+        if SharingConsent.shared.approved(profile.apiBaseURL) {
+            Task { await coordinator.connect(profile) }
+        } else {
+            consentProfile = profile
+        }
     }
 
     private func identityRow(_ key: LocalizedStringKey, _ value: String?) -> some View {

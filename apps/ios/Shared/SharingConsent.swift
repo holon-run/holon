@@ -16,7 +16,23 @@ struct SharingConsent: @unchecked Sendable {
     let defaults: UserDefaults?
 
     private func key(_ url: URL) -> String {
-        "sharing.consent.v\(Self.version).\(url.absoluteString)"
+        "sharing.consent.v\(Self.version).\(Self.endpointKey(for: url))"
+    }
+
+    /// Consent entries must not fork on host case or default ports; this
+    /// mirrors ConnectionProfile.endpointKey so a login approved for one
+    /// textual form of an endpoint also covers the stored profile form.
+    /// Sources-target types are not visible here: this file also builds
+    /// into the share extension.
+    static func endpointKey(for url: URL) -> String {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        parts.host = parts.host?.lowercased()
+        if (parts.scheme == "https" && parts.port == 443) || (parts.scheme == "http" && parts.port == 80) {
+            parts.port = nil
+        }
+        return parts.url?.absoluteString ?? url.absoluteString
     }
 
     func approved(_ url: URL) -> Bool {

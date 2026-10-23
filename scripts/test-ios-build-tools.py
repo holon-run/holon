@@ -214,7 +214,7 @@ class UIFixtureSetupContracts(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(RuntimeError):
                 self.run_loss_scenarios(transform)
 
-    def run_setup(self, initialize, install, share=True, report=False):
+    def run_setup(self, initialize, install, share=True, report=False, commands=None):
         # Execute the fixture's real setup block without starting its daemon/XCTest.
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
@@ -240,7 +240,9 @@ class UIFixtureSetupContracts(unittest.TestCase):
                              report_acceptance=report,
                              lost_response_acceptance=False, history_acceptance=False,
                              task_result_acceptance=False,
-                             share_acceptance=share, initialize_simulator_text_size=initialize)
+                             share_acceptance=share, initialize_simulator_text_size=initialize,
+                             subprocess=commands if commands is not None else Mock(),
+                             time=Mock())
             with patch.dict(os.environ, {}, clear=True), patch("ios_share_probe.install", install):
                 exec(compile(setup, str(source), "exec"), namespace)
             return namespace["cases"]
@@ -274,6 +276,26 @@ class UIFixtureSetupContracts(unittest.TestCase):
 
         self.run_setup(initialize, install)
         self.assertEqual(events, ["ready", "installed"])
+
+    def test_stale_app_is_uninstalled_before_share_install(self):
+        events = []
+
+        def initialize(simulator):
+            events.append("ready")
+
+        def install(simulator, repo, directory):
+            events.append("installed")
+
+        commands = Mock()
+        commands.run.side_effect = lambda *arguments, **keywords: (
+            events.append(tuple(arguments[0])), Mock(returncode=1))[1]
+        self.run_setup(initialize, install, commands=commands)
+        self.assertEqual(events, [
+            "ready",
+            ("xcrun", "simctl", "uninstall", UUID, "run.holon.ios"),
+            ("xcrun", "simctl", "get_app_container", UUID, "run.holon.ios", "data"),
+            "installed",
+        ], "A reused simulator must not restore stale app data into any case")
 
     def test_failed_initialization_prevents_share_install(self):
         install = Mock()
