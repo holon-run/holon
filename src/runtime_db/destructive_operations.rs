@@ -1,8 +1,8 @@
 //! Durable idempotency records for operations which may terminate this daemon.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_db::RuntimeDb;
@@ -14,6 +14,8 @@ pub enum DestructiveOperationPhase {
     Scheduled,
     DaemonInterrupted,
     Verified,
+    /// The owner was deleted. External effects are neither cancelled nor verified.
+    OwnerClosed,
 }
 
 impl DestructiveOperationPhase {
@@ -23,6 +25,7 @@ impl DestructiveOperationPhase {
             Self::Scheduled => "scheduled",
             Self::DaemonInterrupted => "daemon_interrupted",
             Self::Verified => "verified",
+            Self::OwnerClosed => "owner_closed",
         }
     }
 
@@ -32,6 +35,7 @@ impl DestructiveOperationPhase {
             "scheduled" => Ok(Self::Scheduled),
             "daemon_interrupted" => Ok(Self::DaemonInterrupted),
             "verified" => Ok(Self::Verified),
+            "owner_closed" => Ok(Self::OwnerClosed),
             _ => Err(anyhow!("unknown destructive operation phase: {value}")),
         }
     }
@@ -54,6 +58,39 @@ pub fn command_digest(command: &str) -> String {
     format!("{:x}", Sha256::digest(command.as_bytes()))
 }
 
+fn closed_operation_key(operation_id: &str) -> String {
+    format!(
+        "destructive_operation_closed:{:x}",
+        Sha256::digest(operation_id.as_bytes())
+    )
+}
+
+pub(crate) fn retain_closed_operation_fence_tx(
+    tx: &Transaction<'_>,
+    operation_id: &str,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO runtime_metadata(key,value,created_at,updated_at)
+         VALUES (?1,'closed',?2,?2)",
+        params![closed_operation_key(operation_id), now.to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+fn ensure_operation_not_closed_tx(tx: &Transaction<'_>, operation_id: &str) -> Result<()> {
+    let closed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_metadata WHERE key = ?1)",
+        [closed_operation_key(operation_id)],
+        |row| row.get(0),
+    )?;
+    ensure!(
+        !closed,
+        "destructive_operation_owner_closed: operation id {operation_id} cannot be reused"
+    );
+    Ok(())
+}
+
 /// Outcome of fencing a destructive operation.
 ///
 /// `should_dispatch` is true only for the single call allowed to hand the
@@ -74,12 +111,13 @@ impl DestructiveOperationRepository<'_> {
     ///
     /// Returns the durable record plus whether this call may dispatch. A caller
     /// must not dispatch when the operation id already exists or when another
-    /// active (non-`verified`) operation already fences the same owner WorkItem.
+    /// nonterminal operation already fences the same owner WorkItem.
     pub fn plan_and_schedule(
         &self,
         record: &DestructiveOperationRecord,
     ) -> Result<PlannedDestructiveOperation> {
         self.db.transaction(|tx| {
+            ensure_operation_not_closed_tx(tx, &record.operation_id)?;
             let existing = tx
                 .query_row(
                     "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
@@ -130,7 +168,7 @@ impl DestructiveOperationRepository<'_> {
                                 verification_target, recovery_policy, command_digest,
                                 created_at, updated_at
                          FROM destructive_operations
-                         WHERE owner_work_item_id = ?1 AND phase != 'verified'
+                         WHERE owner_work_item_id = ?1 AND phase NOT IN ('verified','owner_closed')
                          ORDER BY updated_at DESC
                          LIMIT 1",
                         [work_item_id],
@@ -204,6 +242,7 @@ impl DestructiveOperationRepository<'_> {
         record: &DestructiveOperationRecord,
     ) -> Result<DestructiveOperationRecord> {
         self.db.transaction(|tx| {
+            ensure_operation_not_closed_tx(tx, &record.operation_id)?;
             tx.execute(
                 "INSERT OR IGNORE INTO destructive_operations
                  (operation_id, owner_turn_id, owner_work_item_id, phase,
@@ -259,7 +298,7 @@ impl DestructiveOperationRepository<'_> {
             Ok(tx.execute(
                 "UPDATE destructive_operations
                      SET phase = ?1, updated_at = ?2
-                     WHERE operation_id = ?3 AND phase = ?4",
+                     WHERE operation_id = ?3 AND phase = ?4 AND phase != 'owner_closed'",
                 params![
                     next.as_str(),
                     Utc::now().to_rfc3339(),
@@ -474,6 +513,59 @@ mod tests {
             DestructiveOperationPhase::DaemonInterrupted,
             DestructiveOperationPhase::Verified,
         )?);
+        Ok(())
+    }
+
+    #[test]
+    fn owner_closed_is_terminal_and_retains_global_dispatch_fence_after_purge() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        durable_turn(&db, "turn-a")?;
+        durable_turn(&db, "turn-b")?;
+        let repo = db.destructive_operations();
+        let record = request("op-a", "turn-a", None);
+        repo.plan_and_schedule(&record)?;
+        assert!(repo.transition(
+            "op-a",
+            DestructiveOperationPhase::Scheduled,
+            DestructiveOperationPhase::OwnerClosed,
+        )?);
+        assert_eq!(
+            repo.by_id("op-a")?.unwrap().phase,
+            DestructiveOperationPhase::OwnerClosed
+        );
+        assert!(!repo.plan_and_schedule(&record)?.should_dispatch);
+        assert!(!repo.transition(
+            "op-a",
+            DestructiveOperationPhase::Scheduled,
+            DestructiveOperationPhase::Planned,
+        )?);
+        assert!(!repo.transition(
+            "op-a",
+            DestructiveOperationPhase::OwnerClosed,
+            DestructiveOperationPhase::Scheduled,
+        )?);
+        assert!(repo.pending_verification()?.is_empty());
+        db.transaction(|tx| {
+            retain_closed_operation_fence_tx(tx, "op-a", Utc::now())?;
+            tx.execute(
+                "DELETE FROM destructive_operations WHERE operation_id = 'op-a'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let replay = request("op-a", "turn-b", None);
+        for error in [
+            repo.plan_and_schedule(&replay).unwrap_err(),
+            repo.plan_or_get(&replay).unwrap_err(),
+        ] {
+            assert!(error
+                .to_string()
+                .contains("destructive_operation_owner_closed"));
+        }
+        assert!(
+            repo.plan_and_schedule(&request("op-b", "turn-b", None))?
+                .should_dispatch
+        );
         Ok(())
     }
 

@@ -51,6 +51,16 @@
     ],
     "flags": [
       {
+        "long": "archive",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "cascade-private-children",
         "short": null,
         "default_value": null,

@@ -15677,6 +15677,16 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
+        let child = AgentIdentityRecord::new(
+            "child_recover",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_agent_id.clone()),
+            Some("task-recover-child".into()),
+        )
+        .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
             .append_task(&TaskRecord {
@@ -15691,6 +15701,11 @@ mod tests {
                 summary: Some("delegated child".into()),
                 detail: Some(serde_json::json!({
                     "child_agent_id": "child_recover",
+                    "target": {
+                        "kind": "child_agent",
+                        "agent_id": child.agent_id,
+                        "incarnation": child.incarnation,
+                    },
                     "child_turn_baseline": 0,
                     "task_status": "running",
                 })),
@@ -15705,16 +15720,6 @@ mod tests {
             })
             .unwrap();
 
-        let child = AgentIdentityRecord::new(
-            "child_recover",
-            AgentKind::Child,
-            AgentVisibility::Private,
-            AgentOwnership::ParentSupervised,
-            AgentProfilePreset::PrivateChild,
-            Some(parent_agent_id.clone()),
-            Some("task-recover-child".into()),
-        )
-        .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
         host.runtime_db().agent_identities().upsert(&child).unwrap();
 
@@ -15809,7 +15814,7 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for canonical terminal child deletion to complete"
+                "timed out waiting for canonical terminal child deletion to complete: {deletion_job:?}"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
@@ -15818,6 +15823,15 @@ mod tests {
             crate::types::AgentDeletionStatus::Completed
         );
         assert_eq!(deletion_job.mode, crate::types::AgentDeletionMode::Delete);
+        assert_eq!(
+            runtime
+                .task_output("task-recover-child", false, 0)
+                .await
+                .unwrap()
+                .task
+                .output_preview,
+            output.task.output_preview
+        );
 
         runtime_task.abort();
         restarted.shutdown_daemon_deletion_coordinator().await;
@@ -17166,7 +17180,7 @@ mod tests {
             assert!(!sweep.is_finished());
             // Commit admission and a failed Home attempt while the stale
             // enumerated candidate is waiting for the shared ownership fence.
-            let (_, mut job, _) = host
+            let (deleting, mut job, _) = host
                 .runtime_db()
                 .agent_deletions()
                 .begin_parent_cleanup(
@@ -17176,6 +17190,7 @@ mod tests {
                     parent.instance_incarnation(),
                 )
                 .unwrap();
+            host.cache_agent_identity(&deleting).unwrap();
             job.phase = AgentDeletionPhase::Home;
             host.runtime_db().agent_deletions().update(&job).unwrap();
             fs::remove_dir(&trash).unwrap();
@@ -17184,12 +17199,11 @@ mod tests {
             fs::write(trash.join("work/report.md"), "protected result").unwrap();
             drop(fence);
             assert!(!sweep.await.unwrap().unwrap());
-            assert!(host
-                .execute_deletion_job(job)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("unregistered_home_artifact"));
+            let error = host.execute_deletion_job(job).await.unwrap_err();
+            assert!(
+                error.to_string().contains("unregistered_home_artifact"),
+                "{error:#}"
+            );
             assert_eq!(host.sweep_orphan_agent_home_trash().await.unwrap(), 0);
             assert_eq!(
                 fs::read_to_string(trash.join("work/report.md")).unwrap(),

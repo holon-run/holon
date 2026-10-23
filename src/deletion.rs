@@ -957,25 +957,12 @@ impl RuntimeHost {
             debug!(agent_id, count = tasks_count, "terminalized active tasks");
         }
 
-        // Cancel active wait conditions.
-        let active_waits = self
+        // Settlement cancels active and triggered waits atomically with its proof.
+        let waits_count = self
             .runtime_db()
             .wait_conditions()
-            .active_for_agent(agent_id)?;
-        let waits_count = active_waits.len();
-        for mut wait in active_waits {
-            wait.status = WaitConditionStatus::Cancelled;
-            wait.updated_at = now;
-            wait.cancelled_at = Some(now);
-            self.runtime_db().wait_conditions().upsert(&wait)?;
-        }
-        if waits_count > 0 {
-            debug!(
-                agent_id,
-                count = waits_count,
-                "cancelled active wait conditions"
-            );
-        }
+            .unresolved_for_agent(agent_id)?
+            .len();
 
         let identity = self
             .agent_identity_record(agent_id)?

@@ -478,8 +478,12 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
 
 pub async fn control_agent_reincarnation_clears_history_and_resets_turn_sequence() -> Result<()> {
     let agent_id = "reborn-turn-sequence";
+    let mut config = test_config();
+    // Exercise explicit HTTP turns without a default bootstrap introduction
+    // racing the prompt for the first turn of each incarnation.
+    config.providers.clear();
     let host = RuntimeHost::new_with_provider(
-        test_config(),
+        config,
         Arc::new(StubProvider::new("fresh incarnation result")),
     )?;
     attach_default_workspace(&host).await?;

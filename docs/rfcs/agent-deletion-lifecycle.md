@@ -266,6 +266,20 @@ queue/attempt/claim/activation evidence; it never makes an old input replayable
 or rewrites a successful terminal result. Parent cleanup retains its existing
 active-work and protected-resource checks.
 
+The settlement transaction also cancels both active and triggered waits, and
+closes destructive-operation recovery ownership as `owner_closed`. This terminal
+state does not assert that an externally dispatched command was cancelled or its
+target verified; deletion neither executes verification commands nor replays
+external effects. Previously verified operations remain verified. Settlement
+proof is valid only while no unresolved wait or nonterminal owned operation
+remains, so a legacy proof that omitted these families restarts at the
+cancellation gate rather than retrying `Index` indefinitely.
+Before purging operation payloads, the same transaction retains a global
+dispatch-fence tombstone keyed only by a hash of `operation_id`. It contains no
+agent, turn, command, verification target or result. Both operation admission
+paths reject reuse of a tombstoned id, including after recreation, so deleting
+private ownership evidence cannot authorize replay of an external side effect.
+
 Deletion removes private conversation, tools, tasks, waits, timers, WorkItems,
 runtime traces and their owned derived projections, as well as the home allowed
 by the selected deletion policy. Shared repositories, other agents' data and
