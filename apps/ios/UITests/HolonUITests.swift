@@ -1669,6 +1669,11 @@ final class HolonUITests: XCTestCase {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
+        // A preceding sweep case can restore straight into its conversation;
+        // this case starts from the roster like a fresh sign-in.
+        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
         let agent = app.buttons["agent." + (try required("AGENT_ID"))]
         reveal(agent, in: app); agent.tap()
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
