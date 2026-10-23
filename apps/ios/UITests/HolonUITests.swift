@@ -1241,6 +1241,12 @@ final class HolonUITests: XCTestCase {
         address.tap(); address.typeText("http://127.0.0.1:1")
         reveal(permission, in: app); permission.switches.firstMatch.tap()
         reveal(next, in: app); next.tap()
+        // The sharing prompt gates probing of this not-yet-approved host.
+        agreeToSharingConsent(app)
+        let proceed = app.buttons["privacy.continueLogin"]
+        reveal(proceed, in: app)
+        waitForEnabled(proceed, message: "Consent must enable the continue action")
+        proceed.tap()
         XCTAssertTrue(app.staticTexts["connection.status"].waitForExistence(timeout: 10))
         try assertNoCachedSessionUI(app)
         app.buttons["onboarding.back"].tap()
@@ -1669,6 +1675,11 @@ final class HolonUITests: XCTestCase {
         try connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
+        // A preceding sweep case can restore straight into its conversation;
+        // this case starts from the roster like a fresh sign-in.
+        if app.buttons["conversation.more"].waitForExistence(timeout: 5) {
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+        }
         let agent = app.buttons["agent." + (try required("AGENT_ID"))]
         reveal(agent, in: app); agent.tap()
         let editor = app.descendants(matching: .any)["sending.text"].firstMatch
