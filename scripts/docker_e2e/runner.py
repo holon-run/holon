@@ -1056,13 +1056,74 @@ class CaseHarness:
         while True:
             try:
                 self.request("GET", state_path)
-                return
+                break
             except AssertionError as error:
                 if f"GET {state_path} returned 404" not in str(error):
                     raise
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.25)
+        self.wait_default_bootstrap_turn_settled()
+
+    def wait_default_bootstrap_turn_settled(
+        self, *, settle_timeout: float | None = None, missing_grace: float = 10.0
+    ) -> None:
+        """Wait until the default bootstrap initialization turn settles.
+
+        Agents created without an ``initial_message`` run one runtime-owned
+        bootstrap initialization turn before ordinary traffic (#2795/#3685).
+        An operator prompt sent while that turn is in flight is admitted as
+        an interjection into it and never starts its own turn, so scenario
+        prompts time out waiting for ``turn_started`` (#3687). Wait until the
+        fresh agent completed its first turn and is idle again before the
+        caller sends the first prompt. Runtimes that never schedule the
+        default bootstrap turn (pre-#3685 images in upgrade cases, or a
+        provider-less first-run node) stay idle at ``turn_index`` 0; return
+        after a short grace window so those flows keep working.
+        """
+        timeout = (
+            settle_timeout
+            if settle_timeout is not None
+            else min(float(self.timeout_seconds), 300.0)
+        )
+        deadline = time.monotonic() + timeout
+        idle_since: float | None = None
+        last_state: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            last_state = self.request("GET", self.agent_path("state"))
+            agent = last_state["agent"]["agent"]
+            idle = (
+                agent["status"] in TERMINAL_STATUSES
+                and agent.get("current_run_id") is None
+                and int(last_state["session"]["pending_count"]) == 0
+            )
+            if idle:
+                if idle_since is None:
+                    idle_since = time.monotonic()
+                if int(agent["turn_index"]) >= 1:
+                    return
+                if time.monotonic() - idle_since >= missing_grace:
+                    write_json(
+                        self.evidence / "bootstrap-settle-skipped.json",
+                        {
+                            "agent_id": self.agent_id,
+                            "turn_index": int(agent["turn_index"]),
+                            "idle_seconds": round(
+                                time.monotonic() - idle_since, 3
+                            ),
+                            "reason": "no default bootstrap turn was scheduled",
+                        },
+                    )
+                    return
+            else:
+                idle_since = None
+            time.sleep(1)
+        write_json(self.evidence / "bootstrap-settle-timeout-state.json", last_state)
+        self.capture_logs()
+        raise TimeoutError(
+            f"default bootstrap turn did not settle for agent {self.agent_id} "
+            f"within {timeout:.0f}s"
+        )
 
     def wait_readiness(self) -> None:
         deadline = time.monotonic() + 90
@@ -2829,6 +2890,7 @@ def run_runtime_agent_lifecycle_case(
     )
 
     harness.agent_id = agent_id
+    harness.wait_default_bootstrap_turn_settled()
     before_turn, before_state = harness.prompt(
         "runtime-agent-before-restart",
         case["phases"][0]["prompt"].format(marker=before_marker),
@@ -2991,6 +3053,7 @@ def run_runtime_upgrade_previous_release_case(
         created_legacy_agent,
     )
     harness.agent_id = legacy_agent_id
+    harness.wait_default_bootstrap_turn_settled()
     harness.prompt(
         "upgrade-v030-old",
         case["phases"][0]["prompt"].format(marker=old_marker),
@@ -3197,6 +3260,7 @@ def run_runtime_upgrade_interrupted_schema47_case(
         created_work_item_agent,
     )
     harness.agent_id = work_item_agent
+    harness.wait_default_bootstrap_turn_settled()
     try:
         harness.prompt(
             "upgrade-schema47-workitem-bootstrap",
@@ -6175,6 +6239,7 @@ def run_live_input_batch_case(harness: CaseHarness, case: dict[str, Any]) -> Non
     sender = copy.copy(harness)
     sender.agent_id = f"batch-sender-{marker}"
     harness.request("POST", sender.agent_path("create", control=True), {})
+    sender.wait_default_bootstrap_turn_settled()
     gates = [
         harness.workspace_parent / f".{stage}-{marker}"
         for stage in ("initial-release", "initial-ready", "live-release", "live-ready")
