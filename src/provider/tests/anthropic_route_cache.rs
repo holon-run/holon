@@ -173,6 +173,151 @@ async fn anthropic_registry_route_cache_override_isolated_across_rebuilds_claude
     assert_registry_cache_policy_isolation(AnthropicCacheStrategy::ClaudeCodePromptCache).await;
 }
 
+fn remove_cache_controls(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("cache_control");
+            for value in object.values_mut() {
+                remove_cache_controls(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                remove_cache_controls(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[tokio::test]
+async fn anthropic_dashscope_glm53_cache_control_ab_preserves_implicit_usage() {
+    let _env = crate::test_env::lock_env();
+    let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_for_server = captured.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<Value>| {
+            let captured = captured_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                // A permissive mock cannot prove upstream marker support. It
+                // demonstrates that cache reads do not require outgoing markers.
+                Json(json!({
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 4, "output_tokens": 2,
+                        "cache_read_input_tokens": 2048,
+                        "cache_creation_input_tokens": 0
+                    }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let home = tempfile::tempdir().unwrap();
+    let route = "dashscope@token-plan/glm-5.3";
+    let mut stored: HolonConfigFile = serde_json::from_value(json!({
+        "model": {"default": route},
+        "providers": {
+            "dashscope-token-plan": {
+                "transport": "anthropic_messages",
+                "base_url": base_url,
+                "auth": {"source": "none", "kind": "none"}
+            }
+        }
+    }))
+    .unwrap();
+
+    for strategy in [
+        AnthropicCacheStrategy::MessagesNative,
+        AnthropicCacheStrategy::ClaudeCodePromptCache,
+    ] {
+        let mut bodies = Vec::new();
+        for override_value in [None, Some(true), Some(false), Some(true)] {
+            stored.models.routes.clear();
+            if let Some(enabled) = override_value {
+                stored.models.routes.insert(
+                    route.into(),
+                    serde_json::from_value(json!({
+                        "cache_capabilities": {"cache_control": enabled}
+                    }))
+                    .unwrap(),
+                );
+            }
+            let enabled = override_value.unwrap_or(false);
+            let source = if override_value.is_some() {
+                AnthropicCacheControlSource::RouteOverride
+            } else {
+                AnthropicCacheControlSource::RouteBuiltin
+            };
+            save_persisted_config_at(&persisted_config_path(home.path()), &stored).unwrap();
+            let mut config =
+                AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf()))
+                    .unwrap();
+            config
+                .providers
+                .get_mut(&ProviderId::parse("dashscope-token-plan").unwrap())
+                .unwrap()
+                .context_management
+                .cache_strategy = strategy;
+            let provider = build_provider_from_config(&config).unwrap();
+            assert_eq!(provider.configured_model_refs(), vec![route.to_string()]);
+            let mut request = provider_continuation_request_with_prompt_frame();
+            request.tools = vec![tool_spec_named("ExecCommand")];
+            let response = provider.complete_turn(request).await.unwrap();
+            let diagnostics = response
+                .request_diagnostics
+                .as_ref()
+                .unwrap()
+                .anthropic_cache
+                .as_ref()
+                .unwrap();
+            assert_eq!(diagnostics.model_route.as_deref(), Some(route));
+            assert_eq!(diagnostics.explicit_cache_control_enabled, Some(enabled));
+            assert_eq!(diagnostics.cache_control_source, Some(source));
+            let usage = response.cache_usage.as_ref().unwrap();
+            assert_eq!(usage.read_input_tokens, 2048);
+            assert_eq!(usage.creation_input_tokens, 0);
+            let mut body = captured.lock().unwrap().last().unwrap().clone();
+            assert_eq!(body["model"], "glm-5.3");
+            assert_eq!(
+                serde_json::to_string(&body)
+                    .unwrap()
+                    .contains("\"cache_control\""),
+                enabled
+            );
+            if !enabled {
+                assert!(diagnostics.cache_breakpoints.is_empty());
+            }
+            remove_cache_controls(&mut body);
+            if strategy == AnthropicCacheStrategy::ClaudeCodePromptCache {
+                let system = body["system"].as_array_mut().unwrap();
+                let original_len = system.len();
+                system.retain(|block| {
+                    !block["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("x-anthropic-billing-header:")
+                });
+                assert_eq!(original_len - system.len(), usize::from(enabled));
+                assert!(!system.is_empty());
+            }
+            bodies.push(body);
+        }
+        for body in &bodies[1..] {
+            assert_eq!(body["messages"], bodies[0]["messages"]);
+            assert_eq!(body["tools"], bodies[0]["tools"]);
+            assert_eq!(body["system"], bodies[0]["system"]);
+            if strategy == AnthropicCacheStrategy::MessagesNative {
+                assert_eq!(body, &bodies[0]);
+            }
+        }
+    }
+    assert_eq!(captured.lock().unwrap().len(), 8);
+}
+
 #[tokio::test]
 async fn anthropic_direct_runtime_cache_policy_keeps_unknown_source() {
     let base_url = spawn_test_server(Router::new().route(

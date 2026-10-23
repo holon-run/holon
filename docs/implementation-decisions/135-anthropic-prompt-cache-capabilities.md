@@ -1,7 +1,8 @@
 # 135 Anthropic Prompt-Cache Capabilities
 
 Anthropic-compatible endpoints differ in how their caches are driven. The
-official API and dashscope honor explicit `cache_control` breakpoints; deepseek
+official API honors explicit `cache_control` breakpoints; DashScope support
+varies by model (see the reviewed route default below). Deepseek
 ignores `cache_control` entirely (Context Caching is automatic) and
 bigmodel/GLM caches implicitly only. Sending the `claude_code_prompt_cache`
 wire shape to an implicit-cache endpoint bought no cache benefit while its
@@ -41,3 +42,28 @@ are still only auto-injected for the official Anthropic provider.
 Reserved for a follow-up (P2 in #3177): `tools_breakpoint` and
 `long_cache_retention` capabilities would follow the same declaration pattern
 once the transport implements tools-level breakpoints and the 1h TTL.
+
+## Reviewed route default: DashScope Token Plan GLM-5.3
+
+As of 2026-10-23, only `dashscope@token-plan/glm-5.3` defaults to
+`cache_control=false`. The [official GLM capability table](https://help.aliyun.com/zh/model-studio/glm)
+lists GLM-5.3 as implicit-cache only, while GLM-5.1 supports explicit and implicit
+caching. The [Token Plan quick start](https://help.aliyun.com/zh/model-studio/token-plan-personal-quick-start)
+documents a dedicated Anthropic-compatible endpoint but does not promise
+explicit cache breakpoints. This is a conservative route default, not evidence
+that this endpoint rejects or ignores markers. Other models and endpoints keep
+their defaults.
+
+The existing precedence remains route override → provider override → route
+built-in → endpoint built-in → compatibility default. An operator can explicitly
+re-enable markers through `models.routes` or a provider override; no persisted
+user configuration is rewritten. The request gating described above also
+removes Claude-Code billing/metadata/temperature mimicry, but preserves the
+system/context, conversation and tools.
+
+Response cache-usage parsing is independent of outgoing markers. Offline
+provider-path tests use a permissive local mock to compare default/true/false/true
+requests under both strategies; their returned cache counts are fixtures, not
+upstream measurements. An earlier real Token Plan call reported cache reads
+without a marker-on/off comparison. Neither proves marker support or predicts
+cache hit rate, cost or latency after this default change.

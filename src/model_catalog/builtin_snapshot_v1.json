@@ -8671,6 +8671,9 @@
     {
       "route_ref": "dashscope@token-plan/glm-5.3",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
