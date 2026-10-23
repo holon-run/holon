@@ -87,6 +87,21 @@ MIME describes content rather than authorizing access: `.wasm` uses
 `application/wasm`, while `.data`, extensionless files, and unknown types
 use `application/octet-stream`.
 
+### Web GUI fallback boundary
+
+The Web GUI SPA fallback does not own `/api` or `/apps`, and never rewrites
+missing assets (including `/assets` paths and known file extensions) to the
+GUI entry document. Unmatched extensionless `GET` and `HEAD` navigation may
+serve `index.html` when `Accept` permits HTML: `text/html`, `text/*`, `*/*`,
+or an absent header. The most specific matching media range determines
+quality, so `text/html;q=0, */*` still rejects HTML; JSON-only requests do not
+receive the SPA.
+
+Wildcard and absent-header fallback applies only to non-root navigation.
+Existing root/API discovery negotiation still requires explicit HTML to select
+the GUI rather than JSON. Explicit HTML navigation also retains support for
+dotted route identifiers that are not known asset file types.
+
 ### Daemon policy
 
 The persisted `local_apps` settings are daemon-wide, not per-app manifest

@@ -9,6 +9,11 @@ pub async fn web_or_not_found_handler(
     if matches!(method, Method::GET | Method::HEAD) {
         let head_only = method == Method::HEAD;
         let request_path = uri.path().trim_start_matches('/');
+        if normalize_web_asset_path(request_path)
+            .is_some_and(|path| matches!(path.split('/').next(), Some("api" | "apps")))
+        {
+            return not_found("Not Found").into_response();
+        }
         if request_path == "login" {
             if let Some(response) =
                 web_asset_response(&state, "index.html", &headers, head_only).await
@@ -24,7 +29,7 @@ pub async fn web_or_not_found_handler(
                 return response;
             }
         }
-        if accepts_html(&headers) {
+        if accepts_spa_html(request_path, &headers) {
             if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc
                 && super::authenticate_session(&headers, &state).is_err()
             {
@@ -80,14 +85,76 @@ fn login_page_response(head_only: bool) -> AxumResponse {
 }
 
 pub(crate) fn accepts_html(headers: &HeaderMap) -> bool {
-    headers
-        .get(ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|accept| {
-            accept
-                .split(',')
-                .any(|part| part.trim_start().starts_with("text/html"))
-        })
+    html_acceptance(headers).is_some_and(|(specificity, quality)| specificity == 2 && quality > 0.0)
+}
+
+fn accepts_spa_html(request_path: &str, headers: &HeaderMap) -> bool {
+    // Keep the root's explicit-HTML versus JSON behavior separate from SPA navigation.
+    if request_path.is_empty() {
+        return accepts_html(headers);
+    }
+    let Some(path) = normalize_web_asset_path(request_path) else {
+        return false;
+    };
+    if matches!(path.split('/').next(), Some("api" | "apps" | "assets")) {
+        return false;
+    }
+    let Some((specificity, quality)) = html_acceptance(headers) else {
+        return false;
+    };
+    if quality <= 0.0 {
+        return false;
+    }
+    // Do not turn missing assets into successful HTML responses. Explicit HTML
+    // still supports dotted route identifiers that are not known file types.
+    if std::path::Path::new(&path).extension().is_some() {
+        return specificity == 2 && mime_guess::from_path(&path).first().is_none();
+    }
+    true
+}
+
+fn html_acceptance(headers: &HeaderMap) -> Option<(u8, f32)> {
+    if !headers.contains_key(ACCEPT) {
+        return Some((0, 1.0));
+    }
+    let mut preferred = None;
+    for value in headers.get_all(ACCEPT) {
+        let accept = value.to_str().ok()?;
+        for range in accept.split(',') {
+            let mut parts = range.split(';');
+            let media_type = parts.next()?.trim();
+            let specificity = if media_type.eq_ignore_ascii_case("text/html") {
+                2
+            } else if media_type.eq_ignore_ascii_case("text/*") {
+                1
+            } else if media_type == "*/*" {
+                0
+            } else {
+                continue;
+            };
+            let mut quality = 1.0;
+            for parameter in parts {
+                if let Some((name, value)) = parameter.trim().split_once('=') {
+                    if name.trim().eq_ignore_ascii_case("q") {
+                        quality = value
+                            .trim()
+                            .parse::<f32>()
+                            .ok()
+                            .filter(|quality| (0.0..=1.0).contains(quality))
+                            .unwrap_or(0.0);
+                        break;
+                    }
+                }
+            }
+            if preferred.is_none_or(|(best_specificity, best_quality)| {
+                specificity > best_specificity
+                    || (specificity == best_specificity && quality > best_quality)
+            }) {
+                preferred = Some((specificity, quality));
+            }
+        }
+    }
+    preferred
 }
 
 pub(crate) async fn web_asset_response(
@@ -169,6 +236,214 @@ pub(crate) fn normalize_web_asset_path(request_path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use std::fs;
+    use tempfile::tempdir;
+    use tower::ServiceExt;
+
+    const TEST_INDEX: &str = "<html>holon spa</html>";
+
+    fn web_router() -> (tempfile::TempDir, Router) {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config =
+            crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host = crate::host::RuntimeHost::new_with_provider(
+            config,
+            Arc::new(crate::provider::StubProvider::new("done")),
+        )
+        .unwrap();
+        let web_dist = home.path().join("web");
+        fs::create_dir_all(web_dist.join("assets")).unwrap();
+        fs::create_dir_all(web_dist.join("api")).unwrap();
+        fs::write(web_dist.join("index.html"), TEST_INDEX).unwrap();
+        fs::write(web_dist.join("assets/existing.js"), "export {};").unwrap();
+        fs::write(web_dist.join("api/missing"), "not an API response").unwrap();
+        let app = crate::http::router(AppState::for_tcp(host).with_web_dist(Some(web_dist)));
+        (home, app)
+    }
+
+    fn web_request(method: Method, path: &str, accept: Option<&str>) -> AxumRequest<Body> {
+        let mut request = AxumRequest::builder().method(method).uri(path);
+        if let Some(accept) = accept {
+            request = request.header(ACCEPT, accept);
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn spa_navigation_negotiates_html_for_get_and_head() {
+        let (_home, app) = web_router();
+        for method in [Method::GET, Method::HEAD] {
+            for accept in [
+                Some("text/html"),
+                Some("*/*"),
+                None,
+                Some("text/*"),
+                Some("application/json, text/html;q=0.2"),
+                Some("text/html;q=0.5, text/*;q=0, */*;q=0"),
+                Some("text/*;q=0.5, */*;q=0"),
+                Some("TEXT/HTML; Q=0.5"),
+            ] {
+                for path in ["/search", "/agents/default/conversation", "/settings/"] {
+                    let response = app
+                        .clone()
+                        .oneshot(web_request(method.clone(), path, accept))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        response.status(),
+                        StatusCode::OK,
+                        "{method} {path} {accept:?}"
+                    );
+                    assert_eq!(response.headers()[CONTENT_TYPE], "text/html");
+                    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                    let expected = if method == Method::HEAD {
+                        ""
+                    } else {
+                        TEST_INDEX
+                    };
+                    assert_eq!(&body[..], expected.as_bytes());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn spa_navigation_honors_rejected_html_and_media_range_specificity() {
+        let (_home, app) = web_router();
+        for method in [Method::GET, Method::HEAD] {
+            for accept in [
+                "",
+                "application/json",
+                "text/html;q=0",
+                "text/html;q=0, */*;q=1",
+                "*/*;q=1, text/html;q=0",
+                "text/html;q=0, text/*;q=1",
+                "text/*;q=0, */*;q=1",
+                "*/*;q=0",
+                "text/html;q=invalid, */*",
+                "text/html;q=1.5, */*",
+                "text/html-other",
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(web_request(method.clone(), "/search", Some(accept)))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::NOT_FOUND,
+                    "{method} {accept}"
+                );
+            }
+        }
+        let mut request = web_request(Method::GET, "/search", Some("*/*"));
+        request
+            .headers_mut()
+            .append(ACCEPT, HeaderValue::from_static("text/html;q=0"));
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_does_not_mask_namespaces_assets_or_non_navigation_methods() {
+        let (_home, app) = web_router();
+        for method in [Method::GET, Method::HEAD] {
+            for accept in [Some("text/html"), Some("*/*"), None] {
+                for path in [
+                    "/api/",
+                    "/api/missing",
+                    "/api/missing/nested",
+                    "/%61pi/missing",
+                    "/apps",
+                    "/apps/default/missing",
+                    "/assets",
+                    "/assets/missing.js",
+                    "/assets/missing",
+                    "/assets%2fmissing",
+                    "/missing.js",
+                    "/missing.css",
+                    "/missing.json",
+                    "/favicon.ico",
+                    "/missing%2Ejs",
+                ] {
+                    let response = app
+                        .clone()
+                        .oneshot(web_request(method.clone(), path, accept))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        response.status(),
+                        StatusCode::NOT_FOUND,
+                        "{method} {path} {accept:?}"
+                    );
+                }
+            }
+        }
+        let response = app
+            .clone()
+            .oneshot(web_request(Method::POST, "/search", Some("text/html")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = app
+            .oneshot(web_request(Method::GET, "/assets/existing.js", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"export {};");
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_keeps_root_negotiation_and_explicit_html_dotted_routes() {
+        let (_home, app) = web_router();
+        for accept in [
+            None,
+            Some("*/*"),
+            Some("application/json"),
+            Some("text/html;q=0, */*"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(web_request(Method::GET, "/", accept))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+            let response = app
+                .clone()
+                .oneshot(web_request(Method::GET, "/api", accept))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let payload: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(payload["ok"], true);
+        }
+        for path in ["/", "/api", "/agents/agent.v1", "/templates/template.v1"] {
+            let response = app
+                .clone()
+                .oneshot(web_request(Method::GET, path, Some("text/html")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers()[CONTENT_TYPE], "text/html");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(&body[..], TEST_INDEX.as_bytes());
+        }
+        let response = app
+            .oneshot(web_request(Method::GET, "/agents/agent.v1", Some("*/*")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 
     fn if_none_match_headers(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
