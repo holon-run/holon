@@ -60,7 +60,7 @@ Install Holon, then run `holon onboard` to configure a model provider and `holon
 
 Open `http://localhost:7878` or run `holon tui` to create your first assistant and assign a task.
 
-<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.53.0">v0.53.0</a></p>
+<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.54.0">v0.54.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/getting-started/">Setup guide · all platforms</a>
@@ -132,7 +132,7 @@ Keep project files and outputs in separate workspaces. Agents work in the backgr
 <div class="home-actions">
 <a class="home-button home-button--quiet" href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight ↗</a>
 <a class="home-button home-button--quiet" href="https://groups.google.com/g/holon-pioneers/c/Cgs_KEAjdN0">Android · Join testing ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.53.0/holon-android-v0.53.0.apk">Download Android APK ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.54.0/holon-android-v0.54.0.apk">Download Android APK ↗</a>
 </div>
 </div>
 </section>
