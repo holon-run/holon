@@ -7817,6 +7817,72 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn task_non_terminal_phase_cannot_regress_with_a_newer_timestamp() -> Result<()> {
+        for (existing_status, incoming_status) in [
+            (TaskStatus::Running, TaskStatus::Queued),
+            (TaskStatus::Cancelling, TaskStatus::Queued),
+            (TaskStatus::Cancelling, TaskStatus::Running),
+        ] {
+            for offset in [-1, 0, 1] {
+                let (_temp_dir, db_path, lock_path) = temp_paths()?;
+                let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+                let existing = task_record("task-monotonic", "agent-a", existing_status.clone(), 0);
+                db.tasks().upsert(&existing)?;
+                let mut incoming = existing.clone();
+                incoming.status = incoming_status.clone();
+                incoming.updated_at += chrono::Duration::seconds(offset);
+                assert_eq!(
+                    crate::runtime_db::repositories::task_transition(&existing, &incoming)?,
+                    crate::runtime_db::repositories::StateTransitionOutcome::Idempotent
+                );
+                db.tasks().upsert(&incoming)?;
+                assert_eq!(db.tasks().latest(&existing.id)?, Some(existing));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn task_non_terminal_phase_allows_fresh_same_or_forward_updates() -> Result<()> {
+        for existing_status in [
+            TaskStatus::Queued,
+            TaskStatus::Running,
+            TaskStatus::Cancelling,
+        ] {
+            for incoming_status in [
+                TaskStatus::Queued,
+                TaskStatus::Running,
+                TaskStatus::Cancelling,
+                TaskStatus::Completed,
+                TaskStatus::Failed,
+                TaskStatus::Cancelled,
+                TaskStatus::Interrupted,
+            ] {
+                if crate::runtime_db::repositories::task_status_phase(&incoming_status)
+                    < crate::runtime_db::repositories::task_status_phase(&existing_status)
+                {
+                    continue;
+                }
+                for offset in [-1, 0, 1] {
+                    let (_temp_dir, db_path, lock_path) = temp_paths()?;
+                    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+                    let existing =
+                        task_record("task-monotonic", "agent-a", existing_status.clone(), 0);
+                    db.tasks().upsert(&existing)?;
+                    let mut incoming = existing.clone();
+                    incoming.status = incoming_status.clone();
+                    incoming.summary = Some("fresh task metadata".into());
+                    incoming.updated_at += chrono::Duration::seconds(offset);
+                    db.tasks().upsert(&incoming)?;
+                    let expected = if offset < 0 { existing } else { incoming };
+                    assert_eq!(db.tasks().latest(&expected.id)?, Some(expected));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn task_terminal_state_is_first_writer_wins_across_terminal_matrix() -> Result<()> {
         let statuses = [
             TaskStatus::Completed,

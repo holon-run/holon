@@ -189,6 +189,13 @@ The command-family meaning should be:
 This means command-family stop semantics should remain bounded and observable,
 not overly synchronous.
 
+Once a command task has durably entered `Cancelling`, later runner updates must
+not restore `Queued` or `Running`, even if their observation timestamps are newer.
+The task repository enforces lifecycle phase monotonicity inside the write
+transaction; a runner's pre-write status check alone is insufficient. Task
+inspection and output snapshots preserve the durable cancellation state until
+terminal settlement, without polling to hide a stale writer.
+
 ## 6. `TaskInput`
 
 `TaskInput` is the input-side continuation primitive for managed execution.
