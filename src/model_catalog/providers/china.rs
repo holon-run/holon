@@ -163,14 +163,22 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         ]
         .into_iter()
         .map(|(model, context, output)| {
-            route_definition(
+            let mut definition = route_definition(
                 "dashscope-token-plan",
                 "dashscope",
                 "token-plan",
                 model,
                 context,
                 output,
-            )
+            );
+            // GLM-5.3 documents implicit caching only; Token Plan does not
+            // separately guarantee explicit breakpoints. Keep this route conservative.
+            if model == "glm-5.3" {
+                definition.policy.cache_capabilities = Some(ModelRouteCacheCapabilities {
+                    cache_control: Some(false),
+                });
+            }
+            definition
         }),
     );
     definitions.extend(

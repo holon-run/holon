@@ -246,6 +246,57 @@ fn route_cache_precedence_covers_both_boolean_directions_and_null_inheritance() 
 }
 
 #[test]
+fn route_cache_dashscope_glm53_default_is_scoped_and_overridable() {
+    let mut catalog = cache_catalog();
+    let route = "dashscope@token-plan/glm-5.3";
+    assert_eq!(
+        cache_policy(&catalog, route),
+        ResolvedAnthropicCachePolicy {
+            cache_control: false,
+            source: AnthropicCacheControlSource::RouteBuiltin,
+        }
+    );
+    for peer in [
+        "dashscope@default/glm-5.3",
+        "dashscope@token-plan/glm-5.1",
+        "dashscope@token-plan/glm-5.2",
+        "dashscope@token-plan/qwen3.7-max",
+    ] {
+        assert_eq!(
+            cache_policy(&catalog, peer),
+            ResolvedAnthropicCachePolicy {
+                cache_control: true,
+                source: AnthropicCacheControlSource::EndpointBuiltin,
+            },
+            "{peer}"
+        );
+    }
+    catalog
+        .provider_cache_overrides
+        .insert(ProviderId::parse("dashscope-token-plan").unwrap(), true);
+    assert_eq!(
+        cache_policy(&catalog, route),
+        ResolvedAnthropicCachePolicy {
+            cache_control: true,
+            source: AnthropicCacheControlSource::ProviderOverride,
+        }
+    );
+    for enabled in [false, true] {
+        catalog.model_route_overrides.insert(
+            ModelRouteRef::parse(route).unwrap(),
+            cache_override(Some(enabled)),
+        );
+        assert_eq!(
+            cache_policy(&catalog, route),
+            ResolvedAnthropicCachePolicy {
+                cache_control: enabled,
+                source: AnthropicCacheControlSource::RouteOverride,
+            }
+        );
+    }
+}
+
+#[test]
 fn route_cache_isolates_models_endpoints_providers_and_ignores_other_transports() {
     let mut catalog = cache_catalog();
     let a = "dashscope@token-plan/cache-a";
