@@ -268,6 +268,158 @@ fn output_text(output: &Output) -> (String, String) {
     )
 }
 
+#[test]
+fn events_tail_resolves_caller_and_operator_targets() {
+    for (caller, explicit, default, expected) in [
+        (
+            Some("caller"),
+            None,
+            Some("operator-default"),
+            Some("caller"),
+        ),
+        (Some("caller"), Some("caller"), None, Some("caller")),
+        (Some("caller"), Some("other"), None, Some("other")),
+        (
+            None,
+            None,
+            Some("operator-default"),
+            Some("operator-default"),
+        ),
+        (None, None, None, None),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind target lookup server");
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut paths = Vec::new();
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let request = read_http_request(&mut stream);
+                        let path = request
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap()
+                            .to_owned();
+                        let body = if path == "/api" {
+                            serde_json::json!({"default_agent": default})
+                        } else if path.starts_with("/api/agents/") {
+                            serde_json::json!({
+                                "events": [], "event_log_epoch": "test", "contract_version": 1,
+                                "oldest_seq": null, "newest_seq": null, "cursor_seq": null,
+                                "has_older": false, "has_newer": false, "order": "desc", "limit": 1
+                            })
+                        } else {
+                            let body = r#"{"error":"not found"}"#;
+                            write!(stream, "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                            paths.push(path);
+                            continue;
+                        };
+                        write_json_response(&mut stream, &body.to_string());
+                        paths.push(path);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if done_rx.try_recv().is_ok() {
+                            break;
+                        }
+                        assert!(Instant::now() < deadline, "CLI target lookup timed out");
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept target lookup request: {error}"),
+                }
+            }
+            paths
+        });
+        let (mut command, _home) = isolated_holon_command();
+        command.env("HOLON_HTTP_ADDR", addr.to_string()).args([
+            "events",
+            "tail",
+            "--limit",
+            "1",
+            "--max-level",
+            "info",
+        ]);
+        if let Some(caller) = caller {
+            // Synthetic child-process context; never mutate the test runner's context.
+            command
+                .env("HOLON_CALLER_AGENT_ID", caller)
+                .env("HOLON_CALLER_SOURCE_TASK_ID", "test-task")
+                .env("HOLON_CALLER_SOURCE_TURN_ID", "test-turn")
+                .env("HOLON_CALLER_AUTHORITY_CLASS", "external_evidence");
+        }
+        if let Some(explicit) = explicit {
+            command.args(["--agent", explicit]);
+        }
+        let output = command.output().expect("run events tail CLI");
+        done_tx.send(()).unwrap();
+        let paths = server.join().unwrap();
+        let (stdout, stderr) = output_text(&output);
+        let mut expected_paths = Vec::new();
+        if caller.is_none() && explicit.is_none() {
+            expected_paths.push("/api".to_owned());
+        }
+        if let Some(target) = expected {
+            expected_paths.push(format!(
+                "/api/agents/{target}/events?limit=1&order=desc&max_level=info"
+            ));
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "stderr: {stderr}; paths: {paths:?}"
+            );
+            let page: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(page["events"], serde_json::json!([]));
+        } else {
+            assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+            assert!(stdout.is_empty());
+            assert!(stderr.contains("no default agent configured"), "{stderr}");
+        }
+        assert_eq!(
+            paths, expected_paths,
+            "caller={caller:?}, explicit={explicit:?}"
+        );
+    }
+}
+
+#[test]
+fn events_tail_rejects_malformed_context_even_with_explicit_target() {
+    for explicit in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (mut command, _home) = isolated_holon_command();
+        command
+            .env(
+                "HOLON_HTTP_ADDR",
+                listener.local_addr().unwrap().to_string(),
+            )
+            .env("HOLON_CALLER_SOURCE_TASK_ID", "test-task")
+            .args(["events", "tail", "--limit", "1"]);
+        if explicit {
+            command.args(["--agent", "other"]);
+        }
+        let output = command.output().expect("run malformed-context events CLI");
+        let (stdout, stderr) = output_text(&output);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stdout.is_empty());
+        assert!(
+            stderr.contains("HOLON_CALLER_AGENT_ID is required"),
+            "{stderr}"
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
 fn run_with_mock_control_plane(args: &[&str]) -> (Output, String) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock control plane");
     let addr = listener.local_addr().expect("mock control plane address");

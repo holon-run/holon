@@ -271,8 +271,8 @@ impl LocalHttpError {
 }
 
 fn api_path(path: &str) -> String {
-    if path == "/" {
-        "/api/".to_string()
+    if path == "/" || path == "/api" {
+        "/api".to_string()
     } else if path.starts_with("/api/") {
         path.to_string()
     } else {
@@ -2091,17 +2091,26 @@ fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        authorization_header_value, decode_chunked_body, decode_or_error, event_stream_path,
-        normalize_remote_base_url, parse_http_response, parse_sse_frame, read_http_response_body,
-        take_next_sse_frame, validate_header_value, validate_unix_request_target,
-        EventStreamRequest, EventStreamTransport, LocalEventStream, LocalHttpError,
-        StreamEventEnvelope, TuiNetworkPolicy, TUI_LOCAL_NETWORK_POLICY, TUI_REMOTE_NETWORK_POLICY,
+        api_path, authorization_header_value, decode_chunked_body, decode_or_error,
+        event_stream_path, normalize_remote_base_url, parse_http_response, parse_sse_frame,
+        read_http_response_body, take_next_sse_frame, validate_header_value,
+        validate_unix_request_target, EventStreamRequest, EventStreamTransport, LocalEventStream,
+        LocalHttpError, StreamEventEnvelope, TuiNetworkPolicy, TUI_LOCAL_NETWORK_POLICY,
+        TUI_REMOTE_NETWORK_POLICY,
     };
     use crate::runtime_error::RuntimeErrorDomain;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
+
+    #[test]
+    fn api_paths_match_the_nested_router_root() {
+        assert_eq!(api_path("/"), "/api");
+        assert_eq!(api_path("/api"), "/api");
+        assert_eq!(api_path("/agents/list"), "/api/agents/list");
+        assert_eq!(api_path("/api/agents/list"), "/api/agents/list");
+    }
 
     #[test]
     fn remote_connect_url_rejects_unspecified_hosts() {

@@ -422,8 +422,12 @@ async fn handle_memory_index_command(
 }
 
 async fn resolve_agent_id(client: &LocalClient, agent: Option<String>) -> Result<String> {
+    let context = cli_invocation_context()?;
     if let Some(agent) = agent {
         return Ok(agent);
+    }
+    if let Some(context) = context {
+        return Ok(context.caller_agent_id);
     }
     match client.configured_default_agent_id().await? {
         Some(agent) => Ok(agent),
