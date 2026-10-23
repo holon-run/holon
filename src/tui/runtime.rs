@@ -7,6 +7,7 @@ use crate::client::{
 };
 use crate::http_dto::AgentStateSnapshotDto;
 use crate::types::{BriefRecord, MessageEnvelope, TranscriptEntry};
+use anyhow::Context;
 use tokio::sync::mpsc;
 
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -132,6 +133,36 @@ pub(super) enum AgentListChange {
     Ready,
     RequiresBootstrap,
     Empty,
+    StartupTargetMissing,
+}
+
+async fn preflight_agent(client: &LocalClient, agent_id: &str) -> Result<Vec<AgentListEntry>> {
+    let roster = client
+        .public_agent_roster()
+        .await
+        .context("failed to load public agent roster")?;
+    client.agent_status_compact(agent_id).await.map_err(|err| {
+        let reason = match err.downcast_ref::<LocalHttpError>() {
+            Some(http) if http.has_code("agent_deleted") || http.status_code == 410 => {
+                format!("agent {agent_id} has been deleted")
+            }
+            Some(http) if http.has_code("agent_deleting") => {
+                format!("agent {agent_id} is being deleted")
+            }
+            Some(http) if http.status_code == 404 && http.has_code("not_found") => {
+                format!("agent {agent_id} not found")
+            }
+            _ => format!("failed to read compact status for agent {agent_id}"),
+        };
+        err.context(reason)
+    })?;
+    anyhow::ensure!(
+        roster
+            .iter()
+            .any(|entry| entry.identity.agent_id == agent_id),
+        "agent {agent_id} is not in the currently selectable public roster"
+    );
+    Ok(roster)
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +174,18 @@ pub(super) struct TuiRuntimeCheckpoint {
 }
 
 impl TuiApp {
+    pub(super) async fn initialize_with_agent(&mut self, agent: Option<String>) -> Result<()> {
+        let Some(agent_id) = agent else {
+            self.initialize().await;
+            return Ok(());
+        };
+        self.initial_agent_id = Some(agent_id.clone());
+        self.persist_selection = false;
+        let roster = preflight_agent(&self.client, &agent_id).await?;
+        self.apply_loaded_agents(Ok(roster));
+        Ok(())
+    }
+
     pub(super) async fn initialize(&mut self) {
         self.schedule_agent_list_refresh();
         self.begin_load_agents();
@@ -150,6 +193,12 @@ impl TuiApp {
 
     pub(super) async fn tick(&mut self) -> Result<()> {
         self.process_runtime_messages();
+
+        if self.initial_agent_id.is_some() {
+            if let TuiConnectionState::Disconnected { reason } = &self.connection_state {
+                return Err(anyhow!(reason.clone()));
+            }
+        }
 
         if self
             .agent_list_refresh_deadline
@@ -277,6 +326,7 @@ impl TuiApp {
             .collect();
         match self.apply_agent_list(agents) {
             AgentListChange::Ready => {}
+            AgentListChange::StartupTargetMissing => {}
             AgentListChange::RequiresBootstrap => self.begin_bootstrap_selected_agent(),
             AgentListChange::Empty => {
                 self.set_disconnected("no public agents are available".into());
@@ -291,6 +341,18 @@ impl TuiApp {
                 .iter()
                 .any(|agent| agent.identity.agent_id == message.agent_id)
         });
+        if let Some(agent_id) = self.initial_agent_id.clone() {
+            let Some(index) = find_agent_index(&agents, &agent_id) else {
+                self.clear_agent_view();
+                self.set_disconnected(format!(
+                    "startup agent {agent_id} is no longer in the selectable public roster"
+                ));
+                return AgentListChange::StartupTargetMissing;
+            };
+            self.agents = agents;
+            self.selected_agent = index;
+            return AgentListChange::RequiresBootstrap;
+        }
         if agents.is_empty() {
             self.clear_agent_view();
             return AgentListChange::Empty;
@@ -471,6 +533,14 @@ impl TuiApp {
             self.status_line = "No agent selected".into();
             return;
         };
+        if self
+            .initial_agent_id
+            .as_ref()
+            .is_some_and(|initial| initial != &agent_id)
+        {
+            self.status_line = "Waiting for the explicit startup agent to bootstrap".into();
+            return;
+        }
         let switching_agents = target_index != self.selected_agent;
         let checkpoint = switching_agents.then(|| self.runtime_checkpoint());
         self.refresh_deadline = None;
@@ -542,6 +612,13 @@ impl TuiApp {
         if request_id != self.snapshot_refresh_request_id {
             return;
         }
+        if self
+            .initial_agent_id
+            .as_ref()
+            .is_some_and(|initial| initial != &agent_id)
+        {
+            return;
+        }
         if !self
             .agents
             .get(target_index)
@@ -554,6 +631,12 @@ impl TuiApp {
             match result {
                 Ok(result) => result,
                 Err(err) => {
+                    if self.initial_agent_id.is_some() {
+                        self.set_disconnected(format!(
+                            "failed to bootstrap startup agent {agent_id} from /state: {err}"
+                        ));
+                        return;
+                    }
                     if let Some(checkpoint) = checkpoint {
                         self.restore_runtime_checkpoint(checkpoint);
                         self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
@@ -588,6 +671,7 @@ impl TuiApp {
 
         self.stop_stream_task();
         self.selected_agent = target_index;
+        self.initial_agent_id = None;
         self.begin_conversation(agent_id.clone());
         self.record_selected_agent(&agent_id);
         self.projection = Some(projection);
@@ -697,6 +781,9 @@ impl TuiApp {
 
     pub(super) fn record_selected_agent(&mut self, agent_id: &str) {
         self.preferred_agent_id = Some(agent_id.to_string());
+        if !self.persist_selection {
+            return;
+        }
         let mut state = TuiClientState::load_or_new(&self.state_path, agent_id);
         state.set_selected_agent(agent_id);
         if let Err(err) = state.save(&self.state_path) {
@@ -755,6 +842,15 @@ impl TuiApp {
     pub(super) fn process_runtime_messages(&mut self) -> bool {
         let mut disconnected = false;
         loop {
+            // A failed explicit startup must reach tick before another message can retry it.
+            if self.initial_agent_id.is_some()
+                && matches!(
+                    self.connection_state,
+                    TuiConnectionState::Disconnected { .. }
+                )
+            {
+                break;
+            }
             let message = match self.runtime_messages.try_recv() {
                 Ok(message) => Some(message),
                 Err(mpsc::error::TryRecvError::Empty) => None,

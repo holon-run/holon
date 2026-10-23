@@ -238,6 +238,9 @@ pub enum Commands {
         command: WorkspaceCommands,
     },
     Tui {
+        /// Select an agent for this session only (including later switches); do not update remembered selection.
+        #[arg(long, value_name = "AGENT_ID")]
+        agent: Option<String>,
         #[arg(long)]
         no_alt_screen: bool,
         #[arg(long)]
@@ -1176,6 +1179,27 @@ mod tests {
     #[test]
     fn command_tree_builds() {
         let _cmd = build_command_tree();
+    }
+
+    #[test]
+    fn tui_accepts_explicit_agent_locally_and_remotely() {
+        for args in [
+            vec!["holon", "tui", "--agent", "beta"],
+            vec![
+                "holon",
+                "tui",
+                "--connect",
+                "https://example.test",
+                "--agent",
+                "beta",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.command, Commands::Tui { agent: Some(id), .. } if id == "beta"));
+        }
+        assert!(Cli::try_parse_from(["holon", "tui", "--agent"]).is_err());
+        let cli = Cli::try_parse_from(["holon", "tui"]).unwrap();
+        assert!(matches!(cli.command, Commands::Tui { agent: None, .. }));
     }
 
     /// Sanity: snapshot collection must produce entries for all commands.

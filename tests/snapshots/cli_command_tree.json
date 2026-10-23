@@ -2711,6 +2711,13 @@
     "positionals": [],
     "flags": [
       {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
         "long": "connect",
         "short": null,
         "default_value": null,

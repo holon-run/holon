@@ -47,6 +47,9 @@ pub(super) struct TuiApp {
     pub(super) reconnect_attempt: u32,
     pub(super) selected_agent: usize,
     pub(super) preferred_agent_id: Option<String>,
+    // Consumed only after the first successful bootstrap, unlike a remembered preference.
+    pub(super) initial_agent_id: Option<String>,
+    pub(super) persist_selection: bool,
     pub(super) state_path: PathBuf,
     pub(super) chat_scroll: ChatScrollState,
     pub(super) chat_max_scroll: u16,
@@ -110,6 +113,8 @@ impl TuiApp {
             reconnect_attempt: 0,
             selected_agent: 0,
             preferred_agent_id,
+            initial_agent_id: None,
+            persist_selection: true,
             state_path,
             chat_scroll: ChatScrollState::new(),
             chat_max_scroll: 0,

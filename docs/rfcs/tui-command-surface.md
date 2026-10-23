@@ -29,6 +29,30 @@ In the first version, the command surface should remain explicitly narrow:
 - reject direct operator-driven execution-root or worktree mutation
 - converge safe action-menu behavior into slash commands over time
 
+## CLI Startup Selection
+
+`holon tui --agent <AGENT_ID>` selects an exact public agent ID for the current
+session, both locally and with `--connect`. It overrides remembered selection
+and the configured default; it does not create or start an agent.
+
+Before acquiring raw mode or alternate screen, the client reads the existing
+public roster and targeted compact status. A readable status does not grant
+public-roster eligibility, and a cached roster does not prove that an agent
+still exists. Missing, deleted, deleting, access, transport, and protocol errors
+fail explicitly, retaining structured HTTP error details. No legacy
+`/agents/list`, other-agent, or other-server fallback is permitted at startup.
+
+The explicit target remains a startup constraint until its first successful
+state bootstrap. A roster race or bootstrap failure before that point exits
+with an error and restores the terminal. After success the constraint is
+consumed: manual switching works normally, and losing the selected agent uses
+ordinary runtime fallback. This is not a permanent agent pin.
+
+The entire explicit session is session-only: initial selection, refreshes,
+runtime fallback, and later manual switches do not write shared last-selected
+state. An invocation without `--agent` retains the existing asynchronous
+initialization, remembered selection, persistence, and fallback behavior.
+
 ## Problem
 
 The current TUI has three different kinds of interaction mixed together:

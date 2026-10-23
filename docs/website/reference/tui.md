@@ -16,6 +16,21 @@ model selection, event inspection, and remote daemon connections.
 holon tui
 ```
 
+Select an exact public agent ID for this session, locally or remotely:
+
+```bash
+holon tui --agent worker
+holon tui --connect https://your-server:8787 --token-profile my-profile --agent worker
+```
+
+`--agent` overrides remembered/default selection. It checks the public roster
+and compact status before raw mode or alternate screen; unavailable or
+inaccessible targets fail rather than silently selecting another agent. Viewing
+an unloaded or stopped public agent does not start it. The startup constraint
+ends after the first successful state bootstrap, allowing normal switching and
+runtime fallback. The entire session, including later manual switches, does not
+update remembered selection. Without the flag, selection memory is unchanged.
+
 Start with alternate screen disabled (useful when the terminal renders
 incorrectly):
 
@@ -33,6 +48,7 @@ holon tui --connect https://your-server:8787 --token-profile my-profile
 
 | Option | Description |
 |--------|-------------|
+| `--agent <AGENT_ID>` | Select an exact public agent ID; keep all selection changes session-only |
 | `--no-alt-screen` | Disable alternate screen buffer |
 | `--connect <URL>` | Connect to a remote daemon |
 | `--token <TOKEN>` | Bearer token for remote connection |

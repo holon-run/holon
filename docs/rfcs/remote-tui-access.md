@@ -91,6 +91,21 @@ URLs should fail before silently falling back to local runtime state.
 
 ## Client Responsiveness
 
+Remote `holon tui --connect <URL> --agent <AGENT_ID>` performs the existing
+handshake, then awaits public-roster and targeted compact-status preflight
+before raw mode or alternate screen. The ID must be readable and present in
+the public roster; neither check replaces the other. Structured service errors
+remain distinguishable from a missing agent, and no failure switches to the
+local runtime or legacy `/agents/list`.
+
+The preflight roster seeds initialization without an immediate duplicate roster
+request. Until the first successful `/state` bootstrap, the explicit ID cannot
+silently fall back, including if a later roster omits it. Startup failure exits
+and restores the terminal. After success ordinary runtime fallback resumes.
+All selection changes in an explicit session remain session-only, including
+later refreshes and manual switches; remote last-selected state is not written.
+Without `--agent`, startup and remembered-selection behavior are unchanged.
+
 The first-party TUI must keep terminal input and drawing local. Remote
 control-plane refreshes are allowed to update local connection state, but they
 must not be awaited by the main input/render loop.
