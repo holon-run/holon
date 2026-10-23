@@ -186,15 +186,28 @@ struct HolonApp: App {
                                 reader.activateOffline(partition: context.partition)
                             }
                         }
-                        .task(id: coordinator.identity) { [coordinator] in
-                            guard let sender, let identity = coordinator.identity,
-                                  let profile = coordinator.selectedProfile else {
-                                sender?.disconnect()
+                        .task(id: readingActivation) { [coordinator] in
+                            guard !Task.isCancelled,
+                                  ReadingActivation(coordinator) == readingActivation else { return }
+                            // Offline scope first: the stored confirmed context keeps
+                            // local drafts persisting while the node is unreachable,
+                            // mirroring the reader's two-stage activation. The identity
+                            // only exists after the node answers, so the offline scope
+                            // must come from the persisted partition, not identity.
+                            if let sender, let context = readingActivation.context {
+                                sender.activateOffline(partition: context.partition)
+                                sender.selectAgent(reader.selectedAgentID)
+                            }
+                            guard let sender, let identity = readingActivation.identity,
+                                  let profile = readingActivation.profile,
+                                  readingActivation.context?.profile == profile else {
+                                if readingActivation.context == nil { sender?.disconnect() }
                                 return
                             }
                             do {
                                 let client = try await coordinator.makeAuthenticatedClient()
-                                guard !Task.isCancelled, coordinator.identity == identity else {
+                                guard !Task.isCancelled,
+                                      ReadingActivation(coordinator) == readingActivation else {
                                     await client.close()
                                     return
                                 }
@@ -206,7 +219,9 @@ struct HolonApp: App {
                                                 apiBaseURL: profile.apiBaseURL)
                                 sender.selectAgent(reader.selectedAgentID)
                             } catch {
-                                if coordinator.identity == identity { sender.disconnect() }
+                                // An unreachable node keeps the offline scope above;
+                                // a revoked identity re-runs this task and drops it
+                                // through the context guard.
                             }
                         }
                         .task(id: coordinator.identity) { [coordinator] in

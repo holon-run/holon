@@ -80,6 +80,33 @@ final class SendingCoordinator {
         loadModels()
     }
 
+    /// Offline activation keeps the composer's local scope while the node is
+    /// unreachable: drafts keep persisting and the offline hint stays honest.
+    /// Only a full disconnect (revoked identity) drops the scope.
+    func activateOffline(partition: ReadingPartition) {
+        let previous = transport
+        cancelLocalSend()
+        revision += 1
+        connectionRevision += 1
+        confirmationRevision += 1
+        attachmentRevision += 1
+        catalogRevision += 1
+        catalogTask?.cancel()
+        catalogTask = nil
+        transport = nil
+        consentURL = nil
+        identity = nil
+        if self.partition != partition {
+            draft = SendingDraft()
+            entries = []
+            models = []
+        }
+        self.partition = partition
+        refreshIdleStatus()
+        reload()
+        if let previous { Task { await previous.close() } }
+    }
+
     private func loadModels() {
         guard foreground, let transport else { return }
         catalogTask?.cancel()
@@ -132,7 +159,12 @@ final class SendingCoordinator {
         } else if changed {
             loadModels()
         }
-        status = transport == nil ? .disconnected : (value ? .ready : .offline)
+        refreshIdleStatus()
+    }
+
+    private func refreshIdleStatus() {
+        status = transport == nil ? (partition == nil ? .disconnected : .offline)
+                                  : (foreground ? .ready : .offline)
     }
 
     func selectAgent(_ agentID: String?) {
@@ -274,7 +306,7 @@ final class SendingCoordinator {
             do { try store.update(entry) } catch { self.error = error.localizedDescription }
         }
         activeRequestID = nil
-        status = transport == nil ? .disconnected : (foreground ? .ready : .offline)
+        refreshIdleStatus()
         reload()
     }
 
