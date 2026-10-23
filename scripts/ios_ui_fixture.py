@@ -832,6 +832,9 @@ with fixture_directory(repo) as root:
                 cases = [("testDisconnectedEnglishLight", "large"),
                          ("testDisconnectedChineseDarkAccessibilitySize", MAXIMUM_TEXT_SIZE),
                          ("testPairingPreviewStaysOfflineAndCanCancel", "large"),
+                         # Login consent precedes every connection attempt, so the
+                         # gate is asserted before credentials exist on the device.
+                         ("testLoginConsentPrecedesAnyConnection", "large"),
                          # Authenticate through shipped onboarding before diagnostics.
                          ("testAuthenticatedNativeWorkflow", "large"),
                          ("testOfflineReadingCacheColdLaunchAndRetry", "large"),
@@ -893,17 +896,18 @@ with fixture_directory(repo) as root:
                     if not requested or len(set(requested)) != len(requested) or set(requested) - {method for method, _ in cases}:
                         raise RuntimeError("IOS_UI_CASES must select known unique UI methods")
                     cases = [(method, size) for method, size in cases if method in requested]
-                    # A subset skips the sweep ordering that establishes app
-                    # state (disconnected cases first, the first authenticator
-                    # installs credentials, sign-out cases restore onboarding).
-                    # Uninstall the app so every selection starts from the same
-                    # clean install a fresh full sweep would use.
-                    ensure_uninstalled(simulator, "run.holon.ios")
                 bundles = [bundle.with_name(bundle.stem + "-" + method + ".xcresult")
                            for method, _ in cases]
                 if any(path.exists() for path in bundles):
                     raise RuntimeError("Per-case xcresult paths must be unused")
                 initialize_simulator_text_size(simulator)
+                # Sweep ordering establishes app state from a clean install
+                # (disconnected cases first, the first authenticator installs
+                # credentials, sign-out cases restore onboarding), and a
+                # subset skips that ordering entirely. A reused simulator can
+                # otherwise restore a stale profile straight past onboarding.
+                # Always uninstall so every sweep starts from that clean install.
+                ensure_uninstalled(simulator, "run.holon.ios")
                 if share_acceptance:
                     # The preceding xcodebuild may leave this simulator shut down.
                     from ios_share_probe import install

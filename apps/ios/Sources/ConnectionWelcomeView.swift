@@ -4,9 +4,9 @@ import HolonClient
 /// Android-parity single-screen connection flow: enter or paste an address,
 /// press 下一步, and the host's sign-in method is probed automatically.
 /// Organization sign-in presents itself; token hosts show a token field.
-/// Data-sharing consent is enforced after sign-in: the full-screen gate
-/// (`ConnectionSharingConsentView`) blocks agent data from being shown and
-/// sending requires approved sharing; never a disabled button here.
+/// Data-sharing consent gates the login flow itself: the host-aware prompt
+/// (`LoginConsentSheet`) must be approved before any connection activity,
+/// and restored sessions re-review consent at the full-screen gate.
 struct ConnectionWelcomeView: View {
     @Bindable var coordinator: ConnectionCoordinator
     var cancel: (() -> Void)? = nil
@@ -20,6 +20,7 @@ struct ConnectionWelcomeView: View {
     @State private var pairingAttempt = false
     @State private var organizationLoginShown = false
     @State private var anchor: UIWindow?
+    @State private var consentRequest: LoginConsentRequest?
     @FocusState private var addressFocused: Bool
 
     private enum Step { case address, authentication, pairing }
@@ -79,6 +80,13 @@ struct ConnectionWelcomeView: View {
             .alert("input.error", isPresented: $inputError) {
                 Button("action.ok", role: .cancel) {}
             } message: { Text("onboarding.invalidInput") }
+            .sheet(item: $consentRequest) { request in
+                LoginConsentSheet(apiBaseURL: request.apiBaseURL) {
+                    let action = request.action
+                    consentRequest = nil
+                    perform(action)
+                }
+            }
             .onChange(of: address) { allowHTTP = false }
             .onChange(of: step) { attemptAutoOrganizationLogin() }
             .onChange(of: coordinator.status) { attemptAutoOrganizationLogin() }
@@ -226,9 +234,8 @@ struct ConnectionWelcomeView: View {
                     Text("connection.httpWarning").font(.caption)
                 }
                 Button {
-                    pairingAttempt = true
-                    step = .authentication
-                    Task { await coordinator.confirmPairing(allowInsecureHTTP: allowHTTP) }
+                    let target = coordinator.pairingTargetURL ?? invitation.apiBaseURL
+                    beginConnection(.pairing(allowInsecureHTTP: allowHTTP), url: target)
                 } label: { actionLabel("pairing.confirm") }
                     .buttonStyle(.borderedProminent)
                     .disabled(coordinator.isBusy ||
@@ -249,11 +256,7 @@ struct ConnectionWelcomeView: View {
     }
 
     private func connectSaved(_ profile: ConnectionProfile) {
-        token = ""
-        pairingAttempt = false
-        organizationLoginShown = false
-        step = .authentication
-        Task { await coordinator.connect(profile) }
+        beginConnection(.saved(profile), url: profile.apiBaseURL)
     }
 
     /// A pairing payload confirms HTTP later on its own offline confirmation
@@ -293,7 +296,8 @@ struct ConnectionWelcomeView: View {
     }
 
     /// 下一步 owns the transition: a pairing link opens offline confirmation;
-    /// an address is probed for its sign-in method without asking for consent.
+    /// an address asks for data-sharing consent first, and only an approved
+    /// host is probed for its sign-in method.
     private func connectAddress() {
         addressFocused = false
         guard !coordinator.isBusy else { return }
@@ -308,15 +312,46 @@ struct ConnectionWelcomeView: View {
                 step = .pairing
             case .address(let url):
                 let chosenName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                let profile = try coordinator.addProfile(name: chosenName.isEmpty ? url.host ?? "Holon" : chosenName,
-                                                         apiBaseURL: url, allowInsecureHTTP: allowHTTP)
+                let resolvedName = chosenName.isEmpty ? url.host ?? "Holon" : chosenName
+                beginConnection(.address(name: resolvedName, apiBaseURL: url, allowInsecureHTTP: allowHTTP),
+                                url: url)
+            }
+        } catch { inputError = true }
+    }
+
+    /// Every connection start funnels through here: approved hosts connect
+    /// straight through, new hosts see the host-aware sharing prompt first.
+    private func beginConnection(_ action: LoginConsentRequest.Action, url: URL) {
+        if SharingConsent.shared.approved(url) {
+            perform(action)
+        } else {
+            consentRequest = LoginConsentRequest(apiBaseURL: url, action: action)
+        }
+    }
+
+    private func perform(_ action: LoginConsentRequest.Action) {
+        switch action {
+        case let .address(name, url, allowInsecureHTTP):
+            do {
+                let profile = try coordinator.addProfile(name: name, apiBaseURL: url,
+                                                         allowInsecureHTTP: allowInsecureHTTP)
                 token = ""
                 pairingAttempt = false
                 organizationLoginShown = false
                 step = .authentication
                 Task { await coordinator.connect(profile) }
-            }
-        } catch { inputError = true }
+            } catch { inputError = true }
+        case let .saved(profile):
+            token = ""
+            pairingAttempt = false
+            organizationLoginShown = false
+            step = .authentication
+            Task { await coordinator.connect(profile) }
+        case let .pairing(allowInsecureHTTP):
+            pairingAttempt = true
+            step = .authentication
+            Task { await coordinator.confirmPairing(allowInsecureHTTP: allowInsecureHTTP) }
+        }
     }
 
     private func back() {
@@ -327,6 +362,53 @@ struct ConnectionWelcomeView: View {
         pairingAttempt = false
         organizationLoginShown = false
         step = .address
+    }
+}
+
+/// A connection start held until data-sharing consent is approved.
+private struct LoginConsentRequest: Identifiable {
+    let id = UUID()
+    let apiBaseURL: URL
+    let action: Action
+
+    enum Action {
+        case address(name: String, apiBaseURL: URL, allowInsecureHTTP: Bool)
+        case saved(ConnectionProfile)
+        case pairing(allowInsecureHTTP: Bool)
+    }
+}
+
+/// Host-aware data-sharing prompt that blocks the login flow itself: nothing
+/// is sent to the host until the user explicitly agrees. Declining (cancel
+/// or swipe) returns without a profile or a probe. Presented by onboarding
+/// and by ContentView before stored-profile reconnects.
+struct LoginConsentSheet: View {
+    let apiBaseURL: URL
+    let onApproved: () -> Void
+    @State private var agreed = false
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                LoginSharingConsentSection(apiBaseURL: apiBaseURL, agreed: $agreed)
+                Button("privacy.continueLogin") {
+                    SharingConsent.shared.approve(apiBaseURL)
+                    guard SharingConsent.shared.approved(apiBaseURL) else { return }
+                    onApproved()
+                }
+                .disabled(!agreed || SharingConsent.shared.defaults == nil)
+                .accessibilityIdentifier("privacy.continueLogin")
+            }
+            .navigationTitle("privacy.title")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("action.cancel") { dismiss() }
+                        .accessibilityIdentifier("privacy.cancelLogin")
+                }
+            }
+        }
     }
 }
 

@@ -382,6 +382,7 @@
 "privacy.revoke" = "撤回数据分享同意";
 "privacy.cancel" = "取消";
 "privacy.continue" = "进入 Holon";
+"privacy.continueLogin" = "同意并继续登录";
 "privacy.storageUnavailable" = "无法保存数据分享同意。请重新打开应用或联系支持。";
 "report.title" = "举报 AI 内容";
 "report.selectResponse" = "请选择要举报的 AI 回复。仅能举报公开可见的助手回复。";

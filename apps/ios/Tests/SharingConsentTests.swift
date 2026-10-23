@@ -24,4 +24,16 @@ final class SharingConsentTests: XCTestCase {
         consent.revoke(url)
         XCTAssertThrowsError(try consent.require(url))
     }
+
+    func testConsentKeyIgnoresHostCaseAndDefaultPort() throws {
+        let suite = "SharingConsentTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let consent = SharingConsent(defaults: defaults)
+        let variant = URL(string: "https://Example.Test:443/api")!
+        consent.approve(variant)
+        try consent.require(URL(string: "https://example.test/api")!)
+        consent.revoke(URL(string: "https://example.test/api")!)
+        XCTAssertThrowsError(try consent.require(variant))
+    }
 }

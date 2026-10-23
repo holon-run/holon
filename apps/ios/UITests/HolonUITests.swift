@@ -90,14 +90,16 @@ final class HolonUITests: XCTestCase {
         confirm.tap()
     }
 
-    /// Consent moved after sign-in: a connected profile without consent stops
-    /// at the full-screen gate before any agent data is shown.
-    private func approveSharingAfterLogin(_ app: XCUIApplication) {
+    /// Login stops at the data-sharing prompt before any connection activity;
+    /// restored sessions re-review the same consent at the in-app gate.
+    private func approveSharingConsent(_ app: XCUIApplication) {
         let consent = app.switches["privacy.accept"]
-        XCTAssertTrue(consent.waitForExistence(timeout: 30), "Sign-in must stop at the sharing gate before data")
+        XCTAssertTrue(consent.waitForExistence(timeout: 30), "Login must stop at the sharing prompt before data")
         agreeToSharingConsent(app)
-        let proceed = app.buttons["privacy.continue"]
+        let sheetProceed = app.buttons["privacy.continueLogin"]
+        let proceed = sheetProceed.exists ? sheetProceed : app.buttons["privacy.continue"]
         reveal(proceed, in: app)
+        waitForEnabled(proceed, message: "Consent must enable the continue action")
         proceed.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30),
                       "Agent home appears only after consent")
@@ -544,13 +546,50 @@ final class HolonUITests: XCTestCase {
         waitForEnabled(app.buttons["onboarding.confirmPairing"],
                        message: "No data-sharing agreement may disable pairing confirmation")
         XCTAssertFalse(app.switches["privacy.accept"].exists,
-                       "Consent is requested after sign-in, not during pairing")
+                       "The offline pairing preview shows no consent prompt; confirm asks first")
         app.buttons["onboarding.back"].tap()
         XCTAssertTrue(app.textFields["onboarding.address"].waitForExistence(timeout: 10))
         XCTAssertFalse(target.exists)
         try enterPairingPayload(app, payload: "https://other.example.test/login#pair=" + String(repeating: "b", count: 64))
         XCTAssertEqual(app.staticTexts["onboarding.pairingTarget"].label, "https://other.example.test/api/")
         XCTAssertFalse(app.switches["privacy.accept"].exists)
+    }
+
+    func testLoginConsentPrecedesAnyConnection() throws {
+        let app = launch(language: "en", dark: false, large: false)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
+        let address = app.textFields["onboarding.address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        address.tap()
+        address.typeText("https://unreachable.example.test")
+        let next = app.buttons["onboarding.checkAddress"]
+        reveal(next, in: app)
+        next.tap()
+        // The prompt precedes the probe: an unreachable host still names itself first.
+        let consent = app.switches["privacy.accept"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 10),
+                      "下一步 must stop at the sharing prompt before probing the host")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
+                                                             "unreachable.example.test")).firstMatch.exists,
+                      "The prompt must name the host receiving the data")
+        XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
+        let cancel = app.buttons["privacy.cancelLogin"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        XCTAssertTrue(address.waitForExistence(timeout: 10), "Declining consent returns to the address screen")
+        XCTAssertFalse(app.staticTexts["connection.status"].exists,
+                       "Declining consent must not create a profile or probe the host")
+        reveal(next, in: app)
+        next.tap()
+        XCTAssertTrue(consent.waitForExistence(timeout: 10), "Declined consent is not persisted")
+        agreeToSharingConsent(app)
+        let proceed = app.buttons["privacy.continueLogin"]
+        reveal(proceed, in: app)
+        waitForEnabled(proceed, message: "Consent must enable the continue action")
+        proceed.tap()
+        XCTAssertTrue(app.buttons["onboarding.back"].waitForExistence(timeout: 10),
+                      "Approved consent continues into the sign-in step")
     }
 
     private func audit(_ app: XCUIApplication, name: String) throws {
@@ -647,7 +686,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Identity must be confirmed before showing tabs")
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
-        approveSharingAfterLogin(app)
+        approveSharingConsent(app)
         XCTAssertFalse(app.tabBars.firstMatch.exists, "Agent home has no global bottom tabs")
         let manage = app.buttons["connection.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10))
@@ -805,7 +844,7 @@ final class HolonUITests: XCTestCase {
         let app = launch(language: "en", dark: false, large: false)
         XCTAssertTrue(app.buttons["onboarding.scan"].waitForExistence(timeout: 15))
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
-        approveSharingAfterLogin(app)
+        approveSharingConsent(app)
         let agentButton = app.buttons["agent." + agent]
         XCTAssertTrue(agentButton.waitForExistence(timeout: 30))
         agentButton.tap()
@@ -1133,8 +1172,8 @@ final class HolonUITests: XCTestCase {
             app.terminate(); return
         }
         try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
-        approveSharingAfterLogin(app)
-        XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed at the post-login gate")
+        approveSharingConsent(app)
+        XCTAssertFalse(app.switches["privacy.accept"].exists, "Agreement was completed at the login prompt")
         app.terminate()
     }
 
@@ -1406,7 +1445,7 @@ final class HolonUITests: XCTestCase {
             components.path = String(components.path.dropLast(4)) + "/login"
             components.fragment = "pair=" + (try required("PAIRING_CODE"))
             try connectThroughPairing(app, endpoint: endpoint, payload: try XCTUnwrap(components.string))
-            approveSharingAfterLogin(app)
+            approveSharingConsent(app)
         }
         let agent = try required("AGENT_ID")
         if app.buttons["agent." + agent].waitForExistence(timeout: 5) { app.buttons["agent." + agent].tap() }

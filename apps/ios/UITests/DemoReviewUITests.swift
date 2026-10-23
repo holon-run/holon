@@ -60,10 +60,10 @@ final class DemoReviewUITests: XCTestCase {
         reveal(confirm, in: app)
         XCTAssertTrue(confirm.isEnabled, "HTTPS pairing must not require insecure HTTP permission")
         confirm.tap()
-        // Sign-in stops at the full-screen sharing gate before agent data is shown.
+        // Confirm stops at the sharing prompt before any connection activity.
         let consent = app.switches["privacy.accept"]
         XCTAssertTrue(consent.waitForExistence(timeout: 30),
-                      "Sign-in must stop at the sharing gate before data")
+                      "Confirm must stop at the sharing prompt before data")
         let providerCopy = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "DeepSeek")).firstMatch
         XCTAssertTrue(providerCopy.waitForExistence(timeout: 10),
                       "Demo consent copy must name the AI provider")
@@ -71,7 +71,7 @@ final class DemoReviewUITests: XCTestCase {
         XCTAssertEqual(consent.value as? String, "0", "Consent must never be preselected")
         consent.switches.firstMatch.tap()
         XCTAssertEqual(consent.value as? String, "1")
-        let proceed = app.buttons["privacy.continue"]
+        let proceed = app.buttons["privacy.continueLogin"]
         reveal(proceed, in: app)
         proceed.tap()
         XCTAssertTrue(app.buttons["settings.open"].waitForExistence(timeout: 30))

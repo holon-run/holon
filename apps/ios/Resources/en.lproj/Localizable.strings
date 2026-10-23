@@ -382,6 +382,7 @@
 "privacy.revoke" = "Withdraw data sharing consent";
 "privacy.cancel" = "Cancel";
 "privacy.continue" = "Continue to Holon";
+"privacy.continueLogin" = "Agree and continue sign-in";
 "privacy.storageUnavailable" = "Data sharing consent cannot be saved. Reopen the app or contact support.";
 "report.title" = "Report AI content";
 "report.selectResponse" = "Select the AI response you want to report. Only public assistant responses can be reported.";
