@@ -1241,6 +1241,12 @@ final class HolonUITests: XCTestCase {
         address.tap(); address.typeText("http://127.0.0.1:1")
         reveal(permission, in: app); permission.switches.firstMatch.tap()
         reveal(next, in: app); next.tap()
+        // The sharing prompt gates probing of this not-yet-approved host.
+        agreeToSharingConsent(app)
+        let proceed = app.buttons["privacy.continueLogin"]
+        reveal(proceed, in: app)
+        waitForEnabled(proceed, message: "Consent must enable the continue action")
+        proceed.tap()
         XCTAssertTrue(app.staticTexts["connection.status"].waitForExistence(timeout: 10))
         try assertNoCachedSessionUI(app)
         app.buttons["onboarding.back"].tap()
