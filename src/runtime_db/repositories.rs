@@ -5672,13 +5672,13 @@ pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Resul
             completed_at = excluded.completed_at,
             last_message_id = excluded.last_message_id,
             payload_json = excluded.payload_json
-         WHERE excluded.revision > tasks.revision
-            OR (excluded.revision = tasks.revision AND ?20 >= CASE tasks.status
+         WHERE excluded.revision >= tasks.revision
+            AND ?20 >= CASE tasks.status
                 WHEN 'queued' THEN 0
                 WHEN 'running' THEN 1
                 WHEN 'cancelling' THEN 2
                 ELSE 3
-            END)",
+            END",
         params![
             record.id,
             record.agent_id,
@@ -6102,8 +6102,7 @@ pub(crate) fn task_transition(
         .into());
     }
     if task_revision(incoming) < task_revision(existing)
-        || (task_revision(incoming) == task_revision(existing)
-            && task_status_phase(&incoming.status) < task_status_phase(&existing.status))
+        || task_status_phase(&incoming.status) < task_status_phase(&existing.status)
     {
         return Ok(StateTransitionOutcome::Idempotent);
     }

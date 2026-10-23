@@ -1483,6 +1483,83 @@ mod tests {
         assert!(should_ignore_task_update(latest, &stale));
     }
 
+    #[tokio::test]
+    async fn concurrent_running_snapshot_cannot_overwrite_cancelling() {
+        let runtime = runtime();
+        let running = task_with_kind(
+            "task-cancel-race",
+            TaskStatus::Running,
+            false,
+            TaskKind::CommandTask,
+        );
+        runtime
+            .persist_task_transition(&running, "task_created")
+            .await
+            .unwrap();
+        let mut cancelling = running.clone();
+        cancelling.status = TaskStatus::Cancelling;
+        cancelling.updated_at += chrono::Duration::seconds(1);
+        cancelling.detail = Some(json!({"cancel_requested": true, "accepts_input": false}));
+        let mut late_running = running.clone();
+        // The runner can construct its update after stop constructed Cancelling,
+        // while both reducers still observe the original Running record.
+        late_running.updated_at = cancelling.updated_at + chrono::Duration::seconds(1);
+
+        let (snapshots, mut observed_snapshots) = tokio::sync::mpsc::unbounded_channel();
+        let (audit_events, _observed_events) = tokio::sync::mpsc::unbounded_channel();
+        let (commits, _observed_commits) = tokio::sync::mpsc::unbounded_channel();
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() =
+            Some(Arc::new(TaskTransitionSnapshotPause {
+                task_id: running.id.clone(),
+                snapshots,
+                audit_events,
+                commits,
+            }));
+        let writer = {
+            let runtime = runtime.runtime.clone();
+            tokio::spawn(async move {
+                runtime
+                    .persist_task_transition(&late_running, "task_status_updated")
+                    .await
+            })
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (latest, _, release) = tokio::time::timeout_at(deadline, observed_snapshots.recv())
+            .await
+            .expect("runner must pause after reading Running")
+            .unwrap();
+        assert_eq!(latest, Some(running.clone()));
+        *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
+        runtime
+            .persist_task_transition(&cancelling, "task_status_updated")
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.task_record(&running.id).await.unwrap(),
+            Some(cancelling.clone())
+        );
+        let event_count = runtime.recent_events(100).await.unwrap().len();
+
+        release.send(()).unwrap();
+        tokio::time::timeout_at(deadline, writer)
+            .await
+            .expect("runner must finish after release")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            runtime.task_record(&running.id).await.unwrap(),
+            Some(cancelling)
+        );
+        let output = runtime.task_output(&running.id, false, 0).await.unwrap();
+        assert_eq!(output.task.status, TaskStatus::Cancelling);
+        assert_eq!(
+            output.retrieval_status,
+            crate::types::TaskOutputRetrievalStatus::NotReady
+        );
+        assert_eq!(runtime.recent_events(100).await.unwrap().len(), event_count);
+    }
+
     #[test]
     fn active_tasks_do_not_block_from_legacy_wait_policy_payloads() {
         let dir = tempdir().unwrap();
