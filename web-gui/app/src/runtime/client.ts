@@ -1051,6 +1051,30 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId);
       return projectWorkItem(workItem);
     },
+    async getAgentTimers(agentId: string, options: { limit?: number } = {}): Promise<components["schemas"]["TimerRecord"][]> {
+      if (!baseUrl) {
+        return [];
+      }
+      const limit = options.limit ?? 50;
+      return getJson<components["schemas"]["TimerRecord"][]>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/timers?limit=${encodeURIComponent(limit)}`,
+        { headers: requestHeaders, timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS },
+      );
+    },
+    async cancelAgentTimer(agentId: string, timerId: string): Promise<components["schemas"]["TimerRecord"]> {
+      if (!baseUrl) {
+        throw new Error("Timer control requires a runtime connection.");
+      }
+      return postJson<components["schemas"]["TimerRecord"]>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/timers/${encodeURIComponent(timerId)}/cancel`,
+        {},
+        requestHeaders,
+      );
+    },
     async getAgentEvents(
       agentId: string,
       options: AgentEventPageOptions = {},

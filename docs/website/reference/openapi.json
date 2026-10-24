@@ -3256,6 +3256,27 @@
                 "agent_id": {
                   "type": "string"
                 },
+                "calendar": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "expression": {
+                      "description": "A standard five-field cron expression.",
+                      "type": "string"
+                    },
+                    "timezone": {
+                      "description": "An IANA timezone name, for example `America/Los_Angeles`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "expression",
+                    "timezone"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
                 "created_at": {
                   "format": "date-time",
                   "type": "string"
@@ -11029,10 +11050,19 @@
               "null"
             ]
           },
+          "calendar_expression": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "duration_ms": {
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "interval_ms": {
             "format": "uint64",
@@ -11047,11 +11077,14 @@
               "string",
               "null"
             ]
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "required": [
-          "duration_ms"
-        ],
         "title": "CreateTimerRequest",
         "type": "object"
       },
@@ -20126,6 +20159,27 @@
         "properties": {
           "agent_id": {
             "type": "string"
+          },
+          "calendar": {
+            "additionalProperties": false,
+            "properties": {
+              "expression": {
+                "description": "A standard five-field cron expression.",
+                "type": "string"
+              },
+              "timezone": {
+                "description": "An IANA timezone name, for example `America/Los_Angeles`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timezone"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "created_at": {
             "format": "date-time",

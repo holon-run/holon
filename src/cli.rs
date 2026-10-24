@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::types::AuthorityClass;
 
@@ -43,11 +43,20 @@ pub enum TimerCommands {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("schedule")
+        .required(true)
+        .args(["after_ms", "every_ms", "calendar_expression"])
+))]
 pub struct TimerCreateArgs {
     #[arg(long)]
-    pub after_ms: u64,
+    pub after_ms: Option<u64>,
     #[arg(long)]
     pub every_ms: Option<u64>,
+    #[arg(long)]
+    pub calendar_expression: Option<String>,
+    #[arg(long)]
+    pub timezone: Option<String>,
     #[arg(long)]
     pub summary: Option<String>,
     #[arg(long)]
@@ -60,6 +69,10 @@ pub struct LegacyTimerCreateArgs {
     pub after_ms: Option<u64>,
     #[arg(long)]
     pub every_ms: Option<u64>,
+    #[arg(long)]
+    pub calendar_expression: Option<String>,
+    #[arg(long)]
+    pub timezone: Option<String>,
     #[arg(long)]
     pub summary: Option<String>,
     #[arg(long)]
