@@ -2799,6 +2799,22 @@ impl RuntimeTransitionRepository<'_> {
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             validate_task_tx(tx, &command.task)?;
+            // Linearize success/failure publication with the target's deletion
+            // fence. The caller recomputes cancellation if deletion won.
+            if command.queue_entry.is_some() && command.task.status != crate::types::TaskStatus::Cancelled {
+                if let Some(target) = command.task.target() {
+                    if super::repositories::task_target_is_deleted(tx, &target)? {
+                        let terminal: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id = ?1
+                             AND status IN ('completed','failed','cancelled','interrupted'))",
+                            [&command.task.id], |row| row.get(0),
+                        )?;
+                        if !terminal {
+                            return Err(super::repositories::TaskTargetDeleted.into());
+                        }
+                    }
+                }
+            }
             if let Some(queue_entry) = command.queue_entry.as_ref() {
                 validate_queue_mutation_tx(tx, &QueueMutation::Upsert(queue_entry.clone()))?;
             }

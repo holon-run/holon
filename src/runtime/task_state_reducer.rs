@@ -618,7 +618,117 @@ impl RuntimeHandle {
         if let Some(agent_deletion) = agent_deletion {
             transition = transition.with_agent_deletion(agent_deletion);
         }
-        self.apply_task_transition(transition).await
+        match self.apply_task_transition(transition).await {
+            Err(error) => {
+                // A competing terminal winner can be observed before the
+                // writer's target-fence check. Deletion-related losers converge.
+                if let Some(target) = task.target() {
+                    let db = self.inner.runtime_db.clone();
+                    if db
+                        .with_read_async(move |connection| {
+                            crate::runtime_db::repositories::task_target_is_deleted(
+                                connection, &target,
+                            )
+                        })
+                        .await?
+                        && self.task_record(&task.id).await?.is_some_and(|latest| {
+                            latest.agent_id == task.agent_id
+                                && is_terminal_task_status(&latest.status)
+                        })
+                    {
+                        return Ok(());
+                    }
+                }
+                if error
+                    .downcast_ref::<crate::runtime_db::repositories::TaskTargetDeleted>()
+                    .is_some()
+                {
+                    self.commit_deleted_target_cancellation(task, &message)
+                        .await
+                } else {
+                    Err(error)
+                }
+            }
+            result => result,
+        }
+    }
+
+    async fn commit_deleted_target_cancellation(
+        &self,
+        task: &TaskRecord,
+        original_message: &MessageEnvelope,
+    ) -> Result<()> {
+        if self
+            .task_record(&task.id)
+            .await?
+            .is_some_and(|latest| is_terminal_task_status(&latest.status))
+        {
+            return Ok(());
+        }
+        let target = task
+            .target()
+            .ok_or_else(|| anyhow!("deleted task target binding is missing"))?;
+        let db = self.inner.runtime_db.clone();
+        let checked = target.clone();
+        anyhow::ensure!(
+            db.with_read_async(move |connection| {
+                crate::runtime_db::repositories::task_target_is_deleted(connection, &checked)
+            })
+            .await?,
+            "task target deletion evidence changed"
+        );
+        let incarnation = target.incarnation.unwrap_or(1);
+        let text = format!(
+            "Agent {} incarnation {incarnation}: target agent was deleted; invocation cancelled.",
+            target.agent_id
+        );
+        let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+        detail["target_deleted"] = serde_json::json!(true);
+        detail["target_incarnation"] = serde_json::json!(incarnation);
+        detail["cancellation_reason"] = serde_json::json!("agent_deleted");
+        detail["output_summary"] = serde_json::json!(text);
+        let _ = self
+            .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, &mut detail)
+            .await?;
+        let mut message = original_message.clone();
+        let prefix = if task.kind == TaskKind::AgentMessageWait {
+            "agent-message-wait"
+        } else {
+            "child-invocation-result"
+        };
+        message.id = format!("message:{prefix}:{}", task.id);
+        message.turn_id = Some(format!("turn:{prefix}:{}", task.id));
+        message.created_at = task.created_at;
+        message.body = MessageBody::Text { text };
+        message.authority_class = AuthorityClass::RuntimeInstruction;
+        message.metadata = Some(serde_json::json!({
+            "task_id": task.id, "task_kind": task.kind, "task_status":"cancelled",
+            "task_summary": task.summary, "task_recovery": task.recovery,
+            "work_item_id":task.work_item_id, "task_detail":detail,
+        }));
+        let cancelled = super::tasks::task_with_result_message(
+            task,
+            TaskStatus::Cancelled,
+            Some(detail),
+            &message,
+        );
+        message.metadata.as_mut().unwrap()["task_detail"] =
+            serde_json::to_value(&cancelled.detail)?;
+        let result = self
+            .apply_task_transition(
+                TaskTransition::new(&cancelled, "task_cancelled_by_agent_deletion")
+                    .with_terminal_result(&message),
+            )
+            .await;
+        if result.is_err()
+            && self
+                .task_record(&task.id)
+                .await?
+                .is_some_and(|latest| is_terminal_task_status(&latest.status))
+        {
+            return Ok(());
+        }
+        result
     }
 
     pub(super) async fn commit_terminal_child_task_result(
@@ -1745,6 +1855,122 @@ mod tests {
                 .map(|stored| stored.id),
             Some(message.id)
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_publication_is_linearized_with_target_deletion() {
+        use crate::types::{
+            AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+        };
+        for (deletion_wins, proposed_status) in [
+            (true, TaskStatus::Completed),
+            (true, TaskStatus::Failed),
+            (true, TaskStatus::Interrupted),
+            (false, TaskStatus::Completed),
+        ] {
+            let runtime = runtime();
+            let identity = AgentIdentityRecord::new(
+                "target",
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            runtime
+                .inner
+                .runtime_db
+                .agent_identities()
+                .upsert(&identity)
+                .unwrap();
+            let mut running = task("deletion-race", TaskStatus::Running, false);
+            running.detail = Some(json!({
+                "target":{"kind":"child_agent","agent_id":"target","incarnation":1},
+                "source_message_id":"original-source",
+                "parent_turn_id":"parent-turn", "rejoin_obligation_id":"deletion-race", "rejoin_generation":1,
+            }));
+            runtime
+                .persist_task_transition(&running, "task_created")
+                .await
+                .unwrap();
+            let mut terminal = running.clone();
+            terminal.status = proposed_status;
+            terminal.updated_at = Utc::now();
+            terminal.detail.as_mut().unwrap()["output_summary"] = json!("copied result");
+            let message = task_result_message(&running.id);
+            terminal.parent_message_id = Some(message.id.clone());
+            if !deletion_wins {
+                runtime
+                    .commit_terminal_task_result(&terminal, "task_status_updated", &message)
+                    .await
+                    .unwrap();
+            }
+            runtime
+                .inner
+                .runtime_db
+                .agent_deletions()
+                .begin("target", identity.revision, "test", false)
+                .unwrap();
+            let publication = runtime
+                .commit_terminal_task_result(&terminal, "task_status_updated", &message)
+                .await;
+            publication.unwrap();
+            let stored = runtime
+                .inner
+                .runtime_db
+                .tasks()
+                .latest(&running.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                stored.status,
+                if deletion_wins {
+                    TaskStatus::Cancelled
+                } else {
+                    TaskStatus::Completed
+                }
+            );
+            // A stale cancellation/stop publisher must converge on a success
+            // which committed before the deletion fence, without another result.
+            if !deletion_wins {
+                let mut losing = running.clone();
+                losing.status = TaskStatus::Cancelled;
+                losing.detail.as_mut().unwrap()["cancellation_reason"] = json!("agent_deleted");
+                let loser_message = task_result_message(&running.id);
+                losing.parent_message_id = Some(loser_message.id.clone());
+                runtime
+                    .commit_terminal_task_result(&losing, "task_status_updated", &loser_message)
+                    .await
+                    .unwrap();
+                assert!(runtime
+                    .inner
+                    .storage
+                    .read_message_by_id(&loser_message.id)
+                    .unwrap()
+                    .is_none());
+            }
+            // Replay the winning durable result, not a losing cached success.
+            let winner = runtime
+                .inner
+                .storage
+                .read_message_by_id(stored.parent_message_id.as_deref().unwrap())
+                .unwrap()
+                .unwrap();
+            runtime
+                .commit_terminal_task_result(&stored, "task_status_updated", &winner)
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .tasks()
+                    .latest(&running.id)
+                    .unwrap(),
+                Some(stored)
+            );
+        }
     }
 
     #[tokio::test]

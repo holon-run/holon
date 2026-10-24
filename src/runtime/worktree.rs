@@ -465,6 +465,36 @@ impl RuntimeHandle {
         detail: &mut serde_json::Value,
         reason: &str,
     ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
+        if detail.get("worktree").is_none() {
+            return Ok(None);
+        }
+        let task = self.task_record(task_id).await?;
+        let deletion_fenced = match task.as_ref().and_then(TaskRecord::target) {
+            Some(target) => {
+                self.inner
+                    .runtime_db
+                    .with_read_async(move |connection| {
+                        crate::runtime_db::repositories::task_target_is_deleted(connection, &target)
+                    })
+                    .await?
+            }
+            None => false,
+        };
+        let retained_for_deletion = |detail: &serde_json::Value| {
+            detail["worktree"]["cleanup_reason"].as_str() == Some("agent_deleted")
+        };
+        if deletion_fenced
+            || reason == "agent_deleted"
+            || retained_for_deletion(detail)
+            || task
+                .as_ref()
+                .and_then(|task| task.detail.as_ref())
+                .is_some_and(retained_for_deletion)
+        {
+            return self
+                .retain_task_owned_worktree_for_target_deletion_in_detail(task_id, detail)
+                .await;
+        }
         let Some(worktree) = detail.get_mut("worktree") else {
             return Ok(None);
         };
@@ -472,6 +502,36 @@ impl RuntimeHandle {
             .cleanup_task_owned_worktree_metadata(task_id, worktree, reason)
             .await?;
         Ok(Some(cleanup))
+    }
+
+    /// The caller persists this detail with its task transition.
+    pub(super) async fn retain_task_owned_worktree_for_target_deletion_in_detail(
+        &self,
+        task_id: &str,
+        detail: &mut serde_json::Value,
+    ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
+        let Some(worktree) = detail.get_mut("worktree") else {
+            return Ok(None);
+        };
+        anyhow::ensure!(worktree.is_object(), "invalid task-owned worktree metadata");
+        worktree["cleanup_status"] =
+            serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
+        worktree["cleanup_reason"] = serde_json::json!("agent_deleted");
+        worktree["retained_for_review"] = serde_json::json!(true);
+        worktree["cleanup_owner_task_id"] = serde_json::json!(task_id);
+        worktree["auto_cleaned_up"] = serde_json::json!(false);
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "task_worktree_cleanup_retained",
+            serde_json::json!({
+                "task_id": task_id,
+                "worktree": worktree,
+                "reason": "agent_deleted",
+            }),
+        ))?;
+        Ok(Some(TaskOwnedWorktreeCleanup {
+            changed_files: changed_files_from_metadata(worktree),
+            status: TaskOwnedWorktreeCleanupStatus::Retained,
+        }))
     }
 
     async fn cleanup_task_owned_worktree_metadata(
@@ -622,7 +682,7 @@ impl RuntimeHandle {
             });
         }
 
-        match self.remove_task_owned_worktree(&artifact).await {
+        match self.remove_task_owned_worktree(task_id, &artifact).await {
             Ok(remove_outcome) => {
                 worktree["cleanup_status"] =
                     serde_json::json!(TaskOwnedWorktreeCleanupStatus::Cleaned.label());
@@ -859,8 +919,90 @@ impl RuntimeHandle {
 
     async fn remove_task_owned_worktree(
         &self,
+        task_id: &str,
         artifact: &TaskOwnedWorktreeArtifact,
     ) -> Result<TaskOwnedWorktreeRemoveOutcome> {
+        let registered_root = if self.inner.host_bridge.is_some() {
+            let path = crate::system::workspace::normalize_path(&artifact.worktree_path)?;
+            let roots = self
+                .inner
+                .runtime_db
+                .execution_root_entries()
+                .latest_all()?;
+            let mut matching_roots = Vec::new();
+            for root in roots.into_iter().filter(|root| root.removed_at.is_none()) {
+                if crate::system::workspace::normalize_path(&root.filesystem_path)? == path {
+                    matching_roots.push(root);
+                }
+            }
+            anyhow::ensure!(
+                matching_roots.len() == 1,
+                "task-owned worktree requires a unique registered execution root"
+            );
+            let root = matching_roots.remove(0);
+            let agent_id = self.agent_id().await?;
+            anyhow::ensure!(
+                root.root_kind == WorkspaceProjectionKind::GitWorktreeRoot,
+                "task-owned root is not a git worktree"
+            );
+            if let Some(metadata) = root.worktree.as_ref() {
+                anyhow::ensure!(
+                    metadata.provenance == crate::types::WorktreeProvenance::RuntimeCreated
+                        && metadata.registered_by_agent_id.as_deref() == Some(agent_id.as_str()),
+                    "task-owned worktree has foreign or unowned registered root"
+                );
+                anyhow::ensure!(
+                    !metadata
+                        .authorized_agent_ids
+                        .iter()
+                        .any(|id| id != &agent_id),
+                    "task-owned worktree has shared registered root"
+                );
+            } else {
+                // Legacy task worktrees have no root-level worktree metadata.
+                // Ownership must come from the exact runtime task artifact;
+                // a matching path/branch alone never authorizes cleanup.
+                let task = self
+                    .task_record(task_id)
+                    .await?
+                    .ok_or_else(|| anyhow!("task-owned worktree owner is missing"))?;
+                let recorded = task
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.get("worktree"));
+                anyhow::ensure!(
+                    task.agent_id == agent_id
+                        && task.is_worktree_child_agent_task()
+                        && artifact.worktree_branch == format!("task-{task_id}")
+                        && recorded
+                            .and_then(|value| value.get("worktree_branch"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some(artifact.worktree_branch.as_str())
+                        && recorded
+                            .and_then(|value| value.get("worktree_path"))
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|value| Path::new(value) == artifact.worktree_path),
+                    "task-owned worktree ownership metadata is unavailable"
+                );
+            }
+            Some(root)
+        } else {
+            None
+        };
+        if let (Some(bridge), Some(task)) = (
+            self.inner.host_bridge.as_ref(),
+            self.task_record(task_id).await?,
+        ) {
+            bridge.quiesce_terminal_task_worktree(&task).await?;
+        }
+        let _cleanup_lease = match (self.inner.host_bridge.as_ref(), registered_root.as_ref()) {
+            (Some(bridge), Some(root)) => Some(
+                bridge
+                    .acquire_workspace_cleanup_lease(&root.execution_root_id)
+                    .await?,
+            ),
+            _ => None,
+        };
         let execution = self
             .effective_execution(ExecutionScopeKind::AgentTurn)
             .await?;
@@ -894,6 +1036,13 @@ impl RuntimeHandle {
                 .trim()
                 .to_string();
             return Err(anyhow!("git worktree remove failed: {stderr}"));
+        }
+
+        if let Some(root) = registered_root.as_ref() {
+            self.inner
+                .runtime_db
+                .execution_root_entries()
+                .mark_removed(&root.execution_root_id)?;
         }
 
         if !self

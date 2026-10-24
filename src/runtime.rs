@@ -7300,6 +7300,7 @@ impl RuntimeHandle {
     ) -> Result<()> {
         observe_startup_phase(observation, "runtime.bootstrap.tasks", async {
             if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
+                let tasks = self.settle_deleted_task_targets(tasks).await?;
                 if self.agent_state().await?.status == AgentStatus::Stopped {
                     self.interrupt_active_tasks_for_lifecycle_stop(tasks)
                         .await?;

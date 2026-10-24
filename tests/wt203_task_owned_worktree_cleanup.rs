@@ -193,7 +193,11 @@ async fn wt203_task_owned_cleanup_removes_clean_terminal_worktree_and_branch() -
     let expected_worktree = wait_for_worktree(&runtime, &workspace, &task.id).await?;
     wait_for_task_status(&runtime, &task.id, TaskStatus::Completed).await?;
 
-    assert!(!expected_worktree.exists());
+    assert!(
+        !expected_worktree.exists(),
+        "cleanup metadata: {}",
+        task_worktree_metadata(&runtime, &task.id)?
+    );
     assert!(git(
         &workspace,
         &["branch", "--list", &format!("task-{}", task.id)]
@@ -307,7 +311,7 @@ async fn wt203_task_owned_cleanup_records_branch_mismatch_without_blocking() -> 
 }
 
 #[tokio::test]
-async fn wt203_task_stop_cleans_clean_task_owned_worktree() -> Result<()> {
+async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir().to_path_buf();
     std::fs::create_dir_all(&workspace)?;
@@ -331,17 +335,21 @@ async fn wt203_task_stop_cleans_clean_task_owned_worktree() -> Result<()> {
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     assert_eq!(stopped.status, TaskStatus::Cancelled);
-    assert!(!expected_worktree.exists());
-    assert!(git(
+    assert!(expected_worktree.exists());
+    assert!(!git(
         &workspace,
         &["branch", "--list", &format!("task-{}", task.id)]
     )?
     .is_empty());
-
     let metadata = task_worktree_metadata(&runtime, &task.id)?;
-    assert_eq!(metadata["cleanup_status"].as_str(), Some("cleaned"));
-    assert_eq!(metadata["branch_cleanup_status"].as_str(), Some("deleted"));
-    assert_eq!(metadata["auto_cleaned_up"].as_bool(), Some(true));
+    assert_eq!(metadata["cleanup_status"].as_str(), Some("retained"));
+    assert_eq!(metadata["cleanup_reason"].as_str(), Some("agent_deleted"));
+    assert_eq!(
+        metadata["cleanup_owner_task_id"].as_str(),
+        Some(task.id.as_str())
+    );
+    assert_eq!(metadata["retained_for_review"].as_bool(), Some(true));
+    assert_eq!(metadata["auto_cleaned_up"].as_bool(), Some(false));
 
     Ok(())
 }

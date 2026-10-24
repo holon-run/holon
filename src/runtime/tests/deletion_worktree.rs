@@ -1,0 +1,321 @@
+use super::super::*;
+use super::support::*;
+
+use crate::runtime::workspace_control::{ExistingWorktreePolicy, WorkspaceSwitchTarget};
+use crate::types::AgentIdentityRecord;
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct WorktreeFixture {
+    _home: TempDir,
+    _host: RuntimeHost,
+    repo: TempDir,
+    runtime: RuntimeHandle,
+    root: crate::types::ExecutionRootEntry,
+    task: TaskRecord,
+}
+
+async fn worktree_fixture() -> WorktreeFixture {
+    let (home, host, runtime) = host_backed_test_runtime().await;
+    let repo = tempdir().unwrap();
+    let repo_path = repo.path().join("repo");
+    std::fs::create_dir(&repo_path).unwrap();
+    git(&repo_path, &["init", "-b", "main"]);
+    git(&repo_path, &["config", "user.name", "Holon Test"]);
+    git(
+        &repo_path,
+        &["config", "user.email", "holon-test@example.com"],
+    );
+    git(&repo_path, &["commit", "--allow-empty", "-m", "initial"]);
+    let workspace = runtime
+        .attach_workspace_path(repo_path)
+        .await
+        .unwrap()
+        .workspace;
+    runtime
+        .switch_workspace_target(
+            WorkspaceSwitchTarget::WorkspaceId(workspace.workspace_id.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+    let created = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "task-deletion-test",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Error,
+        )
+        .await
+        .unwrap();
+    let root = runtime
+        .inner
+        .runtime_db
+        .execution_root_entries()
+        .get(&created.execution_root_id.unwrap())
+        .unwrap()
+        .unwrap();
+    let now = Utc::now();
+    let task = TaskRecord {
+        id: "deletion-worktree-task".into(),
+        agent_id: runtime.agent_id().await.unwrap(),
+        kind: TaskKind::ChildAgentTask,
+        status: TaskStatus::Running,
+        created_at: now,
+        updated_at: now,
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("worktree cleanup safety".into()),
+        detail: Some(serde_json::json!({
+            "workspace_mode": "worktree",
+            "target": {"kind": "child_agent", "agent_id": "worktree-child", "incarnation": 1},
+            "worktree": {
+                "worktree_path": root.filesystem_path,
+                "worktree_branch": "task-deletion-test",
+            },
+        })),
+        recovery: None,
+    };
+    runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+    WorktreeFixture {
+        _home: home,
+        _host: host,
+        repo,
+        runtime,
+        root,
+        task,
+    }
+}
+
+#[tokio::test]
+async fn deletion_retention_survives_persistence_and_stale_cleanup_detail() {
+    let fixture = worktree_fixture().await;
+    let mut task = fixture.task.clone();
+    let detail = task.detail.as_mut().unwrap();
+    let cleanup = fixture
+        .runtime
+        .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, detail)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cleanup.status,
+        worktree::TaskOwnedWorktreeCleanupStatus::Retained
+    );
+    task.status = TaskStatus::Cancelled;
+    task.updated_at = Utc::now();
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .tasks()
+        .upsert(&task)
+        .unwrap();
+
+    let persisted = fixture
+        .runtime
+        .task_record(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let worktree = &persisted.detail.unwrap()["worktree"];
+    assert_eq!(worktree["cleanup_status"], "retained");
+    assert_eq!(worktree["cleanup_reason"], "agent_deleted");
+    assert_eq!(worktree["retained_for_review"], true);
+    assert_eq!(worktree["cleanup_owner_task_id"], task.id);
+    assert_eq!(worktree["auto_cleaned_up"], false);
+
+    let mut stale_detail = fixture.task.detail.unwrap();
+    let cleanup = fixture
+        .runtime
+        .cleanup_task_owned_worktree_in_detail(&task.id, &mut stale_detail, "task_stop")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cleanup.status,
+        worktree::TaskOwnedWorktreeCleanupStatus::Retained
+    );
+    assert!(fixture.root.filesystem_path.exists());
+    git(
+        &fixture.repo.path().join("repo"),
+        &["show-ref", "--verify", "refs/heads/task-deletion-test"],
+    );
+    assert!(fixture
+        .runtime
+        .inner
+        .runtime_db
+        .execution_root_entries()
+        .get(&fixture.root.execution_root_id)
+        .unwrap()
+        .unwrap()
+        .removed_at
+        .is_none());
+}
+
+#[tokio::test]
+async fn persisted_target_deletion_fence_retains_clean_task_worktree() {
+    let fixture = worktree_fixture().await;
+    let identity = AgentIdentityRecord::new(
+        "worktree-child",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .agent_identities()
+        .upsert(&identity)
+        .unwrap();
+    fixture
+        .runtime
+        .inner
+        .runtime_db
+        .agent_deletions()
+        .begin(&identity.agent_id, identity.revision, "test", false)
+        .unwrap();
+    let mut detail = fixture.task.detail.clone().unwrap();
+    // The cleanup caller need not carry the target; it is durable task evidence.
+    detail.as_object_mut().unwrap().remove("target");
+    let cleanup = fixture
+        .runtime
+        .cleanup_task_owned_worktree_in_detail(&fixture.task.id, &mut detail, "task_stop")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cleanup.status,
+        worktree::TaskOwnedWorktreeCleanupStatus::Retained
+    );
+    assert_eq!(detail["worktree"]["cleanup_reason"], "agent_deleted");
+    assert_eq!(detail["worktree"]["cleanup_owner_task_id"], fixture.task.id);
+    assert!(fixture.root.filesystem_path.exists());
+}
+
+#[tokio::test]
+async fn task_worktree_cleanup_requires_quiescence_and_marks_removed_after_release() {
+    let fixture = worktree_fixture().await;
+    let bridge = fixture.runtime.inner.host_bridge.as_ref().unwrap();
+    let occupancy = bridge
+        .acquire_workspace_occupancy(
+            &fixture.root.workspace_id,
+            &fixture.root.execution_root_id,
+            &fixture.task.agent_id,
+            WorkspaceAccessMode::SharedRead,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut detail = fixture.task.detail.clone().unwrap();
+    let cleanup = fixture
+        .runtime
+        .cleanup_task_owned_worktree_in_detail(&fixture.task.id, &mut detail, "task_stop")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cleanup.status,
+        worktree::TaskOwnedWorktreeCleanupStatus::Failed
+    );
+    assert!(detail["worktree"]["cleanup_error"]
+        .as_str()
+        .unwrap()
+        .contains("active occupancy"));
+    assert!(fixture.root.filesystem_path.exists());
+    assert!(fixture
+        .runtime
+        .inner
+        .runtime_db
+        .execution_root_entries()
+        .get(&fixture.root.execution_root_id)
+        .unwrap()
+        .unwrap()
+        .removed_at
+        .is_none());
+
+    bridge
+        .release_workspace_occupancy(&occupancy.occupancy_id)
+        .await
+        .unwrap();
+    let cleanup = fixture
+        .runtime
+        .cleanup_task_owned_worktree_in_detail(&fixture.task.id, &mut detail, "task_stop")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cleanup.status,
+        worktree::TaskOwnedWorktreeCleanupStatus::Cleaned
+    );
+    assert!(!fixture.root.filesystem_path.exists());
+    assert!(fixture
+        .runtime
+        .inner
+        .runtime_db
+        .execution_root_entries()
+        .get(&fixture.root.execution_root_id)
+        .unwrap()
+        .unwrap()
+        .removed_at
+        .is_some());
+}
+
+#[tokio::test]
+async fn task_worktree_cleanup_rejects_shared_foreign_and_unowned_registered_roots() {
+    let fixture = worktree_fixture().await;
+    for ownership in ["shared", "foreign", "unowned"] {
+        let mut root = fixture.root.clone();
+        match ownership {
+            "shared" => root
+                .worktree
+                .as_mut()
+                .unwrap()
+                .authorized_agent_ids
+                .push("other-agent".into()),
+            "foreign" => {
+                root.worktree.as_mut().unwrap().registered_by_agent_id = Some("other-agent".into())
+            }
+            _ => root.worktree = None,
+        }
+        fixture
+            .runtime
+            .inner
+            .runtime_db
+            .execution_root_entries()
+            .upsert(&root)
+            .unwrap();
+        let mut detail = fixture.task.detail.clone().unwrap();
+        let cleanup = fixture
+            .runtime
+            .cleanup_task_owned_worktree_in_detail(&fixture.task.id, &mut detail, "task_stop")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cleanup.status,
+            worktree::TaskOwnedWorktreeCleanupStatus::Failed,
+            "{ownership}"
+        );
+        assert!(root.filesystem_path.exists(), "{ownership}");
+    }
+}
