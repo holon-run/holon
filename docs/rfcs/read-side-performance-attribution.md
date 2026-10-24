@@ -11,14 +11,31 @@ per-operation millisecond truncation; they do not imply clock accuracy.
 
 Timers include failed/cancelled attempts. Row counts report successfully
 materialized rows (latest work items), or rows entering wait filtering.
-Query stages include connection acquisition, SQL execution and decoding;
-they are not SQL-engine-only timers. The live-scope filter and per-item lookup
-timers make global scan and N+1 amplification observable.
+The existing wait/work-item query stages include connection acquisition, SQL
+execution and decoding; they are not SQL-engine-only timers. The live-scope
+filter and per-item lookup timers make global scan and N+1 amplification observable.
 
 Connection stages distinguish SQLite opening, configuration and the two Linux
 sidecar consistency checks. Safety checks remain unchanged. Agent lock wait and
 state cloning are distinct; lightweight state projection additionally times
 posture, closure, children, identity and active task reads.
+
+Reader-pool stages additionally distinguish asynchronous semaphore admission,
+blocking-task admission, checkout (including protection checks), lease holding
+through connection return, and the synchronous read closure. These count
+attempts, including errors/cancellation. The closure includes transactions and
+row decoding; neither it nor lease holding is a SQL-engine-only measurement.
+Synchronous callers do not pass through asynchronous admission. A cancelled
+queued blocking closure settles its timer when its captured state is dropped;
+started reads keep their existing acquisition-only timeout semantics.
+
+Roster and per-Agent anchor reads have operation-level timers that include
+checkout. Their latest-Brief query timers, and the index-outbox pending count
+and oldest query timers, start *inside* the read closure and exclude checkout.
+Capability verification, gate decision, follower waiting and leader building
+are distinct stages. Existing gate hit/miss/leader/stale counters distinguish
+request volume from actual builds; none of these diagnostics adds a deadline,
+interrupts SQLite, changes cache freshness or changes reader capacity.
 
 Counters are process-global relaxed atomics, not a request-level transaction.
 Nested stages overlap and must not be summed as independent wall time.
@@ -42,3 +59,23 @@ reliable production tail estimates.
 Scale one dimension per fixture before combining growth and contention.
 Temporary databases must not read production records. A synthetic result can
 validate a mechanism but cannot establish its contribution to live latency.
+
+The bounded latest-Brief workload uses the production SQL and bundled SQLite:
+
+```bash
+cargo test --lib runtime_db::brief_latest_tests::brief_latest_history_benchmark \
+  -- --exact --ignored --nocapture
+```
+
+It emits a `brief_latest_benchmark=` JSON line. `HOLON_BENCH_SAMPLES` selects
+20–200 measured executions per arm (default 40). Three A/B/A rounds each reset
+the same synthetic database snapshot, with or without the candidate nonunique
+`(agent_id, created_at DESC, evidence_id DESC)` index. SQL preparation is
+excluded from stepped/decoded execution timing; sort and VM-step counters,
+roster reads through the default reader pool, serial writer commits, index
+build time and database/WAL end snapshots are reported separately.
+
+This is deliberately not a production migration/capacity benchmark, peak
+temporary-disk measurement, HTTP load test or frontend request-count test.
+Run it alone before interpreting global diagnostic deltas; shared-host noise
+and warm filesystem caches remain even with an identical logical snapshot.

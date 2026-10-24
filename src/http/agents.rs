@@ -272,6 +272,7 @@ fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
 pub(crate) fn load_observer_sync_verification(
     state: &AppState,
 ) -> ObserverSyncCapabilityVerification {
+    let _preflight = crate::diagnostics::attribution::CAPABILITY_PREFLIGHT.start();
     let mut verification = ObserverSyncCapabilityVerification::default();
     match state
         .host
