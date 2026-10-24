@@ -533,6 +533,23 @@ fn supplement_model_supported_by_provider(
     model_id: &str,
     model: &ModelsDevModel,
 ) -> bool {
+    // International native API retirement, not a family-wide aggregator ban.
+    // https://platform.kimi.ai/docs/models.md (retired 2026-08-31)
+    if provider == "moonshot"
+        && matches!(
+            model_id,
+            "kimi-k2.5"
+                | "moonshot-v1-8k"
+                | "moonshot-v1-32k"
+                | "moonshot-v1-128k"
+                | "moonshot-v1-auto"
+                | "moonshot-v1-8k-vision-preview"
+                | "moonshot-v1-32k-vision-preview"
+                | "moonshot-v1-128k-vision-preview"
+        )
+    {
+        return false;
+    }
     // Native Chat IDs retired on 2026-10-21; aggregator and audio IDs are separate.
     // https://mimo.mi.com/docs/en-US/updates/deprecate
     if provider == "xiaomi" && matches!(model_id, "mimo-v2.5-pro" | "mimo-v2.5") {
@@ -1013,6 +1030,75 @@ mod tests {
                 .models
                 .iter()
                 .any(|model| { model.model_ref.as_string() == "xiaomi/mimo-v2.5-pro-ultraspeed" }));
+        }
+    }
+
+    #[test]
+    fn retired_moonshot_ids_are_excluded_from_new_and_retained_supplements() {
+        let legacy = legacy();
+        let ids = [
+            "kimi-k2.5",
+            "moonshot-v1-8k",
+            "moonshot-v1-32k",
+            "moonshot-v1-128k",
+            "moonshot-v1-auto",
+            "moonshot-v1-8k-vision-preview",
+            "moonshot-v1-32k-vision-preview",
+            "moonshot-v1-128k-vision-preview",
+        ];
+        let mut parsed: ModelsDevSnapshot =
+            serde_json::from_str(r#"{"moonshotai":{"id":"moonshotai","models":{}}}"#).unwrap();
+        let mut previous = ModelsDevSupplement::empty();
+        for id in ids {
+            let model = serde_json::from_value(serde_json::json!({
+                "id": id, "release_date": "2026-10-24",
+                "modalities": {"input": ["text"], "output": ["text"]}
+            }))
+            .unwrap();
+            for provider in ["tencent-tokenhub", "opencode-go", "openrouter"] {
+                assert!(supplement_model_supported_by_provider(provider, id, &model));
+            }
+            parsed
+                .providers
+                .get_mut("moonshotai")
+                .unwrap()
+                .models
+                .insert(id.into(), model);
+            previous
+                .models
+                .push(supplement_metadata(&format!("moonshot/{id}"), id));
+            previous
+                .routes
+                .push(ModelRouteRef::parse(&format!("moonshot@default/{id}")).unwrap());
+        }
+        let model = parsed.providers["moonshotai"]
+            .models
+            .values()
+            .next()
+            .unwrap();
+        for id in ["kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "kimi-k3.1-pro"] {
+            assert!(supplement_model_supported_by_provider(
+                "moonshot", id, model
+            ));
+        }
+        for previous in [None, Some(&previous)] {
+            let update = generate(&parsed, previous, &legacy, "2026-10-25", "rev", "ver").unwrap();
+            assert!(update.supplement.models.is_empty());
+            assert!(update.supplement.routes.is_empty());
+            for id in ids {
+                let model_ref = format!("moonshot/{id}");
+                if previous.is_some() {
+                    assert!(update.removed.iter().any(|removed| {
+                        removed.model_ref == model_ref
+                            && removed.reason == RemovalReason::UnsupportedByProvider
+                    }));
+                } else {
+                    assert!(update.deferred.iter().any(|deferred| {
+                        deferred.model_ref == model_ref
+                            && deferred.reason == DeferredReason::UnsupportedByProvider
+                    }));
+                }
+            }
         }
     }
 

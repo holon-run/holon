@@ -299,6 +299,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             "deepseek-v4.1-flash-economy",
             "kimi-k2.8-preview",
             "kimi-k3",
+            "kimi-k3.1-pro",
             "glm-latest",
             "minimax-latest",
             "kimi-latest",
@@ -1219,6 +1220,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             ),
             ("kimi-k2.8-preview", "Kimi K2.8 Preview", true, true),
             ("kimi-k3", "Kimi K3", true, true),
+            ("kimi-k3.1-pro", "Kimi K3.1 Pro", true, false),
         ]
         .into_iter()
         .map(|(model, name, reasoning, image)| {
@@ -1300,6 +1302,46 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
     ]);
+    // Messages eligibility and the three model cards independently confirm
+    // these limits and modalities, but not subscription eligibility or effort.
+    entries.extend(
+        [
+            ("qwen3.8-2.4t-a95b", false),
+            ("qwen3.8-27b", true),
+            ("qwen3.8-max-0902", true),
+        ]
+        .into_iter()
+        .map(|(model, image)| {
+            let mut entry =
+                catalog_model("dashscope", model, model, 1_000_000, 131_072, true, image);
+            entry.endpoint = Some(ProviderEndpointId::parse("default").unwrap());
+            entry
+        }),
+    );
+    // The remaining Messages IDs have eligibility evidence only; do not
+    // infer limits, capabilities, or subscription eligibility from their names.
+    entries.extend(
+        [
+            "qwen-plus-latest",
+            "qwen-flash-2025-07-28",
+            "qwen3.5-flash-2026-02-23",
+            "qwen3.5-plus-2026-02-15",
+            "qwen3.5-plus-2026-04-20",
+            "qwen3.6-flash-2026-04-16",
+            "qwen3.6-plus-2026-04-02",
+            "qwen3.7-flash-2026-07-15",
+        ]
+        .into_iter()
+        .map(|model| {
+            let mut entry =
+                reviewed_subscription_model("dashscope", "default", model, model, false, false);
+            entry.description = format!(
+                "DashScope default Anthropic-compatible API {model}; eligibility reviewed, \
+                 exact token limits and model capabilities unconfirmed."
+            );
+            entry
+        }),
+    );
     // Endpoint eligibility is reviewed against the official Token Plan list.
     // Limits and tool support come from models.dev's alibaba-token-plan-cn,
     // not from the underlying vendors' API catalogs or official hard limits.
@@ -1341,6 +1383,7 @@ fn volcengine_reviewed_subscription_models_do_not_imply_default_api_routes() {
         "deepseek-v4.1-flash",
         "kimi-k2.8-preview",
         "kimi-k3",
+        "kimi-k3.1-pro",
     ] {
         for endpoint in ["coding", "plan"] {
             let route = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
@@ -1538,6 +1581,86 @@ fn reviewed_subscription_capabilities_do_not_leak_between_endpoints() {
                 8_192,
             );
             assert_eq!(policy.capabilities.image_input, image_input);
+        }
+    }
+}
+
+#[test]
+fn reviewed_kimi_k31_subscription_metadata_does_not_inherit_k3_tier_or_api_limits() {
+    let entries = late_entries();
+    let metadata = entries
+        .iter()
+        .find(|entry| entry.model_ref.as_string() == "volcengine/kimi-k3.1-pro")
+        .unwrap();
+    assert_eq!(metadata.endpoint.as_ref().unwrap().as_str(), "coding");
+    assert!(metadata.capabilities.supports_reasoning);
+    assert!(!metadata.capabilities.image_input);
+    assert_eq!(metadata.context_window_tokens, None);
+    assert_eq!(metadata.default_max_output_tokens, None);
+    assert_eq!(metadata.max_output_tokens_upper_limit, None);
+    assert!(metadata.reasoning_effort_options.is_empty());
+    assert!(!metadata.description.contains("Medium/Large/Max"));
+    let definitions = route_definitions();
+    let plan = definitions
+        .iter()
+        .find(|definition| {
+            definition.model_ref == metadata.model_ref && definition.endpoint.as_str() == "plan"
+        })
+        .unwrap();
+    assert!(plan.policy.description.is_none());
+}
+
+#[test]
+fn reviewed_dashscope_anthropic_ids_are_default_only_and_conservative() {
+    let entries = late_entries();
+    for model in [
+        "qwen3.8-2.4t-a95b",
+        "qwen3.8-27b",
+        "qwen3.8-max-0902",
+        "qwen-plus-latest",
+        "qwen-flash-2025-07-28",
+        "qwen3.5-flash-2026-02-23",
+        "qwen3.5-plus-2026-02-15",
+        "qwen3.5-plus-2026-04-20",
+        "qwen3.6-flash-2026-04-16",
+        "qwen3.6-plus-2026-04-02",
+        "qwen3.7-flash-2026-07-15",
+    ] {
+        let model_ref = ModelRef::new(provider_id("dashscope"), model);
+        let metadata = entries
+            .iter()
+            .find(|entry| entry.model_ref == model_ref)
+            .unwrap();
+        assert_eq!(metadata.endpoint.as_ref().unwrap().as_str(), "default");
+        let has_model_card = model.starts_with("qwen3.8-");
+        assert_eq!(
+            metadata.context_window_tokens,
+            has_model_card.then_some(1_000_000)
+        );
+        assert_eq!(
+            metadata.default_max_output_tokens,
+            has_model_card.then_some(131_072)
+        );
+        assert_eq!(
+            metadata.max_output_tokens_upper_limit,
+            has_model_card.then_some(131_072)
+        );
+        assert!(metadata.reasoning_effort_options.is_empty());
+        assert_eq!(metadata.capabilities.supports_reasoning, has_model_card);
+        assert_eq!(
+            metadata.capabilities.image_input,
+            matches!(model, "qwen3.8-27b" | "qwen3.8-max-0902")
+        );
+        for catalog in [
+            legacy_builtin_catalog().unwrap(),
+            BuiltInModelCatalog::new(),
+        ] {
+            let route = ModelRouteRef::parse(&format!("dashscope@default/{model}")).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+            for endpoint in ["token-plan", "coding-plan", "coding-plan-intl"] {
+                let route = ModelRouteRef::parse(&format!("dashscope@{endpoint}/{model}")).unwrap();
+                assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+            }
         }
     }
 }

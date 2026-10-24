@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-3800890225bd879647209b9559344168f6e60f41a6b46a25c2e016707265f92b",
+  "revision": "models-dev-4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462",
   "upstream": {
     "source": "models.dev",
-    "revision": "3800890225bd879647209b9559344168f6e60f41a6b46a25c2e016707265f92b",
-    "fetched_at": "2026-10-23T21:03:42.424283224+00:00",
-    "content_sha256": "3800890225bd879647209b9559344168f6e60f41a6b46a25c2e016707265f92b",
-    "adapter_version": "0.54.0 (9c7918f6-dirty)"
+    "revision": "4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462",
+    "fetched_at": "2026-10-24T21:01:56.367515483+00:00",
+    "content_sha256": "4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462",
+    "adapter_version": "0.54.1 (bc1a3dbe-dirty)"
   },
   "models": [
     {
@@ -7093,7 +7093,7 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 1048576,
+      "default_max_output_tokens": 131072,
       "max_output_tokens_upper_limit": 1048576,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
@@ -13993,8 +13993,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -15161,27 +15161,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/openai/gpt-3.5-turbo",
-      "display_name": "GPT-3.5-turbo",
-      "description": "Compact GPT model for low-latency assistance and high-volume workloads",
-      "context_window_tokens": 16385,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 15565,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/openai/gpt-3.5-turbo-0613",
       "display_name": "GPT-3.5 Turbo (older v0613)",
       "description": "Compact GPT model for low-latency assistance and high-volume workloads",
@@ -15211,27 +15190,6 @@
       "auto_compact_token_limit": 15565,
       "default_max_output_tokens": 4096,
       "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "openrouter/openai/gpt-3.5-turbo-instruct",
-      "display_name": "GPT-3.5 Turbo Instruct",
-      "description": "Compact GPT model for low-latency assistance and high-volume workloads",
-      "context_window_tokens": 4095,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 3890,
-      "default_max_output_tokens": 3685,
-      "max_output_tokens_upper_limit": 3685,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20082,8 +20040,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20108,8 +20066,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -22436,6 +22394,60 @@
     {
       "model_ref": "venice/kimi-k3",
       "display_name": "Kimi K3",
+      "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/kimi-k3-1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/kimi-k3-1-pro-highspeed",
+      "display_name": "Kimi K3.1 Pro Highspeed",
       "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,

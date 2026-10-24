@@ -237,6 +237,8 @@ const TENCENT_TOKENHUB_ADDITIONAL_MODEL_IDS: &[&str] = &[
     "glm-5.3-flash",
     "glm-5.3-flashx",
     "kimi-k3",
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
     "kimi-k2.8-preview",
     "mimo-v2.6-pro",
     "mimo-v2.6-flash",
@@ -273,6 +275,8 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "glm-5.3-flashx",
     "glm-5.2",
     "kimi-k3",
+    "kimi-k3.1-pro",
+    "kimi-k3.1-pro-highspeed",
     "kimi-k2.6",
     "minimax-m3",
     "minimax-m3.1-flash",
@@ -333,7 +337,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
 #[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 30);
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 32);
     for id in TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| model.0)
@@ -396,5 +400,46 @@ fn tokenhub_protocol_matrix_routes_do_not_inherit_vendor_limits() {
             "{}",
             model.0
         );
+    }
+}
+
+#[test]
+fn tokenhub_kimi_k3_1_routes_keep_endpoint_metadata_conservative() {
+    let catalog = BuiltInModelCatalog::from_legacy_definitions();
+    for id in ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
+        assert!(is_tencent_tokenhub_model_id(id));
+        let model = ModelRef::new(provider_id("tencent-tokenhub"), id);
+        let metadata = catalog.get(&model).expect("reviewed TokenHub model ID");
+        assert_eq!(metadata.context_window_tokens, None);
+        assert_eq!(metadata.default_max_output_tokens, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        assert_eq!(metadata.capabilities, ModelCapabilityFlags::default());
+        assert!(metadata.reasoning_effort_options.is_empty());
+        for endpoint in ["default", "messages", "responses"] {
+            let route = ModelRouteRef::new(
+                provider_id("tencent-tokenhub"),
+                ProviderEndpointId::parse(endpoint).unwrap(),
+                id,
+            );
+            assert_eq!(
+                catalog.get_route(&route),
+                Some(&BuiltInModelRoutePolicy::default()),
+                "{id}@{endpoint}"
+            );
+        }
+    }
+    for id in ["kimi-k3-pro", "kimi-k3-pro-highspeed"] {
+        assert!(!is_tencent_tokenhub_model_id(id));
+        assert!(catalog
+            .get(&ModelRef::new(provider_id("tencent-tokenhub"), id))
+            .is_none());
+        for endpoint in ["default", "messages", "responses"] {
+            let route = ModelRouteRef::new(
+                provider_id("tencent-tokenhub"),
+                ProviderEndpointId::parse(endpoint).unwrap(),
+                id,
+            );
+            assert!(catalog.get_route(&route).is_none(), "{id}@{endpoint}");
+        }
     }
 }

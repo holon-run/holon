@@ -1918,7 +1918,7 @@ fn reasoning_effort_options(
                 matches!(endpoint.as_str(), "default" | "coding" | "plan")
             }) && !matches!(
                 model_ref.model.as_str(),
-                "kimi-k2.6" | "kimi-k2.7-code" | "deepseek-v4.1-flash-economy"
+                "kimi-k2.6" | "kimi-k2.7-code" | "kimi-k3.1-pro" | "deepseek-v4.1-flash-economy"
             ) =>
         {
             &["low", "medium", "high"][..]
@@ -2958,7 +2958,7 @@ mod tests {
                 Some(196_608),
                 false,
             ),
-            ("accounts/fireworks/models/minimax-m3", Some(524_288), true),
+            ("accounts/fireworks/models/minimax-m3", Some(512_000), true),
             (
                 "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
                 Some(262_144),
@@ -3105,6 +3105,36 @@ mod tests {
                     .is_none(),
                 "{retired} should not remain in the built-in catalog"
             );
+        }
+    }
+
+    #[test]
+    fn together_new_chat_models_keep_unconfirmed_token_limits_unknown() {
+        for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
+            for (id, effort) in [
+                (
+                    "MiniMaxAI/MiniMax-M3.1-Flash",
+                    &["low", "medium", "high", "xhigh", "max"][..],
+                ),
+                ("deepseek-ai/DeepSeek-V4.1-Flash-1017", &[][..]),
+            ] {
+                let model = catalog
+                    .get(&ModelRef::parse(&format!("together/{id}")).unwrap())
+                    .unwrap();
+                assert_eq!(model.context_window_tokens, None);
+                assert_eq!(model.default_max_output_tokens, None);
+                assert_eq!(model.max_output_tokens_upper_limit, None);
+                assert!(model.capabilities.image_input);
+                assert!(model.capabilities.supports_reasoning);
+                assert_eq!(model.reasoning_effort_options, effort);
+                for endpoint in ["messages", "responses"] {
+                    assert!(catalog
+                        .get_route(
+                            &ModelRouteRef::parse(&format!("together@{endpoint}/{id}")).unwrap()
+                        )
+                        .is_none());
+                }
+            }
         }
     }
 
@@ -4450,6 +4480,82 @@ mod tests {
     }
 
     #[test]
+    fn newly_reviewed_subscription_and_messages_routes_do_not_inherit_limits() {
+        for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
+            for endpoint in ["coding", "plan"] {
+                let route =
+                    ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k3.1-pro")).unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let policy = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base_context(),
+                    8192,
+                );
+                assert_eq!(policy.context_window_tokens, None);
+                assert_eq!(policy.max_output_tokens_upper_limit, None);
+                assert_eq!(policy.runtime_max_output_tokens, 8192);
+                assert!(policy.reasoning_effort_options.is_empty());
+            }
+            assert!(catalog
+                .get_route(&ModelRouteRef::parse("volcengine@default/kimi-k3.1-pro").unwrap())
+                .is_none());
+            for id in [
+                "qwen3.8-2.4t-a95b",
+                "qwen3.8-27b",
+                "qwen3.8-max-0902",
+                "qwen-plus-latest",
+                "qwen-flash-2025-07-28",
+                "qwen3.5-flash-2026-02-23",
+                "qwen3.5-plus-2026-02-15",
+                "qwen3.5-plus-2026-04-20",
+                "qwen3.6-flash-2026-04-16",
+                "qwen3.6-plus-2026-04-02",
+                "qwen3.7-flash-2026-07-15",
+            ] {
+                let model = catalog
+                    .get(&ModelRef::parse(&format!("dashscope/{id}")).unwrap())
+                    .unwrap();
+                let has_model_card = id.starts_with("qwen3.8-");
+                assert_eq!(
+                    model.context_window_tokens,
+                    has_model_card.then_some(1_000_000),
+                    "{id}"
+                );
+                assert_eq!(
+                    model.default_max_output_tokens,
+                    has_model_card.then_some(131_072),
+                    "{id}"
+                );
+                assert_eq!(
+                    model.max_output_tokens_upper_limit,
+                    has_model_card.then_some(131_072),
+                    "{id}"
+                );
+                assert_eq!(
+                    model.capabilities.supports_reasoning, has_model_card,
+                    "{id}"
+                );
+                assert_eq!(
+                    model.capabilities.image_input,
+                    matches!(id, "qwen3.8-27b" | "qwen3.8-max-0902"),
+                    "{id}"
+                );
+                assert!(model.reasoning_effort_options.is_empty(), "{id}");
+                for endpoint in ["token-plan", "coding-plan", "coding-plan-intl"] {
+                    assert!(catalog
+                        .get_route(
+                            &ModelRouteRef::parse(&format!("dashscope@{endpoint}/{id}")).unwrap()
+                        )
+                        .is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn volcengine_reasoning_effort_options_follow_route_contract() {
         let catalog = BuiltInModelCatalog::new();
 
@@ -4556,23 +4662,14 @@ mod tests {
         assert_eq!(
             models,
             [
-                "kimi-k2.5",
                 "kimi-k2.6",
                 "kimi-k2.7-code",
                 "kimi-k2.7-code-highspeed",
                 "kimi-k3",
-                "moonshot-v1-128k",
-                "moonshot-v1-128k-vision-preview",
-                "moonshot-v1-32k",
-                "moonshot-v1-32k-vision-preview",
-                "moonshot-v1-8k",
-                "moonshot-v1-8k-vision-preview",
-                "moonshot-v1-auto",
             ]
         );
 
         for model_ref in [
-            "moonshot/kimi-k2.5",
             "moonshot/kimi-k2.6",
             "moonshot/kimi-k2.7-code",
             "moonshot/kimi-k2.7-code-highspeed",
@@ -4607,6 +4704,14 @@ mod tests {
         );
 
         for model_ref in [
+            "moonshot/kimi-k2.5",
+            "moonshot/moonshot-v1-8k",
+            "moonshot/moonshot-v1-32k",
+            "moonshot/moonshot-v1-128k",
+            "moonshot/moonshot-v1-auto",
+            "moonshot/moonshot-v1-8k-vision-preview",
+            "moonshot/moonshot-v1-32k-vision-preview",
+            "moonshot/moonshot-v1-128k-vision-preview",
             "moonshot/kimi-k2-thinking",
             "moonshot/kimi-k2-thinking-turbo",
             "moonshot/kimi-k2-turbo",
@@ -4703,9 +4808,9 @@ mod tests {
     }
 
     #[test]
-    fn moonshot_k3_1_supplement_resolves_documented_default_and_explicit_override() {
+    fn moonshot_k3_family_resolves_documented_default_and_explicit_override() {
         let catalog = BuiltInModelCatalog::new();
-        for model in ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
+        for model in ["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
             let route = ModelRouteRef::parse(&format!("moonshot@default/{model}")).unwrap();
             let policy = catalog.resolve_route_policy(
                 &route,
@@ -4746,6 +4851,37 @@ mod tests {
     }
 
     #[test]
+    fn opencode_iceman_is_chat_only_with_unknown_capabilities() {
+        for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
+            let model_ref = ModelRef::parse("opencode-go/iceman-contributor-free").unwrap();
+            let model = catalog.get(&model_ref).unwrap();
+            assert_eq!(model.context_window_tokens, None);
+            assert_eq!(model.default_max_output_tokens, None);
+            assert_eq!(model.max_output_tokens_upper_limit, None);
+            assert_eq!(model.capabilities, ModelCapabilityFlags::default());
+            assert!(model.reasoning_effort_options.is_empty());
+            assert!(model.description.contains("not ZDR"));
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&model_ref)
+                    .unwrap()
+                    .endpoint,
+                ProviderEndpointId::default_endpoint()
+            );
+            for endpoint in ["messages", "responses"] {
+                assert!(catalog
+                    .get_route(
+                        &ModelRouteRef::parse(&format!(
+                            "opencode-go@{endpoint}/iceman-contributor-free"
+                        ))
+                        .unwrap()
+                    )
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
     fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         let catalog = curated_catalog();
         let provider = provider_id("opencode-go");
@@ -4755,17 +4891,21 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 40);
+        assert_eq!(models.len(), 41);
         for model in &models {
             assert_eq!(
                 model.capabilities.supports_reasoning,
-                model.model_ref.model != "kimi-k3.1-pro"
+                !matches!(
+                    model.model_ref.model.as_str(),
+                    "kimi-k3.1-pro" | "iceman-contributor-free"
+                )
             );
             assert!(model.reasoning_effort_options.is_empty());
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
         }
 
         for model in [
+            "iceman-contributor-free",
             "deepseek-v4.1-flash",
             "deepseek-v4-pro",
             "deepseek-v4-flash",
@@ -4982,7 +5122,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 50);
+        assert_eq!(models.len(), 52);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
