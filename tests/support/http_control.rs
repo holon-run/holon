@@ -396,11 +396,24 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
     .await?;
 
     // While deleted, the detail view still reports the tombstone.
+    for path in [
+        "/api/agents/reborn-http/state",
+        "/api/agents/reborn-http/events?limit=100&order=desc",
+    ] {
+        let response = client.get(format!("{base}{path}")).send().await?;
+        assert_eq!(response.status(), reqwest::StatusCode::GONE, "{path}");
+        assert_eq!(response.headers()["cache-control"], "no-store", "{path}");
+        assert_eq!(
+            response.json::<serde_json::Value>().await?["code"],
+            "agent_deleted"
+        );
+    }
     let gone = client
         .get(format!("{base}/api/control/agents/reborn-http/detail"))
         .send()
         .await?;
     assert_eq!(gone.status(), reqwest::StatusCode::OK);
+    assert_eq!(gone.headers()["cache-control"], "no-store");
     assert_eq!(
         gone.json::<serde_json::Value>().await?["identity"]["status"],
         "deleted"
@@ -425,9 +438,19 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
         .send()
         .await?;
     assert_eq!(detail.status(), reqwest::StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "no-store");
     let detail: serde_json::Value = detail.json().await?;
     assert_eq!(detail["identity"]["status"], "active");
     assert_eq!(detail["identity"]["incarnation"], 2);
+
+    for path in [
+        "/api/agents/reborn-http/state",
+        "/api/agents/reborn-http/events?limit=100&order=desc",
+    ] {
+        let response = client.get(format!("{base}{path}")).send().await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "{path}");
+        assert_eq!(response.headers()["cache-control"], "no-store", "{path}");
+    }
 
     // The audit boundary event is recorded for the new incarnation.
     let connection = host.runtime_db().connection()?;

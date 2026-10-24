@@ -1873,7 +1873,7 @@ async function fetchAgentEvents(
     fetchImpl,
     baseUrl,
     path,
-    { headers, timeoutMs: HYDRATION_READ_TIMEOUT_MS },
+    { headers, timeoutMs: HYDRATION_READ_TIMEOUT_MS, cache: "no-store" },
   );
   const pageContractVersion = responseHeaders.get(EVENT_CONTRACT_VERSION_HEADER);
   validateEventContractVersion(pageContractVersion, "event page");
@@ -1890,7 +1890,7 @@ async function getJsonWithResponseBytes<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
-  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+  options: { timeoutMs?: number; headers?: Record<string, string>; cache?: RequestCache } = {},
 ): Promise<{ value: T; responseBytes: number; responseHeaders: Headers }> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(
@@ -1899,6 +1899,7 @@ async function getJsonWithResponseBytes<T>(
   );
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "application/json", ...options.headers },
+    cache: options.cache,
     signal: controller.signal,
   }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {

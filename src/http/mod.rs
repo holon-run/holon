@@ -563,11 +563,17 @@ pub fn router(state: AppState) -> Router {
             post(state::briefs_batch_get),
         )
         .route("/agents/{agent_id}/briefs/{brief_id}", get(state::brief))
-        .route("/agents/{agent_id}/state", get(state::agent_state))
+        .route(
+            "/agents/{agent_id}/state",
+            get(state::agent_state).layer(map_response(prevent_agent_read_caching)),
+        )
         .route("/events/stream", get(events::global_events_stream))
         .route("/jobs", post(jobs::create_job))
         .route("/jobs/{job_id}", get(jobs::job_status))
-        .route("/agents/{agent_id}/events", get(events::events))
+        .route(
+            "/agents/{agent_id}/events",
+            get(events::events).layer(map_response(prevent_agent_read_caching)),
+        )
         .route(
             "/agents/{agent_id}/events/stream",
             get(events::events_stream),
@@ -660,7 +666,7 @@ pub fn router(state: AppState) -> Router {
         .route("/control/agents/tree", get(control::agent_tree))
         .route(
             "/control/agents/{agent_id}/detail",
-            get(control::agent_detail),
+            get(control::agent_detail).layer(map_response(prevent_agent_read_caching)),
         )
         .route(
             "/control/agents/{agent_id}/repair",
@@ -1046,6 +1052,14 @@ pub fn router(state: AppState) -> Router {
                 ),
         )
         .with_state(Arc::new(state))
+}
+
+async fn prevent_agent_read_caching(mut response: AxumResponse) -> AxumResponse {
+    // URLs outlive agent incarnations; even a tombstone must not be cached.
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn add_retry_after_to_service_unavailable(mut response: AxumResponse) -> AxumResponse {
