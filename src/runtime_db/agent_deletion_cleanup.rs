@@ -889,6 +889,7 @@ mod tests {
 
     fn attempt(db: &RuntimeDb) -> Result<()> {
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: "attempt-a".into(),
             agent_id: "a".into(),
             source_message_id: Some("message-a".into()),

@@ -339,7 +339,14 @@ async fn p1_shared_reply_oversize_and_ordinary_inputs_share_identity_and_byte_li
         } else {
             "mixed-original-marker".into()
         };
-        let original = reply(runtime, Some(&receiver), "mixed-original", &body).await;
+        let original = reply_with_authority(
+            runtime,
+            Some(&receiver),
+            "mixed-original",
+            &body,
+            AuthorityClass::ExternalEvidence,
+        )
+        .await;
         let mut sources = Vec::new();
         for index in 0..9 {
             let task = waiter(runtime, Some(&receiver), &format!("mixed-wait-{index}")).await;
@@ -360,10 +367,16 @@ async fn p1_shared_reply_oversize_and_ordinary_inputs_share_identity_and_byte_li
         }
         let batch = first_batch.expect("shared reply opens a canonical execution");
         assert!(batch.identities.len() <= 5, "{batch:?}");
-        assert!(!batch.identities.is_empty(), "{batch:?}");
         assert!(batch.input_ids.contains(&original.id), "{batch:?}");
-        assert!(batch.input_ids.contains(&first.id), "{batch:?}");
-        assert!(batch.input_ids.contains(&second.id), "{batch:?}");
+        if oversized {
+            // The anchor's preclaim projection is frozen before batch selection.
+            assert!(batch.identities.is_empty(), "{batch:?}");
+            assert_eq!(batch.input_ids, [original.id.clone()], "{batch:?}");
+        } else {
+            assert!(!batch.identities.is_empty(), "{batch:?}");
+            assert!(batch.input_ids.contains(&first.id), "{batch:?}");
+            assert!(batch.input_ids.contains(&second.id), "{batch:?}");
+        }
         assert!(
             batch.identities.len() + batch.ordinary_sources <= 8,
             "{batch:?}"
@@ -373,11 +386,11 @@ async fn p1_shared_reply_oversize_and_ordinary_inputs_share_identity_and_byte_li
             !all_settled(runtime, &sources),
             "overflow must remain durable"
         );
-        for source in commands {
+        for source in &commands {
             let record = runtime
                 .runtime_db()
                 .task_result_settlements()
-                .latest_for_message(&source)
+                .latest_for_message(source)
                 .unwrap()
                 .unwrap();
             if batch.identities.contains(&record.result_identity) {
@@ -399,6 +412,38 @@ async fn p1_shared_reply_oversize_and_ordinary_inputs_share_identity_and_byte_li
             assert!(context.contains(&format!("message:{}", original.id)));
             assert!(!context.contains(&body));
         }
+        drop(requests);
+
+        let all_sources: Vec<_> = sources.iter().chain(commands.iter()).cloned().collect();
+        let mut identities = batch.identities.clone();
+        let mut ordinary = BTreeSet::new();
+        for id in &batch.input_ids {
+            if id == &first.id || id == &second.id {
+                assert!(ordinary.insert(id.clone()));
+            }
+        }
+        for _ in 0..all_sources.len() * 6 + 12 {
+            if all_settled(runtime, &all_sources) && ordinary.len() == 2 {
+                break;
+            }
+            if runtime.inner.agent.lock().await.queue.is_empty() {
+                harness.advance(std::time::Duration::from_secs(31)).await;
+                runtime.emit_due_task_result_recovery().await.unwrap();
+            }
+            if let Some(next) = process_next(runtime).await {
+                for identity in &next.identities {
+                    assert!(identities.insert(identity.clone()), "{next:?}");
+                }
+                for id in &next.input_ids {
+                    if id == &first.id || id == &second.id {
+                        assert!(ordinary.insert(id.clone()), "{next:?}");
+                    }
+                }
+            }
+        }
+        assert!(all_settled(runtime, &all_sources), "{identities:?}");
+        assert_eq!(identities.len(), all_sources.len());
+        assert_eq!(ordinary, BTreeSet::from([first.id, second.id]));
     }
 }
 
@@ -440,6 +485,22 @@ fn prepare_shared_message(
     key: &str,
     body: &str,
 ) -> crate::runtime::agent_message_delivery::PreparedAgentMessageDelivery {
+    prepare_shared_message_with_authority(
+        recipient,
+        sender,
+        key,
+        body,
+        AuthorityClass::RuntimeInstruction,
+    )
+}
+
+fn prepare_shared_message_with_authority(
+    recipient: &str,
+    sender: &str,
+    key: &str,
+    body: &str,
+    authority_class: AuthorityClass,
+) -> crate::runtime::agent_message_delivery::PreparedAgentMessageDelivery {
     AgentMessageDeliveryService::prepare(
         AgentMessageSendRequest {
             target_agent_id: recipient.into(),
@@ -459,7 +520,7 @@ fn prepare_shared_message(
             origin: MessageOrigin::System {
                 subsystem: "agent_message".into(),
             },
-            authority_class: AuthorityClass::RuntimeInstruction,
+            authority_class,
             delivery_surface: MessageDeliverySurface::RuntimeSystem,
             admission_context: AdmissionContext::RuntimeOwned,
             current_turn_id: None,
@@ -478,7 +539,30 @@ async fn reply(
     key: &str,
     body: &str,
 ) -> MessageEnvelope {
-    let mut prepared = prepare_shared_message("default", "shared-reply-peer", key, body);
+    reply_with_authority(
+        runtime,
+        owner,
+        key,
+        body,
+        AuthorityClass::RuntimeInstruction,
+    )
+    .await
+}
+
+async fn reply_with_authority(
+    runtime: &RuntimeHandle,
+    owner: Option<&str>,
+    key: &str,
+    body: &str,
+    authority_class: AuthorityClass,
+) -> MessageEnvelope {
+    let mut prepared = prepare_shared_message_with_authority(
+        "default",
+        "shared-reply-peer",
+        key,
+        body,
+        authority_class,
+    );
     // Explicit receiver ownership is fixture input, never inferred from sender.
     prepared.message.work_item_id = owner.map(str::to_owned);
     prepared.message.created_at = runtime.now();

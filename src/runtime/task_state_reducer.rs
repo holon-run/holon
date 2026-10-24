@@ -813,7 +813,18 @@ impl RuntimeHandle {
                 self.inner
                     .runtime_db
                     .task_result_settlements()
-                    .admit_message(&message.agent_id, &message.id, activation_id, self.now())?;
+                    .admit_message_with_projection(
+                        &message.agent_id,
+                        &message.id,
+                        activation_id,
+                        super::input_consumption::projection::admitted_item(
+                            &self.inner.storage,
+                            &message.agent_id,
+                            &message.id,
+                        )?
+                        .as_ref(),
+                        self.now(),
+                    )?;
             }
         }
         if let Some(settlement) = settlement.as_ref() {
@@ -1294,6 +1305,7 @@ mod tests {
             execution.attempts.insert(
                 "activation-exact".into(),
                 ExecutionAttempt {
+                    input_projection: None,
                     attempt_id: "activation-exact".into(),
                     agent_id: message.agent_id.clone(),
                     source_message_id: Some(message.id.clone()),

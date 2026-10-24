@@ -3,7 +3,7 @@
 use super::*;
 use crate::domain::execution_protocol::ExecutionAttemptState;
 use crate::runtime::input_consumption::InputScope;
-use crate::types::{IdleInputBatchItem, LiveInputBatchRecord, LiveInputSafePoint};
+use crate::types::{LiveInputBatchRecord, LiveInputSafePoint};
 use std::collections::BTreeSet;
 
 impl RuntimeHandle {
@@ -11,9 +11,10 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         provider_round: usize,
-        available_bytes: usize,
+        available: impl Into<super::input_consumption::projection::InputBudget>,
         results_only: bool,
     ) -> Result<Vec<String>> {
+        let budget = available.into();
         let mut guard = self.inner.agent.lock().await;
         let expected_state = guard.state.clone();
         let Some(binding) = expected_state.current_execution_binding.as_ref() else {
@@ -76,7 +77,8 @@ impl RuntimeHandle {
             .map(|batch| batch.rendered_bytes)
             .sum();
         let max_items = 8.min(32usize.saturating_sub(used_items));
-        let max_bytes = available_bytes
+        let max_bytes = budget
+            .bytes
             .min(24 * 1024)
             .min((96 * 1024usize).saturating_sub(used_bytes));
         if max_items == 0 || max_bytes <= LiveInputBatchRecord::HEADER.len() {
@@ -120,29 +122,36 @@ impl RuntimeHandle {
                 record.result_identity, record.task_id, record.parent_turn_id,
                 record.rejoin_generation, serde_json::to_string(&record.work_item_id)?,
             );
-            let remaining = max_bytes.saturating_sub(batch.rendered_bytes + metadata.len());
-            let Some(mut item) = fit_live_item(&message, remaining, max_bytes)? else {
-                break;
-            };
-            item.rendered.insert_str(0, &metadata);
-            let mut additions = vec![(message, item)];
-            if let Some(reply_id) =
-                crate::wake_contract::agent_message_reply_reference(&additions[0].0)
-            {
+            let reply_id =
+                crate::wake_contract::agent_message_reply_reference(&message).map(str::to_owned);
+            let mut sources = vec![message];
+            if let Some(reply_id) = reply_id.as_deref() {
                 if !selected.contains(reply_id)
                     && !turn.input_message_ids.iter().any(|id| id == reply_id)
                 {
                     let Some(reply) = self.inner.storage.read_message_by_id(reply_id)? else {
                         continue;
                     };
-                    let remaining = max_bytes
-                        .saturating_sub(batch.rendered_bytes + additions[0].1.rendered.len());
-                    let Some(reply_item) = fit_live_item(&reply, remaining, max_bytes)? else {
-                        break;
-                    };
-                    additions.push((reply, reply_item));
+                    sources.push(reply);
                 }
             }
+            let Some(mut items) = super::input_consumption::projection::persisted_group(
+                &self.inner.storage,
+                &sources,
+                |items| {
+                    let mut text = batch.rendered_text();
+                    text.push_str(&metadata);
+                    for item in items {
+                        text.push_str(&item.rendered);
+                    }
+                    Ok(text.len() <= max_bytes && budget.fits("current_live_input_batches", &text))
+                },
+            )?
+            else {
+                break;
+            };
+            items[0].rendered.insert_str(0, &metadata);
+            let additions: Vec<_> = sources.into_iter().zip(items).collect();
             let mut source_queues = Vec::new();
             let mut valid = true;
             for (message, _) in &additions {
@@ -223,7 +232,15 @@ impl RuntimeHandle {
                 continue;
             };
             let remaining = max_bytes.saturating_sub(batch.rendered_bytes);
-            let Some(item) = fit_live_item(&message, remaining, max_bytes)? else {
+            let preceding = format!("[current_live_input_batches]\n{}", batch.rendered_text());
+            let Some(item) = super::input_consumption::projection::persisted_item_after(
+                &self.inner.storage,
+                &message,
+                budget.tokens,
+                remaining,
+                &preceding,
+            )?
+            else {
                 break;
             };
             batch.ordinary_message_ids.push(message.id.clone());
@@ -252,6 +269,9 @@ impl RuntimeHandle {
         let mut committed_state = expected_state.clone();
         committed_state.pending = guard.queue.len().saturating_sub(removed_from_memory);
         let text = batch.rendered_text();
+        if !budget.fits("current_live_input_batches", &text) {
+            return Ok(Vec::new());
+        }
         let mut commit = self
             .inner
             .runtime_db
@@ -285,20 +305,4 @@ impl RuntimeHandle {
         self.apply_transition_commit(commit).await;
         Ok(vec![text])
     }
-}
-
-fn fit_live_item(
-    message: &MessageEnvelope,
-    remaining: usize,
-    batch_max: usize,
-) -> Result<Option<IdleInputBatchItem>> {
-    let full = super::input_consumption::item_evidence(message, usize::MAX)?
-        .expect("unbounded source evidence fits");
-    if full.rendered.len() <= remaining {
-        return Ok(Some(full));
-    }
-    if full.rendered.len() > batch_max.saturating_sub(LiveInputBatchRecord::HEADER.len()) {
-        return super::input_consumption::item_evidence(message, remaining.min(4096));
-    }
-    Ok(None)
 }

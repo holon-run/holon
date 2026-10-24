@@ -21,6 +21,8 @@ fn pending_record(index: usize) -> TaskResultSettlementRecord {
     let created_at =
         Utc.timestamp_opt(1_700_000_000, 0).single().unwrap() + Duration::seconds(index as i64);
     TaskResultSettlementRecord {
+        source_projection: None,
+        reply_projection: None,
         result_identity: format!("result-{index:02}"),
         agent_id: "agent-a".into(),
         task_id: format!("task-{index:02}"),

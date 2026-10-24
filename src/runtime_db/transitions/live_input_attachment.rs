@@ -273,6 +273,26 @@ impl RuntimeTransitionRepository<'_> {
                 {
                     return Ok(TransitionCommit::default());
                 }
+                let Some(item) = batch
+                    .items
+                    .iter()
+                    .find(|item| item.message_id == message.id)
+                else {
+                    return Ok(TransitionCommit::default());
+                };
+                // Result identities are prepended by the batch, outside source provenance.
+                let source_rendered = item
+                    .rendered
+                    .find("- reply_context_id:")
+                    .map(|start| &item.rendered[start..])
+                    .unwrap_or(&item.rendered);
+                let source = crate::types::IdleInputBatchItem {
+                    rendered: source_rendered.to_owned(),
+                    ..item.clone()
+                };
+                crate::runtime::input_consumption::projection::validate_projection(
+                    message, &source,
+                )?;
             }
             if batch.items.iter().any(|item| {
                 !seen.contains(&item.message_id)

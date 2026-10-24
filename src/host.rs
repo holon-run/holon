@@ -8970,6 +8970,7 @@ mod tests {
         execution.attempts.insert(
             attempt_id.clone(),
             ExecutionAttempt {
+                input_projection: None,
                 attempt_id: attempt_id.clone(),
                 agent_id: agent_id.into(),
                 source_message_id: Some(message_id.clone()),
@@ -14424,6 +14425,7 @@ mod tests {
             .load_execution_authority_fences(child_id)
             .unwrap();
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: child_id.into(),
             source_message_id: Some(source.id.clone()),
@@ -22637,6 +22639,7 @@ mod tests {
             .append_queue_entry(&make_queue_entry(&msg_b, QueueEntryStatus::Dequeued))
             .unwrap();
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: format!("activation:message:{}", msg_b.id),
             agent_id: agent_id.clone(),
             source_message_id: Some(msg_b.id.clone()),

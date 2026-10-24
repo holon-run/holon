@@ -2388,6 +2388,7 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
         &state,
         &AdmitExecution {
             attempt: ExecutionAttempt {
+                input_projection: None,
                 attempt_id: source_attempt_id.clone(),
                 agent_id: "default".into(),
                 source_message_id: Some(source.id.clone()),
@@ -2580,6 +2581,7 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
         &state,
         &crate::domain::execution_protocol::AdmitExecution {
             attempt: crate::domain::execution_protocol::ExecutionAttempt {
+                input_projection: None,
                 attempt_id: activation_id.clone(),
                 agent_id: "default".into(),
                 source_message_id: Some(message.id.clone()),
@@ -4627,6 +4629,7 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
     stale.attempts.insert(
         attempt_id.clone(),
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: "default".into(),
             source_message_id: Some(result.id.clone()),
@@ -4962,6 +4965,7 @@ async fn task_result_claim_fixture(
     stale.attempts.insert(
         attempt_id.clone(),
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: "default".into(),
             source_message_id: Some(result.id.clone()),
@@ -18756,6 +18760,30 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     let mut interjection = trusted_operator_prompt(None, "use the smaller lifecycle fix");
     interjection.priority = Priority::Interject;
     let interjection = runtime.enqueue(interjection).await.unwrap();
+    assert!(runtime
+        .drain_operator_interjections_with_budget(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+            super::super::input_consumption::projection::InputBudget {
+                tokens: 1,
+                bytes: usize::MAX,
+            },
+        )
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&interjection.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
     // A failed admission must leave both queue visibility and turn membership unchanged.
     runtime.inject_next_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,

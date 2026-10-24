@@ -772,12 +772,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .queue_entries()
             .latest(&candidate.message.id)?;
-        let mut persisted_message = self
+        let original_message = self
             .runtime
             .inner
             .storage
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
+        let mut persisted_message = original_message.clone();
         let isolated_legacy_execution_bindings = if queue_entry
             .as_ref()
             .is_some_and(|entry| entry.status == QueueEntryStatus::Queued)
@@ -1066,6 +1067,116 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } else {
             None
         };
+        let recovered_projection = if let Some(prior_id) = prior_id {
+            self.runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized(&persisted_message.agent_id)?
+                .and_then(|state| {
+                    state
+                        .attempts
+                        .get(prior_id)
+                        .filter(|prior| {
+                            prior.source_message_id.as_deref()
+                                == Some(persisted_message.id.as_str())
+                        })
+                        .and_then(|prior| prior.input_projection.clone())
+                })
+        } else {
+            None
+        };
+        if let Some(projection) = recovered_projection {
+            if let Some(plan) = canonical_claim.as_mut() {
+                for command in &mut plan.execution_protocol.commands {
+                    if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(
+                        admit,
+                    ) = command
+                    {
+                        admit.attempt.input_projection = Some(projection.clone());
+                    }
+                }
+            }
+        } else if let Some(plan) = canonical_claim
+            .as_mut()
+            .filter(|_| replay_source_turn_id.is_none())
+        {
+            let mut admission_state = candidate.prior_state.clone();
+            admission_state.current_turn_id = None;
+            let attempt = plan
+                .execution_protocol
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(admit) => {
+                        Some(&admit.attempt)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| anyhow!("canonical claim has no execution admission"))?;
+            let owner = match &attempt.binding {
+                ExecutionBinding::WorkItem { work_item_id } => crate::types::TurnOwner::WorkItem {
+                    work_item_id: work_item_id.clone(),
+                },
+                ExecutionBinding::Conversation { interaction_id } => {
+                    crate::types::TurnOwner::Conversation {
+                        interaction_id: interaction_id.clone(),
+                    }
+                }
+                ExecutionBinding::AgentLifecycle { agent_id } => {
+                    crate::types::TurnOwner::AgentLifecycle {
+                        agent_id: agent_id.clone(),
+                    }
+                }
+                ExecutionBinding::Command => crate::types::TurnOwner::Command,
+            };
+            // Charge the owner this Claim will admit, never the unrelated focus.
+            admission_state.current_execution_binding =
+                Some(crate::types::WorkItemExecutionBinding {
+                    activation_id: Some(attempt.attempt_id.clone()),
+                    admission_provenance: Some(ExecutionAdmissionProvenance::Canonical {
+                        scenario_class: plan.scenario_class,
+                        activation_id: attempt.attempt_id.clone(),
+                    }),
+                    source_message_id: persisted_message.id.clone(),
+                    turn_id: persisted_message.turn_id.clone().unwrap_or_default(),
+                    work_item_id: owner.work_item_id().map(ToString::to_string),
+                    owner: Some(owner),
+                    claimed_work_revision: attempt.admitted_fences.work_item_source_revision,
+                });
+            // Preserve ingress provenance; isolated caller bindings only affect dispatch.
+            let projection = match Box::pin(self.runtime.prepare_input_projection(
+                &original_message,
+                &admission_state,
+                dispatch_plan.continuation_resolution.as_ref(),
+            ))
+            .await
+            {
+                Ok(projection) => projection,
+                Err(error) if error.is::<crate::context::ContextPlanningError>() => None,
+                Err(error) => return Err(error),
+            };
+            let Some(projection) = projection else {
+                self.runtime.inner.storage.append_event(&AuditEvent::legacy(
+                    "input_context_admission_rejected",
+                    serde_json::json!({
+                        "agent_id": persisted_message.agent_id,
+                        "message_id": persisted_message.id,
+                        "work_item_id": plan.work_item_id,
+                        "reason": "source_minimum_over_budget_or_original_unavailable",
+                        "action": "split the input or explicitly adjust the context budget; source remains unclaimed",
+                    }),
+                ))?;
+                return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::AuthorityBlocked));
+            };
+            for command in &mut plan.execution_protocol.commands {
+                if let crate::domain::execution_protocol::ExecutionProtocolCommand::Admit(admit) =
+                    command
+                {
+                    admit.attempt.input_projection = Some(projection.clone());
+                }
+            }
+        }
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
                 Some(ExecutionAdmissionProvenance::Canonical {
@@ -2946,6 +3057,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             };
         commands.push(ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
             attempt: ExecutionAttempt {
+                input_projection: None,
                 attempt_id: attempt_id.to_owned(),
                 agent_id: message.agent_id.clone(),
                 source_message_id: Some(message.id.clone()),
@@ -4011,6 +4123,7 @@ mod tests {
             agent_id: message.agent_id.clone(),
         };
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: canonical_activation_id(&message.id),
             agent_id: message.agent_id.clone(),
             source_message_id: Some(message.id.clone()),
@@ -4977,6 +5090,25 @@ mod tests {
         assert_eq!(stored.turn_id.as_deref(), Some("turn-caller"));
         assert_eq!(stored.task_id.as_deref(), Some("task-caller"));
         assert_eq!(stored.work_item_id.as_deref(), Some("work-caller"));
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        let attempt = execution.open_attempt().unwrap();
+        assert_ne!(
+            attempt.binding,
+            ExecutionBinding::WorkItem {
+                work_item_id: "work-caller".into(),
+            }
+        );
+        crate::runtime::input_consumption::projection::validate_projection(
+            &stored,
+            attempt.input_projection.as_ref().unwrap(),
+        )
+        .unwrap();
         let delivery = runtime
             .inner
             .runtime_db

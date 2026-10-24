@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Result};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -6,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     runtime_db::{migrations::timestamp, RuntimeDb},
-    types::{MessageEnvelope, TaskRecord},
+    types::{IdleInputBatchItem, MessageEnvelope, TaskRecord},
 };
 
 pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
@@ -116,6 +118,10 @@ pub(crate) struct TaskResultSettlementRecord {
     pub recovery_paused_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub recovery_diagnostic_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub source_projection: Option<IdleInputBatchItem>,
+    #[serde(default)]
+    pub reply_projection: Option<IdleInputBatchItem>,
 }
 
 impl TaskResultSettlementRecord {
@@ -184,6 +190,8 @@ impl TaskResultSettlementRecord {
             last_recovery_admitted_at: None,
             recovery_paused_at: None,
             recovery_diagnostic_at: None,
+            source_projection: None,
+            reply_projection: None,
         }))
     }
 }
@@ -252,6 +260,7 @@ impl TaskResultSettlementRepository<'_> {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_unsettled_snapshot(
         &self,
         agent_id: &str,
@@ -259,6 +268,27 @@ impl TaskResultSettlementRepository<'_> {
         activation_id: &str,
         anchor_message_id: Option<&str>,
         selected: Option<&std::collections::BTreeSet<String>>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<TaskResultSettlementRecord>> {
+        self.admit_unsettled_snapshot_with_projections(
+            agent_id,
+            work_item_id,
+            activation_id,
+            anchor_message_id,
+            selected,
+            None,
+            now,
+        )
+    }
+
+    pub(crate) fn admit_unsettled_snapshot_with_projections(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        activation_id: &str,
+        anchor_message_id: Option<&str>,
+        selected: Option<&std::collections::BTreeSet<String>>,
+        projections: Option<&BTreeMap<String, IdleInputBatchItem>>,
         now: DateTime<Utc>,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
@@ -330,6 +360,7 @@ impl TaskResultSettlementRepository<'_> {
                 if !charge_selected_recovery_tx(tx, &mut record, activation_id, now)? {
                     continue;
                 }
+                set_admission_projections_tx(tx, &mut record, projections)?;
                 record.state = TaskResultSettlementState::CallerAdmitted;
                 record.activation_id = Some(activation_id.to_owned());
                 record.admitted_at.get_or_insert(now);
@@ -587,6 +618,7 @@ impl TaskResultSettlementRepository<'_> {
 
     /// The caller reserves rendered bytes and every waiter identity before this
     /// source-specific transaction independently rechecks their eligibility.
+    #[cfg(test)]
     pub(crate) fn admit_reply_message_snapshot(
         &self,
         agent_id: &str,
@@ -594,6 +626,27 @@ impl TaskResultSettlementRepository<'_> {
         message_id: &str,
         activation_id: &str,
         selected: &std::collections::BTreeSet<String>,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<TaskResultSettlementRecord>> {
+        self.admit_reply_message_snapshot_with_projections(
+            agent_id,
+            work_item_id,
+            message_id,
+            activation_id,
+            selected,
+            None,
+            cutoff,
+        )
+    }
+
+    pub(crate) fn admit_reply_message_snapshot_with_projections(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        message_id: &str,
+        activation_id: &str,
+        selected: &std::collections::BTreeSet<String>,
+        projections: Option<&BTreeMap<String, IdleInputBatchItem>>,
         cutoff: DateTime<Utc>,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
@@ -709,6 +762,7 @@ impl TaskResultSettlementRepository<'_> {
                 if !charge_selected_recovery_tx(tx, &mut record, activation_id, cutoff)? {
                     continue;
                 }
+                set_admission_projections_tx(tx, &mut record, projections)?;
                 record.state = TaskResultSettlementState::CallerAdmitted;
                 record.activation_id = Some(activation_id.to_owned());
                 record.admitted_at = Some(cutoff);
@@ -753,11 +807,23 @@ impl TaskResultSettlementRepository<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_message(
         &self,
         agent_id: &str,
         message_id: &str,
         activation_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<TaskResultSettlementRecord>> {
+        self.admit_message_with_projection(agent_id, message_id, activation_id, None, now)
+    }
+
+    pub(crate) fn admit_message_with_projection(
+        &self,
+        agent_id: &str,
+        message_id: &str,
+        activation_id: &str,
+        projection: Option<&IdleInputBatchItem>,
         now: DateTime<Utc>,
     ) -> Result<Option<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
@@ -773,6 +839,10 @@ impl TaskResultSettlementRepository<'_> {
             }
             match record.state {
                 TaskResultSettlementState::PersistedPending => {
+                    if let Some(projection) = projection {
+                        validate_projection_tx(tx, message_id, agent_id, projection)?;
+                        record.source_projection = Some(projection.clone());
+                    }
                     record.state = TaskResultSettlementState::CallerAdmitted;
                     record.activation_id = Some(activation_id.to_owned());
                     record.admitted_at = Some(now);
@@ -1164,6 +1234,69 @@ pub(crate) fn upsert_pending_tx(
         ],
     )?;
     Ok(inserted == 1)
+}
+
+fn validate_projection_tx(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    agent_id: &str,
+    projection: &IdleInputBatchItem,
+) -> Result<MessageEnvelope> {
+    if projection.message_id != message_id
+        || projection.source_ref != format!("message:{message_id}")
+    {
+        bail!("task result projection source mismatch for message {message_id}");
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        bail!("task result projection original message missing: {message_id}");
+    };
+    let message: MessageEnvelope = serde_json::from_str(&payload)?;
+    if message.id != message_id || message.agent_id != agent_id {
+        bail!("task result projection original message mismatch: {message_id}");
+    }
+    crate::runtime::input_consumption::projection::validate_projection(&message, projection)?;
+    Ok(message)
+}
+
+fn set_admission_projections_tx(
+    tx: &Transaction<'_>,
+    record: &mut TaskResultSettlementRecord,
+    projections: Option<&BTreeMap<String, IdleInputBatchItem>>,
+) -> Result<()> {
+    // Recovery rebinds admission ownership, never the already admitted representation.
+    if record.state != TaskResultSettlementState::PersistedPending {
+        return Ok(());
+    }
+    let Some(projections) = projections else {
+        return Ok(());
+    };
+    let Some(projection) = projections.get(&record.message_id) else {
+        bail!(
+            "task result projection missing for message {}",
+            record.message_id
+        );
+    };
+    let message = validate_projection_tx(tx, &record.message_id, &record.agent_id, projection)?;
+    let reply_projection =
+        if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(&message) {
+            let Some(reply_projection) = projections.get(reply_id) else {
+                bail!("task result reply projection missing for message {reply_id}");
+            };
+            validate_projection_tx(tx, reply_id, &record.agent_id, reply_projection)?;
+            Some(reply_projection.clone())
+        } else {
+            None
+        };
+    record.source_projection = Some(projection.clone());
+    record.reply_projection = reply_projection;
+    Ok(())
 }
 
 fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<()> {
@@ -1666,4 +1799,548 @@ fn latest_for_message_tx(
     payload
         .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
         .transpose()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use crate::types::{
+        AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageKind,
+        MessageOrigin, Priority, TaskKind, TaskStatus,
+    };
+
+    fn runtime_db() -> (tempfile::TempDir, RuntimeDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )
+        .unwrap();
+        (dir, db)
+    }
+
+    fn pending_result(
+        db: &RuntimeDb,
+        index: usize,
+        reply_id: Option<&str>,
+    ) -> TaskResultSettlementRecord {
+        let now = Utc::now();
+        let task = TaskRecord {
+            id: format!("projection-task-{index}"),
+            agent_id: "agent-a".into(),
+            kind: if reply_id.is_some() {
+                TaskKind::AgentMessageWait
+            } else {
+                TaskKind::CommandTask
+            },
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: Some(format!("projection-result-{index}")),
+            work_item_id: Some("work-a".into()),
+            summary: None,
+            detail: Some(serde_json::json!({
+                "rejoin_obligation_id": format!("projection-task-{index}"),
+                "rejoin_generation": 1,
+                "parent_turn_id": "parent-turn",
+                "message_id": reply_id,
+                "reply_content_source": reply_id.map(|_| "original_message"),
+            })),
+            recovery: None,
+        };
+        let mut message = MessageEnvelope::new(
+            &task.agent_id,
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "complete original result body".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.id = task.parent_message_id.clone().unwrap();
+        message.created_at = now;
+        message.work_item_id = task.work_item_id.clone();
+        message.task_id = Some(task.id.clone());
+        message.metadata = Some(serde_json::json!({
+            "task_id": task.id,
+            "task_kind": task.kind,
+            "task_status": task.status,
+            "task_detail": task.detail,
+        }));
+        db.tasks().upsert(&task).unwrap();
+        db.messages().upsert(&message).unwrap();
+        db.task_result_settlements()
+            .ensure_pending(&task, &message, now)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn projection(db: &RuntimeDb, message_id: &str) -> IdleInputBatchItem {
+        let message = db.messages().by_id(None, message_id).unwrap().unwrap();
+        crate::runtime::input_consumption::projection::project_item(
+            &message,
+            usize::MAX,
+            usize::MAX,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn latest(db: &RuntimeDb, message_id: &str) -> TaskResultSettlementRecord {
+        db.task_result_settlements()
+            .latest_for_message(message_id)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn legacy_payloads_default_to_no_projections() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        let mut payload = serde_json::to_value(&record).unwrap();
+        let object = payload.as_object_mut().unwrap();
+        object.remove("source_projection");
+        object.remove("reply_projection");
+        let decoded: TaskResultSettlementRecord = serde_json::from_value(payload).unwrap();
+        assert_eq!(decoded, record);
+        assert!(decoded.source_projection.is_none());
+        assert!(decoded.reply_projection.is_none());
+    }
+
+    #[test]
+    fn snapshot_admission_persists_each_selected_projection() {
+        let (_dir, db) = runtime_db();
+        let first = pending_result(&db, 0, None);
+        let second = pending_result(&db, 1, None);
+        let projections = BTreeMap::from([
+            (first.message_id.clone(), projection(&db, &first.message_id)),
+            (
+                second.message_id.clone(),
+                projection(&db, &second.message_id),
+            ),
+        ]);
+        let admitted = db
+            .task_result_settlements()
+            .admit_unsettled_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                "projection-activation",
+                None,
+                None,
+                Some(&projections),
+                Utc::now(),
+            )
+            .unwrap();
+        assert_eq!(admitted.len(), 2);
+        for record in admitted {
+            assert_eq!(
+                record.source_projection,
+                projections.get(&record.message_id).cloned()
+            );
+            assert_eq!(latest(&db, &record.message_id), record);
+            assert_eq!(record.state, TaskResultSettlementState::CallerAdmitted);
+        }
+    }
+
+    #[test]
+    fn invalid_snapshot_projection_rolls_back_all_admissions() {
+        let (_dir, db) = runtime_db();
+        let first = pending_result(&db, 0, None);
+        let second = pending_result(&db, 1, None);
+        let mut invalid = projection(&db, &second.message_id);
+        invalid.rendered = invalid
+            .rendered
+            .replace("complete original result body", "unrelated result body");
+        let projections = BTreeMap::from([
+            (first.message_id.clone(), projection(&db, &first.message_id)),
+            (second.message_id.clone(), invalid),
+        ]);
+        assert!(db
+            .task_result_settlements()
+            .admit_unsettled_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                "projection-activation",
+                None,
+                None,
+                Some(&projections),
+                Utc::now(),
+            )
+            .is_err());
+        assert_eq!(latest(&db, &first.message_id), first);
+        assert_eq!(latest(&db, &second.message_id), second);
+    }
+
+    #[test]
+    fn projection_admission_requires_a_matching_durable_original() {
+        for invalid_case in [
+            "message_id",
+            "source_ref",
+            "missing",
+            "durable_id",
+            "agent_id",
+            "content_version",
+            "origin",
+            "routing_context",
+            "body",
+        ] {
+            let (_dir, db) = runtime_db();
+            let record = pending_result(&db, 0, None);
+            let mut item = projection(&db, &record.message_id);
+            match invalid_case {
+                "message_id" => item.message_id = "unrelated".into(),
+                "source_ref" => item.source_ref = "message:unrelated".into(),
+                "content_version" => {
+                    item.rendered = item.rendered.replacen(
+                        "\"content_version\":\"sha256:",
+                        "\"content_version\":\"sha256:unrelated",
+                        1,
+                    );
+                }
+                "origin" => {
+                    item.rendered = item.rendered.replacen(
+                        &format!("\"task_id\":\"{}\"", record.task_id),
+                        "\"task_id\":\"unrelated\"",
+                        1,
+                    );
+                }
+                "routing_context" => {
+                    item.rendered = item.rendered.replacen(
+                        "\"routing_context\":null",
+                        "\"routing_context\":{\"message_id\":\"unrelated\"}",
+                        1,
+                    );
+                }
+                "body" => {
+                    item.rendered = item
+                        .rendered
+                        .replace("complete original result body", "unrelated result body");
+                }
+                "missing" => {
+                    db.transaction(|tx| {
+                        tx.execute(
+                            "DELETE FROM messages WHERE message_id = ?1",
+                            [&record.message_id],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                }
+                field => {
+                    let field = if field == "durable_id" {
+                        "$.id"
+                    } else {
+                        "$.agent_id"
+                    };
+                    db.transaction(|tx| {
+                        tx.execute(
+                            "UPDATE messages SET payload_json = json_set(payload_json, ?2, 'unrelated')
+                             WHERE message_id = ?1",
+                            params![record.message_id, field],
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+                }
+            }
+            assert!(
+                db.task_result_settlements()
+                    .admit_message_with_projection(
+                        "agent-a",
+                        &record.message_id,
+                        "projection-activation",
+                        Some(&item),
+                        Utc::now(),
+                    )
+                    .is_err(),
+                "{invalid_case}"
+            );
+            assert_eq!(latest(&db, &record.message_id), record, "{invalid_case}");
+        }
+    }
+
+    #[test]
+    fn supplied_snapshot_map_cannot_omit_a_new_source() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        assert!(db
+            .task_result_settlements()
+            .admit_unsettled_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                "projection-activation",
+                None,
+                None,
+                Some(&BTreeMap::new()),
+                Utc::now(),
+            )
+            .is_err());
+        assert_eq!(latest(&db, &record.message_id), record);
+    }
+
+    #[test]
+    fn stale_content_projection_cannot_admit_a_changed_original() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        let item = projection(&db, &record.message_id);
+        let mut message = db
+            .messages()
+            .by_id(None, &record.message_id)
+            .unwrap()
+            .unwrap();
+        message.body = MessageBody::Text {
+            text: "changed durable body".into(),
+        };
+        db.messages().upsert(&message).unwrap();
+        assert!(db
+            .task_result_settlements()
+            .admit_message_with_projection(
+                "agent-a",
+                &record.message_id,
+                "projection-activation",
+                Some(&item),
+                Utc::now(),
+            )
+            .is_err());
+        assert_eq!(latest(&db, &record.message_id), record);
+    }
+
+    #[test]
+    fn preview_admission_requires_an_explicit_original_prefix() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        let mut message = db
+            .messages()
+            .by_id(None, &record.message_id)
+            .unwrap()
+            .unwrap();
+        let body = "原始结果正文。".repeat(256);
+        message.body = MessageBody::Text { text: body.clone() };
+        db.messages().upsert(&message).unwrap();
+        let full = projection(&db, &record.message_id);
+        let preview = crate::runtime::input_consumption::projection::project_item(
+            &message,
+            usize::MAX,
+            full.rendered.len() - body.len() / 2,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(preview
+            .rendered
+            .contains("representation: bounded_preview\n"));
+        assert!(preview.rendered.contains("原始"));
+        for (from, to) in [
+            ("原始", "伪造"),
+            ("original not fully read", "original fully read"),
+            ("representation: bounded_preview", "representation: full"),
+        ] {
+            let mut invalid = preview.clone();
+            invalid.rendered = invalid.rendered.replacen(from, to, 1);
+            assert!(db
+                .task_result_settlements()
+                .admit_message_with_projection(
+                    "agent-a",
+                    &record.message_id,
+                    "projection-activation",
+                    Some(&invalid),
+                    Utc::now(),
+                )
+                .is_err());
+            assert_eq!(latest(&db, &record.message_id), record);
+        }
+        let admitted = db
+            .task_result_settlements()
+            .admit_message_with_projection(
+                "agent-a",
+                &record.message_id,
+                "projection-activation",
+                Some(&preview),
+                Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(admitted.source_projection, Some(preview));
+        assert_eq!(latest(&db, &record.message_id), admitted);
+    }
+
+    #[test]
+    fn admitted_and_settled_projections_are_immutable() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        let item = projection(&db, &record.message_id);
+        let repository = db.task_result_settlements();
+        let admitted = repository
+            .admit_message_with_projection(
+                "agent-a",
+                &record.message_id,
+                "projection-activation",
+                Some(&item),
+                Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(admitted.source_projection, Some(item));
+        let mut replacement = projection(&db, &record.message_id);
+        replacement.source_ref = "message:unrelated".into();
+        assert_eq!(
+            repository
+                .admit_message_with_projection(
+                    "agent-a",
+                    &record.message_id,
+                    "projection-activation",
+                    Some(&replacement),
+                    Utc::now(),
+                )
+                .unwrap(),
+            Some(admitted.clone())
+        );
+        // A historical admission may be selected again, without replacing its projection.
+        let rebound = repository
+            .admit_unsettled_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                "rebound-activation",
+                None,
+                None,
+                Some(&BTreeMap::new()),
+                Utc::now(),
+            )
+            .unwrap();
+        assert_eq!(rebound.len(), 1);
+        assert_eq!(rebound[0].source_projection, admitted.source_projection);
+        repository
+            .settle_activation(
+                "agent-a",
+                "rebound-activation",
+                TaskResultSettlementDisposition::ModelDelivered,
+                Utc::now(),
+            )
+            .unwrap();
+        let settled = latest(&db, &record.message_id);
+        assert!(repository
+            .admit_message_with_projection(
+                "agent-a",
+                &record.message_id,
+                "later-activation",
+                Some(&replacement),
+                Utc::now(),
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(latest(&db, &record.message_id), settled);
+        assert_eq!(settled.source_projection, admitted.source_projection);
+    }
+
+    #[test]
+    fn historical_admission_remains_projection_free() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, None);
+        let repository = db.task_result_settlements();
+        let admitted = repository
+            .admit_message(
+                "agent-a",
+                &record.message_id,
+                "legacy-activation",
+                Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(admitted.source_projection.is_none());
+        assert!(admitted.reply_projection.is_none());
+        let repeated = repository
+            .admit_message_with_projection(
+                "agent-a",
+                &record.message_id,
+                "legacy-activation",
+                Some(&projection(&db, &record.message_id)),
+                Utc::now(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated, admitted);
+    }
+
+    #[test]
+    fn reply_admission_persists_result_and_original_reply_atomically() {
+        let (_dir, db) = runtime_db();
+        let record = pending_result(&db, 0, Some("original-reply"));
+        let mut reply = MessageEnvelope::new(
+            "agent-a",
+            MessageKind::InternalFollowup,
+            MessageOrigin::Task {
+                task_id: "sender-task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "complete original reply body".into(),
+            },
+        );
+        reply.id = "original-reply".into();
+        db.messages().upsert(&reply).unwrap();
+        let selected = std::collections::BTreeSet::from([record.result_identity.clone()]);
+        let mut projections = BTreeMap::from([(
+            record.message_id.clone(),
+            projection(&db, &record.message_id),
+        )]);
+        let repository = db.task_result_settlements();
+        assert!(repository
+            .admit_reply_message_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                &reply.id,
+                "reply-activation",
+                &selected,
+                Some(&projections),
+                Utc::now(),
+            )
+            .is_err());
+        assert_eq!(latest(&db, &record.message_id), record);
+        let mut invalid_reply = projection(&db, &reply.id);
+        invalid_reply.rendered = invalid_reply
+            .rendered
+            .replace("complete original reply body", "unrelated reply body");
+        projections.insert(reply.id.clone(), invalid_reply);
+        assert!(repository
+            .admit_reply_message_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                &reply.id,
+                "reply-activation",
+                &selected,
+                Some(&projections),
+                Utc::now(),
+            )
+            .is_err());
+        assert_eq!(latest(&db, &record.message_id), record);
+        projections.insert(reply.id.clone(), projection(&db, &reply.id));
+        let admitted = repository
+            .admit_reply_message_snapshot_with_projections(
+                "agent-a",
+                Some("work-a"),
+                &reply.id,
+                "reply-activation",
+                &selected,
+                Some(&projections),
+                Utc::now(),
+            )
+            .unwrap();
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(
+            admitted[0].source_projection,
+            projections.get(&record.message_id).cloned()
+        );
+        assert_eq!(
+            admitted[0].reply_projection,
+            projections.get(&reply.id).cloned()
+        );
+        assert_eq!(latest(&db, &record.message_id), admitted[0]);
+    }
 }

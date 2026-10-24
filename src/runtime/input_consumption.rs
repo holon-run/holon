@@ -1,5 +1,7 @@
 //! Idle-start input snapshots. A batch key never grants execution authority.
 
+pub(crate) mod projection;
+
 use super::message_dispatch::message_text;
 use super::*;
 use crate::runtime_error::{
@@ -11,6 +13,7 @@ use rusqlite::OptionalExtension;
 pub(crate) const INPUT_BATCH_ITEMS: usize = 8;
 pub(crate) const INPUT_BATCH_BYTES: usize = 24 * 1024;
 pub(crate) const INPUT_BATCH_SCAN: usize = 64;
+#[cfg(test)]
 const OVERSIZE_PREVIEW_BYTES: usize = 4096;
 pub(crate) const BATCH_HEADER: &str =
     "Current input batch (receive order; each item retains its own authority and reply route):\n";
@@ -120,6 +123,7 @@ fn mixed_result_capacity(
     admitted_results + results
 }
 
+#[cfg(test)]
 pub(super) fn item_evidence(
     message: &MessageEnvelope,
     limit: usize,
@@ -609,8 +613,10 @@ impl RuntimeHandle {
     pub(super) async fn admit_idle_task_results(
         &self,
         anchor: &MessageEnvelope,
-        available_bytes: usize,
+        available: impl Into<projection::InputBudget>,
     ) -> Result<bool> {
+        let budget = available.into();
+        let available_bytes = budget.bytes;
         let guard = self.inner.agent.lock().await;
         let state = &guard.state;
         let Some(binding) = state.current_execution_binding.as_ref() else {
@@ -928,16 +934,34 @@ impl RuntimeHandle {
         let anchor_limit = INPUT_BATCH_BYTES
             .min(available_bytes)
             .saturating_sub(BATCH_HEADER.len());
-        let anchor_full = item_evidence(anchor, usize::MAX)?.expect("unbounded evidence fits");
-        let anchor_limit = if anchor_full.rendered.len() > anchor_limit {
-            anchor_limit.min(OVERSIZE_PREVIEW_BYTES)
+        let anchor_item = if let Some(item) = attempt.input_projection.clone() {
+            item
         } else {
-            anchor_limit
+            let Some(item) = projection::persisted_item_after(
+                &self.inner.storage,
+                anchor,
+                budget.tokens,
+                anchor_limit,
+                &format!("[current_input]\n{BATCH_HEADER}"),
+            )?
+            else {
+                return Ok(false);
+            };
+            item
         };
-        let Some(anchor_item) = item_evidence(anchor, anchor_limit)? else {
+        if anchor_item.rendered.len() > anchor_limit {
             return Ok(false);
+        }
+        let recovered_batch = if turn.idle_input_batch.is_none() {
+            self.validated_recovered_idle_batch(anchor, attempt, &execution, &turn)?
+        } else {
+            None
         };
-        let anchor_bytes = BATCH_HEADER.len() + anchor_item.rendered.len();
+        let frozen_batch = turn.idle_input_batch.as_ref().or(recovered_batch.as_ref());
+        let mut current = frozen_batch
+            .map(render_batch)
+            .unwrap_or_else(|| format!("{BATCH_HEADER}{}", anchor_item.rendered));
+        let anchor_bytes = current.len();
         let previous_pending = crate::context::render_pending_task_result_records(
             &self.inner.storage,
             anchor,
@@ -952,22 +976,39 @@ impl RuntimeHandle {
             .take(2 - usize::from(ordinary_anchor))
         {
             let remaining = max_bytes.saturating_sub(anchor_bytes + reserved_ordinary_bytes);
-            let full = item_evidence(message, usize::MAX)?.expect("unbounded evidence fits");
-            let item = if full.rendered.len() <= remaining {
-                full
-            } else if full.rendered.len() > max_bytes.saturating_sub(BATCH_HEADER.len()) {
-                let Some(preview) = item_evidence(message, remaining.min(OVERSIZE_PREVIEW_BYTES))?
-                else {
-                    break;
-                };
-                preview
-            } else {
+            let Some(item) = projection::persisted_item_after(
+                &self.inner.storage,
+                message,
+                budget.tokens,
+                remaining,
+                &format!("[current_input]\n{current}"),
+            )?
+            else {
                 break;
             };
             reserved_ordinary_bytes += item.rendered.len();
+            current.push_str(&item.rendered);
         }
         let mut selected = std::collections::BTreeSet::new();
-        for record in eligible_results {
+        let mut projections = std::collections::BTreeMap::new();
+        projections.insert(anchor.id.clone(), anchor_item.clone());
+        if let Some(batch) = frozen_batch {
+            for item in &batch.items {
+                projections.insert(item.message_id.clone(), item.clone());
+            }
+        }
+        for prior in &admitted {
+            for item in [
+                prior.source_projection.as_ref(),
+                prior.reply_projection.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                projections.insert(item.message_id.clone(), item.clone());
+            }
+        }
+        for mut record in eligible_results {
             if admitted.len() >= result_limit || record.created_at > cutoff {
                 break;
             }
@@ -977,21 +1018,91 @@ impl RuntimeHandle {
             {
                 continue;
             }
-            admitted.push(record.clone());
-            let pending = crate::context::render_pending_task_result_records(
-                &self.inner.storage,
-                anchor,
-                &admitted,
-            )?
-            .map_or(0, |text| text.len());
-            if anchor_bytes
-                .saturating_add(reserved_ordinary_bytes)
-                .saturating_add(pending)
-                > max_bytes
+            if record.state
+                != crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
             {
-                admitted.pop();
-                break;
+                // Recovery must charge the representation the transaction retains,
+                // including the legacy None representation, without selecting again.
+                let mut records = admitted.clone();
+                records.push(record.clone());
+                let pending = crate::context::render_pending_task_result_records(
+                    &self.inner.storage,
+                    anchor,
+                    &records,
+                )?;
+                if current
+                    .len()
+                    .saturating_add(pending.as_ref().map_or(0, String::len))
+                    > max_bytes
+                    || !budget.fits_idle(&current, pending.as_deref())
+                {
+                    break;
+                }
+                for item in [
+                    record.source_projection.as_ref(),
+                    record.reply_projection.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    projections.insert(item.message_id.clone(), item.clone());
+                }
+                selected.insert(record.result_identity.clone());
+                admitted.push(record);
+                continue;
             }
+            let Some(message) = self.inner.storage.read_message_by_id(&record.message_id)? else {
+                break;
+            };
+            let reply_id =
+                crate::wake_contract::agent_message_reply_reference(&message).map(str::to_owned);
+            let mut sources = vec![message];
+            if let Some(reply_id) = reply_id
+                .as_ref()
+                .filter(|id| !projections.contains_key(*id))
+            {
+                let Some(reply) = self.inner.storage.read_message_by_id(reply_id)? else {
+                    break;
+                };
+                sources.push(reply);
+            }
+            let Some(items) =
+                projection::persisted_group(&self.inner.storage, &sources, |items| {
+                    let mut proposed = record.clone();
+                    proposed.source_projection = Some(items[0].clone());
+                    proposed.reply_projection = reply_id.as_ref().and_then(|id| {
+                        projections
+                            .get(id)
+                            .cloned()
+                            .or_else(|| items.get(1).cloned())
+                    });
+                    let mut records = admitted.clone();
+                    records.push(proposed);
+                    let pending = crate::context::render_pending_task_result_records(
+                        &self.inner.storage,
+                        anchor,
+                        &records,
+                    )?;
+                    Ok(current
+                        .len()
+                        .saturating_add(pending.as_ref().map_or(0, String::len))
+                        <= max_bytes
+                        && budget.fits_idle(&current, pending.as_deref()))
+                })?
+            else {
+                break;
+            };
+            record.source_projection = Some(items[0].clone());
+            record.reply_projection = reply_id.as_ref().and_then(|id| {
+                projections
+                    .get(id)
+                    .cloned()
+                    .or_else(|| items.get(1).cloned())
+            });
+            for item in items {
+                projections.insert(item.message_id.clone(), item);
+            }
+            admitted.push(record.clone());
             selected.insert(record.result_identity);
         }
         if selected.is_empty() && admitted.is_empty() {
@@ -1016,7 +1127,7 @@ impl RuntimeHandle {
             // Preserve the validated source before admission moves its result
             // out of the closed predecessor. A batch alone grants no result.
             let mut recovery_turn = turn.clone();
-            recovery_turn.idle_input_batch = Some(IdleInputBatchRecord {
+            let mut batch = recovered_batch.unwrap_or_else(|| IdleInputBatchRecord {
                 anchor_message_id: anchor.id.clone(),
                 activation_id: Some(activation_id.to_owned()),
                 sender_agent_id: String::new(),
@@ -1026,26 +1137,37 @@ impl RuntimeHandle {
                 rendered_bytes: anchor_bytes,
                 items: vec![anchor_item],
             });
+            batch.activation_id = Some(activation_id.to_owned());
+            for item in &batch.items {
+                if !recovery_turn.input_message_ids.contains(&item.message_id) {
+                    recovery_turn
+                        .input_message_ids
+                        .push(item.message_id.clone());
+                }
+            }
+            recovery_turn.idle_input_batch = Some(batch);
             self.inner.storage.append_turn(&recovery_turn)?;
         }
         if selected.is_empty() {
             return Ok(result_recovery && !admitted.is_empty());
         }
-        let mut admitted = repository.admit_unsettled_snapshot(
+        let mut admitted = repository.admit_unsettled_snapshot_with_projections(
             &anchor.agent_id,
             binding.work_item_id.as_deref(),
             activation_id,
             (!is_reply_anchor && !result_recovery).then_some(anchor.id.as_str()),
             Some(&ordinary_selection),
+            Some(&projections),
             admission_at,
         )?;
         for (reply_id, identities) in reply_selection {
-            admitted.extend(repository.admit_reply_message_snapshot(
+            admitted.extend(repository.admit_reply_message_snapshot_with_projections(
                 &anchor.agent_id,
                 binding.work_item_id.as_deref(),
                 &reply_id,
                 activation_id,
                 &identities,
+                Some(&projections),
                 admission_at,
             )?);
         }
@@ -1192,13 +1314,187 @@ impl RuntimeHandle {
         Ok(true)
     }
 
+    // Share the exact recovery fences with admission before any result is rebound.
+    fn validated_recovered_idle_batch(
+        &self,
+        anchor: &MessageEnvelope,
+        attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+        execution: &crate::domain::execution_protocol::ExecutionProtocolState,
+        turn: &TurnRecord,
+    ) -> Result<Option<IdleInputBatchRecord>> {
+        let Some(replay) = &turn.replay else {
+            return Ok(None);
+        };
+        let activation_id = attempt.attempt_id.as_str();
+        let Some(source) = self.inner.storage.read_turn_by_id(&replay.source_turn_id)? else {
+            // A claim may be interrupted before its turn is persisted.
+            // Replay alone is not evidence of an admitted input batch.
+            return Ok(None);
+        };
+        let Some(batch) = source.idle_input_batch.clone() else {
+            return Ok(None);
+        };
+        let prior = attempt
+            .recovery_of_attempt_id
+            .as_ref()
+            .and_then(|id| execution.attempts.get(id));
+        let rejection = |predicate, field| {
+            IdleInputRecoveryRejection::new(predicate, field)
+                .with_id("message_id", Some(&anchor.id))
+                .with_id("turn_id", Some(&turn.turn_id))
+                .with_id("activation_id", Some(activation_id))
+                .with_id(
+                    "predecessor_activation_id",
+                    attempt.recovery_of_attempt_id.as_deref(),
+                )
+                .with_id("source_turn_id", Some(&replay.source_turn_id))
+                .with_id("batch_activation_id", batch.activation_id.as_deref())
+        };
+        macro_rules! reject_if {
+            ($condition:expr, $predicate:ident, $field:literal) => {
+                if $condition {
+                    return Err(rejection(RecoveryPredicate::$predicate, $field).into());
+                }
+            };
+        }
+        validate_idle_recovery_predecessor(anchor, attempt, prior, &batch)
+            .map_err(|reason| rejection(reason.predicate, reason.field))?;
+        reject_if!(
+            anchor.source_refs.get("replay_source_turn_id") != Some(&replay.source_turn_id),
+            ReplaySourceMismatch,
+            "replay.source_selector"
+        );
+        reject_if!(
+            anchor.source_refs.get("replay_reason").map(String::as_str)
+                != Some("interrupted_queue_claim_reentry"),
+            ReplayReasonMismatch,
+            "replay.reason"
+        );
+        reject_if!(
+            source.agent_id != anchor.agent_id,
+            SourceAgentMismatch,
+            "source.agent"
+        );
+        reject_if!(
+            source.turn_id != replay.source_turn_id,
+            ReplaySourceMismatch,
+            "source.turn_id"
+        );
+        reject_if!(
+            replay.source_message_id != anchor.id,
+            ReplayMessageMismatch,
+            "replay.source_message"
+        );
+        reject_if!(
+            source.effective_owner() != turn.effective_owner(),
+            OwnerMismatch,
+            "source.owner"
+        );
+        reject_if!(
+            source
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+                != Some(anchor.id.as_str()),
+            SourceTriggerMismatch,
+            "source.trigger.message"
+        );
+        reject_if!(
+            batch.anchor_message_id != anchor.id,
+            BatchAnchorMismatch,
+            "batch.anchor_message"
+        );
+        reject_if!(
+            batch.items.first().map(|item| item.message_id.as_str()) != Some(anchor.id.as_str()),
+            BatchAnchorMismatch,
+            "batch.first_item"
+        );
+        reject_if!(
+            batch.items.len() > INPUT_BATCH_ITEMS,
+            BatchIntegrityMismatch,
+            "batch.item_count"
+        );
+        reject_if!(
+            render_batch(&batch).len() != batch.rendered_bytes,
+            BatchIntegrityMismatch,
+            "batch.rendered_bytes"
+        );
+        reject_if!(
+            batch.rendered_bytes > batch.max_bytes,
+            BatchIntegrityMismatch,
+            "batch.max_bytes"
+        );
+        reject_if!(
+            batch.max_bytes > INPUT_BATCH_BYTES,
+            BatchIntegrityMismatch,
+            "batch.global_byte_budget"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for item in &batch.items {
+            reject_if!(
+                !seen.insert(&item.message_id),
+                AttachmentEvidenceMismatch,
+                "attachment.duplicate_item"
+            );
+            reject_if!(
+                !source.input_message_ids.contains(&item.message_id),
+                AttachmentEvidenceMismatch,
+                "attachment.source_membership"
+            );
+            reject_if!(
+                item.source_ref != format!("message:{}", item.message_id),
+                AttachmentEvidenceMismatch,
+                "attachment.source_ref"
+            );
+            let Some(message) = self.inner.storage.read_message_by_id(&item.message_id)? else {
+                return Err(rejection(
+                    RecoveryPredicate::AttachmentEvidenceMismatch,
+                    "attachment.message_missing",
+                )
+                .into());
+            };
+            reject_if!(
+                message.agent_id != anchor.agent_id,
+                AttachmentEvidenceMismatch,
+                "attachment.message_agent"
+            );
+            if item.message_id != anchor.id {
+                let Some(queue) = self
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&item.message_id)?
+                else {
+                    return Err(rejection(
+                        RecoveryPredicate::AttachmentEvidenceMismatch,
+                        "attachment.queue_missing",
+                    )
+                    .into());
+                };
+                reject_if!(
+                    queue.agent_id != anchor.agent_id,
+                    AttachmentEvidenceMismatch,
+                    "attachment.queue_agent"
+                );
+                reject_if!(
+                    queue.status != QueueEntryStatus::Interjected,
+                    AttachmentEvidenceMismatch,
+                    "attachment.queue_status"
+                );
+            }
+        }
+        Ok(Some(batch))
+    }
+
     /// Called once, after canonical turn start and before the first provider request.
     /// Queue consumption and input evidence share the existing source-neutral CAS.
     pub(super) async fn attach_idle_sender_inputs(
         &self,
         anchor: &MessageEnvelope,
-        available_bytes: usize,
+        available: impl Into<projection::InputBudget>,
     ) -> Result<bool> {
+        let budget = available.into();
+        let available_bytes = budget.bytes;
         let mut guard = self.inner.agent.lock().await;
         let expected = guard.state.clone();
         let Some(binding) = expected.current_execution_binding.as_ref() else {
@@ -1259,167 +1555,9 @@ impl RuntimeHandle {
         {
             return Ok(false);
         }
-        // Replay metadata selects evidence, but only the canonical interrupted
-        // predecessor authorizes restoring that turn's admitted snapshot.
-        if let Some(replay) = &turn.replay {
-            let Some(source) = self.inner.storage.read_turn_by_id(&replay.source_turn_id)? else {
-                // A claim may be interrupted before its turn is persisted.
-                // Replay alone is not evidence of an admitted input batch.
-                return Ok(false);
-            };
-            let Some(mut batch) = source.idle_input_batch.clone() else {
-                return Ok(false);
-            };
-            let prior = attempt
-                .recovery_of_attempt_id
-                .as_ref()
-                .and_then(|id| execution.attempts.get(id));
-            let rejection = |predicate, field| {
-                IdleInputRecoveryRejection::new(predicate, field)
-                    .with_id("message_id", Some(&anchor.id))
-                    .with_id("turn_id", Some(&turn.turn_id))
-                    .with_id("activation_id", Some(activation_id))
-                    .with_id(
-                        "predecessor_activation_id",
-                        attempt.recovery_of_attempt_id.as_deref(),
-                    )
-                    .with_id("source_turn_id", Some(&replay.source_turn_id))
-                    .with_id("batch_activation_id", batch.activation_id.as_deref())
-            };
-            macro_rules! reject_if {
-                ($condition:expr, $predicate:ident, $field:literal) => {
-                    if $condition {
-                        return Err(rejection(RecoveryPredicate::$predicate, $field).into());
-                    }
-                };
-            }
-            validate_idle_recovery_predecessor(anchor, attempt, prior, &batch)
-                .map_err(|reason| rejection(reason.predicate, reason.field))?;
-            reject_if!(
-                anchor.source_refs.get("replay_source_turn_id") != Some(&replay.source_turn_id),
-                ReplaySourceMismatch,
-                "replay.source_selector"
-            );
-            reject_if!(
-                anchor.source_refs.get("replay_reason").map(String::as_str)
-                    != Some("interrupted_queue_claim_reentry"),
-                ReplayReasonMismatch,
-                "replay.reason"
-            );
-            reject_if!(
-                source.agent_id != anchor.agent_id,
-                SourceAgentMismatch,
-                "source.agent"
-            );
-            reject_if!(
-                source.turn_id != replay.source_turn_id,
-                ReplaySourceMismatch,
-                "source.turn_id"
-            );
-            reject_if!(
-                replay.source_message_id != anchor.id,
-                ReplayMessageMismatch,
-                "replay.source_message"
-            );
-            reject_if!(
-                source.effective_owner() != turn.effective_owner(),
-                OwnerMismatch,
-                "source.owner"
-            );
-            reject_if!(
-                source
-                    .trigger
-                    .as_ref()
-                    .and_then(|trigger| trigger.message_id.as_deref())
-                    != Some(anchor.id.as_str()),
-                SourceTriggerMismatch,
-                "source.trigger.message"
-            );
-            reject_if!(
-                batch.anchor_message_id != anchor.id,
-                BatchAnchorMismatch,
-                "batch.anchor_message"
-            );
-            reject_if!(
-                batch.items.first().map(|item| item.message_id.as_str())
-                    != Some(anchor.id.as_str()),
-                BatchAnchorMismatch,
-                "batch.first_item"
-            );
-            reject_if!(
-                batch.items.len() > INPUT_BATCH_ITEMS,
-                BatchIntegrityMismatch,
-                "batch.item_count"
-            );
-            reject_if!(
-                render_batch(&batch).len() != batch.rendered_bytes,
-                BatchIntegrityMismatch,
-                "batch.rendered_bytes"
-            );
-            reject_if!(
-                batch.rendered_bytes > batch.max_bytes,
-                BatchIntegrityMismatch,
-                "batch.max_bytes"
-            );
-            reject_if!(
-                batch.max_bytes > INPUT_BATCH_BYTES,
-                BatchIntegrityMismatch,
-                "batch.global_byte_budget"
-            );
-            let mut seen = std::collections::BTreeSet::new();
-            for item in &batch.items {
-                reject_if!(
-                    !seen.insert(&item.message_id),
-                    AttachmentEvidenceMismatch,
-                    "attachment.duplicate_item"
-                );
-                reject_if!(
-                    !source.input_message_ids.contains(&item.message_id),
-                    AttachmentEvidenceMismatch,
-                    "attachment.source_membership"
-                );
-                reject_if!(
-                    item.source_ref != format!("message:{}", item.message_id),
-                    AttachmentEvidenceMismatch,
-                    "attachment.source_ref"
-                );
-                let Some(message) = self.inner.storage.read_message_by_id(&item.message_id)? else {
-                    return Err(rejection(
-                        RecoveryPredicate::AttachmentEvidenceMismatch,
-                        "attachment.message_missing",
-                    )
-                    .into());
-                };
-                reject_if!(
-                    message.agent_id != anchor.agent_id,
-                    AttachmentEvidenceMismatch,
-                    "attachment.message_agent"
-                );
-                if item.message_id != anchor.id {
-                    let Some(queue) = self
-                        .inner
-                        .runtime_db
-                        .queue_entries()
-                        .latest(&item.message_id)?
-                    else {
-                        return Err(rejection(
-                            RecoveryPredicate::AttachmentEvidenceMismatch,
-                            "attachment.queue_missing",
-                        )
-                        .into());
-                    };
-                    reject_if!(
-                        queue.agent_id != anchor.agent_id,
-                        AttachmentEvidenceMismatch,
-                        "attachment.queue_agent"
-                    );
-                    reject_if!(
-                        queue.status != QueueEntryStatus::Interjected,
-                        AttachmentEvidenceMismatch,
-                        "attachment.queue_status"
-                    );
-                }
-            }
+        if let Some(mut batch) =
+            self.validated_recovered_idle_batch(anchor, attempt, &execution, &turn)?
+        {
             for item in &batch.items {
                 if !turn.input_message_ids.contains(&item.message_id) {
                     turn.input_message_ids.push(item.message_id.clone());
@@ -1491,23 +1629,42 @@ impl RuntimeHandle {
         if max_items == 0 {
             return Ok(false);
         }
-        let result_bytes =
-            crate::context::render_pending_task_results(&self.inner.storage, &expected, anchor)?
-                .map_or(0, |rendered| rendered.len());
+        let pending_results =
+            crate::context::render_pending_task_results(&self.inner.storage, &expected, anchor)?;
+        let result_bytes = pending_results
+            .as_ref()
+            .map_or(0, |rendered| rendered.len());
+        let result_tokens = pending_results.as_ref().map_or(0, |rendered| {
+            crate::context::estimate_text_tokens(&format!("[pending_task_results]\n{rendered}"))
+        });
+        let current_tokens = budget.tokens.saturating_sub(result_tokens);
         let max_bytes = available_bytes.min(INPUT_BATCH_BYTES.saturating_sub(result_bytes));
         let Some(anchor_limit) = max_bytes.checked_sub(BATCH_HEADER.len()) else {
             return Ok(false);
         };
-        let anchor_full = item_evidence(anchor, usize::MAX)?.expect("unbounded evidence fits");
-        let anchor_item = if anchor_full.rendered.len() <= anchor_limit {
-            anchor_full
+        let anchor_item = if let Some(item) = attempt.input_projection.clone() {
+            item
         } else {
-            let Some(preview) = item_evidence(anchor, anchor_limit.min(OVERSIZE_PREVIEW_BYTES))?
+            let Some(item) = projection::persisted_item_after(
+                &self.inner.storage,
+                anchor,
+                current_tokens,
+                anchor_limit,
+                &format!("[current_input]\n{BATCH_HEADER}"),
+            )?
             else {
                 return Ok(false);
             };
-            preview
+            item
         };
+        if anchor_item.rendered.len() > anchor_limit
+            || !budget.fits_idle(
+                &format!("{BATCH_HEADER}{}", anchor_item.rendered),
+                pending_results.as_deref(),
+            )
+        {
+            return Ok(false);
+        }
         let cutoff = turn.created_at;
         let snapshot = guard.queue.input_snapshot(INPUT_BATCH_SCAN);
         let mut batch = IdleInputBatchRecord {
@@ -1574,18 +1731,15 @@ impl RuntimeHandle {
             {
                 continue;
             }
-            let full = item_evidence(&message, usize::MAX)?.expect("unbounded evidence fits");
             let remaining = max_bytes.saturating_sub(batch.rendered_bytes);
-            let item = if full.rendered.len() <= remaining {
-                full
-            } else if full.rendered.len() > max_bytes.saturating_sub(BATCH_HEADER.len()) {
-                let Some(preview) = item_evidence(&message, remaining.min(OVERSIZE_PREVIEW_BYTES))?
-                else {
-                    break;
-                };
-                preview
-            } else {
-                // A normal item that does not fit stays queued, preserving FIFO.
+            let Some(item) = projection::persisted_item_after(
+                &self.inner.storage,
+                &message,
+                current_tokens,
+                remaining,
+                &format!("[current_input]\n{}", render_batch(&batch)),
+            )?
+            else {
                 break;
             };
             let expected_state = guard.state.clone();

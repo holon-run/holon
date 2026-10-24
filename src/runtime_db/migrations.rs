@@ -6160,6 +6160,7 @@ fn execution_protocol_state_from_canonical_claim(
         ),
     };
     let attempt = ExecutionAttempt {
+        input_projection: None,
         attempt_id: activation_id.to_string(),
         agent_id: agent_id.to_string(),
         source_message_id: Some(message.id.clone()),

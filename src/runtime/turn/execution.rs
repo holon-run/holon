@@ -71,12 +71,12 @@ use crate::runtime::{
     CurrentRunAborted, RuntimeHandle, WaitForWakeKind,
 };
 
-fn live_input_available_bytes(
+fn live_input_budget(
     prompt: &EffectivePrompt,
     rounds: &[TurnRoundRecord],
     tools: &[ToolSpec],
     prompt_budget: usize,
-) -> usize {
+) -> crate::runtime::input_consumption::projection::InputBudget {
     // Reserve the complete un-compacted request, including request time,
     // reminder and envelope overhead, before claiming a new source.
     let frame = build_provider_prompt_frame(prompt);
@@ -85,7 +85,10 @@ fn live_input_available_bytes(
         .saturating_add(rounds.iter().map(estimate_round_tokens).sum::<usize>())
         .saturating_add(estimate_tool_specs_tokens(tools))
         .saturating_add(1024);
-    prompt_budget.saturating_sub(baseline).saturating_mul(4)
+    crate::runtime::input_consumption::projection::InputBudget {
+        tokens: prompt_budget.saturating_sub(baseline),
+        bytes: crate::runtime::input_consumption::INPUT_BATCH_BYTES,
+    }
 }
 
 enum OperatorInterjectionPlan {
@@ -965,11 +968,54 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::runtime) async fn drain_operator_interjections(
         &self,
         agent_id: &str,
         round: usize,
         boundary: scheduler::InterjectionBoundary,
+    ) -> Result<Vec<String>> {
+        self.drain_operator_interjections_with_budget(
+            agent_id,
+            round,
+            boundary,
+            crate::runtime::input_consumption::projection::InputBudget {
+                tokens: usize::MAX,
+                bytes: usize::MAX,
+            },
+        )
+        .await
+    }
+
+    async fn operator_interjection_budget(
+        &self,
+        prompt: &EffectivePrompt,
+        rounds: &[TurnRoundRecord],
+        tools: &[ToolSpec],
+        assistant: &[ModelBlock],
+        results: &[ToolResultBlock],
+        followups: &[String],
+    ) -> crate::runtime::input_consumption::projection::InputBudget {
+        let mut budget = live_input_budget(
+            prompt,
+            rounds,
+            tools,
+            self.current_context_config()
+                .await
+                .prompt_budget_estimated_tokens,
+        );
+        budget.tokens = budget
+            .tokens
+            .saturating_sub(build_round_estimated_tokens(assistant, results, followups));
+        budget
+    }
+
+    pub(in crate::runtime) async fn drain_operator_interjections_with_budget(
+        &self,
+        agent_id: &str,
+        round: usize,
+        boundary: scheduler::InterjectionBoundary,
+        mut budget: crate::runtime::input_consumption::projection::InputBudget,
     ) -> Result<Vec<String>> {
         let boundary_str = boundary.as_str();
         let mut follow_up_texts = Vec::new();
@@ -1001,6 +1047,22 @@ impl RuntimeHandle {
                     )? {
                         OperatorInterjectionPlan::Admit => {}
                     }
+                    let text = render_operator_interjection_text(&message);
+                    if text.len() > budget.bytes
+                        || crate::context::estimate_text_tokens(&text) > budget.tokens
+                    {
+                        self.inner.storage.append_event(&AuditEvent::legacy(
+                            "input_context_admission_rejected",
+                            serde_json::json!({
+                                "agent_id": message.agent_id,
+                                "message_id": message.id,
+                                "boundary": boundary_str,
+                                "reason": "complete_operator_interjection_over_budget",
+                                "action": "leave queued; split input or explicitly adjust context budget",
+                            }),
+                        ))?;
+                        break 'outer;
+                    }
                     let turn_id = expected_state
                         .current_turn_id
                         .as_deref()
@@ -1019,7 +1081,6 @@ impl RuntimeHandle {
                     }
                     let mut committed_state = expected_state.clone();
                     committed_state.pending = guard.queue.len().saturating_sub(1);
-                    let text = render_operator_interjection_text(&message);
                     let transcript = TranscriptEntry::new(
                         message.agent_id.clone(),
                         TranscriptEntryKind::IncomingMessage,
@@ -1120,6 +1181,10 @@ impl RuntimeHandle {
                 }
             };
             self.apply_transition_commit(committed.1).await;
+            budget.tokens = budget
+                .tokens
+                .saturating_sub(crate::context::estimate_text_tokens(&committed.0));
+            budget.bytes = budget.bytes.saturating_sub(committed.0.len());
             follow_up_texts.push(committed.0);
         }
         Ok(follow_up_texts)
@@ -1245,9 +1310,10 @@ impl RuntimeHandle {
         round: usize,
         boundary: scheduler::InterjectionBoundary,
         completed_rounds: &mut [TurnRoundRecord],
+        budget: crate::runtime::input_consumption::projection::InputBudget,
     ) -> Result<bool> {
         let interjections = self
-            .drain_operator_interjections(agent_id, round, boundary)
+            .drain_operator_interjections_with_budget(agent_id, round, boundary, budget)
             .await?;
         let admitted = !interjections.is_empty();
         if let Some(last_round) = completed_rounds.last_mut() {
@@ -2148,15 +2214,26 @@ impl TurnExecution<'_> {
                 }
             }
             if round > 1 && pending_completion_report.is_none() && pending_wait_report.is_none() {
+                let operator_budget = runtime
+                    .operator_interjection_budget(
+                        &effective_prompt,
+                        &completed_rounds,
+                        &available_tools,
+                        &[],
+                        &[],
+                        &[],
+                    )
+                    .await;
                 runtime
                     .append_operator_interjections_to_last_round(
                         agent_id,
                         round,
                         scheduler::InterjectionBoundary::BeforeProviderContinuation,
                         &mut completed_rounds,
+                        operator_budget,
                     )
                     .await?;
-                let available_bytes = live_input_available_bytes(
+                let available_bytes = live_input_budget(
                     &effective_prompt,
                     &completed_rounds,
                     &available_tools,
@@ -3594,10 +3671,20 @@ impl TurnExecution<'_> {
 
             if tool_calls.is_empty() {
                 let interjections = runtime
-                    .drain_operator_interjections(
+                    .drain_operator_interjections_with_budget(
                         agent_id,
                         round,
                         scheduler::InterjectionBoundary::AfterProviderRound,
+                        runtime
+                            .operator_interjection_budget(
+                                &effective_prompt,
+                                &completed_rounds,
+                                &available_tools,
+                                &completed_round_assistant_blocks,
+                                &[],
+                                &[],
+                            )
+                            .await,
                     )
                     .await?;
                 let mut interjections = interjections;
@@ -3623,7 +3710,7 @@ impl TurnExecution<'_> {
                     };
                     let mut rounds = completed_rounds.clone();
                     rounds.push(candidate);
-                    let available_bytes = live_input_available_bytes(
+                    let available_bytes = live_input_budget(
                         &effective_prompt,
                         &rounds,
                         &available_tools,
@@ -3671,10 +3758,20 @@ impl TurnExecution<'_> {
             let mut before_tool_execution_interjections = Vec::new();
             if !tool_calls.is_empty() {
                 before_tool_execution_interjections = runtime
-                    .drain_operator_interjections(
+                    .drain_operator_interjections_with_budget(
                         agent_id,
                         round,
                         scheduler::InterjectionBoundary::BeforeToolExecution,
+                        runtime
+                            .operator_interjection_budget(
+                                &effective_prompt,
+                                &completed_rounds,
+                                &available_tools,
+                                &completed_round_assistant_blocks,
+                                &[],
+                                &[],
+                            )
+                            .await,
                     )
                     .await?;
             }
@@ -4620,10 +4717,20 @@ impl TurnExecution<'_> {
                 Vec::new()
             } else {
                 runtime
-                    .drain_operator_interjections(
+                    .drain_operator_interjections_with_budget(
                         agent_id,
                         round,
                         scheduler::InterjectionBoundary::AfterToolResults,
+                        runtime
+                            .operator_interjection_budget(
+                                &effective_prompt,
+                                &completed_rounds,
+                                &available_tools,
+                                &completed_round_assistant_blocks,
+                                &tool_results,
+                                &before_tool_execution_interjections,
+                            )
+                            .await,
                     )
                     .await?
             };

@@ -1115,6 +1115,7 @@ mod tests {
         db.evidence().append_brief(&brief)?;
 
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: agent_id.clone(),
             source_message_id: Some(message.id.clone()),

@@ -435,6 +435,7 @@ mod tests {
         recovery_of: Option<&str>,
     ) -> ExecutionAttempt {
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: id.into(),
             agent_id: "agent-a".into(),
             source_message_id: Some(format!("message:{id}")),
@@ -651,6 +652,7 @@ mod tests {
 
         // Recovery command: RuntimeRecovery → Command
         let recovery_attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: "recovery-1".into(),
             agent_id: "agent-a".into(),
             source_message_id: None,

@@ -87,6 +87,22 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::Admit(command) = command {
             validate_admission_authority_tx(tx, agent_id, &command.attempt.admitted_fences)?;
             validate_wait_ingress_tx(tx, agent_id, &command.attempt)?;
+            if let Some(projection) = command.attempt.input_projection.as_ref() {
+                let message_id = command
+                    .attempt
+                    .source_message_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("source projection requires a source message"))?;
+                let payload: String = tx.query_row(
+                    "SELECT payload_json FROM messages WHERE agent_id = ?1 AND message_id = ?2",
+                    params![agent_id, message_id],
+                    |row| row.get(0),
+                )?;
+                let message: crate::types::MessageEnvelope = serde_json::from_str(&payload)?;
+                crate::runtime::input_consumption::projection::validate_projection(
+                    &message, projection,
+                )?;
+            }
         }
         if let ExecutionProtocolCommand::RegisterWorkItem(command) = command {
             validate_register_work_item(tx, agent_id, command, work_item_mutations)?;
@@ -1604,6 +1620,7 @@ mod tests {
             let revision = message.message_seq.unwrap_or(1) + u64::from(case == "revision");
             let commands = [ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
                 attempt: ExecutionAttempt {
+                    input_projection: None,
                     attempt_id: format!("attempt-{case}"),
                     agent_id: agent_id.into(),
                     source_message_id: Some(if case == "source" {

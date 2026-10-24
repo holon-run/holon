@@ -2471,7 +2471,8 @@ async fn p1_mixed_budget_reserves_ordinary_bytes_before_result_admission() {
                 == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
         })
         .count();
-    assert_eq!(settled, 2);
+    // Versioned source/provenance wrappers consume the same byte allowance.
+    assert_eq!(settled, 1);
     let requests = provider.requests.lock().await;
     let visible = requests[0]
         .prompt_frame
@@ -2825,7 +2826,14 @@ async fn p1_different_runtime_senders_are_not_combined() {
 #[tokio::test]
 async fn p1_oversize_input_preserves_utf8_preview_and_reachable_source() {
     let (_home, _host, sender, target, provider) = fixture().await;
-    let id = send(&sender, &target, "large", &"更正".repeat(40_000)).await;
+    let id = send_with_authority(
+        &sender,
+        &target,
+        "large",
+        &"更正".repeat(40_000),
+        AuthorityClass::ExternalEvidence,
+    )
+    .await;
     process_one(&target).await;
     let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
     let batch = turn.idle_input_batch.unwrap();
