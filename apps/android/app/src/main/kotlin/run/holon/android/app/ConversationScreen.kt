@@ -422,9 +422,10 @@ internal fun ModelPickerSheet(
     var pendingModel by remember(agent.id) { mutableStateOf<String?>(null) }
     var effort by remember(agent.id, pendingModel) { mutableStateOf<String?>(null) }
     val options = state.modelCatalog?.options.orEmpty()
-    val common = commonModelOptions(options, state.agents, agent.effectiveModel)
-    val visibleOptions = if (search.isNotBlank()) options.filter { it.model.contains(search, true) || it.displayName.contains(search, true) }
-        else if (showAll || common.isEmpty()) options else common
+    val pickerOptions = modelPickerOptions(options, agent.effectiveModel)
+    val common = commonModelOptions(pickerOptions, state.agents, agent.effectiveModel)
+    val visibleOptions = if (search.isNotBlank()) pickerOptions.filter { it.model.contains(search, true) || it.displayName.contains(search, true) }
+        else if (showAll || common.isEmpty()) pickerOptions else common
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding(),
@@ -463,6 +464,9 @@ internal fun ModelPickerSheet(
             if (options.isEmpty() && !state.modelBusy) {
                 Text(ui("暂无模型目录，请刷新后重试"), style = MaterialTheme.typography.bodySmall)
             }
+            if (options.isNotEmpty() && pickerOptions.isEmpty() && !state.modelBusy) {
+                Text(ui("暂无可用模型，请配置凭证后刷新"), style = MaterialTheme.typography.bodySmall)
+            }
             if (search.isBlank() && common.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(ui(if (showAll) "全部模型" else "常用模型"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 TextButton(onClick = { showAll = !showAll }) { Text(ui(if (showAll) "仅显示常用" else "查看全部")) }
@@ -491,7 +495,7 @@ internal fun ModelPickerSheet(
                 }
             }
             pendingModel?.let { model ->
-                val option = options.firstOrNull { it.model == model }
+                val option = pickerOptions.firstOrNull { it.model == model }
                 Text(ui("待应用：") + model)
                 if (option?.supportsReasoningEffort == true) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
