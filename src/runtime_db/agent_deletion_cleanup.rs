@@ -403,6 +403,23 @@ pub(crate) fn assert_execution_settled(db: &RuntimeDb, agent_id: &str) -> Result
     })
 }
 
+/// True when this incarnation's cleanup proof already settled execution and
+/// purged private history. A cleanup repair in this state must not replay
+/// settlement writers; re-purging residue is the only remaining work.
+pub(crate) fn private_history_purge_proof_is_current(
+    db: &RuntimeDb,
+    agent_id: &str,
+    expected_incarnation: u64,
+) -> bool {
+    db.with_read(|connection| {
+        let tx = connection.transaction()?;
+        Ok(proof_tx(&tx, agent_id)?.is_some_and(|proof| {
+            proof.incarnation == expected_incarnation && proof.settled && proof.purged
+        }))
+    })
+    .unwrap_or(false)
+}
+
 /// Read-only legacy completion audit. Errors mean cleanup is not proven.
 pub(crate) fn assert_private_history_cleared(db: &RuntimeDb, agent_id: &str) -> Result<()> {
     db.with_read(|connection| {
