@@ -9,6 +9,7 @@ pub(super) struct MessageDispatchPlan {
     pub(super) continuation_resolution: Option<ContinuationResolution>,
     pub(super) model_turn_allowed: bool,
     pub(super) execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+    pub(super) provider_admission: Option<Arc<super::provider_admission::ProviderTurnAdmission>>,
 }
 
 impl RuntimeHandle {
@@ -132,6 +133,7 @@ impl RuntimeHandle {
             continuation_resolution,
             model_turn_allowed,
             execution_admission_provenance: None,
+            provider_admission: None,
         })
     }
 
@@ -193,6 +195,8 @@ impl RuntimeHandle {
         // Box at this synchronous boundary so construction frames unwind before
         // polling and the runtime loop retains only a heap pointer.
         Box::pin(async move {
+            let _provider_admission =
+                self.activate_provider_admission(plan.provider_admission.clone())?;
             let trace_context = message.trace_context.clone();
             let attributes = crate::observability::TraceAttributes {
                 agent_id: Some(message.agent_id.clone()),

@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-use super::{build_http_client, request_send_timeout, response_body_timeout};
+use super::{build_http_client, response_body_timeout, send_provider_request, RequestDeadline};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     invalid_response_error, parse_retry_after, timeout_transport_error_with_trace,
@@ -27,6 +27,7 @@ pub struct GeminiProvider {
     client: Client,
     base_url: String,
     api_key: String,
+    quota_identity: Option<crate::provider::ProviderQuotaIdentity>,
     model: String,
     max_output_tokens: u32,
     trace_home_dir: PathBuf,
@@ -128,6 +129,9 @@ impl GeminiProvider {
             client,
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
+            quota_identity: crate::provider::ProviderQuotaIdentity::for_api_credential(
+                provider_config,
+            ),
             model: model.to_string(),
             max_output_tokens,
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -137,6 +141,10 @@ impl GeminiProvider {
 
 #[async_trait]
 impl AgentProvider for GeminiProvider {
+    fn quota_identity(&self) -> Option<crate::provider::ProviderQuotaIdentity> {
+        self.quota_identity.clone()
+    }
+
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let request_body = GenerateContentRequest {
             system_instruction: build_system_instruction(&request),
@@ -174,26 +182,24 @@ impl AgentProvider for GeminiProvider {
             )
         });
         let request_started_at = chrono::Utc::now();
-        let response = self
+        let request_builder = self
             .client
             .post(&url)
             .header("content-type", "application/json")
             .header("x-goog-api-key", &self.api_key)
-            .timeout(request_send_timeout())
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|error| {
-                classify_reqwest_transport_error_with_trace(
-                    "Gemini request failed",
-                    "request_send",
-                    "gemini",
-                    Some(&model_ref),
-                    Some(url.as_str()),
-                    error,
-                    request_trace.as_ref(),
-                )
-            })?;
+            .json(&request_body);
+        let response = send_provider_request(
+            request_builder,
+            "Gemini request failed",
+            "request_send",
+            "gemini",
+            Some(&model_ref),
+            Some(url.as_str()),
+            RequestDeadline::FullRequest,
+            request_trace.as_ref(),
+            request.dispatch_guard.as_deref(),
+        )
+        .await?;
         let response_headers_at = chrono::Utc::now();
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_headers(response.status(), response.headers());

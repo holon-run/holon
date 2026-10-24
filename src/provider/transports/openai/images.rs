@@ -187,6 +187,7 @@ pub(super) async fn send_openai_images_request(
         Some(url.as_str()),
         RequestDeadline::HeadersOnly,
         request_trace.as_ref(),
+        None,
     )
     .await?;
     trace_response_headers(
@@ -360,6 +361,7 @@ pub(super) async fn send_openai_codex_image_generation_request(
         agent_id,
         "openai-codex",
         &model_ref,
+        None,
     )
     .await?;
     parse_openai_codex_image_generation_response_items(terminal_response.output_items)

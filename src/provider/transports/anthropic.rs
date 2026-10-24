@@ -54,6 +54,7 @@ pub struct AnthropicProvider {
     route_endpoint: String,
     base_url: String,
     auth_token: Option<String>,
+    quota_identity: Option<crate::provider::ProviderQuotaIdentity>,
     model: String,
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
@@ -245,6 +246,9 @@ impl AnthropicProvider {
             route_endpoint: provider_config.route_endpoint.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             auth_token,
+            quota_identity: crate::provider::ProviderQuotaIdentity::for_api_credential(
+                provider_config,
+            ),
             model: model.to_string(),
             max_output_tokens,
             context_window_tokens,
@@ -395,6 +399,8 @@ fn context_budget_overflow_error(
         }),
         http_trace: None,
         quota_identity: None,
+        retry_after_not_before: None,
+        throttle: None,
         source_chain: Vec::new(),
     };
     provider_transport_error_with_code(
@@ -497,6 +503,10 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl AgentProvider for AnthropicProvider {
+    fn quota_identity(&self) -> Option<crate::provider::ProviderQuotaIdentity> {
+        self.quota_identity.clone()
+    }
+
     async fn complete_turn(
         &self,
         mut request: ProviderTurnRequest,
@@ -618,6 +628,7 @@ impl AgentProvider for AnthropicProvider {
             Some(url.as_str()),
             RequestDeadline::TextStream,
             request_trace.as_ref(),
+            request.dispatch_guard.as_deref(),
         )
         .await?;
         let response_headers_at = chrono::Utc::now();
@@ -3477,6 +3488,7 @@ mod tests {
     #[test]
     fn claude_code_prompt_cache_keeps_turn_scoped_context_out_of_system_prefix() {
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "unused plain system".to_string(),
@@ -3578,6 +3590,7 @@ mod tests {
             },
         ];
         ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
                 "stable system".to_string(),
@@ -4395,6 +4408,7 @@ mod tests {
     #[test]
     fn anthropic_request_payload_for_fingerprints_is_wire_object() {
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "unused plain system".to_string(),
@@ -4432,6 +4446,7 @@ mod tests {
     #[test]
     fn test_collect_anthropic_cache_diagnostics_initial_request() {
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "You are a helpful assistant.".to_string(),
@@ -4527,6 +4542,7 @@ mod tests {
     #[test]
     fn test_collect_anthropic_cache_diagnostics_continuation_with_breakpoints() {
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "You are a helpful assistant.".to_string(),
@@ -5016,6 +5032,7 @@ mod tests {
     #[test]
     fn test_estimate_token_distribution() {
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "System prompt".to_string(),
@@ -5075,6 +5092,7 @@ mod tests {
         }
 
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "System prompt".to_string(),

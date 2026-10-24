@@ -816,6 +816,7 @@ impl RuntimeHandle {
                 base_provider,
                 provider: RwLock::new(provider),
                 turn_fallback_model: RwLock::new(None),
+                turn_provider_admission: StdMutex::new(None),
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
@@ -1065,6 +1066,10 @@ impl RuntimeHandle {
             .map(|hook| Arc::new(hook) as Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>);
         // Atomically swap the snapshot.
         self.inner.config_snapshot.store(new_snapshot);
+        // Recompute eligibility, without clearing shared provider incidents.
+        self.inner
+            .runtime_db
+            .clear_agent_provider_queue_parking(&self.inner.default_agent_id)?;
         self.inner.view_image_candidate_health.lock().await.reset();
         *self
             .inner

@@ -30,8 +30,8 @@ use crate::{
         builtin_web_search_probe_turn_request, emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
         AgentProvider, ContinuationScopeId, ConversationMessage, ModelBlock, ModelToolCallKind,
-        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderGenerateImageRequest,
-        ProviderGenerateImageResponse, ProviderGeneratedImage,
+        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderDispatchGuard,
+        ProviderGenerateImageRequest, ProviderGenerateImageResponse, ProviderGeneratedImage,
         ProviderIncrementalContinuationDiagnostics, ProviderNativeWebSearchDiagnostics,
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
         ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
@@ -131,6 +131,7 @@ pub struct OpenAiProvider {
     route_endpoint: String,
     base_url: String,
     auth: OpenAiBearerAuth,
+    quota_identity: Option<ProviderQuotaIdentity>,
     model: String,
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
@@ -186,6 +187,7 @@ pub struct OpenAiChatCompletionsProvider {
     route_provider: String,
     base_url: String,
     api_key: Option<String>,
+    quota_identity: Option<ProviderQuotaIdentity>,
     model: String,
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
@@ -308,18 +310,35 @@ async fn send_openai_responses_for_contract(
     agent_id: Option<&str>,
     provider: &str,
     model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
     let parsed = match contract {
         OpenAiResponsesTransportContract::StandardJson => {
             send_openai_responses_request(
-                client, url, body, headers, trace, agent_id, provider, model_ref,
+                client,
+                url,
+                body,
+                headers,
+                trace,
+                agent_id,
+                provider,
+                model_ref,
+                dispatch_guard,
             )
             .await
         }
         OpenAiResponsesTransportContract::CodexStreaming
         | OpenAiResponsesTransportContract::DeepSeekStreaming => {
             send_openai_responses_streaming_request(
-                client, url, body, headers, trace, agent_id, provider, model_ref,
+                client,
+                url,
+                body,
+                headers,
+                trace,
+                agent_id,
+                provider,
+                model_ref,
+                dispatch_guard,
             )
             .await
         }
@@ -393,6 +412,7 @@ impl OpenAiProvider {
             route_endpoint: provider_config.route_endpoint.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             auth,
+            quota_identity: ProviderQuotaIdentity::for_api_credential(provider_config),
             model: model.to_string(),
             max_output_tokens,
             context_window_tokens,
@@ -516,6 +536,7 @@ impl OpenAiChatCompletionsProvider {
             route_provider: provider_config.route_provider.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
+            quota_identity: ProviderQuotaIdentity::for_api_credential(provider_config),
             model: model.to_string(),
             max_output_tokens: resolved_max_output_tokens,
             context_window_tokens,
@@ -529,6 +550,10 @@ impl OpenAiChatCompletionsProvider {
 
 #[async_trait]
 impl AgentProvider for OpenAiProvider {
+    fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
+        self.quota_identity.clone()
+    }
+
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut body = build_openai_responses_request(
             &self.model,
@@ -588,8 +613,9 @@ impl AgentProvider for OpenAiProvider {
                 request_agent_id(&request),
                 &self.route_provider,
                 &model_ref,
+                request.dispatch_guard.as_deref(),
             )
-            .await
+            .await?
             {
                 sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
                 sent_diagnostics.request_lowering_mode =
@@ -614,6 +640,7 @@ impl AgentProvider for OpenAiProvider {
             request_agent_id(&request),
             &self.route_provider,
             &model_ref,
+            request.dispatch_guard.as_deref(),
         )
         .await
         {
@@ -633,6 +660,7 @@ impl AgentProvider for OpenAiProvider {
                         request_agent_id(&request),
                         &self.route_provider,
                         &model_ref,
+                        request.dispatch_guard.as_deref(),
                     )
                     .await
                 } else {
@@ -657,6 +685,7 @@ impl AgentProvider for OpenAiProvider {
                             &mut final_replay_loss_reason,
                             &self.route_provider,
                             &model_ref,
+                            request.dispatch_guard.as_deref(),
                         )
                         .await
                         {
@@ -702,8 +731,17 @@ impl AgentProvider for OpenAiProvider {
                 request_agent_id(&request),
                 &self.route_provider,
                 &model_ref,
+                request.dispatch_guard.as_deref(),
             )
-            .await;
+            .await
+            .or_else(|error| {
+                // Optional IO must not discard an already usable response.
+                if error.is::<super::http::DispatchGuardRejected>() {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })?;
         }
         if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
             let controls = sent_diagnostics
@@ -824,6 +862,7 @@ impl AgentProvider for OpenAiProvider {
             None,
             &self.route_provider,
             &model_ref,
+            None,
         )
         .await
         {
@@ -844,6 +883,7 @@ impl AgentProvider for OpenAiProvider {
                     None,
                     &self.route_provider,
                     &model_ref,
+                    None,
                 )
                 .await?;
             }
@@ -937,8 +977,9 @@ impl AgentProvider for OpenAiCodexProvider {
             request_agent_id(&request),
             "openai-codex",
             &model_ref,
+            request.dispatch_guard.as_deref(),
         )
-        .await
+        .await?
         {
             sent_diagnostics.openai_remote_compaction = Some(remote_compaction);
             sent_diagnostics.request_lowering_mode = plan.diagnostics.request_lowering_mode.clone();
@@ -958,6 +999,7 @@ impl AgentProvider for OpenAiCodexProvider {
             request_agent_id(&request),
             "openai-codex",
             &model_ref,
+            request.dispatch_guard.as_deref(),
         )
         .await
         {
@@ -1000,6 +1042,7 @@ impl AgentProvider for OpenAiCodexProvider {
                             request_agent_id(&request),
                             "openai-codex",
                             &model_ref,
+                            request.dispatch_guard.as_deref(),
                         )
                         .await
                         {
@@ -1047,8 +1090,16 @@ impl AgentProvider for OpenAiCodexProvider {
                 request_agent_id(&request),
                 "openai-codex",
                 &model_ref,
+                request.dispatch_guard.as_deref(),
             )
-            .await;
+            .await
+            .or_else(|error| {
+                if error.is::<super::http::DispatchGuardRejected>() {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })?;
         }
         if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
             let controls = sent_diagnostics
@@ -1208,6 +1259,7 @@ impl AgentProvider for OpenAiCodexProvider {
             None,
             "openai-codex",
             &model_ref,
+            None,
         )
         .await?;
         Ok(())
@@ -1216,6 +1268,10 @@ impl AgentProvider for OpenAiCodexProvider {
 
 #[async_trait]
 impl AgentProvider for OpenAiChatCompletionsProvider {
+    fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
+        self.quota_identity.clone()
+    }
+
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         // Build Chat Completions request
         let mut full_body = build_chat_completion_request(
@@ -1255,6 +1311,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             headers,
             trace.as_ref(),
             request_agent_id(&request),
+            request.dispatch_guard.as_deref(),
         )
         .await
         {
@@ -1424,6 +1481,8 @@ fn openai_codex_auth_error(
             context_budget: None,
             http_trace: None,
             quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
             source_chain,
         }),
         message,

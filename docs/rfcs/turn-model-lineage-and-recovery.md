@@ -243,6 +243,84 @@ and surface the failure to the operator instead of creating an infinite recovery
 loop. Holon must also prevent fallback loops where each new turn retries the
 same failed primary model instead of promoting the next candidate.
 
+#### Shared availability and request admission
+
+Availability facts are shared within one runtime database, not by WorkItem
+focus. Quota uses the existing account identity; transport has separate records
+and cannot masquerade as an exhausted account. Connection scopes come from
+configured endpoint/transport/proxy identity, while ambiguous or request/read
+timeouts use the narrower route/model scope. Neither implies a host-wide breaker.
+
+API-key transports without an account identity use a coarse hash of provider,
+configured endpoint URL and resolved credential. Models sharing that credential
+share admission, but another credential or endpoint does not inherit its quota
+facts. This is not proof of account-wide equality; Codex keeps its existing
+account identity. Raw credentials never enter incident or episode records.
+
+An unavailable scope moves from cooling to a leased probe, not directly to
+healthy when its deadline passes. One database transaction reserves every
+applicable scope or none; each reservation binds its revision and probe token.
+The final dispatch guard must recheck these fences and atomically charge the
+durable recovery budget. Local preflight failure releases undispatched leases
+without recording a provider failure. Restart cannot renew a lease or budget.
+Only a complete response with current fences clears the scopes it proves;
+late success/failure cannot overwrite a newer incident or success. A healthy
+success is not an incident transition and does not invalidate another healthy
+reservation. A concurrent failure still opens a new fenced incident.
+
+Quota and transport deadlines compose by taking the maximum for a candidate.
+The chain recheck uses the minimum candidate deadline, subject to the episode
+floor. A cooling primary must not prevent selection of a healthy fallback.
+Absolute server `Retry-After` deadlines also apply to 5xx transport failures,
+independently of quota throttle metadata; restart and operator input cannot
+shorten them.
+When no candidate qualifies, admission parks before creating a model turn;
+durable non-model settlement and inbound storage continue normally.
+
+Automatic network recovery includes the initial request in a persistent
+three-dispatch budget, with at most one dispatch per failed network scope.
+Exhaustion with untried candidates is distinct from chain cooling. Expiry
+allows one bounded probe epoch, not a fresh sweep on every wake. Runtime-authenticated
+new operator messages can grant one target-bound, idempotent bounded episode;
+they do not clear shared incidents or override a server not-before.
+Cross-lineage fallback still creates a new turn and preserves all existing
+source, owner, lifecycle, and side-effect gates.
+
+The durable budget binds the validated root execution's source, owner, admitted
+fences, and effective-chain fingerprint. Request IDs are consumed atomically
+with the final admission-fence check; a duplicate is a denial, not permission
+to replay an unknown dispatch. Local construction and rejected reservations
+consume no request. A non-network error does not replenish an already active
+network recovery sequence. Complete usable responses end that sequence; quota
+and other failures outside a network sequence keep their own policies.
+
+Ordinary reads and replayed ingress do not start another budget epoch or extend
+its floor. A due explicit recheck uses the episode revision CAS, preserving the
+cursor, request history, and side-effect boundary. An operator grant cannot be
+renewed by reopening its root message or advancing an automatic probe epoch.
+Its policy override can skip local cooldown only, never a server not-before or
+an existing probe lease. Budget settlement does not itself clear availability
+incidents or authorize execution; canonical source and owner checks still apply.
+
+Runtime model requests carry an explicit dispatch guard through transport
+lowering. Local prompt, payload, header, and HTTP-request construction complete
+before the guard charges IO; SDK retries and redirects cannot silently bypass
+it. Canonical execution fences, admission fences, and budget charging share one
+writer transaction. An unknown HTTP outcome remains charged.
+Adapters settle each complete HTTP response before auth refresh, lossless
+replay, or remote compaction can dispatch another request. A known ordinary
+protocol/auxiliary result may end a healthy sequence, but never replenishes
+an active recovery episode. Scarce probes skip optional compaction until an
+actual usable model response arrives; an auxiliary failure cannot retroactively
+discard or masquerade as that model response.
+
+Provider queue parking is separate from business waits. The scheduler checks
+canonical eligibility before consulting provider admission, retains the queued
+source when parked, and can continue reducer-only bookkeeping behind it. Its
+deadline participates in the existing run-loop recheck, without consuming a task
+result or moving its owner. A cancelled pre-dispatch build releases its probe;
+an in-flight unknown result retains its lease until controlled expiry.
+
 Local context planning failures are not provider attempt failures. A recovery
 whose pinned minimum cannot fit terminates through the canonical aborted
 queue/turn settlement without dispatching another request or enqueueing another

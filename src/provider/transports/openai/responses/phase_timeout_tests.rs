@@ -95,13 +95,13 @@ async fn phase_timeout_openai_operations_preserve_non_text_headers_budgets() {
         }]});
         let (url, server) = serve(response, false).await;
         send_openai_responses_request(
-            &client, url, json!({"model":"test"}), vec![], None, None, "openai", "openai/test",
+            &client, url, json!({"model":"test"}), vec![], None, None, "openai", "openai/test", None,
         ).await.expect("non-streaming Responses retains its existing deadline");
         server.abort();
 
         let (url, server) = serve(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}), false).await;
         chat::send_chat_completion_request(
-            &client, url, json!({"model":"test"}), vec![], None, None,
+            &client, url, json!({"model":"test"}), vec![], None, None, None,
         ).await.expect("Chat retains its existing deadline");
         server.abort();
 
@@ -127,7 +127,7 @@ async fn phase_timeout_openai_operations_preserve_non_text_headers_budgets() {
 
         let (url, server) = serve(json!({"output":[{"type":"compaction","encrypted_content":"opaque"}]}), false).await;
         super::compaction::send_openai_compact_request(
-            &client, url, json!({"model":"test"}), vec![], None, None, "openai", "openai/test",
+            &client, url, json!({"model":"test"}), vec![], None, None, "openai", "openai/test", None,
         ).await.expect("compaction retains its full-request deadline");
         server.abort();
     }).await;

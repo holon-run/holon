@@ -20,6 +20,7 @@ mod media;
 mod message_dispatch;
 mod operator;
 mod operator_dispatch;
+mod provider_admission;
 pub(crate) mod provider_recovery;
 mod provider_turn;
 mod repair;
@@ -434,6 +435,7 @@ struct RuntimeInner {
     base_provider: Arc<dyn AgentProvider>,
     provider: RwLock<Arc<dyn AgentProvider>>,
     turn_fallback_model: RwLock<Option<ModelRouteRef>>,
+    turn_provider_admission: StdMutex<Option<Arc<provider_admission::ProviderTurnAdmission>>>,
     context_config: RwLock<ContextConfig>,
     config_snapshot: ArcSwap<ConfigSnapshot>,
     view_image_observation_cache:
@@ -6262,11 +6264,18 @@ impl RuntimeHandle {
                         )?;
                     }
                     let next_recheck_at = [
+                        self.inner
+                            .runtime_db
+                            .next_provider_queue_recheck_at(&idle_snapshot.0.id)?,
                         self.next_blocked_work_item_recheck_at().await?,
                         self.next_agent_wait_recheck_at().await?,
-                        self.next_queued_available_retry_at(
-                            &projection.queued_runnable_work_items,
-                        )?,
+                        if idle_snapshot.1 == 0 {
+                            self.next_queued_available_retry_at(
+                                &projection.queued_runnable_work_items,
+                            )?
+                        } else {
+                            None
+                        },
                     ]
                     .into_iter()
                     .flatten()
