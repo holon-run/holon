@@ -480,7 +480,7 @@ pub(crate) async fn resolve_file_references(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ResolveFileReferencesRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     if request.references.len() > MAX_RESOLVE_REFERENCES {
         return Err(http_error(
             StatusCode::BAD_REQUEST,
@@ -694,7 +694,7 @@ async fn workspace_files_inner(
     params: FileQueryParams,
     method: Method,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
 
     let root_id = params.execution_root_id()?;
     let root = resolve_workspace_root(&state, &workspace_id, root_id)?;

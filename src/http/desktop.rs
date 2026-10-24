@@ -66,7 +66,7 @@ pub(crate) async fn capabilities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<DesktopCapabilities>, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     Ok(Json(DesktopCapabilities {
         reveal_in_finder: state.desktop_integration,
     }))
@@ -77,7 +77,7 @@ pub(crate) async fn reveal(
     headers: HeaderMap,
     ApiJson(request): ApiJson<RevealFileRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let authenticated_remote = state.require_control_token
         || state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc;
     if !state.desktop_integration || !same_origin_request(&headers, true, authenticated_remote) {

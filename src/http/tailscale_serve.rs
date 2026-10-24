@@ -327,7 +327,7 @@ pub async fn status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let status = tokio::task::spawn_blocking(move || read(&state, &Cli))
         .await
         .map_err(|err| error_response(err.into()))?
@@ -387,7 +387,7 @@ pub async fn enable(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let status = tokio::task::spawn_blocking(move || change(&state, &Cli, true))
         .await
         .map_err(|err| error_response(err.into()))?
@@ -399,7 +399,7 @@ pub async fn disable(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let status = tokio::task::spawn_blocking(move || change(&state, &Cli, false))
         .await
         .map_err(|err| error_response(err.into()))?

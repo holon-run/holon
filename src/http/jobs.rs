@@ -105,7 +105,7 @@ pub async fn create_job(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateJobRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     match request {
         CreateJobRequest::SkillInstall { params } => create_skill_install_job(state, params)
             .await
@@ -123,7 +123,7 @@ pub async fn job_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     match state.jobs.get(&job_id) {
         Some(job) => Ok(Json(json!({ "ok": true, "job": job }))),
         None => Err(http_error(

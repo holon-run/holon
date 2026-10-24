@@ -33,9 +33,8 @@ pub(crate) async fn create(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateContentReportRequest>,
 ) -> Result<(StatusCode, Json<CreateContentReportResponse>), (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|error| auth_required(error.to_string()))?;
-    let actor =
-        control_actor(&headers, &state).map_err(|error| auth_required(error.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let actor = control_actor(&headers, &state).map_err(authentication_error_response)?;
     validate_request(&request)?;
 
     let record = state

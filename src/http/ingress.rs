@@ -166,7 +166,7 @@ pub async fn generic_webhook(
     headers: HeaderMap,
     ApiJson(payload): ApiJson<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let trace_context = super::state::trace_context_from_headers(&headers)?;
     enqueue_internal(
         state,

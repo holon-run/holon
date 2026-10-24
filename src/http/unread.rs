@@ -63,12 +63,12 @@ pub(crate) async fn brief_read_states(
     headers: HeaderMap,
 ) -> AxumResponse {
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let (principal, entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(value) => value,
-            Err(error) => return error_response(error).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let db = state.host.runtime_db().clone();
     match run_unread_db(&state, move || {
@@ -87,12 +87,12 @@ pub(crate) async fn brief_read_state(
     headers: HeaderMap,
 ) -> AxumResponse {
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let (principal, entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(value) => value,
-            Err(error) => return error_response(error).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let db = state.host.runtime_db().clone();
     let requested_agent_id = agent_id.clone();
@@ -114,12 +114,12 @@ pub(crate) async fn mark_brief_read(
     Json(request): Json<MarkBriefReadRequest>,
 ) -> AxumResponse {
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let (principal, entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(value) => value,
-            Err(error) => return error_response(error).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let db = state.host.runtime_db().clone();
     let requested_agent_id = agent_id.clone();

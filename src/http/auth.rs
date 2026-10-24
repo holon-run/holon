@@ -160,11 +160,16 @@ pub async fn issue_pairing_ticket(
                 .and_then(|header| header.strip_prefix("Bearer "))
                 == Some(expected)
         });
-    if !state.uses_trusted_local_admission()
-        && !has_valid_token
-        && authenticate_session(&headers, &state).is_err()
-    {
-        return Err(auth_required("authentication required"));
+    if !state.uses_trusted_local_admission() && !has_valid_token {
+        match authenticate_session(&headers, &state) {
+            Ok(_) => {}
+            Err(AuthenticationError::Rejected(_)) => {
+                return Err(auth_required("authentication required"));
+            }
+            Err(error @ AuthenticationError::Infrastructure(_)) => {
+                return Err(authentication_error_response(error));
+            }
+        }
     }
     let (ticket, expires_at) = state
         .pairing_tickets
@@ -291,8 +296,7 @@ pub async fn session_me(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let actor =
-        control_actor(&headers, &state).map_err(|error| auth_required(error.to_string()))?;
+    let actor = control_actor(&headers, &state).map_err(authentication_error_response)?;
     let (user_id, display_name, auth_method) = match &actor {
         ControlActor::User {
             user_id,
@@ -588,8 +592,7 @@ pub async fn logout(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let session =
-        authenticate_session(&headers, &state).map_err(|error| auth_required(error.to_string()))?;
+    let session = authenticate_session(&headers, &state).map_err(authentication_error_response)?;
     state
         .host
         .runtime_db()
@@ -620,7 +623,7 @@ pub async fn start_codex_device_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let device_code = crate::auth::request_codex_device_code()
         .await
         .map_err(error_response)?;
@@ -727,7 +730,7 @@ pub async fn start_oauth_device_login(
     Path(provider): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = crate::auth::oauth_provider_config(&provider).ok_or_else(|| {
         error_response(anyhow::anyhow!(
             "provider {provider} does not support OAuth device login"
