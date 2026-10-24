@@ -6329,50 +6329,6 @@ impl RuntimeHost {
         Ok(())
     }
 
-    async fn quiesce_terminal_task_worktree(&self, task: &TaskRecord) -> Result<()> {
-        let Some(target) = task.target() else {
-            return Ok(());
-        };
-        if target.kind != crate::types::TaskTargetKind::ChildAgent {
-            return Ok(());
-        }
-        let lock = self.agent_bootstrap_lock(&target.agent_id);
-        let _guard = lock.lock().await;
-        let Some(runtime) = self.try_get_loaded_runtime(&target.agent_id).await else {
-            return Ok(());
-        };
-        let (identity, _) = self.supervised_invocation_source(task, &target.agent_id)?;
-        anyhow::ensure!(
-            runtime.instance_incarnation() == identity.incarnation,
-            "worktree target incarnation changed"
-        );
-        anyhow::ensure!(
-            matches!(self.resolve_supervised_invocation(task, &target.agent_id, false).await?,
-                ChildInvocationResolution::Ready(result) if matches!(result.status, TaskStatus::Completed | TaskStatus::Failed)),
-            "task-owned worktree invocation is not terminal"
-        );
-        let state = runtime.agent_state().await?;
-        let Some(session) = state.worktree_session else {
-            return Ok(());
-        };
-        let generation = self
-            .inner
-            .runtimes
-            .read()
-            .await
-            .agents
-            .get(&target.agent_id)
-            .filter(|entry| entry.runtime.instance_incarnation() == identity.incarnation)
-            .map(|entry| entry.generation)
-            .context("task worktree runtime changed before quiescence")?;
-        runtime.admit_idle_cleanup(|| Ok(())).await?;
-        self.finish_idle_runtime_exit(&target.agent_id, Some(generation))
-            .await?;
-        runtime.exit_worktree(session.original_cwd, false).await?;
-        tracing::info!(agent_id = %target.agent_id, task_id = %task.id, "terminal task worktree runtime quiesced");
-        Ok(())
-    }
-
     async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {
         self.archive_private_agent(agent_id).await
     }
@@ -8564,10 +8520,6 @@ impl RuntimeHostBridge {
                 expected_incarnation,
             )
             .await
-    }
-
-    pub(crate) async fn quiesce_terminal_task_worktree(&self, task: &TaskRecord) -> Result<()> {
-        self.host()?.quiesce_terminal_task_worktree(task).await
     }
 
     pub(crate) async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {

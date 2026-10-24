@@ -311,15 +311,12 @@ This is lazy consumer settlement: deletion need not activate parents or find
 historical references. A running monitor observes the fence; an unloaded caller
 settles from the same durable fact during recovery. Task-owned worktrees retained
 by cancellation remain explicitly owned by the parent task, marked
-`retained_for_review` with reason `agent_deleted`; physical cleanup uses the
-protected workspace lease and is not part of lazy result settlement. This also
-applies when stopping a task archives its child. Ordinary successful/failed task
-cleanup first proves the exact supervised invocation terminal, closes its idle
-runtime admission, joins its exit and releases its workspace occupancy before
-acquiring the physical cleanup lease. Legacy task worktrees without root-level ownership metadata require
-an exact parent-owned worktree task artifact and its dedicated task branch;
-unknown, foreign and shared roots remain protected. Parent task results that
-already committed remain immutable. A losing concurrent terminal publisher exits
+`retained_for_review` with reason `agent_deleted`; physical cleanup follows the
+existing explicit workspace cleanup flow and is not part of lazy result
+settlement. This also applies when stopping a task archives its child. Ordinary
+terminal-result worktree cleanup keeps its existing authorization and behavior;
+cleanup already authorized before deletion is not rolled back by cancellation.
+Parent task results that already committed remain immutable. A losing concurrent terminal publisher exits
 when it observes that committed result. Accepted message waits persist their
 target incarnation, delivery and reply cursor in the admission transaction, so a
 crash before monitor startup does not erase their generation binding.
