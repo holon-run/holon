@@ -71,6 +71,7 @@ pub fn build_provider_turn_request(
     }
 
     ProviderTurnRequest {
+        dispatch_guard: None,
         continuation_scope_id: ContinuationScopeId::new(
             effective_prompt.cache_identity.agent_id.clone(),
         ),
@@ -123,6 +124,7 @@ pub fn build_continuation_request(
     native_web_search: Option<ProviderNativeWebSearchRequest>,
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
+        dispatch_guard: None,
         continuation_scope_id,
         prompt_frame,
         conversation,

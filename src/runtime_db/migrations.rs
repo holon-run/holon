@@ -4059,6 +4059,78 @@ CREATE INDEX idx_task_result_recovery_paused
         // Name-accepted legacy upgrades can lack historical evidence tables.
         sql: "",
     },
+    Migration {
+        version: 86,
+        name: "provider_admission_fences",
+        sql: r#"
+ALTER TABLE provider_quota_incidents ADD COLUMN server_not_before TEXT;
+ALTER TABLE provider_quota_incidents ADD COLUMN probe_token TEXT;
+ALTER TABLE provider_quota_incidents ADD COLUMN probe_lease_until TEXT;
+ALTER TABLE provider_quota_incidents ADD COLUMN cooldown_policy TEXT;
+
+CREATE TABLE provider_transport_incidents (
+  identity_key TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  consecutive_failures INTEGER NOT NULL CHECK (consecutive_failures >= 0),
+  next_retry_at TEXT,
+  last_failure_kind TEXT,
+  last_model_ref TEXT,
+  opened_at TEXT NOT NULL,
+  last_failed_at TEXT NOT NULL,
+  resolved_at TEXT,
+  server_not_before TEXT,
+  probe_token TEXT,
+  probe_lease_until TEXT,
+  cooldown_policy TEXT
+);
+CREATE INDEX idx_provider_transport_incidents_retry
+  ON provider_transport_incidents(next_retry_at, consecutive_failures);
+
+CREATE TABLE provider_recovery_episodes (
+  episode_key TEXT PRIMARY KEY,
+  binding_json TEXT NOT NULL,
+  budget_kind TEXT NOT NULL CHECK (budget_kind IN ('network', 'operator')),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  epoch INTEGER NOT NULL CHECK (epoch > 0),
+  state TEXT NOT NULL CHECK (state IN ('ready', 'cooling', 'budget_exhausted', 'resolved')),
+  request_count INTEGER NOT NULL CHECK (request_count BETWEEN 0 AND 3),
+  total_requests INTEGER NOT NULL CHECK (total_requests >= request_count),
+  candidate_cursor INTEGER NOT NULL CHECK (candidate_cursor >= 0),
+  failed_epochs INTEGER NOT NULL CHECK (failed_epochs >= 0),
+  not_before TEXT,
+  side_effect_boundary INTEGER NOT NULL CHECK (side_effect_boundary IN (0, 1)),
+  opened_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE provider_recovery_requests (
+  request_id TEXT PRIMARY KEY,
+  episode_key TEXT NOT NULL REFERENCES provider_recovery_episodes(episode_key),
+  epoch INTEGER NOT NULL CHECK (epoch > 0),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  scopes_json TEXT NOT NULL,
+  outcome TEXT CHECK (outcome IN ('available_response', 'non_recovery_response', 'network_failure', 'other_failure')),
+  failed_scope_json TEXT,
+  dispatched_at TEXT NOT NULL,
+  settled_at TEXT
+);
+CREATE INDEX idx_provider_recovery_requests_episode
+  ON provider_recovery_requests(episode_key, epoch);
+
+CREATE TABLE provider_queue_parking (
+  agent_id TEXT NOT NULL CHECK (length(agent_id) > 0),
+  message_id TEXT NOT NULL CHECK (length(message_id) > 0),
+  chain_fingerprint TEXT NOT NULL CHECK (length(chain_fingerprint) > 0),
+  episode_key TEXT NOT NULL CHECK (length(episode_key) > 0),
+  not_before TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('chain_cooling', 'recovery_budget_exhausted')),
+  PRIMARY KEY (agent_id, message_id)
+);
+CREATE INDEX idx_provider_queue_parking_recheck
+  ON provider_queue_parking(agent_id, not_before);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

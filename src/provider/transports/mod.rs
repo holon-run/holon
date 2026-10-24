@@ -1,4 +1,6 @@
 mod anthropic;
+#[cfg(test)]
+mod dispatch_guard_tests;
 mod gemini;
 mod http;
 mod openai;
@@ -44,7 +46,10 @@ fn build_oauth_http_client() -> Result<Client> {
 
 fn build_provider_http_client(connect: Option<Duration>) -> Result<Client> {
     let timeouts = http_timeouts();
-    let mut builder = Client::builder();
+    // Every model dispatch must pass through the explicit admission hook.
+    let mut builder = Client::builder()
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none());
     if let Some(connect) = connect {
         builder = builder.connect_timeout(connect);
     }
@@ -72,10 +77,6 @@ pub(super) fn stream_idle_timeout() -> Duration {
 #[cfg(test)]
 pub(crate) fn set_stream_idle_timeout_override_for_tests(timeout_ms: Option<u64>) {
     STREAM_IDLE_TIMEOUT_OVERRIDE_MS.store(timeout_ms.unwrap_or(0), Ordering::Relaxed);
-}
-
-pub(super) fn request_send_timeout() -> Duration {
-    http_timeouts().request
 }
 
 pub(super) fn response_body_timeout() -> Duration {

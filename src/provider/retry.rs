@@ -7,7 +7,8 @@ use thiserror::Error;
 use tokio::time::Duration;
 
 use super::{
-    http_trace::ProviderHttpTraceRequest, ProviderFallbackDisposition,
+    http_trace::ProviderHttpTraceRequest, ProviderFallbackDisposition, ProviderThrottleHintSource,
+    ProviderThrottleKind, ProviderThrottleMetadata, ProviderThrottleReason,
     ProviderTransportDiagnostics, ReqwestTransportDiagnostics,
 };
 use crate::types::TokenUsage;
@@ -21,6 +22,7 @@ pub(crate) const PROVIDER_RETRY_SERVER_HINT_CAP_MS: u64 = 30_000;
 pub(crate) const PROVIDER_RECOVERY_BASE_BACKOFF_MS: u64 = 2_000;
 pub(crate) const PROVIDER_RECOVERY_MAX_BACKOFF_MS: u64 = 30_000;
 pub(crate) const PROVIDER_RECOVERY_MAX_FALLBACKS: usize = 2;
+const PROVIDER_RETRY_AFTER_MAX_SECONDS: u64 = 35 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -231,7 +233,42 @@ fn provider_server_error_retry_backoff(attempt: usize, jitter_seed: u64) -> Dura
     Duration::from_millis(exponential.saturating_add(jitter))
 }
 
-pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderRetryAfter {
+    pub observed_at: chrono::DateTime<chrono::Utc>,
+    pub not_before: chrono::DateTime<chrono::Utc>,
+    pub delay: Duration,
+}
+
+impl ProviderRetryAfter {
+    #[cfg(test)]
+    pub(crate) fn from_delay(delay: Duration) -> Option<Self> {
+        Self::from_delay_at(delay, chrono::Utc::now())
+    }
+
+    fn from_delay_at(delay: Duration, observed_at: chrono::DateTime<chrono::Utc>) -> Option<Self> {
+        if delay.is_zero() || delay > Duration::from_secs(PROVIDER_RETRY_AFTER_MAX_SECONDS) {
+            return None;
+        }
+        let not_before = observed_at.checked_add_signed(chrono::Duration::from_std(delay).ok()?)?;
+        Some(Self {
+            observed_at,
+            not_before,
+            delay,
+        })
+    }
+}
+
+pub(crate) fn parse_retry_after(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<ProviderRetryAfter> {
+    parse_retry_after_at(headers, chrono::Utc::now())
+}
+
+fn parse_retry_after_at(
+    headers: &reqwest::header::HeaderMap,
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> Option<ProviderRetryAfter> {
     let raw = headers
         .get(&reqwest::header::RETRY_AFTER)?
         .to_str()
@@ -242,16 +279,17 @@ pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<
     }
     // RFC 9110 delta-seconds: a non-negative integer; zero means no wait is
     // required, so fall back to the computed backoff.
-    if let Ok(seconds) = raw.parse::<u64>() {
-        let duration = Duration::from_secs(seconds);
-        return (!duration.is_zero()).then_some(duration);
+    if raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        let seconds = raw.parse::<u64>().ok()?;
+        return ProviderRetryAfter::from_delay_at(Duration::from_secs(seconds), observed_at);
     }
     let date = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
-    date.with_timezone(&chrono::Utc)
-        .signed_duration_since(chrono::Utc::now())
+    let delay = date
+        .with_timezone(&chrono::Utc)
+        .signed_duration_since(observed_at)
         .to_std()
-        .ok()
-        .filter(|duration| !duration.is_zero())
+        .ok()?;
+    ProviderRetryAfter::from_delay_at(delay, observed_at)
 }
 
 pub(crate) fn provider_retry_delay(
@@ -290,12 +328,6 @@ pub(crate) fn provider_retry_delay(
         };
     };
     if server_hint > Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS) {
-        if kind == ProviderFailureKind::RateLimited {
-            return ProviderRetryDelay::Wait {
-                backoff: Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS),
-                source: ProviderRetryDelaySource::ServerRetryAfter,
-            };
-        }
         return ProviderRetryDelay::SkipToFallback;
     }
     ProviderRetryDelay::Wait {
@@ -318,6 +350,66 @@ pub(crate) fn provider_error_retry_after(error: &anyhow::Error) -> Option<Durati
     error
         .downcast_ref::<ProviderTransportError>()
         .and_then(|error| error.retry_after)
+}
+
+pub(crate) fn provider_throttle_metadata(
+    retry_after: Option<ProviderRetryAfter>,
+) -> ProviderThrottleMetadata {
+    ProviderThrottleMetadata {
+        kind: ProviderThrottleKind::Transient,
+        reason: ProviderThrottleReason::RateLimited,
+        observed_at: retry_after
+            .map(|hint| hint.observed_at)
+            .unwrap_or_else(chrono::Utc::now),
+        not_before: retry_after.map(|hint| hint.not_before),
+        hint_source: retry_after.map(|_| ProviderThrottleHintSource::RetryAfter),
+    }
+}
+
+fn is_documented_bigmodel_hard_quota(
+    provider: Option<&str>,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    body: &str,
+) -> bool {
+    let Some(definition) = super::registry::provider_definition("bigmodel") else {
+        return false;
+    };
+    let Some(route) =
+        model_ref.and_then(|route| crate::config::ModelRouteRef::parse_compatible(route).ok())
+    else {
+        return false;
+    };
+    if provider != Some(definition.route_provider)
+        || route.provider.as_str() != definition.route_provider
+        || route.endpoint.as_str() != definition.route_endpoint
+    {
+        return false;
+    }
+    let expected = format!(
+        "{}/v1/messages",
+        definition.default_base_url.trim_end_matches('/')
+    );
+    let Some(actual_url) = url.and_then(|url| reqwest::Url::parse(url).ok()) else {
+        return false;
+    };
+    if reqwest::Url::parse(&expected).ok().as_ref() != Some(&actual_url)
+        || body.len() > MAX_UPSTREAM_ERROR_BODY_BYTES
+    {
+        return false;
+    }
+    // Only the documented error.code envelope is evidence; quota wording
+    // and timezone-less reset text do not establish hard quota or a deadline.
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")?
+                .get("code")?
+                .as_str()
+                .map(|code| code == "1310")
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn provider_transport_error(
@@ -522,7 +614,7 @@ pub(crate) fn classify_status_error_with_trace(
     status: StatusCode,
     body: String,
     trace: Option<&ProviderHttpTraceRequest>,
-    retry_after: Option<Duration>,
+    retry_after: Option<ProviderRetryAfter>,
 ) -> anyhow::Error {
     let detail = extract_upstream_error_detail(&body);
     let deterministic_error =
@@ -569,6 +661,14 @@ pub(crate) fn classify_status_error_with_trace(
             ". This endpoint explicitly rejected the requested tool protocol; update the provider/model/endpoint or builtin_web_search configuration. Holon will not remove the tool or retry with a degraded request.",
         )
         .unwrap_or_default();
+    let throttle = (status == StatusCode::TOO_MANY_REQUESTS).then(|| {
+        let mut metadata = provider_throttle_metadata(retry_after);
+        if is_documented_bigmodel_hard_quota(provider, model_ref, url, &body) {
+            metadata.kind = ProviderThrottleKind::HardQuota;
+            metadata.reason = ProviderThrottleReason::BigmodelWeeklyMonthlyQuota;
+        }
+        metadata
+    });
     provider_transport_error_with_code_and_retry_after(
         classification,
         code,
@@ -584,9 +684,11 @@ pub(crate) fn classify_status_error_with_trace(
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
             quota_identity: None,
+            retry_after_not_before: retry_after.map(|hint| hint.not_before),
+            throttle,
             source_chain: status_error_source_chain(provider, status),
         }),
-        retry_after,
+        retry_after.map(|hint| hint.delay),
         format!("{context} with status {status}{detail_message}{tool_protocol_hint}"),
     )
 }
@@ -815,6 +917,8 @@ pub(crate) fn invalid_response_error_with_trace(
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
             quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
             source_chain: vec![error.clone()],
         }),
         format!("{context}: {error}"),
@@ -854,6 +958,8 @@ pub(crate) fn retryable_invalid_response_error_with_trace(
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
             quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -910,6 +1016,8 @@ pub(crate) fn empty_response_error_with_trace(
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
             quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
             source_chain: vec![error.clone()],
         }),
         Some(token_usage),
@@ -944,6 +1052,8 @@ pub(crate) fn timeout_transport_error_with_trace(
             context_budget: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(None)),
             quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
             source_chain: vec![reason.into()],
         }),
         context.to_string(),
@@ -994,6 +1104,8 @@ fn reqwest_transport_diagnostics(
         context_budget: None,
         http_trace: trace.and_then(|trace| trace.diagnostics(status)),
         quota_identity: None,
+        retry_after_not_before: None,
+        throttle: None,
         source_chain,
     }
 }
@@ -1087,7 +1199,7 @@ mod tests {
     #[test]
     fn parse_retry_after_reads_delta_seconds() {
         assert_eq!(
-            super::parse_retry_after(&retry_after_headers("13")),
+            super::parse_retry_after(&retry_after_headers("13")).map(|hint| hint.delay),
             Some(Duration::from_secs(13))
         );
     }
@@ -1097,8 +1209,8 @@ mod tests {
         let date = (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc2822();
         let parsed =
             super::parse_retry_after(&retry_after_headers(&date)).expect("future date parses");
-        assert!(parsed > Duration::from_secs(20));
-        assert!(parsed <= Duration::from_secs(30));
+        assert!(parsed.delay > Duration::from_secs(20));
+        assert!(parsed.delay <= Duration::from_secs(30));
     }
 
     #[test]
@@ -1126,9 +1238,385 @@ mod tests {
             reqwest::header::HeaderValue::from_static("5"),
         );
         assert_eq!(
-            super::parse_retry_after(&headers),
+            super::parse_retry_after(&headers).map(|hint| hint.delay),
             Some(Duration::from_secs(5))
         );
+    }
+
+    fn bigmodel_status_error(
+        code: &str,
+        model_ref: &str,
+        url: &str,
+        retry_after: Option<super::ProviderRetryAfter>,
+    ) -> anyhow::Error {
+        // Constructed from https://docs.bigmodel.cn/cn/api/api-code, not a captured response.
+        let body = serde_json::json!({
+            "error": {
+                "code": code,
+                "message": "quota reset: 2026-11-01 00:00:00"
+            }
+        });
+        classify_status_error_with_trace(
+            "BigModel request failed",
+            "response_status",
+            Some("bigmodel"),
+            Some(model_ref),
+            Some(url),
+            StatusCode::TOO_MANY_REQUESTS,
+            body.to_string(),
+            None,
+            retry_after,
+        )
+    }
+
+    #[test]
+    fn bigmodel_1310_is_hard_quota_for_builtin_endpoint_and_profile() {
+        for model_ref in ["bigmodel@default/glm-5.2", "bigmodel/glm-5.2"] {
+            let error = bigmodel_status_error(
+                "1310",
+                model_ref,
+                "https://open.bigmodel.cn/api/anthropic/v1/messages",
+                None,
+            );
+            let transport = error.downcast_ref::<ProviderTransportError>().unwrap();
+            assert_eq!(
+                transport.classification.kind,
+                ProviderFailureKind::RateLimited
+            );
+            assert_eq!(
+                transport.classification.disposition,
+                super::RetryDisposition::Retryable
+            );
+            let throttle = transport
+                .diagnostics
+                .as_ref()
+                .unwrap()
+                .throttle
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                throttle.kind,
+                crate::provider::ProviderThrottleKind::HardQuota
+            );
+            assert_eq!(
+                throttle.reason,
+                crate::provider::ProviderThrottleReason::BigmodelWeeklyMonthlyQuota
+            );
+            // The timezone-less reset in the constructed body is deliberately ignored.
+            assert_eq!(throttle.not_before, None);
+            assert_eq!(throttle.hint_source, None);
+        }
+    }
+
+    #[test]
+    fn hard_quota_decoder_rejects_custom_same_name_endpoints_and_profiles() {
+        for (model_ref, url) in [
+            (
+                "bigmodel@default/glm-5.2",
+                "https://custom.example/api/anthropic/v1/messages",
+            ),
+            (
+                "bigmodel@custom/glm-5.2",
+                "https://open.bigmodel.cn/api/anthropic/v1/messages",
+            ),
+            (
+                "other@default/glm-5.2",
+                "https://open.bigmodel.cn/api/anthropic/v1/messages",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn.evil.example/api/anthropic/v1/messages",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "http://open.bigmodel.cn/api/anthropic/v1/messages",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn:8443/api/anthropic/v1/messages",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "https://user@open.bigmodel.cn/api/anthropic/v1/messages",
+            ),
+            (
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn/api/anthropic/v1/messages?custom=1",
+            ),
+        ] {
+            let error = bigmodel_status_error("1310", model_ref, url, None);
+            let throttle = crate::provider::provider_transport_diagnostics(&error)
+                .unwrap()
+                .throttle
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                throttle.kind,
+                crate::provider::ProviderThrottleKind::Transient,
+                "{model_ref} {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn bigmodel_1302_and_unknown_business_codes_remain_transient() {
+        for code in ["1302", "1308", "1309", "1311", "unknown", "1310 quota"] {
+            let error = bigmodel_status_error(
+                code,
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn/api/anthropic/v1/messages",
+                None,
+            );
+            let throttle = crate::provider::provider_transport_diagnostics(&error)
+                .unwrap()
+                .throttle
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                throttle.kind,
+                crate::provider::ProviderThrottleKind::Transient,
+                "{code}"
+            );
+            assert_eq!(
+                throttle.reason,
+                crate::provider::ProviderThrottleReason::RateLimited
+            );
+        }
+    }
+
+    #[test]
+    fn hard_quota_decoder_requires_documented_error_envelope_and_provider() {
+        for (provider, body) in [
+            ("bigmodel", r#"{"code":"1310","message":"quota exhausted"}"#),
+            (
+                "bigmodel",
+                r#"{"error":{"code":1310,"message":"quota exhausted"}}"#,
+            ),
+            (
+                "bigmodel",
+                r#"{"error":{"message":"1310 quota exhausted"}}"#,
+            ),
+            (
+                "other",
+                r#"{"error":{"code":"1310","message":"quota exhausted"}}"#,
+            ),
+        ] {
+            let error = classify_status_error_with_trace(
+                "request failed",
+                "response_status",
+                Some(provider),
+                Some("bigmodel@default/glm-5.2"),
+                Some("https://open.bigmodel.cn/api/anthropic/v1/messages"),
+                StatusCode::TOO_MANY_REQUESTS,
+                body.into(),
+                None,
+                None,
+            );
+            assert_eq!(
+                crate::provider::provider_transport_diagnostics(&error)
+                    .unwrap()
+                    .throttle
+                    .as_ref()
+                    .unwrap()
+                    .kind,
+                crate::provider::ProviderThrottleKind::Transient
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_accepts_only_positive_hints_within_35_days() {
+        for raw in [
+            "0",
+            "-1",
+            "+1",
+            "3024001",
+            "18446744073709551615",
+            "2026-11-01 00:00:00",
+        ] {
+            assert_eq!(
+                super::parse_retry_after(&retry_after_headers(raw)),
+                None,
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            super::parse_retry_after(&retry_after_headers("3024000"))
+                .unwrap()
+                .delay,
+            Duration::from_secs(super::PROVIDER_RETRY_AFTER_MAX_SECONDS)
+        );
+    }
+
+    #[test]
+    fn long_delta_and_http_date_preserve_observed_utc_deadline_through_serde() {
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-10-24T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let expected = observed_at + chrono::Duration::hours(48);
+        for raw in [
+            "172800".to_string(),
+            expected
+                .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+                .to_rfc2822(),
+        ] {
+            let hint =
+                super::parse_retry_after_at(&retry_after_headers(&raw), observed_at).unwrap();
+            assert_eq!(hint.observed_at, observed_at);
+            assert_eq!(hint.not_before, expected);
+            let error = bigmodel_status_error(
+                "1310",
+                "bigmodel@default/glm-5.2",
+                "https://open.bigmodel.cn/api/anthropic/v1/messages",
+                Some(hint),
+            );
+            let diagnostics = crate::provider::provider_transport_diagnostics(&error).unwrap();
+            let encoded = serde_json::to_value(diagnostics).unwrap();
+            assert_eq!(encoded["retry_after_not_before"], "2026-10-26T17:00:00Z");
+            assert_eq!(encoded["throttle"]["not_before"], "2026-10-26T17:00:00Z");
+            let decoded: crate::provider::ProviderTransportDiagnostics =
+                serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.retry_after_not_before, Some(expected));
+            let throttle = decoded.throttle.unwrap();
+            assert_eq!(throttle.observed_at, observed_at);
+            assert_eq!(throttle.not_before, Some(expected));
+            assert_eq!(
+                throttle.hint_source,
+                Some(crate::provider::ProviderThrottleHintSource::RetryAfter)
+            );
+        }
+        let too_late = observed_at + chrono::Duration::days(35) + chrono::Duration::seconds(1);
+        assert_eq!(
+            super::parse_retry_after_at(&retry_after_headers(&too_late.to_rfc2822()), observed_at),
+            None
+        );
+    }
+
+    #[test]
+    fn server_error_retry_after_deadlines_round_trip_without_quota_throttle() {
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-10-24T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let expected = observed_at + chrono::Duration::hours(1);
+        for raw in ["3600", "Sun, 25 Oct 2026 02:00:00 +0800"] {
+            let hint = super::parse_retry_after_at(&retry_after_headers(raw), observed_at).unwrap();
+            for status in [
+                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_GATEWAY,
+                StatusCode::SERVICE_UNAVAILABLE,
+                StatusCode::GATEWAY_TIMEOUT,
+            ] {
+                let error = classify_status_error_with_trace(
+                    "request failed",
+                    "response_status",
+                    Some("openai"),
+                    Some("openai/gpt-test"),
+                    Some("https://example.test/v1/responses"),
+                    status,
+                    "temporarily unavailable".into(),
+                    None,
+                    Some(hint),
+                );
+                let transport = error.downcast_ref::<ProviderTransportError>().unwrap();
+                assert_eq!(
+                    transport.classification.kind,
+                    ProviderFailureKind::ServerError
+                );
+                assert_eq!(
+                    transport.classification.disposition,
+                    super::RetryDisposition::Retryable
+                );
+                assert_eq!(transport.retry_after, Some(Duration::from_secs(3600)));
+                let diagnostics = transport.diagnostics.as_ref().unwrap();
+                assert_eq!(diagnostics.retry_after_not_before, Some(expected));
+                assert_eq!(diagnostics.throttle, None);
+                let encoded = serde_json::to_value(diagnostics).unwrap();
+                assert_eq!(encoded["retry_after_not_before"], "2026-10-24T18:00:00Z");
+                assert!(encoded.get("throttle").is_none());
+                let decoded: crate::provider::ProviderTransportDiagnostics =
+                    serde_json::from_value(encoded).unwrap();
+                assert_eq!(decoded, *diagnostics);
+            }
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_retry_after_hints_do_not_create_server_deadlines() {
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-10-24T17:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for raw in [
+            None,
+            Some(""),
+            Some(" "),
+            Some("soon"),
+            Some("0"),
+            Some("-1"),
+            Some("+1"),
+            Some("3024001"),
+            Some("18446744073709551615"),
+            Some("2026-10-24 18:00:00"),
+            Some("Sat, 24 Oct 2026 16:59:59 GMT"),
+            Some("Sun, 29 Nov 2026 17:00:00 GMT"),
+        ] {
+            let headers = raw.map(retry_after_headers).unwrap_or_default();
+            let hint = super::parse_retry_after_at(&headers, observed_at);
+            assert_eq!(hint, None, "{raw:?}");
+            for status in [
+                StatusCode::TOO_MANY_REQUESTS,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ] {
+                let error = classify_status_error_with_trace(
+                    "request failed",
+                    "response_status",
+                    Some("openai"),
+                    None,
+                    None,
+                    status,
+                    "quota resets at 2026-10-24T18:00:00Z; Retry-After: 3600".into(),
+                    None,
+                    hint,
+                );
+                let transport = error.downcast_ref::<ProviderTransportError>().unwrap();
+                assert_eq!(transport.retry_after, None);
+                let diagnostics = transport.diagnostics.as_ref().unwrap();
+                assert_eq!(diagnostics.retry_after_not_before, None);
+                assert!(serde_json::to_value(diagnostics)
+                    .unwrap()
+                    .get("retry_after_not_before")
+                    .is_none());
+                if let Some(throttle) = diagnostics.throttle.as_ref() {
+                    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+                    assert_eq!(
+                        throttle.kind,
+                        crate::provider::ProviderThrottleKind::Transient
+                    );
+                    assert_eq!(throttle.not_before, None);
+                    assert_eq!(throttle.hint_source, None);
+                } else {
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn old_transport_diagnostics_deserialize_without_retry_metadata() {
+        let decoded: crate::provider::ProviderTransportDiagnostics =
+            serde_json::from_value(serde_json::json!({"stage": "response_status"})).unwrap();
+        assert_eq!(decoded.throttle, None);
+        assert_eq!(decoded.retry_after_not_before, None);
+        let encoded = serde_json::to_value(decoded).unwrap();
+        assert!(encoded.get("throttle").is_none());
+        assert!(encoded.get("retry_after_not_before").is_none());
     }
 
     #[test]
@@ -1164,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_delay_caps_hint_before_retrying() {
+    fn retry_delay_skips_rate_limit_hint_over_request_wait_cap() {
         assert_eq!(
             provider_retry_delay(
                 1,
@@ -1172,10 +1660,7 @@ mod tests {
                 Some(Duration::from_secs(45)),
                 0
             ),
-            ProviderRetryDelay::Wait {
-                backoff: Duration::from_secs(30),
-                source: ProviderRetryDelaySource::ServerRetryAfter
-            }
+            ProviderRetryDelay::SkipToFallback
         );
     }
 
@@ -1284,7 +1769,7 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             r#"{"error":{"message":"rate limited"}}"#.into(),
             None,
-            Some(Duration::from_secs(5)),
+            super::ProviderRetryAfter::from_delay(Duration::from_secs(5)),
         );
         let transport = error
             .downcast_ref::<ProviderTransportError>()
@@ -1355,7 +1840,7 @@ mod tests {
                 StatusCode::TOO_MANY_REQUESTS,
                 r#"{"error":{"message":"rate limited"}}"#.into(),
                 None,
-                Some(Duration::from_secs(5)),
+                super::ProviderRetryAfter::from_delay(Duration::from_secs(5)),
             ),
             identity.clone(),
         );
@@ -1402,7 +1887,7 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "too many tokens per minute".into(),
             None,
-            Some(Duration::from_secs(5)),
+            super::ProviderRetryAfter::from_delay(Duration::from_secs(5)),
         );
         let transport = error
             .downcast_ref::<ProviderTransportError>()

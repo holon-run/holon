@@ -1275,6 +1275,119 @@ fn openai_provider_window_tracks_latest_compaction_item() {
     assert_eq!(latest_openai_compaction_index(&items), Some(3));
 }
 
+#[tokio::test]
+async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("compaction dispatch denied")]
+    struct CompactionDenied;
+
+    #[derive(Debug, Default)]
+    struct RejectGuard(AtomicUsize);
+
+    impl crate::provider::ProviderDispatchGuard for RejectGuard {
+        fn before_dispatch(&self) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(CompactionDenied.into())
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/responses/compact",
+        listener.local_addr().unwrap()
+    );
+    let client = super::build_http_client().unwrap();
+    let scope = crate::provider::ContinuationScopeId::new("compaction-guard").unwrap();
+    let request_shape = test_request_shape();
+    let continuation = Arc::new(Mutex::new(OpenAiContinuationState::default()));
+    continuation.lock().unwrap().windows.insert(
+        scope.clone(),
+        OpenAiProviderWindow {
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: vec![json!({ "type": "message", "content": "complete message" })],
+            append_match_items: Vec::new(),
+            latest_compaction_index: None,
+            latest_input_tokens: 512,
+            replay_loss_reason: None,
+            generation: 1,
+        },
+    );
+    let guard = RejectGuard::default();
+    let policy = OpenAiCompactionPolicy {
+        trigger_input_tokens: 1,
+    };
+    let error = super::maybe_compact_openai_provider_window(
+        &continuation,
+        Some(&scope),
+        &request_shape,
+        policy,
+        &client,
+        url.clone(),
+        vec![],
+        None,
+        None,
+        "openai",
+        "openai/test",
+        Some(&guard),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<CompactionDenied>());
+    assert_eq!(
+        classify_provider_error(&error).disposition,
+        RetryDisposition::FailFast
+    );
+
+    let mut plan = OpenAiRequestPlan {
+        body: json!({ "model": "gpt-test", "input": [] }),
+        fallback_replay: None,
+        scope: Some(scope),
+        append_match_input: Vec::new(),
+        provider_input: vec![json!({ "type": "message", "content": "continue" })],
+        replay_loss_reason: None,
+        request_shape,
+        diagnostics: incremental_diagnostics(
+            "incremental_continuation",
+            "test",
+            None,
+            0,
+            None,
+            None,
+            None,
+            None,
+        ),
+    };
+    let error = super::maybe_compact_openai_request_plan(
+        &continuation,
+        &mut plan,
+        policy,
+        &client,
+        url,
+        vec![],
+        None,
+        None,
+        "openai",
+        "openai/test",
+        Some(&guard),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<CompactionDenied>());
+    assert_eq!(
+        classify_provider_error(&error).disposition,
+        RetryDisposition::FailFast
+    );
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
 #[test]
 fn openai_compaction_trigger_skips_many_small_items_below_budget() {
     let request_shape = test_request_shape();

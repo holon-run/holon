@@ -11,103 +11,112 @@ pub(in super::super) async fn send_openai_responses_request(
     agent_id: Option<&str>,
     provider: &str,
     model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
-    let request_trace = trace.and_then(|trace| {
-        trace.begin_request(
-            agent_id,
+    let result: Result<ParsedOpenAiResponse> = async {
+        let request_trace = trace.and_then(|trace| {
+            trace.begin_request(
+                agent_id,
+                provider,
+                Some(model_ref),
+                url.as_str(),
+                "responses",
+                &headers,
+                &body,
+            )
+        });
+        let mut request = client.post(&url).header("content-type", "application/json");
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+
+        let request_started_at = chrono::Utc::now();
+        let response = send_openai_request(
+            request.json(&body),
+            "OpenAI-style request failed",
+            "request_send",
             provider,
             Some(model_ref),
-            url.as_str(),
-            "responses",
-            &headers,
-            &body,
+            Some(url.as_str()),
+            RequestDeadline::FullRequest,
+            request_trace.as_ref(),
+            dispatch_guard,
         )
-    });
-    let mut request = client.post(&url).header("content-type", "application/json");
-    for (name, value) in headers {
-        request = request.header(name, value);
-    }
+        .await?;
+        let response_headers_at = chrono::Utc::now();
+        trace_response_headers(
+            request_trace.as_ref(),
+            response.status(),
+            response.headers(),
+        );
+        let provider_request_id = provider_request_id_from_headers(response.headers());
 
-    let request_started_at = chrono::Utc::now();
-    let response = send_openai_request(
-        request.json(&body),
-        "OpenAI-style request failed",
-        "request_send",
-        provider,
-        Some(model_ref),
-        Some(url.as_str()),
-        RequestDeadline::FullRequest,
-        request_trace.as_ref(),
-    )
-    .await?;
-    let response_headers_at = chrono::Utc::now();
-    trace_response_headers(
-        request_trace.as_ref(),
-        response.status(),
-        response.headers(),
-    );
-    let provider_request_id = provider_request_id_from_headers(response.headers());
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let retry_after = parse_retry_after(response.headers());
-        let body = read_error_response_body(response, request_trace.as_ref()).await;
-        return Err(crate::provider::retry::set_provider_transport_streaming(
-            classify_status_error_with_trace(
-                "OpenAI-style request failed",
-                "response_status",
-                Some(provider),
-                Some(model_ref),
-                Some(url.as_str()),
-                status,
-                body,
-                request_trace.as_ref(),
-                retry_after,
-            ),
-            false,
-        ));
-    }
-
-    let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-        Ok(Ok(text)) => text,
-        Ok(Err(error)) => {
-            return Err(classify_reqwest_transport_error_with_trace(
-                "OpenAI-style response body failed",
-                "response_body",
-                provider,
-                Some(model_ref),
-                Some(url.as_str()),
-                error,
-                request_trace.as_ref(),
+        if !response.status().is_success() {
+            let status = response.status();
+            let retry_after = parse_retry_after(response.headers());
+            let body = read_error_response_body(response, request_trace.as_ref()).await;
+            return Err(crate::provider::retry::set_provider_transport_streaming(
+                classify_status_error_with_trace(
+                    "OpenAI-style request failed",
+                    "response_status",
+                    Some(provider),
+                    Some(model_ref),
+                    Some(url.as_str()),
+                    status,
+                    body,
+                    request_trace.as_ref(),
+                    retry_after,
+                ),
+                false,
             ));
         }
-        Err(_elapsed) => {
-            return Err(timeout_transport_error_with_trace(
-                "OpenAI-style response body read timed out",
-                "response_body",
-                provider,
-                Some(model_ref),
-                Some(url.as_str()),
-                format!("timed out after {:?}", response_body_timeout()),
-                request_trace.as_ref(),
-            ));
-        }
-    };
-    let response_body_completed_at = chrono::Utc::now();
-    trace_response_body(request_trace.as_ref(), &body);
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
-    let parsed = parse_openai_response_with_transport_state(parsed)?;
-    let parse_completed_at = chrono::Utc::now();
-    Ok(parsed
-        .with_provider_request_id(provider_request_id)
-        .with_transport_timeline(ProviderTransportTimeline {
-            request_started_at,
-            response_headers_at,
-            response_body_completed_at: Some(response_body_completed_at),
-            parse_completed_at,
-            streaming: false,
-        }))
+
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            Ok(Err(error)) => {
+                return Err(classify_reqwest_transport_error_with_trace(
+                    "OpenAI-style response body failed",
+                    "response_body",
+                    provider,
+                    Some(model_ref),
+                    Some(url.as_str()),
+                    error,
+                    request_trace.as_ref(),
+                ));
+            }
+            Err(_elapsed) => {
+                return Err(timeout_transport_error_with_trace(
+                    "OpenAI-style response body read timed out",
+                    "response_body",
+                    provider,
+                    Some(model_ref),
+                    Some(url.as_str()),
+                    format!("timed out after {:?}", response_body_timeout()),
+                    request_trace.as_ref(),
+                ));
+            }
+        };
+        let response_body_completed_at = chrono::Utc::now();
+        trace_response_body(request_trace.as_ref(), &body);
+        let parsed: Value = serde_json::from_str(&body)
+            .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
+        let parsed = parse_openai_response_with_transport_state(parsed)?;
+        let parse_completed_at = chrono::Utc::now();
+        Ok(parsed
+            .with_provider_request_id(provider_request_id)
+            .with_transport_timeline(ProviderTransportTimeline {
+                request_started_at,
+                response_headers_at,
+                response_body_completed_at: Some(response_body_completed_at),
+                parse_completed_at,
+                streaming: false,
+            }))
+    }
+    .await;
+    if let Some(guard) = dispatch_guard {
+        guard.after_request(result.as_ref().map(|parsed| Some(&parsed.response)))?;
+    }
+    result
 }
 
 pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
@@ -123,6 +132,7 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
     final_replay_loss_reason: &mut Option<String>,
     provider: &str,
     model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
     if !matches!(error_status(&error), Some(400..=499))
         || plan.body.get("previous_response_id").is_none()
@@ -167,6 +177,7 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
         agent_id,
         provider,
         model_ref,
+        dispatch_guard,
     )
     .await
 }
@@ -180,94 +191,103 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     agent_id: Option<&str>,
     provider: &str,
     model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
-    let request_trace = trace.and_then(|trace| {
-        trace.begin_request(
-            agent_id,
+    let result: Result<ParsedOpenAiResponse> = async {
+        let request_trace = trace.and_then(|trace| {
+            trace.begin_request(
+                agent_id,
+                provider,
+                Some(model_ref),
+                url.as_str(),
+                "responses_streaming",
+                &headers,
+                &body,
+            )
+        });
+        let mut request = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream");
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+
+        let request_started_at = chrono::Utc::now();
+        let generates_image = body
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "image_generation"));
+        let deadline = if generates_image {
+            RequestDeadline::HeadersOnly
+        } else {
+            RequestDeadline::TextStream
+        };
+        let response = send_openai_request(
+            request.json(&body),
+            "OpenAI-style streaming request failed",
+            "streaming_request_send",
             provider,
             Some(model_ref),
-            url.as_str(),
-            "responses_streaming",
-            &headers,
-            &body,
+            Some(url.as_str()),
+            deadline,
+            request_trace.as_ref(),
+            dispatch_guard,
         )
-    });
-    let mut request = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .header("accept", "text/event-stream");
-    for (name, value) in headers {
-        request = request.header(name, value);
+        .await?;
+        let response_headers_at = chrono::Utc::now();
+        trace_response_headers(
+            request_trace.as_ref(),
+            response.status(),
+            response.headers(),
+        );
+        let provider_request_id = provider_request_id_from_headers(response.headers());
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let retry_after = parse_retry_after(response.headers());
+            let body = read_error_response_body(response, request_trace.as_ref()).await;
+            return Err(crate::provider::retry::set_provider_transport_streaming(
+                classify_status_error_with_trace(
+                    if provider == "openai-codex" {
+                        openai_codex_status_error_context(status)
+                    } else {
+                        "OpenAI-style streaming request failed"
+                    },
+                    "response_status",
+                    Some(provider),
+                    Some(model_ref),
+                    Some(url.as_str()),
+                    status,
+                    body,
+                    request_trace.as_ref(),
+                    retry_after,
+                ),
+                true,
+            ));
+        }
+
+        // Allow the bounded image payload in both output-item and terminal events.
+        let image_stream_limit = generates_image.then_some(96 * 1024 * 1024);
+        let terminal_response =
+            read_openai_streaming_response(response, request_trace.as_ref(), image_stream_limit)
+                .await?;
+        let response_body_completed_at = chrono::Utc::now();
+        let parsed = parse_openai_response_with_transport_state(terminal_response)?;
+        let parse_completed_at = chrono::Utc::now();
+        Ok(parsed
+            .with_provider_request_id(provider_request_id)
+            .with_transport_timeline(ProviderTransportTimeline {
+                request_started_at,
+                response_headers_at,
+                response_body_completed_at: Some(response_body_completed_at),
+                parse_completed_at,
+                streaming: true,
+            }))
     }
-
-    let request_started_at = chrono::Utc::now();
-    let generates_image = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "image_generation"));
-    let deadline = if generates_image {
-        RequestDeadline::HeadersOnly
-    } else {
-        RequestDeadline::TextStream
-    };
-    let response = send_openai_request(
-        request.json(&body),
-        "OpenAI-style streaming request failed",
-        "streaming_request_send",
-        provider,
-        Some(model_ref),
-        Some(url.as_str()),
-        deadline,
-        request_trace.as_ref(),
-    )
-    .await?;
-    let response_headers_at = chrono::Utc::now();
-    trace_response_headers(
-        request_trace.as_ref(),
-        response.status(),
-        response.headers(),
-    );
-    let provider_request_id = provider_request_id_from_headers(response.headers());
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let retry_after = parse_retry_after(response.headers());
-        let body = read_error_response_body(response, request_trace.as_ref()).await;
-        return Err(crate::provider::retry::set_provider_transport_streaming(
-            classify_status_error_with_trace(
-                if provider == "openai-codex" {
-                    openai_codex_status_error_context(status)
-                } else {
-                    "OpenAI-style streaming request failed"
-                },
-                "response_status",
-                Some(provider),
-                Some(model_ref),
-                Some(url.as_str()),
-                status,
-                body,
-                request_trace.as_ref(),
-                retry_after,
-            ),
-            true,
-        ));
+    .await;
+    if let Some(guard) = dispatch_guard {
+        guard.after_request(result.as_ref().map(|parsed| Some(&parsed.response)))?;
     }
-
-    // Allow the bounded image payload in both output-item and terminal events.
-    let image_stream_limit = generates_image.then_some(96 * 1024 * 1024);
-    let terminal_response =
-        read_openai_streaming_response(response, request_trace.as_ref(), image_stream_limit)
-            .await?;
-    let response_body_completed_at = chrono::Utc::now();
-    let parsed = parse_openai_response_with_transport_state(terminal_response)?;
-    let parse_completed_at = chrono::Utc::now();
-    Ok(parsed
-        .with_provider_request_id(provider_request_id)
-        .with_transport_timeline(ProviderTransportTimeline {
-            request_started_at,
-            response_headers_at,
-            response_body_completed_at: Some(response_body_completed_at),
-            parse_completed_at,
-            streaming: true,
-        }))
+    result
 }

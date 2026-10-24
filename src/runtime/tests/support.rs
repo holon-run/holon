@@ -1669,6 +1669,8 @@ impl AgentProvider for FailingTimelineProvider {
                             status: None
                         }),
                         quota_identity: None,
+                        retry_after_not_before: None,
+                        throttle: None,
                         source_chain: vec!["connection reset by peer".into()]
                     })
                 }],

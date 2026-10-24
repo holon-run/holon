@@ -3844,36 +3844,237 @@ def work_queue_message_evidence(
     return evidence
 
 
-def recovered_retry_ticks(
-    failed_ticks: list[dict[str, Any]],
-    recovered_ticks: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    failed_generations: dict[str, int] = {}
-    for tick in failed_ticks:
-        if tick["status"] not in {"aborted", "interrupted"}:
-            continue
-        key = tick.get("idempotency_key")
-        if not isinstance(key, str) or ":generation:" not in key:
-            continue
-        identity, generation = key.rsplit(":generation:", 1)
-        if generation.isdigit():
-            failed_generations[identity] = max(
-                failed_generations.get(identity, -1),
-                int(generation),
-            )
-
-    return [
-        tick
-        for tick in recovered_ticks
-        if tick["status"] == "processed"
-        and isinstance(tick.get("idempotency_key"), str)
-        and ":generation:" in tick["idempotency_key"]
-        and tick["idempotency_key"].rsplit(":generation:", 1)[0]
-        in failed_generations
-        and tick["idempotency_key"].rsplit(":generation:", 1)[1].isdigit()
-        and int(tick["idempotency_key"].rsplit(":generation:", 1)[1])
-        > failed_generations[tick["idempotency_key"].rsplit(":generation:", 1)[0]]
+def require_provider_retry_parking(
+    snapshot: dict[str, Any],
+    *,
+    agent_id: str,
+    work_item_id: str,
+    parked_message_id: str,
+) -> dict[str, Any]:
+    items = [
+        row for row in snapshot["work_items"]
+        if row["agent_id"] == agent_id and row["work_item_id"] == work_item_id
     ]
+    require(
+        len(items) == 1 and items[0]["state"] == "open",
+        f"provider failure did not preserve the open WorkItem: {items}",
+    )
+    messages = {
+        row["message_id"]: row for row in snapshot["messages"]
+        if row["agent_id"] == agent_id and row.get("work_item_id") == work_item_id
+    }
+    ticks = work_queue_message_evidence(
+        snapshot, work_item_id=work_item_id, reason="continue_active"
+    )
+    require(
+        len(ticks) == 1 and ticks[0]["status"] == "processed"
+        and ticks[0]["message_id"] in messages,
+        f"provider retry did not retain one processed source tick: {ticks}",
+    )
+    root_id = ticks[0]["message_id"]
+    require(
+        set(messages) == {root_id, parked_message_id}
+        and root_id != parked_message_id,
+        f"provider retry lost its source or created a recovery loop: {messages}",
+    )
+    root = json.loads(messages[root_id]["payload_json"])
+    parked = json.loads(messages[parked_message_id]["payload_json"])
+    work_queue = root["metadata"]["work_queue"]
+    require(
+        root.get("id") == root_id and root.get("kind") == "system_tick"
+        and root.get("agent_id") == agent_id
+        and root.get("work_item_id") == work_item_id
+        and root.get("origin") == {"kind": "system", "subsystem": "work_queue"}
+        and root.get("authority_class") == "runtime_instruction"
+        and work_queue.get("work_item_id") == work_item_id
+        and work_queue.get("work_item_revision") == items[0]["revision"]
+        and work_queue.get("work_item_generation") == 1
+        and ticks[0]["idempotency_key"]
+        == f"work_queue:continue_active:{work_item_id}:{items[0]['revision']}:generation:1",
+        f"provider retry changed the original source/idempotency: {root}",
+    )
+    turns = [
+        row for row in snapshot["turn_records"]
+        if row["agent_id"] == agent_id
+        and (row.get("owner_id") == work_item_id
+             or row.get("trigger_message_id") in messages)
+    ]
+    require(
+        len(turns) == 1 and turns[0]["trigger_message_id"] == root_id
+        and turns[0]["turn_id"] == messages[root_id]["turn_id"]
+        and turns[0].get("owner_kind") == "work_item"
+        and turns[0].get("owner_id") == work_item_id
+        and turns[0]["terminal_kind"] == "deferred_to_fallback",
+        f"parking fabricated a turn or lost the deferred source owner: {turns}",
+    )
+    root_turn_id = turns[0]["turn_id"]
+    recovery = (parked.get("metadata") or {}).get("provider_recovery") or {}
+    require(
+        parked.get("id") == parked_message_id
+        and parked.get("agent_id") == agent_id
+        and parked.get("work_item_id") == work_item_id
+        and parked.get("kind") == "internal_followup"
+        and parked.get("origin")
+        == {"kind": "system", "subsystem": "model_lineage_recovery"}
+        and parked.get("authority_class") == "runtime_instruction"
+        and parked.get("admission_context") == "runtime_owned"
+        and parked.get("causation_id") == root_id
+        and recovery.get("root_message_id") == root_id
+        and recovery.get("source_message_id") == root_id
+        and recovery.get("source_turn_id") == root_turn_id
+        and recovery.get("source_terminal_kind") == "deferred_to_fallback"
+        and recovery.get("fallback_attempt") == 1
+        and parked.get("source_refs")
+        == {"source_message_id": root_id, "source_turn_id": root_turn_id},
+        f"parked recovery is not the original runtime-owned source: {parked}",
+    )
+    queues = [
+        row for row in snapshot["queue_entries"]
+        if row["message_id"] == parked_message_id
+    ]
+    require(
+        len(queues) == 1 and queues[0]["agent_id"] == agent_id
+        and queues[0]["status"] == "queued"
+        and json.loads(queues[0]["payload_json"]).get("status") == "queued",
+        f"parked recovery was already claimed or terminal: {queues}",
+    )
+    attempts = [
+        (row, execution_attempt(row))
+        for row in snapshot["execution_protocol_attempts"]
+        if row["agent_id"] == agent_id
+    ]
+    owned_attempts = [
+        (row, attempt) for row, attempt in attempts
+        if execution_binding_work_item(attempt) == work_item_id
+        or attempt.get("source_message_id") in messages
+    ]
+    require(
+        len(owned_attempts) == 1
+        and owned_attempts[0][1].get("source_message_id") == root_id
+        and execution_binding_work_item(owned_attempts[0][1]) == work_item_id
+        and owned_attempts[0][1].get("turn_id") == root_turn_id
+        and owned_attempts[0][1].get("recovery_of_attempt_id") is None
+        and owned_attempts[0][0]["lifecycle_state"] == "settled",
+        f"parking admitted an attempt or lost the source binding: {owned_attempts}",
+    )
+    audit = [
+        (row, json.loads(row["data_json"])["data"])
+        for row in snapshot["audit_events"] if row["agent_id"] == agent_id
+    ]
+    failures = [
+        data for row, data in audit
+        if row["kind"] == "provider_attempt_failed"
+        and data.get("turn_id") == root_turn_id
+    ]
+    require(
+        failures and all(
+            data.get("failure_kind") == "connection"
+            and data.get("disposition") == "retryable" for data in failures
+        ),
+        f"source turn did not encounter a real retryable network failure: {failures}",
+    )
+    parking = [
+        (row, data) for row, data in audit
+        if row["kind"] == "provider_queue_parked"
+        and data.get("message_id") == parked_message_id
+    ]
+
+    def timestamp(value: str) -> datetime:
+        # Python <3.11 needs an offset and at most microsecond precision.
+        return datetime.fromisoformat(
+            re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+        )
+
+    require(
+        len(parking) == 1 and parking[0][1].get("reason") == "chain_cooling"
+        and bool(parking[0][1].get("episode_key"))
+        and parking[0][1].get("request_count", 0) >= 1
+        and parking[0][1].get("untried_candidates") is False
+        and timestamp(parking[0][1]["not_before"])
+        > timestamp(parking[0][0]["created_at"]),
+        f"recovery lacks full-chain cooldown parking evidence: {parking}",
+    )
+    require(
+        not [
+            data for row, data in audit
+            if (row["kind"] == "queue_entry_claimed"
+                and data.get("message_id") == parked_message_id)
+            or (row["kind"] == "runtime_error"
+                and (data.get("message_id") in messages
+                     or data.get("turn_id") == root_turn_id))
+        ],
+        "provider parking was claimed or reported as a runtime_error",
+    )
+    return {
+        "root_message": root,
+        "parked_message": parked,
+        "root_attempt_id": owned_attempts[0][0]["attempt_id"],
+    }
+
+
+def require_provider_retry_recovery(
+    snapshot: dict[str, Any],
+    *,
+    agent_id: str,
+    work_item_id: str,
+    parking: dict[str, Any],
+) -> str:
+    root = parking["root_message"]
+    parked = parking["parked_message"]
+    messages = {
+        row["message_id"]: json.loads(row["payload_json"])
+        for row in snapshot["messages"]
+        if row["agent_id"] == agent_id and row.get("work_item_id") == work_item_id
+    }
+    require(
+        messages == {root["id"]: root, parked["id"]: parked},
+        f"provider recovery replaced the parked source or emitted another tick: {messages}",
+    )
+    require_processed_queue_entries(snapshot["queue_entries"], set(messages))
+    attempts = require_execution_attempt_chain(
+        snapshot, agent_id=agent_id, work_item_id=work_item_id,
+        expected_source_kinds=("work_item_continuation", "runtime_recovery"),
+        conversation_message_ids=set(),
+    )
+    roots = [a for a in attempts if a.get("source_message_id") == root["id"]]
+    recovered = [a for a in attempts if a.get("source_message_id") == parked["id"]]
+    require(
+        len(roots) == len(recovered) == 1
+        and roots[0]["attempt_id"] == parking["root_attempt_id"]
+        and recovered[0].get("recovery_of_attempt_id") == parking["root_attempt_id"],
+        f"canonical recovery did not preserve the original root attempt: {attempts}",
+    )
+    turns = [
+        row for row in snapshot["turn_records"]
+        if row["agent_id"] == agent_id
+        and (row.get("owner_id") == work_item_id
+             or row.get("trigger_message_id") in messages)
+    ]
+    require(
+        len(turns) == 2
+        and {row["trigger_message_id"] for row in turns} == set(messages)
+        and all(
+            row.get("owner_kind") == "work_item"
+            and row.get("owner_id") == work_item_id for row in turns
+        )
+        and any(
+            row["turn_id"] == recovered[0].get("turn_id")
+            and row["trigger_message_id"] == parked["id"]
+            and row["terminal_kind"] == "completed" for row in turns
+        ),
+        f"recovery did not complete the exact parked source with its owner: {turns}",
+    )
+    require(
+        not [
+            row for row in snapshot["audit_events"]
+            if row["agent_id"] == agent_id and row["kind"] == "runtime_error"
+            and (json.loads(row["data_json"])["data"].get("message_id") in messages
+                 or json.loads(row["data_json"])["data"].get("turn_id")
+                 in {turn["turn_id"] for turn in turns})
+        ],
+        "provider recovery emitted a runtime_error",
+    )
+    return recovered[0]["turn_id"]
 
 
 def run_scheduler_task_wait_resume_case(
@@ -4107,10 +4308,12 @@ def run_scheduler_provider_failure_retry_case(
     completion_marker = f"SCHEDULER-PROVIDER-RETRY-COMPLETE-{marker}"
     objective = (
         f"{objective_marker}. This WorkItem is being resumed by an autonomous "
-        "work_queue retry after a provider transport failure. Call ListWorkItems "
-        "with filter current, then emit a concise completion report containing "
-        f"{completion_marker} immediately followed by CompleteWorkItem for the "
-        "exact current WorkItem. Do not create another WorkItem or wait for input."
+        "runtime-owned recovery after a provider transport failure. Call "
+        "ListWorkItems with filter current, then call CompleteWorkItem for the "
+        "exact current WorkItem and provide a concise completion report containing "
+        f"{completion_marker} in the same response. If a deferred final report is "
+        "requested, include that marker in the final report. Do not create another "
+        "WorkItem or wait for input."
     )
     created = harness.request(
         "POST",
@@ -4139,8 +4342,8 @@ def run_scheduler_provider_failure_retry_case(
     )
 
     deadline = time.monotonic() + harness.timeout_seconds
-    runtime_errors: list[dict[str, Any]] = []
     target_message_ids: set[str] = set()
+    parked_message_id = None
     while time.monotonic() < deadline:
         events = harness.events(
             "provider-retry-failure-poll",
@@ -4159,59 +4362,34 @@ def run_scheduler_provider_failure_retry_case(
             if event["type"] == "runtime_error"
             and event["payload"].get("message_id") in target_message_ids
         ]
-        if runtime_errors:
+        require(
+            not runtime_errors,
+            f"provider failure unexpectedly produced runtime_error: {runtime_errors}",
+        )
+        parking_events = [
+            event for event in events
+            if event["type"] == "provider_queue_parked"
+            and event["payload"].get("message_id") in target_message_ids
+            and event["payload"].get("reason") == "chain_cooling"
+        ]
+        if parking_events:
+            parked_message_id = parking_events[0]["payload"]["message_id"]
             break
-        time.sleep(0.5)
+        time.sleep(0.1)
     require(
-        runtime_errors,
-        "invalid provider endpoint did not produce a runtime_error for the "
+        parked_message_id,
+        "invalid provider endpoint did not park a same-root recovery for the "
         f"target WorkItem; admitted messages={sorted(target_message_ids)}",
     )
-    failed_message_id = runtime_errors[-1]["payload"]["message_id"]
-    harness.request(
-        "POST",
-        harness.agent_path("control", control=True),
-        {"action": "stop"},
-    )
+    # Observe the first cooldown before shutdown. Agent stop would abort the
+    # exact queued source whose restart recovery this case must prove.
     failed = harness.runtime_db_snapshot("provider-retry-failed")
-    failed_item = next(
-        row for row in failed["work_items"] if row["work_item_id"] == work_item_id
-    )
-    require(
-        failed_item["state"] == "open",
-        f"provider failure closed the retry WorkItem: {failed_item}",
-    )
-    failed_ticks = work_queue_message_evidence(
-        failed,
+    parking = require_provider_retry_parking(
+        failed, agent_id=harness.agent_id,
         work_item_id=work_item_id,
-        reason="continue_active",
+        parked_message_id=parked_message_id,
     )
-    require(
-        failed_ticks
-        and any(tick["status"] == "aborted" for tick in failed_ticks)
-        and not any(tick["status"] == "processed" for tick in failed_ticks),
-        f"provider failure did not abort continue-active ticks: {failed_ticks}",
-    )
-    require(
-        failed_message_id in {tick["message_id"] for tick in failed_ticks},
-        "runtime_error did not belong to the target continue-active message: "
-        f"error_message={failed_message_id}, ticks={failed_ticks}",
-    )
-    failed_keys = {tick["idempotency_key"] for tick in failed_ticks}
-    require(
-        failed_keys
-        and None not in failed_keys
-        and all(
-            isinstance(key, str)
-            and key.startswith(
-                f"work_queue:continue_active:{work_item_id}:"
-            )
-            and ":generation:" in key
-            for key in failed_keys
-        ),
-        "failed continue-active ticks lost generation-aware idempotency: "
-        f"{failed_ticks}",
-    )
+    write_json(harness.evidence / "provider-retry-parking.json", parking)
 
     harness.stop()
     if harness.provider_mode == "stub":
@@ -4238,45 +4416,20 @@ def run_scheduler_provider_failure_retry_case(
     )
     result_brief = harness.brief(result_brief_id, "provider-retry-result")
     require(
-        completion_marker in (result_brief.get("text") or ""),
-        f"provider retry completion marker is missing: {result_brief}",
+        completion_marker in (result_brief.get("text") or "")
+        and result_brief.get("work_item_id") == work_item_id
+        and result_brief.get("related_message_id") == parked_message_id,
+        f"provider retry completion brief lost its marker/source/owner: {result_brief}",
     )
+    harness.wait_queue_drained()
     recovered = harness.runtime_db_snapshot("provider-retry-recovered")
-    recovered_ticks = work_queue_message_evidence(
-        recovered,
-        work_item_id=work_item_id,
-        reason="continue_active",
+    recovery_turn_id = require_provider_retry_recovery(
+        recovered, agent_id=harness.agent_id, work_item_id=work_item_id,
+        parking=parking,
     )
-    processed_ticks = recovered_retry_ticks(failed_ticks, recovered_ticks)
     require(
-        processed_ticks,
-        "provider recovery did not process a stable-idempotency retry after "
-        f"an aborted/interrupted attempt: failed={failed_ticks}, "
-        f"recovered={recovered_ticks}",
-    )
-    recovered_keys = {tick["idempotency_key"] for tick in processed_ticks}
-    failed_identities = {
-        key.rsplit(":generation:", 1)[0]
-        for key in failed_keys
-        if isinstance(key, str) and ":generation:" in key
-    }
-    require(
-        recovered_keys
-        and all(
-            isinstance(key, str)
-            and ":generation:" in key
-            and key.rsplit(":generation:", 1)[0] in failed_identities
-            and int(key.rsplit(":generation:", 1)[1])
-            > max(
-                int(failed_key.rsplit(":generation:", 1)[1])
-                for failed_key in failed_keys
-                if failed_key.rsplit(":generation:", 1)[0]
-                == key.rsplit(":generation:", 1)[0]
-            )
-            for key in recovered_keys
-        ),
-        f"provider recovery did not advance continue-active generation: "
-        f"failed={failed_ticks}, recovered={recovered_ticks}",
+        result_brief.get("turn_id") == recovery_turn_id,
+        f"provider retry result brief came from another turn: {result_brief}",
     )
     required, forbidden = phase_tools(case["phases"][0])
     harness.assert_tools(
@@ -4284,7 +4437,7 @@ def run_scheduler_provider_failure_retry_case(
         0,
         required,
         forbidden,
-        message_id=processed_ticks[-1]["message_id"],
+        message_id=parked_message_id,
     )
 
 

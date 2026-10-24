@@ -69,6 +69,8 @@ impl RuntimeHandle {
         if scheduled.message.id != persisted_message.id {
             return Err(anyhow!("scheduler claimed an unexpected test message"));
         }
+        let _provider_admission =
+            self.activate_provider_admission(scheduled.dispatch_plan.provider_admission.clone())?;
         let terminal_transition = self
             .process_interactive_message_deferred_with_cleanup(
                 &scheduled.message,
@@ -142,7 +144,10 @@ impl RuntimeHandle {
             execution_admission_provenance,
         )
         .await?;
-        let model_selection = TurnModelSelection::from_message(message)?;
+        let mut model_selection = TurnModelSelection::from_message(message)?;
+        model_selection.admitted_model = self
+            .active_provider_admission()?
+            .map(|admission| admission.model().clone());
         self.reconfigure_provider_for_turn(model_selection.fallback_model())
             .await?;
         let provider_inputs_recovered = if model_selection.recovery.is_some() {

@@ -89,13 +89,16 @@ pub(super) struct ProviderRecoveryDirective {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TurnModelSelection {
     pub(super) recovery: Option<ProviderRecoveryDirective>,
+    pub(super) admitted_model: Option<ModelRouteRef>,
 }
 
 impl TurnModelSelection {
     pub(super) fn fallback_model(&self) -> Option<&ModelRouteRef> {
-        self.recovery
-            .as_ref()
-            .map(|directive| &directive.fallback_model_ref)
+        self.admitted_model.as_ref().or_else(|| {
+            self.recovery
+                .as_ref()
+                .map(|directive| &directive.fallback_model_ref)
+        })
     }
 }
 

@@ -5,7 +5,12 @@ use super::{http_timeouts, response_body_timeout, stream_idle_timeout};
 use crate::provider::{
     http_trace::ProviderHttpTraceRequest,
     retry::{classify_reqwest_transport_error_with_trace, timeout_transport_error_with_trace},
+    ProviderDispatchGuard,
 };
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(super) struct DispatchGuardRejected(String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RequestDeadline {
@@ -109,6 +114,7 @@ pub(super) async fn send_provider_request(
     url: Option<&str>,
     deadline: RequestDeadline,
     trace: Option<&ProviderHttpTraceRequest>,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<Response> {
     let timeouts = http_timeouts();
     let headers = match deadline {
@@ -128,19 +134,33 @@ pub(super) async fn send_provider_request(
             },
         );
     }
+    let request = if deadline == RequestDeadline::FullRequest {
+        request.timeout(timeouts.request)
+    } else {
+        request
+    };
+    let (client, request) = request.build_split();
+    let request = request.map_err(|error| {
+        classify_reqwest_transport_error_with_trace(
+            context, stage, provider, model_ref, url, error, trace,
+        )
+    })?;
+    if let Some(guard) = dispatch_guard {
+        // Keep the original error downcastable, without classifying it as transport failure.
+        guard.before_dispatch().map_err(|error| {
+            let rejection = DispatchGuardRejected(error.to_string());
+            error.context(rejection)
+        })?;
+    }
     if deadline == RequestDeadline::FullRequest {
-        return request
-            .timeout(timeouts.request)
-            .send()
-            .await
-            .map_err(|error| {
-                classify_reqwest_transport_error_with_trace(
-                    context, stage, provider, model_ref, url, error, trace,
-                )
-            });
+        return client.execute(request).await.map_err(|error| {
+            classify_reqwest_transport_error_with_trace(
+                context, stage, provider, model_ref, url, error, trace,
+            )
+        });
     }
     // RequestBuilder::timeout would continue through the entire stream body.
-    tokio::time::timeout(headers, request.send())
+    tokio::time::timeout(headers, client.execute(request))
         .await
         .map_err(|_| {
             timeout_transport_error_with_trace(

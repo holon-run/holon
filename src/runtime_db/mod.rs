@@ -24,6 +24,7 @@ pub mod destructive_operations;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
+pub mod provider_admission;
 mod read_scope;
 mod reader_pool;
 #[cfg(test)]

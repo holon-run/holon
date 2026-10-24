@@ -198,6 +198,7 @@ impl TurnModelSelection {
             })?;
         Ok(Self {
             recovery: Some(directive),
+            admitted_model: None,
         })
     }
 }
@@ -450,12 +451,29 @@ impl RuntimeHandle {
         let Some(timeline) = provider_attempt_timeline(error).cloned() else {
             return Ok(None);
         };
-        let fallback_ref = timeline.pending_fallback_model_ref.as_deref();
+        let admission = self.active_provider_admission()?;
+        let resume_model = admission
+            .as_ref()
+            .filter(|_| {
+                timeline.attempts.last().is_some_and(|attempt| {
+                    matches!(
+                        attempt.failure_kind.as_deref(),
+                        Some("timeout" | "connection" | "server_error" | "rate_limited")
+                    )
+                })
+            })
+            .map(|admission| admission.model().as_string());
+        // Exhausted chains retain a canonical recovery source for the pre-turn
+        // gate. They do not create empty turns while the episode is parked.
+        let fallback_ref = timeline
+            .pending_fallback_model_ref
+            .as_deref()
+            .or(resume_model.as_deref());
         let fallback_attempt = recovery
             .map(|directive| directive.fallback_attempt)
             .unwrap_or(0);
         if let Some(fallback_ref) = fallback_ref {
-            if fallback_attempt >= PROVIDER_RECOVERY_MAX_FALLBACKS {
+            if admission.is_none() && fallback_attempt >= PROVIDER_RECOVERY_MAX_FALLBACKS {
                 self.inner.storage.append_event(&AuditEvent::legacy(
                     "provider_recovery_budget_exhausted",
                     serde_json::json!({
@@ -525,10 +543,11 @@ impl RuntimeHandle {
                     .map(|attempt| attempt.model_ref.as_str())
             })
             .unwrap_or("provider");
-        let recovery_delay_ms = matches!(
-            timeline.pending_fallback_disposition,
-            Some(ProviderFallbackDisposition::Deferred)
-        )
+        let recovery_delay_ms = (admission.is_none()
+            && matches!(
+                timeline.pending_fallback_disposition,
+                Some(ProviderFallbackDisposition::Deferred)
+            ))
         .then(|| {
             provider_recovery_delay_ms(
                 fallback_attempt,
@@ -544,41 +563,42 @@ impl RuntimeHandle {
             .and_then(|attempt| {
                 (attempt.failure_kind.as_deref() == Some("rate_limited")).then_some(attempt)
             });
-        let quota_incident = if let Some(attempt) = latest_rate_limit {
-            let identity = attempt
-                .transport_diagnostics
-                .as_ref()
-                .and_then(|diagnostics| diagnostics.quota_identity.clone())
-                .unwrap_or_else(|| {
-                    ProviderQuotaIdentity::coarse(
-                        "agent-provider-route",
-                        &format!("{agent_id}:{}", attempt.model_ref),
-                    )
+        let quota_incident =
+            if let Some(attempt) = latest_rate_limit.filter(|_| admission.is_none()) {
+                let identity = attempt
+                    .transport_diagnostics
+                    .as_ref()
+                    .and_then(|diagnostics| diagnostics.quota_identity.clone())
+                    .unwrap_or_else(|| {
+                        ProviderQuotaIdentity::coarse(
+                            "agent-provider-route",
+                            &format!("{agent_id}:{}", attempt.model_ref),
+                        )
+                    });
+                let identity_key = serde_json::to_string(&identity)?;
+                let failed_at = self.now().to_rfc3339();
+                let retry_at = recovery_delay_ms.map(|delay| {
+                    (self.now()
+                        + chrono::Duration::milliseconds(i64::try_from(delay).unwrap_or(i64::MAX)))
+                    .to_rfc3339()
                 });
-            let identity_key = serde_json::to_string(&identity)?;
-            let failed_at = self.now().to_rfc3339();
-            let retry_at = recovery_delay_ms.map(|delay| {
-                (self.now()
-                    + chrono::Duration::milliseconds(i64::try_from(delay).unwrap_or(i64::MAX)))
-                .to_rfc3339()
-            });
-            let incident_id = format!(
-                "provider-quota:{}:{}",
-                identity_key,
-                uuid::Uuid::new_v4().simple()
-            );
-            let incident = self.inner.runtime_db.record_provider_quota_failure(
-                &identity_key,
-                &incident_id,
-                &failed_at,
-                retry_at.as_deref(),
-                "rate_limited",
-                &attempt.model_ref,
-            )?;
-            Some((identity_key, incident))
-        } else {
-            None
-        };
+                let incident_id = format!(
+                    "provider-quota:{}:{}",
+                    identity_key,
+                    uuid::Uuid::new_v4().simple()
+                );
+                let incident = self.inner.runtime_db.record_provider_quota_failure(
+                    &identity_key,
+                    &incident_id,
+                    &failed_at,
+                    retry_at.as_deref(),
+                    "rate_limited",
+                    &attempt.model_ref,
+                )?;
+                Some((identity_key, incident))
+            } else {
+                None
+            };
         if let Some((identity_key, incident)) = quota_incident.as_ref() {
             if incident.consecutive_failures >= 3 {
                 let parking_delay_ms = provider_recovery_delay_ms(
@@ -862,8 +882,11 @@ impl RuntimeHandle {
     pub(super) async fn complete_turn_with_abort(
         &self,
         provider: std::sync::Arc<dyn AgentProvider>,
-        request: ProviderTurnRequest,
+        mut request: ProviderTurnRequest,
     ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
+        request.dispatch_guard = self
+            .active_provider_admission()?
+            .map(|admission| admission as Arc<dyn crate::provider::ProviderDispatchGuard>);
         if let Some(snapshot) = self.current_run_abort_token().await {
             let result = tokio::select! {
                 result = provider.complete_turn_with_diagnostics(request) => result,
@@ -891,6 +914,7 @@ impl RuntimeHandle {
         &self,
         provider: std::sync::Arc<dyn AgentProvider>,
         request: ProviderTurnRequest,
+        side_effect_boundary: bool,
     ) -> (
         Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>,
         DateTime<Utc>,
@@ -899,7 +923,15 @@ impl RuntimeHandle {
     ) {
         let started_at = Utc::now();
         let started = Instant::now();
-        let result = self.complete_turn_with_abort(provider, request).await;
+        let boundary = self.active_provider_admission().and_then(|admission| {
+            admission.map_or(Ok(()), |admission| {
+                admission.mark_side_effect_boundary(side_effect_boundary)
+            })
+        });
+        let result = match boundary {
+            Ok(()) => self.complete_turn_with_abort(provider, request).await,
+            Err(error) => Err(error),
+        };
         let completed_at = Utc::now();
         let duration_ms = started.elapsed().as_millis() as u64;
         (
@@ -2207,7 +2239,7 @@ impl TurnExecution<'_> {
                         context_build_started_at,
                     );
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request))
+                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request, !completed_rounds.is_empty() || last_assistant_message.is_some()))
                             .await;
                     record_provider_round_span(
                         trace_context.as_ref(),
@@ -2218,7 +2250,9 @@ impl TurnExecution<'_> {
                     );
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => {
-                            let identities = if let Some(timeline) = attempt_timeline.as_ref() {
+                            let identities = if runtime.active_provider_admission()?.is_some() {
+                                Vec::new()
+                            } else if let Some(timeline) = attempt_timeline.as_ref() {
                                 provider_quota_incident_identities_to_resolve(timeline, agent_id)?
                             } else {
                                 provider_quota_clean_success_identities(
@@ -2621,7 +2655,7 @@ impl TurnExecution<'_> {
                         context_build_started_at,
                     );
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request))
+                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request, !completed_rounds.is_empty() || last_assistant_message.is_some()))
                             .await;
                     record_provider_round_span(
                         trace_context.as_ref(),

@@ -126,6 +126,7 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
 
     let output = provider
         .complete_turn(ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
                 "Use web search if needed. Reply in one short sentence.",
@@ -159,6 +160,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
     let scope = ContinuationScopeId::new("live-openai-codex-append-match").unwrap();
     let first = provider
         .complete_turn(ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: Some(scope.clone()),
             prompt_frame: frame.clone(),
             conversation: vec![ConversationMessage::UserText(
@@ -177,6 +179,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
 
     let second = provider
         .complete_turn(ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: Some(scope),
             prompt_frame: frame,
             conversation: vec![

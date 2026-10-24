@@ -199,6 +199,7 @@ mod tests {
         ServerError {
             retry_after: Option<std::time::Duration>,
         },
+        HardQuota,
         DeterministicError,
         Succeed,
     }
@@ -247,6 +248,21 @@ mod tests {
                         "scripted server error",
                     ),
                 ),
+                ScriptedFailure::HardQuota => {
+                    Err(crate::provider::retry::classify_status_error_with_trace(
+                        "BigModel request failed",
+                        "response_status",
+                        Some("bigmodel"),
+                        Some("bigmodel@default/glm-5.2"),
+                        Some("https://open.bigmodel.cn/api/anthropic/v1/messages"),
+                        reqwest::StatusCode::TOO_MANY_REQUESTS,
+                        // Constructed from the official api-code documentation, not a capture.
+                        r#"{"error":{"code":"1310","message":"weekly/monthly usage limit"}}"#
+                            .into(),
+                        None,
+                        None,
+                    ))
+                }
                 ScriptedFailure::DeterministicError => Err(
                     crate::provider::retry::provider_transport_error_with_code_and_retry_after(
                         crate::provider::retry::ProviderFailureClassification {
@@ -307,6 +323,7 @@ mod tests {
 
     fn plain_turn_request() -> ProviderTurnRequest {
         ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain("system"),
             conversation: Vec::new(),
@@ -358,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn oversized_rate_limit_hint_is_capped_and_retried() {
+    async fn oversized_rate_limit_hint_skips_remaining_same_route_retries() {
         let provider = FallbackProvider {
             candidates: vec![scripted_candidate(
                 "openai/gpt-5.4",
@@ -371,35 +388,22 @@ mod tests {
             )],
         };
 
-        let task = tokio::spawn(async move {
-            provider
-                .complete_turn_with_diagnostics(plain_turn_request())
-                .await
-                .expect("capped rate-limit retry should succeed")
-        });
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished());
-        tokio::time::advance(std::time::Duration::from_secs(30)).await;
-        let (_, diagnostics) = task.await.expect("provider task should complete");
-        let timeline = diagnostics.expect("timeline");
-        assert_eq!(timeline.attempts.len(), 2);
+        let error = provider
+            .complete_turn_with_diagnostics(plain_turn_request())
+            .await
+            .expect_err("long rate-limit hint must stop the current request");
+        let timeline = crate::provider::provider_attempt_timeline(&error).expect("timeline");
+        assert_eq!(timeline.attempts.len(), 1);
         assert_eq!(
             timeline.attempts[0].failure_kind.as_deref(),
             Some("rate_limited")
         );
         assert_eq!(
             timeline.attempts[0].outcome,
-            ProviderAttemptOutcome::Retrying
+            ProviderAttemptOutcome::RetriesExhausted
         );
-        assert_eq!(timeline.attempts[0].backoff_ms, Some(30_000));
-        assert_eq!(
-            timeline.attempts[0].backoff_source.as_deref(),
-            Some("server_retry_after")
-        );
-        assert_eq!(
-            timeline.attempts[1].outcome,
-            ProviderAttemptOutcome::Succeeded
-        );
+        assert_eq!(timeline.attempts[0].backoff_ms, None);
+        assert_eq!(timeline.attempts[0].backoff_source, None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -410,16 +414,16 @@ mod tests {
                     "openai/gpt-5.4",
                     vec![
                         ScriptedFailure::Fail {
-                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                            retry_after: Some(std::time::Duration::from_secs(5)),
                         },
                         ScriptedFailure::Fail {
-                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                            retry_after: Some(std::time::Duration::from_secs(5)),
                         },
                         ScriptedFailure::Fail {
-                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                            retry_after: Some(std::time::Duration::from_secs(5)),
                         },
                         ScriptedFailure::Fail {
-                            retry_after: Some(std::time::Duration::from_secs(3_600)),
+                            retry_after: Some(std::time::Duration::from_secs(5)),
                         },
                     ],
                 ),
@@ -451,6 +455,57 @@ mod tests {
         assert_eq!(
             timeline.pending_fallback_model_ref.as_deref(),
             Some("openai/gpt-5.4-mini")
+        );
+    }
+
+    #[tokio::test]
+    async fn hard_quota_stops_after_one_request_and_propagates_typed_diagnostics() {
+        let script = Arc::new(Mutex::new(vec![
+            ScriptedFailure::HardQuota,
+            ScriptedFailure::Succeed,
+        ]));
+        let provider = FallbackProvider {
+            candidates: vec![
+                ProviderCandidate {
+                    model_ref: "bigmodel@default/glm-5.2".into(),
+                    provider_name: "bigmodel".into(),
+                    resolved_image_input: false,
+                    provider: Arc::new(ScriptedProvider {
+                        script: script.clone(),
+                        quota_identity: None,
+                    }),
+                },
+                scripted_candidate("openai/gpt-5.4-mini", vec![ScriptedFailure::Succeed]),
+            ],
+        };
+        let error = provider
+            .complete_turn_with_diagnostics(plain_turn_request())
+            .await
+            .expect_err("hard quota must stop after the first request");
+        assert_eq!(script.lock().await.len(), 1, "only one request dispatched");
+        let timeline = crate::provider::provider_attempt_timeline(&error).unwrap();
+        assert_eq!(timeline.attempts.len(), 1);
+        let attempt = &timeline.attempts[0];
+        assert_eq!(attempt.failure_kind.as_deref(), Some("rate_limited"));
+        assert_eq!(attempt.outcome, ProviderAttemptOutcome::RetriesExhausted);
+        assert_eq!(
+            attempt
+                .transport_diagnostics
+                .as_ref()
+                .unwrap()
+                .throttle
+                .as_ref()
+                .unwrap()
+                .kind,
+            crate::provider::ProviderThrottleKind::HardQuota
+        );
+        assert_eq!(
+            timeline.pending_fallback_model_ref.as_deref(),
+            Some("openai/gpt-5.4-mini")
+        );
+        assert_eq!(
+            timeline.pending_fallback_disposition,
+            Some(crate::provider::ProviderFallbackDisposition::Deferred)
         );
     }
 
@@ -883,6 +938,7 @@ mod tests {
         };
 
         let request = ProviderTurnRequest {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
                 "base",
@@ -974,7 +1030,11 @@ impl AgentProvider for FallbackProvider {
                 Some(acquire) => Some(acquire.await),
                 None => None,
             };
-            match candidate.provider.complete_turn(attempt_request).await {
+            let result = candidate.provider.complete_turn(attempt_request).await;
+            if let Some(guard) = request.dispatch_guard.as_ref() {
+                guard.after_response(&result)?;
+            }
+            match result {
                 Ok(response) => {
                     drop(quota_permit);
                     let attempt_completed_at = Utc::now();
@@ -1021,7 +1081,9 @@ impl AgentProvider for FallbackProvider {
                 Err(error) => {
                     let classification = classify_provider_error(&error);
                     let retry_after = provider_error_retry_after(&error);
-                    if classification.kind == super::retry::ProviderFailureKind::RateLimited {
+                    if request.dispatch_guard.is_none()
+                        && classification.kind == super::retry::ProviderFailureKind::RateLimited
+                    {
                         if let Some(permit) = quota_permit.as_ref() {
                             permit.record_rate_limit(retry_after);
                         } else if let Some(identity) = quota_identity {
@@ -1037,9 +1099,25 @@ impl AgentProvider for FallbackProvider {
                     let rate_limit_retry_available = classification.kind
                         == super::retry::ProviderFailureKind::RateLimited
                         && rate_limit_retries < PROVIDER_RATE_LIMIT_MAX_RETRIES;
-                    let should_retry = classification.disposition == RetryDisposition::Retryable
+                    let shared_recovery = request.dispatch_guard.is_some()
+                        && matches!(
+                            classification.kind,
+                            super::retry::ProviderFailureKind::Timeout
+                                | super::retry::ProviderFailureKind::Connection
+                                | super::retry::ProviderFailureKind::ServerError
+                                | super::retry::ProviderFailureKind::RateLimited
+                        );
+                    let should_retry = !shared_recovery
+                        && classification.disposition == RetryDisposition::Retryable
                         && (attempt < max_attempts || rate_limit_retry_available);
-                    let retry_delay = if should_retry {
+                    let hard_quota = provider_transport_diagnostics(&error)
+                        .and_then(|diagnostics| diagnostics.throttle.as_ref())
+                        .is_some_and(|throttle| {
+                            throttle.kind == super::ProviderThrottleKind::HardQuota
+                        });
+                    let retry_delay = if hard_quota {
+                        Some(ProviderRetryDelay::SkipToFallback)
+                    } else if should_retry {
                         Some(provider_retry_delay(
                             attempt,
                             classification.kind,
@@ -1107,8 +1185,9 @@ impl AgentProvider for FallbackProvider {
                             attempt,
                             max_attempts,
                             failure_kind = classification.kind.as_str(),
+                            hard_quota,
                             server_hint_cap_ms = super::retry::PROVIDER_RETRY_SERVER_HINT_CAP_MS,
-                            "server Retry-After hint exceeds retry cap; skipping remaining retries"
+                            "provider throttle requires skipping remaining retries"
                         );
                     }
                     timeline.push(ProviderAttemptRecord {

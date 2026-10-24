@@ -541,5 +541,6 @@ fn message_dispatch_plan_public_fields_are_constructible_from_tests() {
         continuation_resolution: None,
         model_turn_allowed: false,
         execution_admission_provenance: None,
+        provider_admission: None,
     };
 }

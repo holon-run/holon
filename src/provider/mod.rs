@@ -73,8 +73,30 @@ impl ContinuationScopeId {
     }
 }
 
+pub trait ProviderDispatchGuard: Send + Sync + std::fmt::Debug {
+    fn before_dispatch(&self) -> anyhow::Result<()>;
+
+    /// Settle a complete HTTP result before an adapter retries or compacts.
+    /// `None` is a successful auxiliary response, not a usable model response.
+    fn after_request(
+        &self,
+        _result: std::result::Result<Option<&ProviderTurnResponse>, &anyhow::Error>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn allows_auxiliary_dispatch(&self) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+
+    fn after_response(&self, result: &anyhow::Result<ProviderTurnResponse>) -> anyhow::Result<()> {
+        self.after_request(result.as_ref().map(Some))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderTurnRequest {
+    pub dispatch_guard: Option<std::sync::Arc<dyn ProviderDispatchGuard>>,
     pub continuation_scope_id: Option<ContinuationScopeId>,
     pub prompt_frame: ProviderPromptFrame,
     pub conversation: Vec<ConversationMessage>,
@@ -90,6 +112,7 @@ impl ProviderTurnRequest {
         tools: Vec<ToolSpec>,
     ) -> Self {
         Self {
+            dispatch_guard: None,
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(system_prompt),
             conversation,
@@ -693,6 +716,7 @@ pub(crate) fn builtin_web_search_probe_turn_request(
     native_web_search: ProviderNativeWebSearchRequest,
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
+        dispatch_guard: None,
         continuation_scope_id: None,
         prompt_frame: ProviderPromptFrame::plain("Reply with exactly OK."),
         conversation: vec![ConversationMessage::UserText(
@@ -854,8 +878,44 @@ pub struct ProviderTransportDiagnostics {
     pub http_trace: Option<ProviderHttpTraceDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_identity: Option<ProviderQuotaIdentity>,
+    /// Absolute server Retry-After deadline, independent of quota throttling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_not_before: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throttle: Option<ProviderThrottleMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderThrottleKind {
+    Transient,
+    HardQuota,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderThrottleReason {
+    RateLimited,
+    BigmodelWeeklyMonthlyQuota,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderThrottleHintSource {
+    RetryAfter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderThrottleMetadata {
+    pub kind: ProviderThrottleKind,
+    pub reason: ProviderThrottleReason,
+    pub observed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint_source: Option<ProviderThrottleHintSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -872,6 +932,32 @@ pub struct ProviderQuotaIdentity {
 }
 
 impl ProviderQuotaIdentity {
+    pub(crate) fn for_api_credential(
+        config: &crate::config::ProviderRuntimeConfig,
+    ) -> Option<Self> {
+        use crate::config::CredentialKind;
+
+        if !matches!(
+            config.auth.kind,
+            CredentialKind::ApiKey | CredentialKind::BearerToken | CredentialKind::SessionToken
+        ) {
+            return None;
+        }
+        let credential = config
+            .credential
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())?;
+        // Credential equality is not proof of an account-wide quota identity.
+        // Keep this fallback endpoint-scoped and never persist credential bytes.
+        let material = serde_json::to_string(&(
+            config.route_provider.as_str(),
+            config.base_url.trim_end_matches('/'),
+            credential,
+        ))
+        .ok()?;
+        Some(Self::coarse("provider-api-credential", &material))
+    }
+
     pub fn exact(namespace: &str, value: &str) -> Option<Self> {
         Self::hashed(namespace, value, ProviderQuotaIdentityConfidence::Exact)
     }
@@ -1011,14 +1097,12 @@ pub(crate) use catalog::build_candidate;
 #[cfg(test)]
 pub(crate) use retry::provider_max_attempts;
 pub(crate) use retry::{
-    classify_provider_error, ProviderTransportError, RetryDisposition,
+    classify_provider_error, ProviderFailureKind, ProviderTransportError, RetryDisposition,
     PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
     PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 #[cfg(test)]
-pub(crate) use retry::{
-    provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
-};
+pub(crate) use retry::{provider_transport_error_with_code, ProviderFailureClassification};
 #[cfg(test)]
 pub(crate) use tool_schema::validate_emitted_tool_schema;
 pub(crate) use tool_schema::{emitted_tool_json_schema, ToolSchemaContract};
