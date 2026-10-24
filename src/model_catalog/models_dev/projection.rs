@@ -218,7 +218,7 @@ pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> Bui
     // Moonshot documents a 128K default separately from its 1M output ceiling.
     // Do not turn the upstream capability ceiling into the request budget.
     let default_max_output_tokens = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
-        ("moonshot", "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed") => Some(131_072),
+        ("moonshot", "kimi-k3" | "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed") => Some(131_072),
         _ => max_output_tokens_upper_limit,
     };
 
@@ -330,12 +330,16 @@ mod tests {
     }
 
     #[test]
-    fn moonshot_k3_1_default_output_is_not_the_capability_ceiling() {
+    fn moonshot_k3_default_output_is_not_the_capability_ceiling() {
         let model: ModelsDevModel = serde_json::from_str(
             r#"{"id":"kimi-k3.1-pro","limit":{"context":1048576,"output":1048576}}"#,
         )
         .unwrap();
-        for model_ref in ["moonshot/kimi-k3.1-pro", "moonshot/kimi-k3.1-pro-highspeed"] {
+        for model_ref in [
+            "moonshot/kimi-k3",
+            "moonshot/kimi-k3.1-pro",
+            "moonshot/kimi-k3.1-pro-highspeed",
+        ] {
             let metadata = project_model(&ModelRef::parse(model_ref).unwrap(), &model);
             assert_eq!(metadata.context_window_tokens, Some(1_048_576));
             assert_eq!(metadata.default_max_output_tokens, Some(131_072));

@@ -9,6 +9,175 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-25 incremental review
+
+This cycle starts from main `bc1a3dbe`, including #3729's exact Token Plan
+DeepSeek cache defaults. Preserve those defaults and Qwen's existing explicit
+cache behavior; a generic catalog refresh is not a replacement for that policy.
+
+- Initial models.dev refresh revision
+  `02fb1f3db076358d5dd0440889d3e9be0c8d4513bb3e47cd29bb3680027a607e`.
+  The artifact retains 1,081 records: two Venice additions
+  (`kimi-k3-1-pro` and `kimi-k3-1-pro-highspeed`), two upstream OpenRouter
+  removals (`openai/gpt-3.5-turbo` and `openai/gpt-3.5-turbo-instruct`),
+  and three changed records. Venice metadata remains `remote_discovered`
+  upstream evidence, not a subscription qualification or independently
+  verified endpoint specification. All 54 supplement models, 16 explicit
+  supplement routes, artifact routes, aliases, and preferred selections are
+  semantically unchanged by that initial refresh, before the independently
+  reviewed additions below.
+- Final refresh revision after the reviewed source changes:
+  `4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462`.
+  This is the snapshot SHA-256 and the artifact/supplement upstream revision.
+  The final artifact contains 1,081 records, with two additions, two removals
+  and four metadata changes from the baseline, including the K3 default-output
+  correction below. All 54 supplement models and 16 explicit routes retain
+  their previous semantics.
+- Compared the three changed OpenRouter records with this cycle's 466-entry
+  [public model list](https://openrouter.ai/api/v1/models).
+  MiniMax M2.5 retains context 204,800 and changes output 32,768 → 131,072;
+  `~z-ai/glm-latest` and `~z-ai/glm-flash-latest` retain context 1,048,576
+  and change output 943,718 → 131,072. Each matches the public
+  `top_provider.max_completion_tokens`; both removed GPT-3.5 IDs are absent.
+  This checks only changed records and removal presence, not the full catalog.
+- Re-fetched [Codex model metadata](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json):
+  SHA-256 remains
+  `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`,
+  byte-identical to October 24. The seven listed, non-retired models remain
+  covered. Keep the published 272,000 default context separate from the
+  optional/account-specific 872,000 maximum. The [lifecycle page](https://learn.chatgpt.com/docs/models)
+  still distinguishes ChatGPT sign-in retirements from API access.
+- Rechecked DeepSeek [pricing](https://api-docs.deepseek.com/quick_start/pricing/)
+  and [Responses restrictions](https://api-docs.deepseek.com/guides/responses_api/).
+  Legacy Flash aliases, 1M/384K notation, image support, Pro-only server search,
+  and stateless Responses restrictions remain unchanged. No subscription
+  entitlement or cache override is inferred from these native API contracts.
+- Retrieved Mistral's [GLM-5.3-Flash model page](https://docs.mistral.ai/models/zai-glm-5-3-flash)
+  successfully through the documentation reader. It confirms the exact
+  `zai-glm-5-3-flash` ID, multimodal/function-calling support, and published
+  1M context / 128k maximum-output labels.
+  The separate Markdown fetch still failed with a TLS reset. The page does
+  not establish the exact integer conversion or `low/high/max` effort menu:
+  the retained 1,048,576 / 131,072 integers and effort values remain attributed
+  to models.dev rather than independently confirmed exact Mistral values.
+
+### Independently confirmed endpoint changes
+
+- [TokenHub's protocol matrix](https://cloud.tencent.com/document/product/1823/130079)
+  and [Kimi call reference](https://cloud.tencent.com/document/product/1823/132232)
+  agree on `kimi-k3.1-pro` and `kimi-k3.1-pro-highspeed` for all three registered
+  protocols. Do not add the inconsistent shortened `kimi-k3-pro` IDs in the
+  general model table. Only Chat has independently checked output/effort
+  parameters; a shared URL is not evidence of identical protocol parameters.
+- Volcengine's independent [Coding](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-plan-overview.md)
+  and [Agent](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md)
+  tables qualify `kimi-k3.1-pro` on the existing `coding` and `plan` Responses
+  endpoints. Agent qualifies every tier, unlike the older K3 restriction.
+  Their 1024k/128k notation does not establish exact integers or effort options;
+  do not inherit native Moonshot limits or the provider-wide effort fallback.
+- [DashScope's Messages allowlist](https://help.aliyun.com/zh/model-studio/anthropic-api-messages)
+  confirms eleven missing ordinary-API IDs: `qwen3.8-2.4t-a95b`, `qwen3.8-27b`,
+  `qwen3.8-max-0902`, `qwen-plus-latest`, `qwen-flash-2025-07-28`,
+  `qwen3.5-flash-2026-02-23`, `qwen3.5-plus-2026-02-15`,
+  `qwen3.5-plus-2026-04-20`, `qwen3.6-flash-2026-04-16`,
+  `qwen3.6-plus-2026-04-02`, and `qwen3.7-flash-2026-07-15`.
+  These are confirmed coverage gaps, not a claim of eleven new releases.
+  Add only ordinary Messages routes; no subscription route follows from this
+  list. The independent [2.4T](https://help.aliyun.com/zh/model-studio/qwen3-8-2-4t-a95b),
+  [27B](https://help.aliyun.com/zh/model-studio/qwen3-8-27b), and
+  [Max snapshot](https://help.aliyun.com/zh/model-studio/qwen3-8-max) cards
+  additionally confirm exact 1,000,000 context / 131,072 maximum output and
+  thinking support for the three Qwen3.8 IDs. Only 27B and Max have image
+  input. Leave their effort menus and the other eight IDs' metadata unknown.
+- The [international Moonshot lifecycle page](https://platform.kimi.ai/docs/models.md)
+  directly confirms the August 31 retirement of `kimi-k2.5` and the seven
+  `moonshot-v1` IDs (including auto and vision-preview). Remove only native
+  static entries and reject their admission/retention in the supplement.
+  K2.6/K2.7 remain available: October 31 new-account closure and a planned
+  end-of-December sunset are not an October 25 retirement.
+  The [international Chat schema](https://platform.kimi.ai/docs/api/chat.md)
+  includes `kimi-k3` alongside both K3.1 IDs in the 131,072 default /
+  1,048,576 maximum output contract. Extend the existing exact projection
+  rule to K3 and correct its static fallback; its exact context integer is
+  retained from the existing models.dev record, not inferred from “1M”.
+- The [pinned OpenCode Go protocol table](https://github.com/anomalyco/opencode/blob/0093fe5782766f180167efab86fb8fdb3c5b6a4a/services/www/src/docs/content/console/go.mdx)
+  adds `iceman-contributor-free` on Chat only. Record the limited-time free,
+  training-eligible/non-ZDR boundary; exact limits, modalities, and effort
+  remain unknown. Its absence from the successful public model-list response
+  does not override the explicit official protocol table.
+- Together's own [M3.1 Flash](https://www.together.ai/models/minimax-m3-1-flash)
+  and [DeepSeek 1017](https://www.together.ai/models/deepseek-v4-1-flash-1017)
+  pages provide exact serverless Chat IDs, image input, and reasoning support.
+  M3.1 Flash documents low/medium/high/xhigh/max; DeepSeek documents a numeric
+  1–100 range, which the current string-menu contract cannot faithfully
+  represent, so its menu stays empty. Exact context integers and output
+  ceilings remain unknown; the recommended DeepSeek 256K budget is not a cap.
+  Together's full docs/model-list fetches remained blocked; this is not a
+  zero-difference claim for its whole catalog.
+- The [Fireworks model index](https://fireworks.ai/models) publishes exact
+  `contextLength=512000` for `accounts/fireworks/models/minimax-m3`, matching
+  the artifact and correcting the old static 524,288 fallback. Its image
+  flag conflicts with the multimodal detail page, so retain the existing
+  image capability rather than treating the index flag as a new restriction.
+
+### Registered endpoint coverage and preserved boundaries
+
+All rows are documentation checks, not authenticated account-availability tests.
+Unregistered protocols or regions are not silently introduced.
+
+| Endpoint | This cycle's result |
+| --- | --- |
+| `dashscope@default` | Eleven Messages coverage additions above; the existing host is still supported, not retired by the recommended workspace-domain migration. |
+| `dashscope@token-plan` | Personal/team pages independently rechecked; no new qualified ID, no promotion of the six previously unconfirmed routes. Team deployments still use console-specific URLs. Preserve #3729 and Qwen policies. |
+| `dashscope@coding-plan` | Domestic six-ID current list covered, including `qwen3.5-plus`; omission is not affirmative retirement of historical routes. |
+| `dashscope@coding-plan-intl` | International list independently checked; distinct host/key retained, no inferred exact token or effort limits. |
+| `bigmodel@default` | GLM-5.3 text / Flash multimodal boundaries unchanged; FlashX ordinary-API listing does not prove Messages or plan eligibility. No distinct coding endpoint is registered. |
+| `zai@default` | International model/plan pages independently checked; FlashX still excluded from the plan. Distinct key classification remains significant despite the common Anthropic URL. |
+| `xiaomi@default` | Three V2.6 IDs and exact 131,072 output contract covered; effort values other than none are compatibility mappings, not distinct reasoning strengths. Existing October 21 retirement filters remain. |
+| `xiaomi@token-plan` | Pro/Flash qualify, Ultraspeed does not gain new qualification; only China is registered, not the documented Singapore/Amsterdam hosts. |
+| `volcengine@default` | Ordinary Responses unchanged; subscription qualification and retirement notices do not apply to it. |
+| `volcengine@coding` | K3.1 addition above; K2.7 Code remains callable until October 28 14:00 UTC+8, lowercase M3 until November 2 14:00 UTC+8. |
+| `volcengine@plan` | Independent Agent K3.1 qualification above; preserve exact dated/uppercase IDs and GLM-5.2 forwarding. |
+| `tencent-tokenhub@default` | Two K3.1 additions, 42 current matrix Chat IDs; three HY translation IDs remain Chat-only. |
+| `tencent-tokenhub@messages` | Two additions, 39 current matrix IDs; Guangzhou host/key only, not an alias for Singapore or an unregistered Token Plan. |
+| `tencent-tokenhub@responses` | Two additions, 32 current matrix IDs; GLM-5.2 remains compatibility mode. |
+| `byteplus@coding` | All 13 official quick-start IDs covered; Seed Code vision omissions were already fixed. Keep published k notation unconverted; do not copy the Chat list into unregistered alternative protocols. |
+| `stepfun@default` | Ordinary API remains separate from Plan; the router's Plan-only contract is unchanged. |
+| `stepfun@plan` | Five official IDs covered. Plan Messages exists in documentation but is not registered. Router image/document/web-search restrictions and ignored output effort are not inherited from underlying models. |
+| `minimax@default` | International Anthropic pages rechecked: M3/M3.1 covered, M2/M2.1 retirement preserved, M2.5/M2.7 existing-API access retained until November 18 despite conflicting FAQ footer. |
+| `minimax-cn@default` | China pages independently checked; native M3/M3.1 defaults and exact cache policies retained. Do not infer international access from China evidence. |
+| `minimax@m-plan` | Formal/legacy M3.1 qualified; native M3 ordinary-API availability does not qualify it for the plan. |
+| `minimax-cn@m-plan` | China plan independently rechecked; region/key separation and formal/legacy mapping preserved. |
+| `moonshot@default` | International retirement and K3 budget corrections above; domestic API and Kimi Code are not registered endpoints. |
+| `opencode-go@default` | Iceman addition; K3.1 remains Chat-only. Google protocol is not registered. |
+| `opencode-go@messages` | Current protocol allocations covered; native MiniMax retirements do not retire Go history. |
+| `opencode-go@responses` | Grok/GPT/Muse allocations covered; no K3.1 or Iceman protocol expansion. |
+| `kilocode@default` | Five Auto context/output pairs match the public gateway list; Free text-only/training and Small paid boundaries retained. Supported parameters are not an effort enum. |
+| `together@default` | Two directly confirmed Chat additions above; unrelated video-generation MiniMax H3 excluded. |
+| `fireworks@default` | M3 fallback context correction above; no family-wide retirement inferred from directory absence. |
+| `openai-codex@default` | Seven current non-retired metadata entries covered; optional account-specific context is not the default. |
+| `deepseek@default`, `deepseek@responses` | Native contracts rechecked above; no package qualification or cache policy inferred. |
+| `openrouter@default`, `mistral@default` | Changed-record validation and Mistral exact-limit evidence gap retained above. |
+| OpenCode Zen / Kimi Code | Catalog sources exist but no independent runtime endpoints are registered; no endpoint is added by this review. |
+
+BytePlus sources: [quick start](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-get-started)
+and [overview](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview).
+StepFun sources: [Plan integration](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md)
+and [Messages restrictions](https://platform.stepfun.com/docs/zh/api-reference/chat/messages-create.md).
+Other unchanged endpoint source links and unresolved historical evidence are
+retained in the October 24 review below.
+
+Validation for this cycle: built-in snapshot regeneration, refresh, and
+`models-dev validate` pass (1,081 artifact models, 54 supplement models, 16
+explicit supplement routes). `cargo test --locked --lib model_catalog::`
+passes 165 tests with one intentional snapshot-writer ignore;
+`cargo test --locked models_dev` passes 67 matching library tests, and
+`cargo test --locked --lib route_cache` passes 17 tests.
+After formatting the corrected test fixture, `cargo fmt --all -- --check`,
+`RUSTFLAGS="-D warnings" cargo check --locked --all-targets`, and
+`git diff --check` all pass. Independent final review found no blocking
+defect; its sole low-priority audit revision mismatch has been corrected.
+
 ## 2026-10-24 incremental review
 
 - Refreshed models.dev revision

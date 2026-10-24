@@ -313,6 +313,24 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     });
+    entries.push(BuiltInModelMetadata {
+        model_ref: ModelRef::new(provider_id("opencode-go"), "iceman-contributor-free"),
+        display_name: "Iceman Contributor Free".into(),
+        description: "OpenCode Go Chat-only limited-time free route; prompts and completions may be used for training (not ZDR). Token limits, modalities, and reasoning controls remain unconfirmed.".into(),
+        context_window_tokens: None,
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags::default(),
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    });
     entries.extend(opencode_go_models_dev_entries());
     entries
 }

@@ -217,6 +217,45 @@ pub(super) fn together_model(
     }
 }
 
+fn reviewed_together_model(
+    model: &str,
+    display_name: &str,
+    effort_options: &[&str],
+) -> BuiltInModelMetadata {
+    BuiltInModelMetadata {
+        model_ref: ModelRef::new(provider_id("together"), model),
+        display_name: display_name.into(),
+        description: format!(
+            "Together serverless {model} Chat route confirmed by its official model page; exact context and output limits remain unconfirmed."
+        ),
+        context_window_tokens: None,
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags {
+            image_input: true,
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: effort_options.iter().map(|value| (*value).into()).collect(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    }
+}
+
+fn moonshot_k3_model() -> BuiltInModelMetadata {
+    let mut model = catalog_model(
+        "moonshot", "kimi-k3", "Kimi K3", 1_048_576, 131_072, true, true,
+    );
+    model.max_output_tokens_upper_limit = Some(1_048_576);
+    model
+}
+
 pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
     vec![
         catalog_model(
@@ -513,7 +552,7 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
         fireworks_model(
             "accounts/fireworks/models/minimax-m3",
             "MiniMax M3",
-            Some(524_288),
+            Some(512_000),
             true,
             true,
         ),
@@ -750,81 +789,7 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        catalog_model(
-            "moonshot", "kimi-k3", "Kimi K3", 1_000_000, 262_144, true, true,
-        ),
-        catalog_model(
-            "moonshot",
-            "kimi-k2.5",
-            "Kimi K2.5",
-            262_144,
-            262_144,
-            true,
-            true,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-8k",
-            "Moonshot V1 8K",
-            8_192,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-32k",
-            "Moonshot V1 32K",
-            32_768,
-            32_768,
-            false,
-            false,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-128k",
-            "Moonshot V1 128K",
-            131_072,
-            131_072,
-            false,
-            false,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-auto",
-            "Moonshot V1 Auto",
-            131_072,
-            131_072,
-            false,
-            false,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-8k-vision-preview",
-            "Moonshot V1 8K Vision Preview",
-            8_192,
-            8_192,
-            false,
-            true,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-32k-vision-preview",
-            "Moonshot V1 32K Vision Preview",
-            32_768,
-            32_768,
-            false,
-            true,
-        ),
-        catalog_model(
-            "moonshot",
-            "moonshot-v1-128k-vision-preview",
-            "Moonshot V1 128K Vision Preview",
-            131_072,
-            131_072,
-            false,
-            true,
-        ),
+        moonshot_k3_model(),
         catalog_model(
             "nearai",
             "zai-org/GLM-5.1-FP8",
@@ -992,6 +957,16 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         together_model("MiniMaxAI/MiniMax-M3", "MiniMax M3", 524_288, false, true),
+        reviewed_together_model(
+            "MiniMaxAI/MiniMax-M3.1-Flash",
+            "MiniMax M3.1 Flash",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        reviewed_together_model(
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "DeepSeek V4.1 Flash 1017",
+            &[],
+        ),
         together_model(
             "MiniMaxAI/MiniMax-M2.7",
             "MiniMax M2.7",
