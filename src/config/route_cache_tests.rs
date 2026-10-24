@@ -297,6 +297,63 @@ fn route_cache_dashscope_glm53_default_is_scoped_and_overridable() {
 }
 
 #[test]
+fn route_cache_dashscope_deepseek_defaults_are_exact_and_overridable() {
+    for route in [
+        "dashscope@token-plan/deepseek-v4.1-flash",
+        "dashscope@token-plan/deepseek-v4-flash-0731",
+    ] {
+        let mut catalog = cache_catalog();
+        assert_eq!(
+            cache_policy(&catalog, route),
+            ResolvedAnthropicCachePolicy {
+                cache_control: false,
+                source: AnthropicCacheControlSource::RouteBuiltin,
+            }
+        );
+        for peer in [
+            "dashscope@default/deepseek-v4.1-flash",
+            "dashscope@default/deepseek-v4-flash-0731",
+            "dashscope@token-plan/deepseek-v4.1-flash-1017",
+            "dashscope@token-plan/deepseek-v4-flash",
+            "dashscope@token-plan/deepseek-v3.2",
+            "dashscope@token-plan/qwen3.8-flash",
+        ] {
+            assert_eq!(
+                cache_policy(&catalog, peer),
+                ResolvedAnthropicCachePolicy {
+                    cache_control: true,
+                    source: AnthropicCacheControlSource::EndpointBuiltin,
+                },
+                "{peer}"
+            );
+        }
+        catalog
+            .provider_cache_overrides
+            .insert(ProviderId::parse("dashscope-token-plan").unwrap(), true);
+        assert_eq!(
+            cache_policy(&catalog, route),
+            ResolvedAnthropicCachePolicy {
+                cache_control: true,
+                source: AnthropicCacheControlSource::ProviderOverride,
+            }
+        );
+        for enabled in [false, true] {
+            catalog.model_route_overrides.insert(
+                ModelRouteRef::parse(route).unwrap(),
+                cache_override(Some(enabled)),
+            );
+            assert_eq!(
+                cache_policy(&catalog, route),
+                ResolvedAnthropicCachePolicy {
+                    cache_control: enabled,
+                    source: AnthropicCacheControlSource::RouteOverride,
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn route_cache_minimax_m3_defaults_are_exact_and_overridable() {
     for (provider, subscription_provider) in [
         ("minimax", "minimax-m-plan"),

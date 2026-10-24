@@ -8603,6 +8603,9 @@
     {
       "route_ref": "dashscope@token-plan/deepseek-v4-flash-0731",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
@@ -8637,6 +8640,9 @@
     {
       "route_ref": "dashscope@token-plan/deepseek-v4.1-flash",
       "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
