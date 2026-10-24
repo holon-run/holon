@@ -1006,10 +1006,92 @@ pub(crate) fn persist_queued_admission_tx(
         return Ok(());
     };
     if *replace_existing {
-        replace_delivery_tx(tx, record)
+        replace_delivery_tx(tx, record)?;
     } else {
-        insert_delivery_tx(tx, record)
+        insert_delivery_tx(tx, record)?;
     }
+    bind_message_wait_tx(tx, record)
+}
+
+/// Acceptance must not outlive the parent-owned generation/cursor binding.
+/// The target may be purged before this parent's monitor is started or recovered.
+fn bind_message_wait_tx(tx: &Transaction<'_>, delivery: &AgentMessageDeliveryRecord) -> Result<()> {
+    use crate::types::{MessageOrigin, TaskKind, TaskRecoverySpec, TaskTargetKind, TaskTargetRef};
+    let (Some(task_id), Some(owner)) = (
+        delivery.caller.current_task_id.as_deref(),
+        delivery.caller.caller_agent_id.as_deref(),
+    ) else {
+        return Ok(());
+    };
+    if !matches!(&delivery.caller.origin, MessageOrigin::Task { task_id: origin } if origin == task_id)
+    {
+        return Ok(());
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM tasks WHERE task_id = ?1 AND owner_agent_id = ?2",
+            params![task_id, owner],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let mut task = super::repositories::decode_task_payload(&payload)?;
+    if task.kind != TaskKind::AgentMessageWait {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        super::repositories::is_active_task_status(&task.status),
+        "message wait is no longer active"
+    );
+    let identity: String = tx.query_row(
+        "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+        [&delivery.target_agent_id],
+        |row| row.get(0),
+    )?;
+    let identity: AgentIdentityRecord = serde_json::from_str(&identity)?;
+    let cursor: i64 = tx.query_row(
+        "SELECT rowid FROM agent_message_deliveries WHERE delivery_id = ?1",
+        [&delivery.delivery_id],
+        |row| row.get(0),
+    )?;
+    let detail = task.detail.get_or_insert_with(|| serde_json::json!({}));
+    let detail = detail
+        .as_object_mut()
+        .context("invalid message wait detail")?;
+    detail.insert(
+        "target_agent_id".into(),
+        serde_json::json!(delivery.target_agent_id),
+    );
+    detail.insert(
+        "target".into(),
+        serde_json::to_value(TaskTargetRef {
+            kind: TaskTargetKind::AgentMessageWait,
+            agent_id: delivery.target_agent_id.clone(),
+            incarnation: Some(identity.incarnation),
+        })?,
+    );
+    detail.insert(
+        "request_delivery_id".into(),
+        serde_json::json!(delivery.delivery_id),
+    );
+    detail.insert(
+        "message_wait_after_delivery_rowid".into(),
+        serde_json::json!(cursor),
+    );
+    if let Some(TaskRecoverySpec::AgentMessageWait {
+        delivery_id,
+        after_delivery_rowid,
+        ..
+    }) = task.recovery.as_mut()
+    {
+        *delivery_id = Some(delivery.delivery_id.clone());
+        *after_delivery_rowid = Some(cursor);
+    }
+    task.updated_at = std::cmp::max(task.updated_at, delivery.updated_at);
+    super::repositories::upsert_task_tx(tx, &task)?;
+    Ok(())
 }
 
 fn replace_delivery_tx(tx: &Transaction<'_>, record: &AgentMessageDeliveryRecord) -> Result<()> {
@@ -3042,6 +3124,85 @@ mod tests {
                 assert!(result.is_err(), "{defect}");
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn message_wait_binding_commits_atomically_with_delivery_and_survives_purge() -> Result<()> {
+        use crate::types::{TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus};
+        let (dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let task = TaskRecord {
+            id: "task-delivery".into(),
+            agent_id: "caller-agent".into(),
+            kind: TaskKind::AgentMessageWait,
+            status: TaskStatus::Queued,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("wait".into()),
+            detail: Some(serde_json::json!({"target_agent_id":"target-agent"})),
+            recovery: Some(TaskRecoverySpec::AgentMessageWait {
+                summary: "wait".into(),
+                message: "request".into(),
+                target_agent_id: "target-agent".into(),
+                authority_class: AuthorityClass::RuntimeInstruction,
+                delivery_id: None,
+                after_delivery_rowid: None,
+            }),
+        };
+        db.tasks().upsert(&task)?;
+        let prepared = prepare("atomic-wait", "request")?;
+        let mut command = admission_command(&prepared);
+        command.fault =
+            Some(crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites);
+        assert!(db
+            .transitions()
+            .commit_delivery_admission(&command, &prepared.record)
+            .is_err());
+        assert_eq!(db.tasks().latest(&task.id)?, Some(task.clone()));
+        assert!(db
+            .agent_message_deliveries()
+            .latest(&prepared.record.delivery_id)?
+            .is_none());
+        command.fault = None;
+        db.transitions()
+            .commit_delivery_admission(&command, &prepared.record)?;
+        let accepted = db.tasks().latest(&task.id)?.unwrap();
+        let mut stale = task.clone();
+        stale.updated_at = Utc::now();
+        assert!(
+            db.tasks().upsert(&stale).is_err(),
+            "late status cannot erase an accepted binding"
+        );
+        assert_eq!(db.tasks().latest(&task.id)?, Some(accepted.clone()));
+        assert_eq!(accepted.target().unwrap().incarnation, Some(1));
+        let Some(TaskRecoverySpec::AgentMessageWait {
+            delivery_id: Some(delivery),
+            after_delivery_rowid: Some(cursor),
+            ..
+        }) = accepted.recovery.as_ref()
+        else {
+            panic!("acceptance lost parent-owned wait binding");
+        };
+        assert_eq!(delivery, &prepared.record.delivery_id);
+        assert!(*cursor > 0);
+        // A crash before monitor setup followed by target ledger purge cannot
+        // erase the caller's generation or cause the request to be resent.
+        db.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM agent_message_deliveries WHERE target_agent_id='target-agent'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )?;
+        assert_eq!(reopened.tasks().latest(&task.id)?, Some(accepted));
         Ok(())
     }
 

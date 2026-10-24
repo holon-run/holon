@@ -302,7 +302,7 @@ fn task_with_status(
     }
 }
 
-fn task_with_result_message(
+pub(super) fn task_with_result_message(
     task: &TaskRecord,
     status: TaskStatus,
     mut detail: Option<serde_json::Value>,
@@ -1431,7 +1431,12 @@ impl RuntimeHandle {
 
         let result = loop {
             match bridge
-                .await_agent_message(&agent_id, &target_agent_id, after_delivery_rowid)
+                .await_agent_message(
+                    &agent_id,
+                    &target_agent_id,
+                    after_delivery_rowid,
+                    task_record.target().and_then(|target| target.incarnation),
+                )
                 .await
             {
                 Err(error)
@@ -1489,9 +1494,9 @@ impl RuntimeHandle {
     pub(super) async fn finish_agent_message_wait(
         &self,
         task: &TaskRecord,
-        status: TaskStatus,
+        mut status: TaskStatus,
         mut detail: serde_json::Value,
-        failure_text: String,
+        mut failure_text: String,
     ) -> Result<()> {
         let task = self
             .task_record(&task.id)
@@ -1499,6 +1504,35 @@ impl RuntimeHandle {
             .unwrap_or_else(|| task.clone());
         if task_state_reducer::is_terminal_task_status(&task.status) {
             return Ok(());
+        }
+        for key in [
+            "target",
+            "request_delivery_id",
+            "message_wait_after_delivery_rowid",
+        ] {
+            if let Some(value) = task.detail.as_ref().and_then(|detail| detail.get(key)) {
+                detail[key] = value.clone();
+            }
+        }
+        if let (Some(bridge), Some(target)) = (self.inner.host_bridge.as_ref(), task.target()) {
+            if let Some(result) = bridge
+                .deleted_task_target_result(&target.agent_id, target.incarnation)
+                .await?
+            {
+                status = result.status;
+                failure_text = result.text;
+                if let Some(result_detail) = result.task_detail {
+                    detail
+                        .as_object_mut()
+                        .ok_or_else(|| anyhow!("invalid message wait detail"))?
+                        .extend(
+                            result_detail
+                                .as_object()
+                                .ok_or_else(|| anyhow!("invalid cancellation detail"))?
+                                .clone(),
+                        );
+                }
+            }
         }
         let response = detail
             .get("message_id")
@@ -2023,6 +2057,13 @@ impl RuntimeHandle {
             });
         let mut retry_attempt = 0u32;
         loop {
+            if self
+                .task_record(&task_record.id)
+                .await?
+                .is_some_and(|latest| task_state_reducer::is_terminal_task_status(&latest.status))
+            {
+                return Ok(());
+            }
             match self
                 .commit_terminal_child_task_result(
                     &terminal_task,
@@ -2065,10 +2106,93 @@ impl RuntimeHandle {
         }
     }
 
+    pub(super) async fn settle_deleted_task_targets(
+        &self,
+        tasks: Vec<TaskRecord>,
+    ) -> Result<Vec<TaskRecord>> {
+        let Some(bridge) = self.inner.host_bridge.as_ref() else {
+            return Ok(tasks);
+        };
+        let mut remaining = Vec::new();
+        for task in tasks {
+            if self
+                .task_record(&task.id)
+                .await?
+                .is_some_and(|latest| task_state_reducer::is_terminal_task_status(&latest.status))
+            {
+                continue;
+            }
+            let Some(target) = task.target() else {
+                remaining.push(task);
+                continue;
+            };
+            let Some(result) = bridge
+                .deleted_task_target_result(&target.agent_id, target.incarnation)
+                .await?
+            else {
+                remaining.push(task);
+                continue;
+            };
+            let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+            if let Some(result_detail) = result.task_detail {
+                detail
+                    .as_object_mut()
+                    .ok_or_else(|| anyhow!("invalid invocation detail"))?
+                    .extend(
+                        result_detail
+                            .as_object()
+                            .ok_or_else(|| anyhow!("invalid cancellation detail"))?
+                            .clone(),
+                    );
+            }
+            let _ = self
+                .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, &mut detail)
+                .await?;
+            if task.kind == TaskKind::AgentMessageWait {
+                self.finish_agent_message_wait(&task, result.status, detail, result.text)
+                    .await?;
+            } else {
+                detail["output_summary"] = serde_json::json!(result.text);
+                let mut message = MessageEnvelope::new(
+                    task.agent_id.clone(),
+                    MessageKind::TaskResult,
+                    MessageOrigin::Task {
+                        task_id: task.id.clone(),
+                    },
+                    AuthorityClass::RuntimeInstruction,
+                    Priority::Next,
+                    MessageBody::Text { text: result.text },
+                )
+                .with_admission(
+                    MessageDeliverySurface::TaskRejoin,
+                    AdmissionContext::RuntimeOwned,
+                );
+                message.id = format!("message:child-invocation-result:{}", task.id);
+                message.turn_id = Some(format!("turn:child-invocation-result:{}", task.id));
+                message.created_at = task.created_at;
+                message.metadata = Some(serde_json::json!({
+                    "task_id": task.id, "task_kind": task.kind, "task_status": result.status,
+                    "task_summary": task.summary, "task_recovery": task.recovery,
+                    "work_item_id": task.work_item_id, "task_detail": detail,
+                }));
+                let terminal =
+                    task_with_result_message(&task, result.status, Some(detail), &message);
+                self.commit_terminal_task_result(
+                    &terminal,
+                    "task_cancelled_by_agent_deletion",
+                    &message,
+                )
+                .await?;
+            }
+        }
+        Ok(remaining)
+    }
+
     pub(crate) async fn interrupt_active_tasks(
         &self,
         tasks: Vec<TaskRecord>,
     ) -> Result<Vec<TaskRecord>> {
+        let tasks = self.settle_deleted_task_targets(tasks).await?;
         self.persist_interrupted_tasks(tasks).await
     }
 
@@ -2085,7 +2209,7 @@ impl RuntimeHandle {
 
         for task in tasks {
             if let Some(TaskRecoverySpec::AgentMessageWait {
-                message,
+                message: _,
                 target_agent_id,
                 authority_class,
                 delivery_id,
@@ -2093,67 +2217,65 @@ impl RuntimeHandle {
                 ..
             }) = task.recovery.clone()
             {
+                if let Some(result) = bridge
+                    .deleted_task_target_result(
+                        &target_agent_id,
+                        task.target().and_then(|target| target.incarnation),
+                    )
+                    .await?
+                {
+                    let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(result_detail) = result.task_detail {
+                        detail
+                            .as_object_mut()
+                            .ok_or_else(|| anyhow!("invalid message wait detail"))?
+                            .extend(
+                                result_detail
+                                    .as_object()
+                                    .ok_or_else(|| anyhow!("invalid cancellation detail"))?
+                                    .clone(),
+                            );
+                    }
+                    self.finish_agent_message_wait(&task, result.status, detail, result.text)
+                        .await?;
+                    reattached.push(task);
+                    continue;
+                }
+                // Without the accepted cursor/generation, a recovered wait
+                // cannot prove whether resending would duplicate a request.
+                if task
+                    .target()
+                    .and_then(|target| target.incarnation)
+                    .is_none()
+                    || delivery_id.is_none()
+                    || after_delivery_rowid.is_none()
+                {
+                    remaining.push(task);
+                    continue;
+                }
                 if !bridge.reusable_agent_exists(&target_agent_id).await? {
                     remaining.push(task);
                     continue;
                 }
-                let recovery = async {
-                    if let (Some(delivery_id), Some(after_delivery_rowid)) =
-                        (delivery_id, after_delivery_rowid)
-                    {
-                        let mut task_detail =
-                            task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
-                        task_detail["request_delivery_id"] = serde_json::json!(&delivery_id);
-                        if let Some(detail) = task_detail.as_object_mut() {
-                            detail.remove("delivery_id");
-                        }
-                        task_detail["message_wait_after_delivery_rowid"] =
-                            serde_json::json!(after_delivery_rowid);
-                        task_detail["business_completion"] = serde_json::json!(false);
-                        return self
-                            .start_agent_message_wait_monitor(
-                                task.clone(),
-                                authority_class.clone(),
-                                target_agent_id.clone(),
-                                delivery_id,
-                                after_delivery_rowid,
-                                task_detail,
-                                true,
-                            )
-                            .await;
-                    }
-                    let mut admitted = bridge
-                        .invoke_existing_agent(
-                            &task,
-                            &target_agent_id,
-                            message,
-                            authority_class.clone(),
-                        )
-                        .await?;
-                    let delivery_id = admitted.delivery_id.clone().ok_or_else(|| {
-                        anyhow!("accepted agent message invocation is missing its delivery id")
-                    })?;
-                    let after_delivery_rowid = bridge.agent_message_delivery_rowid(&delivery_id)?;
-                    admitted.task_detail["created_new_subagent"] = serde_json::json!(false);
-                    admitted.task_detail["request_delivery_id"] = serde_json::json!(&delivery_id);
-                    if let Some(detail) = admitted.task_detail.as_object_mut() {
-                        detail.remove("delivery_id");
-                    }
-                    admitted.task_detail["message_wait_after_delivery_rowid"] =
-                        serde_json::json!(after_delivery_rowid);
-                    admitted.task_detail["business_completion"] = serde_json::json!(false);
-                    self.start_agent_message_wait_monitor(
+                let mut task_detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                task_detail["request_delivery_id"] = serde_json::json!(&delivery_id);
+                if let Some(detail) = task_detail.as_object_mut() {
+                    detail.remove("delivery_id");
+                }
+                task_detail["message_wait_after_delivery_rowid"] =
+                    serde_json::json!(after_delivery_rowid);
+                task_detail["business_completion"] = serde_json::json!(false);
+                let recovery = self
+                    .start_agent_message_wait_monitor(
                         task.clone(),
-                        authority_class.clone(),
+                        authority_class,
                         target_agent_id.clone(),
-                        delivery_id,
-                        after_delivery_rowid,
-                        admitted.task_detail,
+                        delivery_id.expect("accepted delivery checked above"),
+                        after_delivery_rowid.expect("accepted cursor checked above"),
+                        task_detail,
                         true,
                     )
-                    .await
-                }
-                .await;
+                    .await;
                 match recovery {
                     Ok(_) => reattached.push(task),
                     Err(error) => {
@@ -2362,7 +2484,11 @@ impl RuntimeHandle {
                 &result_message,
             )
             .await?;
-            interrupted.push(interrupted_task);
+            interrupted.push(
+                self.task_record(&interrupted_task.id)
+                    .await?
+                    .unwrap_or(interrupted_task),
+            );
         }
         Ok(interrupted)
     }
@@ -2371,6 +2497,7 @@ impl RuntimeHandle {
         &self,
         tasks: Vec<TaskRecord>,
     ) -> Result<Vec<TaskRecord>> {
+        let tasks = self.settle_deleted_task_targets(tasks).await?;
         let mut interrupted = Vec::new();
         for task in tasks {
             {
@@ -2439,7 +2566,11 @@ impl RuntimeHandle {
                 &result_message,
             )
             .await?;
-            interrupted.push(interrupted_task);
+            interrupted.push(
+                self.task_record(&interrupted_task.id)
+                    .await?
+                    .unwrap_or(interrupted_task),
+            );
         }
         Ok(interrupted)
     }

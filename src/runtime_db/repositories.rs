@@ -5688,6 +5688,40 @@ fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("task target was deleted before terminal publication")]
+pub(crate) struct TaskTargetDeleted;
+
+/// Historical target identity is resolved by generation, never rebound by name.
+pub(crate) fn task_target_is_deleted(
+    connection: &rusqlite::Connection,
+    target: &crate::types::TaskTargetRef,
+) -> Result<bool> {
+    let payload: Option<String> = connection
+        .query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+            [&target.agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(false);
+    };
+    let identity = decode_agent_identity_payload(&payload)?;
+    let expected = match target.incarnation {
+        Some(0) => return Ok(false),
+        Some(value) => value,
+        None if identity.incarnation == 1 => 1,
+        None => return Ok(false),
+    };
+    Ok(identity.incarnation > expected
+        || (identity.incarnation == expected
+            && matches!(
+                identity.status,
+                AgentRegistryStatus::Deleting | AgentRegistryStatus::Deleted
+            )))
+}
+
 pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
     if is_active_task_status(&record.status) {
         super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
@@ -6165,6 +6199,25 @@ pub(crate) fn task_transition(
                 existing.detail.as_ref().and_then(|detail| detail.get(key))
                     == incoming.detail.as_ref().and_then(|detail| detail.get(key)),
                 "supervised_invocation_source_binding_conflict: {key}"
+            );
+        }
+    }
+    if existing.kind == crate::types::TaskKind::AgentMessageWait
+        && existing
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.get("request_delivery_id"))
+            .is_some()
+    {
+        for key in [
+            "target",
+            "request_delivery_id",
+            "message_wait_after_delivery_rowid",
+        ] {
+            anyhow::ensure!(
+                existing.detail.as_ref().and_then(|detail| detail.get(key))
+                    == incoming.detail.as_ref().and_then(|detail| detail.get(key)),
+                "message_wait_binding_conflict: {key}"
             );
         }
     }

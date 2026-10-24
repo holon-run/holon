@@ -289,14 +289,43 @@ content-free cleanup evidence. Database cleanup is transactional; filesystem
 cleanup remains a separate retryable job phase. A failed phase cannot mark the
 job complete or allow a replacement.
 
-Foreign consumers of private rows block export and purge. A terminal child task
-with a persisted result copy and an exact target incarnation may retain its
-known invocation provenance and terminal observability identifiers unchanged:
-those identifiers are not live dependencies on the child's rows. Its canonical
-runtime-owned result message may retain the same copied metadata, bound to the
-parent task's exact result message, status and target. Active tasks,
-missing or mismatched generations, and unknown or nested references still fail
-closed; deletion never rewrites another agent's result to remove references.
+### Historical references and consumer cancellation (2026-10-24)
+
+An ID in another agent's tool, message, audit or task history does not retain
+ownership of the referenced private row. Export and purge select rows by their
+explicit owner; they never traverse foreign JSON to discover consumers or rewrite
+another agent's history. Dereferencing purged history may return unavailable.
+Unknown owner schemas and jointly owned resources still fail closed. Global
+search-index orphan auditing is separate maintenance, not a deletion preflight.
+
+The durable identity fence is also a cancellation fact for pending invocations.
+Consumers resolve their persisted target incarnation before reading private source
+or execution evidence. A same-generation `Deleting`/`Deleted` identity, or a newer
+incarnation, ends an unfinished invocation as `Cancelled` with reason
+`agent_deleted`. This follows the existing atomic task/result/wait settlement
+protocol and wakes the caller. It never creates a replacement, resends the old
+request, or retries an external effect. Missing identity, an impossible future
+generation and ambiguous legacy bindings are not deletion evidence.
+
+This is lazy consumer settlement: deletion need not activate parents or find
+historical references. A running monitor observes the fence; an unloaded caller
+settles from the same durable fact during recovery. Task-owned worktrees retained
+by cancellation remain explicitly owned by the parent task, marked
+`retained_for_review` with reason `agent_deleted`; physical cleanup follows the
+existing explicit workspace cleanup flow and is not part of lazy result
+settlement. This also applies when stopping a task archives its child. Ordinary
+terminal-result worktree cleanup keeps its existing authorization and behavior;
+cleanup already authorized before deletion is not rolled back by cancellation.
+Parent task results that already committed remain immutable. A losing concurrent terminal publisher exits
+when it observes that committed result. Accepted message waits persist their
+target incarnation, delivery and reply cursor in the admission transaction, so a
+crash before monitor startup does not erase their generation binding.
+
+Deletion completion still means private cleanup completed. It does not mean all
+caller projections have refreshed. Identity tombstones and incarnation fences
+survive purge; ordinary historical links may remain unavailable indefinitely.
+Parent cleanup retains its rule that accepted active work cannot be cancelled to
+make a child eligible. Operator deletion retains explicit cancellation semantics.
 
 Recovery requires same-incarnation execution-settlement proof before resuming
 past `Quiesce`, and purge proof before resuming past `Index`. A legacy job

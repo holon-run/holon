@@ -4875,6 +4875,16 @@ impl RuntimeHost {
         reason: RuntimeActivationReason,
         observation: Option<crate::startup::StartupObservation>,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
+        self.activate_agent_observed_for_incarnation(agent_id, reason, observation, None)
+    }
+
+    fn activate_agent_observed_for_incarnation<'a>(
+        &'a self,
+        agent_id: &'a str,
+        reason: RuntimeActivationReason,
+        observation: Option<crate::startup::StartupObservation>,
+        expected_incarnation: Option<u64>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeHandle>> + Send + 'a>> {
         Box::pin(async move {
             if self.inner.runtime_operations_token.is_cancelled() {
                 return Err(anyhow::Error::new(RuntimeAdmissionClosed));
@@ -4908,7 +4918,14 @@ impl RuntimeHost {
                     }
                 }
             }
-            self.active_agent_identity_async(agent_id).await?;
+            let identity = self.active_agent_identity_async(agent_id).await?;
+            if expected_incarnation.is_some_and(|expected| expected != identity.incarnation) {
+                return Err(RuntimeError::policy(
+                    "agent_incarnation_mismatch",
+                    "invocation target incarnation changed before activation",
+                )
+                .into());
+            }
             {
                 let registry = self.inner.runtimes.read().await;
                 if registry.phase != HostRuntimePhase::Open {
@@ -4916,6 +4933,15 @@ impl RuntimeHost {
                 }
                 if let Some(entry) = registry.agents.get(agent_id) {
                     if entry.accepts_host_access() {
+                        if expected_incarnation.is_some_and(|expected| {
+                            expected != entry.runtime.instance_incarnation()
+                        }) {
+                            return Err(RuntimeError::policy(
+                                "agent_incarnation_mismatch",
+                                "invocation target instance changed before activation",
+                            )
+                            .into());
+                        }
                         return Ok(entry.runtime.clone());
                     }
                 }
@@ -4927,8 +4953,14 @@ impl RuntimeHost {
             let request_cancelled = CancellationToken::new();
             let _cancel_on_drop = request_cancelled.clone().drop_guard();
             self.start_runtime_operation(async move {
-                host.activate_cold_agent(&agent_id, reason, observation, &request_cancelled)
-                    .await
+                host.activate_cold_agent(
+                    &agent_id,
+                    reason,
+                    observation,
+                    &request_cancelled,
+                    expected_incarnation,
+                )
+                .await
             })?
             .await?
         })
@@ -4940,6 +4972,7 @@ impl RuntimeHost {
         reason: RuntimeActivationReason,
         observation: Option<crate::startup::StartupObservation>,
         request_cancelled: &CancellationToken,
+        expected_incarnation: Option<u64>,
     ) -> Result<RuntimeHandle> {
         if agent_id != self.config().default_agent_id && self.bootstrap_mode_active() {
             self.wait_for_runtime_operation(request_cancelled, self.wait_for_bootstrap_ready())
@@ -4948,7 +4981,14 @@ impl RuntimeHost {
         let _bootstrap_handoff_guard = self
             .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
             .await?;
-        self.active_agent_identity_async(agent_id).await?;
+        let identity = self.active_agent_identity_async(agent_id).await?;
+        if expected_incarnation.is_some_and(|expected| expected != identity.incarnation) {
+            return Err(RuntimeError::policy(
+                "agent_incarnation_mismatch",
+                "invocation target incarnation changed before activation",
+            )
+            .into());
+        }
         if agent_id == self.config().default_agent_id {
             self.ensure_default_agent_home_initialized().await?;
         }
@@ -4961,7 +5001,14 @@ impl RuntimeHost {
             if registry.phase != HostRuntimePhase::Open {
                 return Err(anyhow::Error::new(RuntimeAdmissionClosed));
             }
-            self.active_agent_identity_async(agent_id).await?;
+            let identity = self.active_agent_identity_async(agent_id).await?;
+            if expected_incarnation.is_some_and(|expected| expected != identity.incarnation) {
+                return Err(RuntimeError::policy(
+                    "agent_incarnation_mismatch",
+                    "invocation target incarnation changed before activation",
+                )
+                .into());
+            }
             if let Some(entry) = registry.agents.get(agent_id) {
                 if entry.accepts_host_access() {
                     return Ok(entry.runtime.clone());
@@ -6811,12 +6858,60 @@ impl RuntimeHost {
         Ok((identity, message))
     }
 
+    /// The identity fence is durable cancellation evidence, even after private
+    /// rows disappear. A replacement never inherits the old invocation.
+    fn deleted_target_result(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<Option<ChildTaskTerminalResult>> {
+        let target = crate::types::TaskTargetRef {
+            kind: crate::types::TaskTargetKind::ChildAgent,
+            agent_id: agent_id.to_string(),
+            incarnation: expected_incarnation,
+        };
+        if !self.runtime_db().with_read(|connection| {
+            crate::runtime_db::repositories::task_target_is_deleted(connection, &target)
+        })? {
+            return Ok(None);
+        }
+        let expected = expected_incarnation.unwrap_or(1);
+        Ok(Some(ChildTaskTerminalResult {
+            status: TaskStatus::Cancelled,
+            text: format!(
+                "Agent {agent_id} incarnation {expected}: target agent was deleted; invocation cancelled."
+            ),
+            task_detail: Some(json!({
+                "target_deleted": true,
+                "target_incarnation": expected,
+                "cancellation_reason": "agent_deleted",
+            })),
+        }))
+    }
+
+    async fn deleted_task_target_result(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<Option<ChildTaskTerminalResult>> {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        spawn_blocking(move || host.deleted_target_result(&agent_id, expected_incarnation)).await?
+    }
+
     async fn resolve_supervised_invocation(
         &self,
         task: &TaskRecord,
         child_agent_id: &str,
         worktree: bool,
     ) -> Result<ChildInvocationResolution> {
+        let incarnation = task.target().and_then(|target| target.incarnation);
+        if let Some(result) = self
+            .deleted_task_target_result(child_agent_id, incarnation)
+            .await?
+        {
+            return Ok(ChildInvocationResolution::Ready(result));
+        }
         let evidence = async {
             let host = self.clone();
             let task = task.clone();
@@ -6902,6 +6997,14 @@ impl RuntimeHost {
             Ok::<_, anyhow::Error>(ChildInvocationResolution::Ready(result))
         }
         .await;
+        if evidence.is_err() {
+            if let Some(result) = self
+                .deleted_task_target_result(child_agent_id, incarnation)
+                .await?
+            {
+                return Ok(ChildInvocationResolution::Ready(result));
+            }
+        }
         match evidence {
             Err(error) => match error.downcast_ref::<ChildInvocationReason>().copied() {
                 Some(
@@ -6922,8 +7025,43 @@ impl RuntimeHost {
         invocation_task_id: &str,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let storage = self.agent_storage(child_agent_id)?;
+        let incarnation = loop {
+            let db = self.runtime_db().clone();
+            let task_id = invocation_task_id.to_string();
+            match spawn_blocking(move || db.tasks().latest(&task_id)).await? {
+                Ok(task) => {
+                    break task
+                        .as_ref()
+                        .and_then(TaskRecord::target)
+                        .and_then(|target| target.incarnation)
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let identity = loop {
+            match self
+                .deleted_task_target_result(child_agent_id, incarnation)
+                .await
+            {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => {}
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
             match self.active_agent_identity_async(child_agent_id).await {
                 Ok(identity) => break identity,
                 Err(error)
@@ -6936,8 +7074,30 @@ impl RuntimeHost {
                 Err(error) => return Err(error),
             }
         };
+        anyhow::ensure!(
+            incarnation.map_or(identity.incarnation == 1, |value| value
+                == identity.incarnation),
+            ChildInvocationReason::IdentityMismatch
+        );
+        let storage = self.agent_storage(child_agent_id)?;
         let mut runtime_started = false;
         loop {
+            match self
+                .deleted_task_target_result(child_agent_id, incarnation)
+                .await
+            {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => {}
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
             let host = self.clone();
             let read_storage = storage.clone();
             let child = child_agent_id.to_string();
@@ -6970,7 +7130,15 @@ impl RuntimeHost {
                 },
                 Ok(None) => {
                     if !runtime_started {
-                        match self.get_or_create_agent(child_agent_id).await {
+                        match self
+                            .activate_agent_observed_for_incarnation(
+                                child_agent_id,
+                                RuntimeActivationReason::ChildSupervision,
+                                None,
+                                Some(identity.incarnation),
+                            )
+                            .await
+                        {
                             Ok(_runtime) => runtime_started = true,
                             Err(error)
                                 if error
@@ -6990,6 +7158,12 @@ impl RuntimeHost {
                             {
                                 // The deletion fence atomically records delivery cancellation.
                                 tracing::debug!(error = %error, "invocation target deletion fenced; reading cancellation evidence");
+                            }
+                            Err(error)
+                                if describe_runtime_error(&error).code
+                                    == "agent_incarnation_mismatch" =>
+                            {
+                                // Resolve cancellation on the next iteration; no replacement was activated.
                             }
                             Err(error) => return Err(error),
                         }
@@ -7013,14 +7187,38 @@ impl RuntimeHost {
         recipient_agent_id: &str,
         sender_agent_id: &str,
         after_delivery_rowid: i64,
+        expected_incarnation: Option<u64>,
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(recipient_agent_id)?;
         loop {
+            match self
+                .deleted_task_target_result(sender_agent_id, expected_incarnation)
+                .await
+            {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => {}
+                Err(error)
+                    if error
+                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                        .is_some() =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
             let db = self.runtime_db().clone();
             let read_storage = storage.clone();
             let recipient = recipient_agent_id.to_string();
             let sender = sender_agent_id.to_string();
             let reply = spawn_blocking(move || -> Result<_> {
+                if let Some(identity) = db.agent_identities().latest(&sender)? {
+                    anyhow::ensure!(
+                        expected_incarnation.map_or(identity.incarnation == 1, |value| value
+                            == identity.incarnation),
+                        ChildInvocationReason::IdentityMismatch
+                    );
+                }
                 let Some(delivery) = db
                     .agent_message_deliveries()
                     .first_accepted_from_sender_after(&recipient, &sender, after_delivery_rowid)?
@@ -8297,14 +8495,30 @@ impl RuntimeHostBridge {
             })
     }
 
+    pub(crate) async fn deleted_task_target_result(
+        &self,
+        agent_id: &str,
+        incarnation: Option<u64>,
+    ) -> Result<Option<ChildTaskTerminalResult>> {
+        self.host()?
+            .deleted_task_target_result(agent_id, incarnation)
+            .await
+    }
+
     pub(crate) async fn await_agent_message(
         &self,
         recipient_agent_id: &str,
         sender_agent_id: &str,
         after_delivery_rowid: i64,
+        expected_incarnation: Option<u64>,
     ) -> Result<ChildTaskTerminalResult> {
         self.host()?
-            .await_agent_message(recipient_agent_id, sender_agent_id, after_delivery_rowid)
+            .await_agent_message(
+                recipient_agent_id,
+                sender_agent_id,
+                after_delivery_rowid,
+                expected_incarnation,
+            )
             .await
     }
 
@@ -13460,6 +13674,7 @@ mod tests {
     }
 
     include!("host_deletion_tests.rs");
+    include!("host_deletion_reference_tests.rs");
 
     #[tokio::test]
     async fn default_bootstrap_intent_is_dropped_without_ready_provider() {
@@ -14829,7 +15044,7 @@ mod tests {
         let parent = host.config().default_agent_id.clone();
         let message = tokio::spawn(async move {
             read_host
-                .await_agent_message(&parent, "unrelated-sender", 0)
+                .await_agent_message(&parent, "unrelated-sender", 0, None)
                 .await
         });
         tokio::time::sleep(Duration::from_millis(600)).await;

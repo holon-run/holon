@@ -117,7 +117,7 @@ async fn deletion_terminalizes_triggered_waits_and_external_operation_ownership(
                 host.runtime_db(),
                 agent_id,
                 1,
-                now,
+                Utc::now(),
             )
             .unwrap();
             // Model an old proof that omitted unresolved waits and operations.

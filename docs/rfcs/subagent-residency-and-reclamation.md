@@ -56,6 +56,10 @@ action, structured review response, or monitoring agent.
   command/tool output and WorkItem state may be removed by the shared deletion
   core; historical terminal output references do not pin these files. A
   historical identity reference alone does not require permanent live residency.
+  Ordinary historical object IDs also do not pin private history: consumers may
+  show unavailable after purge. Pending invocation cancellation is resolved from
+  the durable deletion fence and captured incarnation through normal task-result
+  settlement, including after caller recovery.
 - An accepted deletion request is durable and idempotent. Failure and restart
   preserve its remaining cleanup responsibility. Logical task completion,
   confirmed resource exit, identity deletion, and evidence retention are distinct

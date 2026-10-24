@@ -318,9 +318,10 @@ impl RuntimeHost {
                         job.status == AgentDeletionStatus::Completed
                     }) && self
                         .runtime_db()
-                        .transaction(|tx| {
+                        .with_read(|connection| {
+                            let tx = connection.transaction()?;
                             crate::runtime_db::agent_deletion_cleanup::assert_private_history_cleared_tx(
-                                tx,
+                                &tx,
                                 &identity.agent_id,
                             )
                         })

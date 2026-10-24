@@ -465,6 +465,36 @@ impl RuntimeHandle {
         detail: &mut serde_json::Value,
         reason: &str,
     ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
+        if detail.get("worktree").is_none() {
+            return Ok(None);
+        }
+        let task = self.task_record(task_id).await?;
+        let deletion_fenced = match task.as_ref().and_then(TaskRecord::target) {
+            Some(target) => {
+                self.inner
+                    .runtime_db
+                    .with_read_async(move |connection| {
+                        crate::runtime_db::repositories::task_target_is_deleted(connection, &target)
+                    })
+                    .await?
+            }
+            None => false,
+        };
+        let retained_for_deletion = |detail: &serde_json::Value| {
+            detail["worktree"]["cleanup_reason"].as_str() == Some("agent_deleted")
+        };
+        if deletion_fenced
+            || reason == "agent_deleted"
+            || retained_for_deletion(detail)
+            || task
+                .as_ref()
+                .and_then(|task| task.detail.as_ref())
+                .is_some_and(retained_for_deletion)
+        {
+            return self
+                .retain_task_owned_worktree_for_target_deletion_in_detail(task_id, detail)
+                .await;
+        }
         let Some(worktree) = detail.get_mut("worktree") else {
             return Ok(None);
         };
@@ -472,6 +502,36 @@ impl RuntimeHandle {
             .cleanup_task_owned_worktree_metadata(task_id, worktree, reason)
             .await?;
         Ok(Some(cleanup))
+    }
+
+    /// The caller persists this detail with its task transition.
+    pub(super) async fn retain_task_owned_worktree_for_target_deletion_in_detail(
+        &self,
+        task_id: &str,
+        detail: &mut serde_json::Value,
+    ) -> Result<Option<TaskOwnedWorktreeCleanup>> {
+        let Some(worktree) = detail.get_mut("worktree") else {
+            return Ok(None);
+        };
+        anyhow::ensure!(worktree.is_object(), "invalid task-owned worktree metadata");
+        worktree["cleanup_status"] =
+            serde_json::json!(TaskOwnedWorktreeCleanupStatus::Retained.label());
+        worktree["cleanup_reason"] = serde_json::json!("agent_deleted");
+        worktree["retained_for_review"] = serde_json::json!(true);
+        worktree["cleanup_owner_task_id"] = serde_json::json!(task_id);
+        worktree["auto_cleaned_up"] = serde_json::json!(false);
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "task_worktree_cleanup_retained",
+            serde_json::json!({
+                "task_id": task_id,
+                "worktree": worktree,
+                "reason": "agent_deleted",
+            }),
+        ))?;
+        Ok(Some(TaskOwnedWorktreeCleanup {
+            changed_files: changed_files_from_metadata(worktree),
+            status: TaskOwnedWorktreeCleanupStatus::Retained,
+        }))
     }
 
     async fn cleanup_task_owned_worktree_metadata(

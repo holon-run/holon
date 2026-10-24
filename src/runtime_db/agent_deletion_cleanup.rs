@@ -285,8 +285,7 @@ pub(crate) fn purge_private_history(
         assert_no_live_resources_tx(tx, agent_id)?;
         assert_safe_ownership_tx(tx, agent_id)?;
         assert_payload_ownership_tx(tx, agent_id)?;
-        assert_no_foreign_consumers_tx(tx, agent_id)?;
-        assert_search_ownership_tx(tx)?;
+        assert_search_schema_tx(tx)?;
 
         let operation_ids = {
             let mut statement = tx.prepare(
@@ -330,8 +329,7 @@ pub(crate) fn export_private_history(
         fenced_identity_tx(tx, agent_id, expected_incarnation)?;
         assert_safe_ownership_tx(tx, agent_id)?;
         assert_payload_ownership_tx(tx, agent_id)?;
-        assert_no_foreign_consumers_tx(tx, agent_id)?;
-        assert_search_ownership_tx(tx)?;
+        assert_search_schema_tx(tx)?;
         let mut tables = serde_json::Map::new();
         for (table, predicate) in private_history_selections_tx(tx)? {
             let mut statement = tx.prepare(&format!(
@@ -442,7 +440,7 @@ pub(crate) fn assert_private_history_cleared_tx(
         "private history cleanup proof is stale or incomplete"
     );
     assert_safe_ownership_tx(tx, agent_id)?;
-    assert_search_ownership_tx(tx)?;
+    assert_search_schema_tx(tx)?;
     for (table, owner) in PRIVATE_TABLES {
         if table_exists(tx, table)?
             && exists(
@@ -618,6 +616,10 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
     for sql in [
         "SELECT EXISTS(SELECT 1 FROM content_reports WHERE agent_id = ?1)",
         "SELECT EXISTS(SELECT 1 FROM work_item_delegations WHERE parent_agent_id = ?1 OR child_agent_id = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM agent_supervisions s
+         JOIN agent_identities i ON i.agent_id = s.child_agent_id
+         WHERE s.supervisor_agent_id = ?1 AND s.state != 'closed'
+           AND i.status != 'deleted')",
     ] {
         ensure!(!exists(tx, sql, agent_id)?, "shared history requires explicit ownership resolution");
     }
@@ -664,209 +666,9 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
     Ok(())
 }
 
-const OWNED_IDS: &str = "
- WITH owned_ids(id) AS (
-     SELECT task_id FROM tasks WHERE owner_agent_id = ?1
-     UNION SELECT work_item_id FROM work_items WHERE agent_id = ?1
-     UNION SELECT turn_id FROM turn_records WHERE agent_id = ?1
-     UNION SELECT evidence_id FROM messages WHERE agent_id = ?1
-     UNION SELECT message_id FROM messages WHERE agent_id = ?1
-     UNION SELECT evidence_id FROM briefs WHERE agent_id = ?1
-     UNION SELECT timer_id FROM timers WHERE agent_id = ?1
-     UNION SELECT wait_condition_id FROM wait_conditions WHERE agent_id = ?1
-     UNION SELECT external_trigger_id FROM external_triggers WHERE target_agent_id = ?1
-     UNION SELECT attempt_id FROM execution_protocol_attempts WHERE agent_id = ?1
-     UNION SELECT source_ref FROM runtime_index_outbox WHERE agent_id = ?1
- ) ";
-
-fn assert_no_foreign_consumers_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
-    // A recipient's consumer or message is not ours to erase. Reject exact
-    // structural references rather than rewriting another agent's history.
-    for (table, owner) in PRIVATE_TABLES.iter().copied().chain([
-        ("agent_identities", "agent_id"),
-        ("subagent_cleanup_outbox", "parent_agent_id"),
-    ]) {
-        if !table_exists(tx, table)? {
-            continue;
-        }
-        let names = columns(tx, table)?;
-        for column in names.iter().filter(|column| {
-            column.ends_with("_id") || column.ends_with("_ref") || column.ends_with("_json")
-        }) {
-            if table == "tasks" && column == "payload_json" {
-                assert_no_foreign_task_consumers_tx(tx, agent_id)?;
-                continue;
-            }
-            if table == "messages" && column == "payload_json" {
-                assert_no_foreign_message_consumers_tx(tx, agent_id)?;
-                continue;
-            }
-            let column_sql = quoted(column);
-            let references = if column.ends_with("_json") {
-                format!(
-                    "EXISTS(SELECT 1 FROM json_tree(r.{column_sql}) j JOIN owned_ids i
-                     ON j.type = 'text' AND j.value = i.id)"
-                )
-            } else {
-                format!("r.{column_sql} IN (SELECT id FROM owned_ids)")
-            };
-            ensure!(
-                !exists(
-                    tx,
-                    &format!(
-                        "{OWNED_IDS} SELECT EXISTS(SELECT 1 FROM {} r
-                     WHERE (r.{} IS NULL OR r.{} != ?1) AND {references})",
-                        quoted(table),
-                        quoted(owner),
-                        quoted(owner)
-                    ),
-                    agent_id
-                )?,
-                "foreign private-history consumer in {table}.{column}"
-            );
-        }
-    }
-    // Supervision is a joint canonical fact: even this agent's outbound
-    // supervision cannot lose another child's delegated source behind its back.
-    ensure!(
-        !exists(
-            tx,
-            &format!(
-                "{OWNED_IDS} SELECT EXISTS(SELECT 1 FROM agent_supervisions r,
-             json_tree(r.payload_json) j JOIN owned_ids i ON j.type = 'text' AND j.value = i.id)"
-            ),
-            agent_id
-        )?,
-        "foreign private-history consumer in agent_supervisions"
-    );
-    Ok(())
-}
-
-fn assert_no_foreign_task_consumers_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
-    use crate::types::TaskRecord;
-
-    let incarnation = identity_tx(tx, agent_id)?.incarnation;
-    let mut statement = tx.prepare(&format!(
-        "{OWNED_IDS} SELECT r.payload_json, r.owner_agent_id, r.kind, r.status, j.fullkey
-         FROM tasks r, json_tree(r.payload_json) j
-         JOIN owned_ids i ON j.type = 'text' AND j.value = i.id
-         WHERE r.owner_agent_id != ?1"
-    ))?;
-    let mut rows = statement.query([agent_id])?;
-    while let Some(row) = rows.next()? {
-        let task: TaskRecord = serde_json::from_str(&row.get::<_, String>(0)?)?;
-        let path: String = row.get(4)?;
-        // A terminal invocation's copied output is self-contained. Only these
-        // provenance fields may outlive its child; all unknown references fail closed.
-        let copied_provenance = invocation_provenance_path(&path, "$.detail")
-            && task.agent_id == row.get::<_, String>(1)?
-            && task.kind.as_str() == row.get::<_, String>(2)?
-            && serde_json::to_value(&task.status)? == row.get::<_, String>(3)?
-            && self_contained_terminal_invocation(&task, agent_id, incarnation);
-        ensure!(
-            copied_provenance,
-            "foreign private-history consumer in tasks.payload_json at {path}"
-        );
-    }
-    Ok(())
-}
-
-fn invocation_provenance_path(path: &str, prefix: &str) -> bool {
-    matches!(
-        path.strip_prefix(prefix),
-        Some(
-            r#"."source_message_id""#
-                | r#"."source_turn_id""#
-                | r#"."activation_id""#
-                | r#"."turn_id""#
-                | r#"."completion_ref""#
-                | r#"."child_observability"."current_work_item_id""#
-        )
-    )
-}
-
-fn self_contained_terminal_invocation(
-    task: &crate::types::TaskRecord,
-    agent_id: &str,
-    incarnation: u64,
-) -> bool {
-    use crate::types::{TaskStatus, TaskTargetKind};
-    task.is_child_agent_task()
-        && matches!(
-            task.status,
-            TaskStatus::Completed
-                | TaskStatus::Failed
-                | TaskStatus::Cancelled
-                | TaskStatus::Interrupted
-        )
-        && task.target().is_some_and(|target| {
-            target.kind == TaskTargetKind::ChildAgent
-                && target.agent_id == agent_id
-                && target.incarnation == Some(incarnation)
-        })
-        && task
-            .detail
-            .as_ref()
-            .and_then(|detail| detail["output_summary"].as_str())
-            .is_some()
-}
-
-fn assert_no_foreign_message_consumers_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
-    use crate::types::{
-        AdmissionContext, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, TaskRecord,
-    };
-
-    let incarnation = identity_tx(tx, agent_id)?.incarnation;
-    let mut statement = tx.prepare(&format!(
-        "{OWNED_IDS} SELECT r.payload_json, r.agent_id, j.fullkey
-         FROM messages r, json_tree(r.payload_json) j
-         JOIN owned_ids i ON j.type = 'text' AND j.value = i.id
-         WHERE r.agent_id != ?1"
-    ))?;
-    let mut rows = statement.query([agent_id])?;
-    while let Some(row) = rows.next()? {
-        let message: MessageEnvelope = serde_json::from_str(&row.get::<_, String>(0)?)?;
-        let path: String = row.get(2)?;
-        let mut copied_provenance = false;
-        if invocation_provenance_path(&path, r#"$.metadata."task_detail""#)
-            && message.agent_id == row.get::<_, String>(1)?
-            && message.kind == MessageKind::TaskResult
-            && message.admission_context == Some(AdmissionContext::RuntimeOwned)
-            && message.delivery_surface == Some(MessageDeliverySurface::TaskRejoin)
-            && matches!(message.body, MessageBody::Text { .. })
-        {
-            if let MessageOrigin::Task { task_id } = &message.origin {
-                let payload: Option<String> = tx
-                    .query_row(
-                        "SELECT payload_json FROM tasks WHERE task_id = ?1 AND owner_agent_id = ?2",
-                        params![task_id, message.agent_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(payload) = payload {
-                    let task: TaskRecord = serde_json::from_str(&payload)?;
-                    copied_provenance = task.id == *task_id
-                        && task.agent_id == message.agent_id
-                        && task.parent_message_id.as_deref() == Some(message.id.as_str())
-                        && self_contained_terminal_invocation(&task, agent_id, incarnation)
-                        && message.metadata.as_ref().is_some_and(|metadata| {
-                            metadata["task_id"] == task.id
-                                && metadata["task_kind"] == serde_json::json!(task.kind)
-                                && metadata["task_status"] == serde_json::json!(task.status)
-                                && metadata["task_detail"]["target"]
-                                    == task.detail.as_ref().unwrap()["target"]
-                        });
-                }
-            }
-        }
-        ensure!(
-            copied_provenance,
-            "foreign private-history consumer in messages.payload_json at {path}"
-        );
-    }
-    Ok(())
-}
+// Historical IDs in another agent's payload do not own or pin these rows.
+// Live invocation consumers resolve the durable identity fence before reading
+// private evidence; their cancellation is settled by the normal task protocol.
 
 fn assert_payload_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
     for (table, owner) in PRIVATE_TABLES {
@@ -895,7 +697,7 @@ fn assert_payload_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
     Ok(())
 }
 
-fn assert_search_ownership_tx(tx: &Transaction<'_>) -> Result<()> {
+fn assert_search_schema_tx(tx: &Transaction<'_>) -> Result<()> {
     for table in ["memory_documents_fts", "memory_documents_fts_rows"] {
         if !table_exists(tx, table)? {
             continue;
@@ -903,18 +705,6 @@ fn assert_search_ownership_tx(tx: &Transaction<'_>) -> Result<()> {
         ensure!(
             table_exists(tx, "memory_documents")?,
             "memory projection has no ownership source"
-        );
-        let orphaned: bool = tx.query_row(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM {table} f WHERE NOT EXISTS(
-                 SELECT 1 FROM memory_documents d WHERE d.document_key = f.document_key))"
-            ),
-            [],
-            |row| row.get(0),
-        )?;
-        ensure!(
-            !orphaned,
-            "memory projection contains rows with unknown ownership"
         );
     }
     Ok(())
@@ -1402,8 +1192,8 @@ mod tests {
     }
 
     #[test]
-    fn external_trigger_ownership_and_foreign_references_fail_closed() -> Result<()> {
-        for case in ["payload", "message", "audit", "unknown"] {
+    fn external_trigger_ownership_and_unknown_schema_still_fail_closed() -> Result<()> {
+        for case in ["payload", "unknown"] {
             let (_dir, db) = fixture()?;
             db.external_triggers().ensure_default_for_agent(
                 "a",
@@ -1412,70 +1202,21 @@ mod tests {
                 "ingress-a".into(),
                 "token-a".into(),
             )?;
-            let expected = match case {
-                "payload" => {
-                    db.transaction(|tx| {
-                        tx.execute(
-                            "UPDATE external_triggers
-                             SET payload_json = json_set(payload_json,'$.target_agent_id','b')",
-                            [],
-                        )?;
-                        Ok(())
-                    })?;
-                    "ownership index mismatch in external_triggers"
+            db.transaction(|tx| {
+                if case == "payload" {
+                    tx.execute("UPDATE external_triggers SET payload_json = json_set(payload_json,'$.target_agent_id','b')", [])?;
+                } else {
+                    tx.execute_batch("CREATE TABLE unclassified_trigger_history(target_agent_id TEXT,external_trigger_id TEXT);
+                        INSERT INTO unclassified_trigger_history VALUES ('a','ingress-a');")?;
                 }
-                "message" => {
-                    callback_message(&db, "b", "ingress-a")?;
-                    "foreign private-history consumer in messages"
-                }
-                "audit" => {
-                    db.transaction(|tx| {
-                        super::super::evidence::insert_audit_event_tx(
-                            tx,
-                            Some("b"),
-                            &AuditEvent::legacy(
-                                "callback_delivered",
-                                serde_json::json!({"external_trigger_id":"ingress-a"}),
-                            ),
-                        )
-                    })?;
-                    "foreign private-history consumer in audit_events"
-                }
-                "unknown" => {
-                    db.transaction(|tx| {
-                        tx.execute_batch(
-                            "CREATE TABLE unclassified_trigger_history(
-                             target_agent_id TEXT,external_trigger_id TEXT);
-                             INSERT INTO unclassified_trigger_history VALUES ('a','ingress-a');",
-                        )?;
-                        Ok(())
-                    })?;
-                    "unclassified deletion ownership in unclassified_trigger_history"
-                }
-                _ => unreachable!(),
-            };
+                Ok(())
+            })?;
             fence(&db)?;
             settle_execution(&db, "a", 1, Utc::now())?;
             let before = snapshot(&db)?;
-            assert!(
-                export_private_history(&db, "a", 1)
-                    .unwrap_err()
-                    .to_string()
-                    .contains(expected),
-                "{case}"
-            );
-            assert!(
-                purge_private_history(&db, "a", 1, Utc::now())
-                    .unwrap_err()
-                    .to_string()
-                    .contains(expected),
-                "{case}"
-            );
-            assert_eq!(before, snapshot(&db)?, "{case}");
-            db.transaction(|tx| {
-                assert!(!proof_tx(tx, "a")?.unwrap().purged, "{case}");
-                Ok(())
-            })?;
+            assert!(export_private_history(&db, "a", 1).is_err());
+            assert!(purge_private_history(&db, "a", 1, Utc::now()).is_err());
+            assert_eq!(before, snapshot(&db)?);
         }
         Ok(())
     }
@@ -1917,279 +1658,54 @@ mod tests {
     }
 
     #[test]
-    fn foreign_consumer_is_preserved_and_blocks_source_purge() -> Result<()> {
+    fn foreign_history_is_preserved_without_pinning_private_rows() -> Result<()> {
         let (_dir, db) = fixture()?;
+        message(&db, "a", "message-a")?;
         task(&db, "a", "task-a", None)?;
         task(
             &db,
             "b",
             "task-b",
-            Some(serde_json::json!({"result_consumer":{"task_id":"task-a"}})),
+            Some(serde_json::json!({
+                "result_consumer":{"task_id":"task-a"},
+                "source_message_id":"message-a",
+                "nested":{"unknown_reference":"message-a"}
+            })),
         )?;
+        callback_message(&db, "b", "message-a")?;
+        db.transaction(|tx| {
+            // A malformed historical tool payload must not even be parsed by deletion.
+            tx.execute(
+                "INSERT INTO tool_executions(evidence_id,agent_id,created_at,kind,payload_json)
+                VALUES ('foreign-tool','b','now','Inspect','not-json')",
+                [],
+            )?;
+            super::super::evidence::insert_audit_event_tx(
+                tx,
+                Some("b"),
+                &AuditEvent::legacy(
+                    "historical_reference",
+                    serde_json::json!({"task_id":"task-a"}),
+                ),
+            )?;
+            Ok(())
+        })?;
+        let foreign = db.tasks().latest("task-b")?.unwrap();
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
-        assert!(purge_private_history(&db, "a", 1, Utc::now())
-            .unwrap_err()
-            .to_string()
-            .contains("foreign private-history consumer"));
-        db.transaction(|tx| {
-            for agent in ["a", "b"] {
-                assert!(exists(
-                    tx,
-                    "SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id = ?1)",
-                    agent
-                )?);
-            }
+        export_private_history(&db, "a", 1)?;
+        purge_private_history(&db, "a", 1, Utc::now())?;
+        assert!(db.tasks().latest("task-a")?.is_none());
+        assert_eq!(db.tasks().latest("task-b")?, Some(foreign));
+        db.with_read(|connection| {
+            let tool: String = connection.query_row(
+                "SELECT payload_json FROM tool_executions WHERE evidence_id='foreign-tool'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(tool, "not-json");
             Ok(())
         })
-    }
-
-    #[test]
-    fn copied_terminal_invocation_provenance_survives_child_purge() -> Result<()> {
-        for status in [
-            TaskStatus::Completed,
-            TaskStatus::Failed,
-            TaskStatus::Cancelled,
-            TaskStatus::Interrupted,
-        ] {
-            let (_dir, db) = fixture()?;
-            message(&db, "a", "message-a")?;
-            let now = Utc::now();
-            let retained = TaskRecord {
-                id: "parent-task".into(),
-                agent_id: "b".into(),
-                kind: TaskKind::ChildAgentTask,
-                status,
-                created_at: now,
-                updated_at: now,
-                parent_message_id: Some("parent-result".into()),
-                work_item_id: None,
-                summary: Some("copied child result".into()),
-                detail: Some(serde_json::json!({
-                    "child_agent_id": "a",
-                    "target": {"kind":"child_agent","agent_id":"a","incarnation":1},
-                    "output_summary":"copied child result",
-                    "source_message_id":"message-a",
-                    "source_turn_id":"message-a",
-                    "activation_id":"message-a",
-                    "turn_id":"message-a",
-                    "completion_ref":"message-a",
-                    "child_observability": {
-                        "phase":"terminal",
-                        "current_work_item_id":"message-a"
-                    }
-                })),
-                recovery: None,
-            };
-            db.tasks().upsert(&retained)?;
-            let mut result = MessageEnvelope::new(
-                "b",
-                MessageKind::TaskResult,
-                MessageOrigin::Task {
-                    task_id: retained.id.clone(),
-                },
-                AuthorityClass::RuntimeInstruction,
-                Priority::Next,
-                MessageBody::Text {
-                    text: "copied child result".into(),
-                },
-            )
-            .with_admission(
-                crate::types::MessageDeliverySurface::TaskRejoin,
-                crate::types::AdmissionContext::RuntimeOwned,
-            );
-            result.id = "parent-result".into();
-            let mut copied_detail = retained.detail.clone().unwrap();
-            copied_detail
-                .as_object_mut()
-                .unwrap()
-                .remove("output_summary");
-            result.metadata = Some(serde_json::json!({
-                "task_id":retained.id,
-                "task_kind":retained.kind,
-                "task_status":retained.status,
-                "task_detail":copied_detail,
-            }));
-            db.messages().upsert_with_index_changes(&result, &[])?;
-            let before_messages =
-                db.transaction(|tx| payloads::<MessageEnvelope>(tx, "messages", "b"))?;
-            fence(&db)?;
-            settle_execution(&db, "a", 1, Utc::now())?;
-            let before = snapshot(&db)?;
-            export_private_history(&db, "a", 1)?;
-            assert_eq!(snapshot(&db)?, before);
-            if retained.status == TaskStatus::Completed {
-                let original: String = db.transaction(|tx| {
-                    Ok(tx.query_row(
-                        "SELECT payload_json FROM messages WHERE message_id = 'parent-result'",
-                        [],
-                        |row| row.get(0),
-                    )?)
-                })?;
-                for case in [
-                    "wrong_origin",
-                    "wrong_message",
-                    "wrong_generation",
-                    "unknown_reference",
-                    "nested_lookalike",
-                ] {
-                    let mut invalid = result.clone();
-                    match case {
-                        "wrong_origin" => {
-                            invalid.origin = MessageOrigin::Task {
-                                task_id: "missing-task".into(),
-                            }
-                        }
-                        "wrong_message" => invalid.id = "unbound-result".into(),
-                        "wrong_generation" => {
-                            invalid.metadata.as_mut().unwrap()["task_detail"]["target"]
-                                ["incarnation"] = 2.into()
-                        }
-                        "unknown_reference" => {
-                            invalid.metadata.as_mut().unwrap()["unknown_ref"] = "message-a".into()
-                        }
-                        "nested_lookalike" => {
-                            invalid.metadata.as_mut().unwrap()["nested"] =
-                                serde_json::json!({"task_detail":{"source_message_id":"message-a"}})
-                        }
-                        _ => unreachable!(),
-                    }
-                    db.transaction(|tx| {
-                        tx.execute("UPDATE messages SET payload_json = ?1 WHERE message_id = 'parent-result'", [serde_json::to_string(&invalid)?])?;
-                        Ok(())
-                    })?;
-                    let invalid_before = snapshot(&db)?;
-                    for error in [
-                        export_private_history(&db, "a", 1).unwrap_err(),
-                        purge_private_history(&db, "a", 1, Utc::now()).unwrap_err(),
-                    ] {
-                        assert!(
-                            error
-                                .to_string()
-                                .contains("foreign private-history consumer in messages"),
-                            "{case}: {error:#}"
-                        );
-                    }
-                    assert_eq!(snapshot(&db)?, invalid_before, "{case}");
-                }
-                db.transaction(|tx| {
-                    tx.execute(
-                        "UPDATE messages SET payload_json = ?1 WHERE message_id = 'parent-result'",
-                        [&original],
-                    )?;
-                    Ok(())
-                })?;
-            }
-            purge_private_history(&db, "a", 1, Utc::now())?;
-            assert_eq!(db.tasks().latest("parent-task")?, Some(retained));
-            assert_eq!(
-                db.transaction(|tx| payloads::<MessageEnvelope>(tx, "messages", "b"))?,
-                before_messages
-            );
-            db.transaction(|tx| assert_private_history_cleared_tx(tx, "a"))?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn invocation_provenance_exemption_rejects_live_stale_and_unknown_references() -> Result<()> {
-        for case in [
-            "queued",
-            "running",
-            "cancelling",
-            "command",
-            "missing_generation",
-            "wrong_generation",
-            "wrong_target",
-            "wrong_target_kind",
-            "owner_index_mismatch",
-            "kind_index_mismatch",
-            "status_index_mismatch",
-            "missing_copy",
-            "unknown_reference",
-            "nested_lookalike",
-            "result_consumer",
-        ] {
-            let (_dir, db) = fixture()?;
-            message(&db, "a", "message-a")?;
-            task(&db, "a", "task-a", None)?;
-            let now = Utc::now();
-            let mut detail = serde_json::json!({
-                "child_agent_id":"a",
-                "target":{"kind":"child_agent","agent_id":"a","incarnation":1},
-                "source_message_id":"message-a",
-                "output_summary":"copied child result"
-            });
-            match case {
-                "missing_generation" => detail["target"]["incarnation"] = serde_json::Value::Null,
-                "wrong_generation" => detail["target"]["incarnation"] = 2.into(),
-                "wrong_target" => detail["target"]["agent_id"] = "b".into(),
-                "wrong_target_kind" => detail["target"]["kind"] = "agent_message_wait".into(),
-                "missing_copy" => detail["output_summary"] = serde_json::Value::Null,
-                "unknown_reference" => detail["unknown_ref"] = "message-a".into(),
-                "nested_lookalike" => {
-                    detail["nested"] = serde_json::json!({"source_message_id":"message-a"})
-                }
-                "result_consumer" => {
-                    detail["result_consumer"] = serde_json::json!({"task_id":"task-a"})
-                }
-                _ => {}
-            }
-            let retained = TaskRecord {
-                id: "parent-task".into(),
-                agent_id: "b".into(),
-                kind: if case == "command" {
-                    TaskKind::CommandTask
-                } else {
-                    TaskKind::ChildAgentTask
-                },
-                status: match case {
-                    "queued" => TaskStatus::Queued,
-                    "running" => TaskStatus::Running,
-                    "cancelling" => TaskStatus::Cancelling,
-                    _ => TaskStatus::Completed,
-                },
-                created_at: now,
-                updated_at: now,
-                parent_message_id: None,
-                work_item_id: None,
-                summary: Some("copied child result".into()),
-                detail: Some(detail),
-                recovery: None,
-            };
-            db.tasks().upsert(&retained)?;
-            let mismatch = match case {
-                "owner_index_mismatch" => Some(("owner_agent_id", "different-owner")),
-                "kind_index_mismatch" => Some(("kind", "command_task")),
-                "status_index_mismatch" => Some(("status", "running")),
-                _ => None,
-            };
-            if let Some((column, value)) = mismatch {
-                db.transaction(|tx| {
-                    tx.execute(
-                        &format!("UPDATE tasks SET {column} = ?1 WHERE task_id = 'parent-task'"),
-                        [value],
-                    )?;
-                    Ok(())
-                })?;
-            }
-            fence(&db)?;
-            settle_execution(&db, "a", 1, Utc::now())?;
-            let before = snapshot(&db)?;
-            let export_error = export_private_history(&db, "a", 1).unwrap_err();
-            let purge_error = purge_private_history(&db, "a", 1, Utc::now()).unwrap_err();
-            for error in [export_error, purge_error] {
-                assert!(
-                    error
-                        .to_string()
-                        .contains("foreign private-history consumer"),
-                    "{case}: {error:#}"
-                );
-            }
-            assert_eq!(snapshot(&db)?, before, "{case}");
-            assert_eq!(db.tasks().latest("parent-task")?, Some(retained), "{case}");
-        }
-        Ok(())
     }
 
     #[test]
@@ -2431,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn purge_requires_settlement_and_known_search_ownership() -> Result<()> {
+    fn purge_requires_settlement_but_does_not_audit_unrelated_search_orphans() -> Result<()> {
         let (_dir, db) = fixture()?;
         memory(&db)?;
         fence(&db)?;
@@ -2444,10 +1960,19 @@ mod tests {
             )?;
             Ok(())
         })?;
-        assert!(purge_private_history(&db, "a", 1, Utc::now())
-            .unwrap_err()
-            .to_string()
-            .contains("unknown ownership"));
+        purge_private_history(&db, "a", 1, Utc::now())?;
+        db.transaction(|tx| {
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM memory_documents_fts WHERE document_key='orphan'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                count, 1,
+                "unattributed search residue belongs to index repair"
+            );
+            Ok(())
+        })?;
         Ok(())
     }
 }
