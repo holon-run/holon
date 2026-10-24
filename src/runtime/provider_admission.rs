@@ -51,7 +51,7 @@ pub(super) enum ProviderTurnGate {
 
 #[derive(Debug, thiserror::Error)]
 #[error("provider admission deferred before dispatch: {0}")]
-struct DispatchDeferred(&'static str);
+struct DispatchDeferred(String);
 
 #[derive(Debug)]
 struct RequestState {
@@ -130,7 +130,7 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
             episode = self
                 .db
                 .begin_provider_recovery_probe_epoch(&episode, now)?
-                .ok_or(DispatchDeferred("episode changed"))?;
+                .ok_or_else(|| DispatchDeferred("episode changed".into()))?;
         }
         if state.lease.is_none() {
             state.lease = match self.db.reserve_provider_recovery_admission(
@@ -140,7 +140,12 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                 PROBE_LEASE,
             )? {
                 ProviderRecoveryAdmissionReservation::Granted(lease) => Some(lease),
-                _ => return Err(DispatchDeferred("scope or budget unavailable").into()),
+                ProviderRecoveryAdmissionReservation::Blocked(_) => {
+                    return Err(DispatchDeferred("scope cooling".into()).into());
+                }
+                ProviderRecoveryAdmissionReservation::Denied(reason) => {
+                    return Err(DispatchDeferred(format!("reservation denied: {reason:?}")).into());
+                }
             };
         }
         let lease = state.lease.as_ref().expect("reservation was checked");
@@ -158,8 +163,8 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                 state.dispatch = Some(dispatch);
                 Ok(())
             }
-            ProviderRecoveryDispatchResult::Denied(_) => {
-                Err(DispatchDeferred("execution, admission or budget changed").into())
+            ProviderRecoveryDispatchResult::Denied(reason) => {
+                Err(DispatchDeferred(format!("dispatch denied: {reason:?}")).into())
             }
         }
     }

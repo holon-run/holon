@@ -15,7 +15,7 @@ import time
 import unittest
 import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -358,55 +358,348 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ],
         )
 
-    def test_recovered_retry_ticks_accepts_newer_generation(self) -> None:
-        key = "work_queue:continue_active:work-1:1:generation:1"
-        failed = [
-            {
-                "message_id": "message-1",
-                "idempotency_key": key,
-                "status": "aborted",
-            },
-            {
-                "message_id": "message-2",
-                "idempotency_key": key,
-                "status": "interrupted",
-            },
-        ]
-        recovered = [
-            failed[0],
-            {
-                "message_id": "message-2",
-                "idempotency_key": "work_queue:continue_active:work-1:1:generation:2",
-                "status": "processed",
-            },
-        ]
+    @staticmethod
+    def provider_retry_snapshot(*, recovered: bool = False) -> dict:
+        root = {
+            "id": "root", "agent_id": "main", "work_item_id": "work-1",
+            "kind": "system_tick",
+            "origin": {"kind": "system", "subsystem": "work_queue"},
+            "authority_class": "runtime_instruction",
+            "metadata": {"work_queue": {
+                "reason": "continue_active", "work_item_id": "work-1",
+                "work_item_revision": 1, "work_item_generation": 1,
+                "idempotency_key": "work_queue:continue_active:work-1:1:generation:1",
+            }},
+        }
+        parked = {
+            "id": "parked", "agent_id": "main", "work_item_id": "work-1",
+            "kind": "internal_followup",
+            "origin": {"kind": "system", "subsystem": "model_lineage_recovery"},
+            "authority_class": "runtime_instruction",
+            "admission_context": "runtime_owned", "causation_id": "root",
+            "source_refs": {"source_message_id": "root", "source_turn_id": "turn-root"},
+            "metadata": {"provider_recovery": {
+                "root_message_id": "root", "source_message_id": "root",
+                "source_turn_id": "turn-root",
+                "source_terminal_kind": "deferred_to_fallback", "fallback_attempt": 1,
+            }},
+        }
 
-        self.assertEqual(
-            runner.recovered_retry_ticks(failed, recovered),
-            [recovered[1]],
+        def audit(kind: str, data: dict) -> dict:
+            return {
+                "agent_id": "main", "kind": kind,
+                "created_at": "2026-10-24T19:57:00.381521253Z",
+                "data_json": json.dumps({"data": data}),
+            }
+
+        snapshot = {
+            "work_items": [{
+                "agent_id": "main", "work_item_id": "work-1",
+                "state": "completed" if recovered else "open", "revision": 1,
+            }],
+            "messages": [
+                {
+                    "message_id": message["id"], "agent_id": "main",
+                    "work_item_id": "work-1", "turn_id": f"turn-{message['id']}",
+                    "payload_json": json.dumps(message),
+                } for message in (root, parked)
+            ],
+            "queue_entries": [
+                {
+                    "message_id": mid, "agent_id": "main", "status": status,
+                    "payload_json": json.dumps({"status": status}),
+                } for mid, status in (
+                    ("root", "processed"),
+                    ("parked", "processed" if recovered else "queued"),
+                )
+            ],
+            "turn_records": [{
+                "turn_id": "turn-root", "agent_id": "main",
+                "owner_kind": "work_item", "owner_id": "work-1",
+                "trigger_message_id": "root", "terminal_kind": "deferred_to_fallback",
+            }],
+            "audit_events": [
+                audit("provider_attempt_failed", {
+                    "turn_id": "turn-root", "failure_kind": "connection",
+                    "disposition": "retryable",
+                }),
+                audit("provider_queue_parked", {
+                    "message_id": "parked", "reason": "chain_cooling",
+                    "episode_key": "episode-root", "request_count": 1,
+                    "untried_candidates": False,
+                    "not_before": "2026-10-24T19:57:12.309Z",
+                }),
+            ],
+            "execution_protocol_attempts": [],
+            "execution_protocol_outcomes": [],
+        }
+        if recovered:
+            snapshot["turn_records"].append({
+                "turn_id": "turn-parked", "agent_id": "main",
+                "owner_kind": "work_item", "owner_id": "work-1",
+                "trigger_message_id": "parked", "terminal_kind": "completed",
+            })
+        for mid in ("root", "parked") if recovered else ("root",):
+            attempt_id = f"activation:message:{mid}"
+            outcome_id = f"outcome:message:{mid}"
+            snapshot["execution_protocol_attempts"].append({
+                "agent_id": "main", "attempt_id": attempt_id,
+                "lifecycle_state": "settled", "terminal_outcome_id": outcome_id,
+                "payload_json": json.dumps({
+                    "attempt_id": attempt_id, "source_message_id": mid,
+                    "source": {"identity": {"kind": (
+                        "work_item_continuation" if mid == "root" else "runtime_recovery"
+                    )}},
+                    "binding": {"kind": "work_item", "work_item_id": "work-1"},
+                    "turn_id": f"turn-{mid}",
+                    "recovery_of_attempt_id": (
+                        None if mid == "root" else "activation:message:root"
+                    ),
+                }),
+            })
+            snapshot["execution_protocol_outcomes"].append({
+                "agent_id": "main", "outcome_id": outcome_id,
+                "payload_json": json.dumps({"attempt_id": attempt_id}),
+            })
+        return snapshot
+
+    def provider_retry_parking(self, snapshot: dict) -> dict:
+        return runner.require_provider_retry_parking(
+            snapshot, agent_id="main", work_item_id="work-1",
+            parked_message_id="parked",
         )
 
-    def test_recovered_retry_ticks_rejects_changed_revision(self) -> None:
-        failed = [
-            {
-                "message_id": "message-1",
-                "idempotency_key": (
-                    "work_queue:continue_active:work-1:1:generation:1"
-                ),
-                "status": "aborted",
-            }
-        ]
-        recovered = [
-            {
-                "message_id": "message-2",
-                "idempotency_key": (
-                    "work_queue:continue_active:work-1:2:generation:2"
-                ),
-                "status": "processed",
-            }
-        ]
+    def test_provider_retry_parking_retains_unclaimed_same_root(self) -> None:
+        parking = self.provider_retry_parking(self.provider_retry_snapshot())
+        self.assertEqual(parking["root_attempt_id"], "activation:message:root")
+        self.assertEqual(parking["parked_message"]["id"], "parked")
 
-        self.assertEqual(runner.recovered_retry_ticks(failed, recovered), [])
+    def test_provider_retry_parking_rejects_foreign_or_forged_source(self) -> None:
+        for field, value in (
+            ("work_item_id", "foreign-work"), ("agent_id", "foreign-agent"),
+            ("kind", "system_tick"), ("authority_class", "operator_instruction"),
+            ("origin", {"kind": "operator"}), ("admission_context", "external"),
+            ("causation_id", "foreign-root"),
+            ("source_refs", {"source_message_id": "root", "source_turn_id": "foreign"}),
+        ):
+            with self.subTest(field=field):
+                snapshot = self.provider_retry_snapshot()
+                row = snapshot["messages"][1]
+                payload = json.loads(row["payload_json"])
+                payload[field] = value
+                row["payload_json"] = json.dumps(payload)
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+        for field, value in (
+            ("root_message_id", "foreign-root"), ("source_message_id", "foreign-root"),
+            ("source_turn_id", "foreign-turn"), ("fallback_attempt", 2),
+            ("source_terminal_kind", "runtime_error"),
+        ):
+            with self.subTest(recovery_field=field):
+                snapshot = self.provider_retry_snapshot()
+                row = snapshot["messages"][1]
+                payload = json.loads(row["payload_json"])
+                payload["metadata"]["provider_recovery"][field] = value
+                row["payload_json"] = json.dumps(payload)
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+        for field in ("agent_id", "work_item_id"):
+            with self.subTest(row_field=field):
+                snapshot = self.provider_retry_snapshot()
+                snapshot["messages"][1][field] = "foreign"
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+
+    def test_provider_retry_parking_rejects_claimed_terminal_or_fabricated_turn(self) -> None:
+        for status in ("dequeued", "processed", "aborted", "interrupted"):
+            with self.subTest(status=status):
+                snapshot = self.provider_retry_snapshot()
+                snapshot["queue_entries"][1]["status"] = status
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+        for evidence in ("queue_payload", "claim_audit", "turn", "attempt", "loop"):
+            with self.subTest(evidence=evidence):
+                snapshot = self.provider_retry_snapshot()
+                if evidence == "queue_payload":
+                    snapshot["queue_entries"][1]["payload_json"] = '{"status":"dequeued"}'
+                elif evidence == "claim_audit":
+                    row = copy.deepcopy(snapshot["audit_events"][1])
+                    row["kind"] = "queue_entry_claimed"
+                    snapshot["audit_events"].append(row)
+                elif evidence == "turn":
+                    row = copy.deepcopy(snapshot["turn_records"][0])
+                    row.update(turn_id="turn-parked", trigger_message_id="parked")
+                    snapshot["turn_records"].append(row)
+                elif evidence == "attempt":
+                    row = copy.deepcopy(snapshot["execution_protocol_attempts"][0])
+                    payload = json.loads(row["payload_json"])
+                    payload["source_message_id"] = "parked"
+                    row["payload_json"] = json.dumps(payload)
+                    snapshot["execution_protocol_attempts"].append(row)
+                else:
+                    row = copy.deepcopy(snapshot["messages"][1])
+                    row["message_id"] = "another-recovery"
+                    snapshot["messages"].append(row)
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+
+    def test_provider_retry_parking_requires_real_failure_and_cooldown(self) -> None:
+        for index, field, value in (
+            (0, "failure_kind", "authentication"), (0, "disposition", "terminal"),
+            (0, "turn_id", "foreign-turn"), (1, "message_id", "foreign-message"),
+            (1, "reason", "recovery_budget_exhausted"), (1, "untried_candidates", True),
+            (1, "not_before", "2026-10-24T19:56:59+00:00"),
+            (1, "request_count", 0),
+        ):
+            with self.subTest(field=field):
+                snapshot = self.provider_retry_snapshot()
+                row = snapshot["audit_events"][index]
+                payload = json.loads(row["data_json"])
+                payload["data"][field] = value
+                row["data_json"] = json.dumps(payload)
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+        for evidence in ("runtime_error", "new_generation", "foreign_owner"):
+            with self.subTest(evidence=evidence):
+                snapshot = self.provider_retry_snapshot()
+                if evidence == "runtime_error":
+                    row = copy.deepcopy(snapshot["audit_events"][1])
+                    row["kind"] = "runtime_error"
+                    snapshot["audit_events"].append(row)
+                elif evidence == "foreign_owner":
+                    snapshot["turn_records"][0]["owner_id"] = "foreign"
+                else:
+                    row = snapshot["messages"][0]
+                    payload = json.loads(row["payload_json"])
+                    payload["metadata"]["work_queue"]["idempotency_key"] = (
+                        "work_queue:continue_active:work-1:1:generation:2"
+                    )
+                    row["payload_json"] = json.dumps(payload)
+                with self.assertRaises(AssertionError):
+                    self.provider_retry_parking(snapshot)
+
+    def test_provider_retry_recovery_processes_exact_parking_source(self) -> None:
+        parking = self.provider_retry_parking(self.provider_retry_snapshot())
+        self.assertEqual(
+            runner.require_provider_retry_recovery(
+                self.provider_retry_snapshot(recovered=True), agent_id="main",
+                work_item_id="work-1", parking=parking,
+            ),
+            "turn-parked",
+        )
+
+    def test_provider_retry_recovery_rejects_replacement_foreign_root_or_owner(self) -> None:
+        parking = self.provider_retry_parking(self.provider_retry_snapshot())
+        for evidence in ("replacement", "foreign_root", "foreign_owner", "unprocessed"):
+            with self.subTest(evidence=evidence):
+                snapshot = self.provider_retry_snapshot(recovered=True)
+                if evidence == "replacement":
+                    snapshot["messages"][1]["message_id"] = "replacement"
+                elif evidence == "unprocessed":
+                    snapshot["queue_entries"][1]["status"] = "queued"
+                else:
+                    row = snapshot["execution_protocol_attempts"][1]
+                    payload = json.loads(row["payload_json"])
+                    if evidence == "foreign_root":
+                        payload["recovery_of_attempt_id"] = "foreign-attempt"
+                    else:
+                        payload["binding"]["work_item_id"] = "foreign-work"
+                    row["payload_json"] = json.dumps(payload)
+                with self.assertRaises(AssertionError):
+                    runner.require_provider_retry_recovery(
+                        snapshot, agent_id="main", work_item_id="work-1", parking=parking,
+                    )
+
+    def test_provider_retry_case_restores_endpoint_and_scopes_real_tool_assertions(self) -> None:
+        case = next(
+            case for case in self.manifest["cases"]
+            if case["id"] == "scheduler-provider-failure-work-queue-retry"
+        )
+        for provider_mode in ("stub", "live"):
+            with self.subTest(provider_mode=provider_mode), tempfile.TemporaryDirectory() as directory:
+                harness = Mock(spec=runner.CaseHarness)
+                harness.agent_id = "main"
+                harness.model = "openai/gpt-5.4"
+                harness.provider_mode = provider_mode
+                harness.runtime_env = {"HOLON_OPENAI_BASE_URL": "http://healthy/v1"}
+                harness.stub_provider_base_url = "http://healthy-stub/v1"
+                harness.timeout_seconds = 1
+                harness.evidence = Path(directory)
+                harness.tool_assertion_mode = "strict"
+                harness.agent_path.side_effect = lambda path, **kwargs: path
+                harness.request.side_effect = lambda method, path, data: (
+                    {"id": "work-1"} if path == "work-items" else {}
+                )
+                endpoints = []
+                harness.start.side_effect = lambda **kwargs: endpoints.append(
+                    harness.stub_provider_base_url if provider_mode == "stub"
+                    else harness.runtime_env["HOLON_OPENAI_BASE_URL"]
+                )
+                harness.event_cursor.return_value = 0
+                harness.events.return_value = [
+                    {"type": "message_admitted", "payload": {
+                        "message_id": mid, "work_item_id": "work-1",
+                    }} for mid in ("root", "parked")
+                ] + [
+                    {"type": "provider_queue_parked", "payload": {
+                        "message_id": "parked", "reason": "chain_cooling",
+                    }},
+                    {"type": "turn_started", "payload": {
+                        "turn_id": "turn-parked", "turn_index": 2, "message_id": "parked",
+                    }},
+                ] + [
+                    {"type": "tool_executed", "payload": {
+                        "turn_id": "turn-parked", "tool_name": tool, "status": "success",
+                    }} for tool in ("ListWorkItems", "CompleteWorkItem")
+                ]
+                harness.runtime_db_snapshot.side_effect = [
+                    self.provider_retry_snapshot(),
+                    self.provider_retry_snapshot(recovered=True),
+                ]
+                harness.wait_work_item.return_value = {"result_brief_id": "brief-result"}
+                harness.brief.return_value = {
+                    "text": "SCHEDULER-PROVIDER-RETRY-COMPLETE-12345678",
+                    "work_item_id": "work-1", "related_message_id": "parked",
+                    "turn_id": "turn-parked",
+                }
+                # Exercise the actual scope contract, including mutually exclusive selectors.
+                harness.successful_tool_events.side_effect = (
+                    lambda *args, **kwargs: runner.CaseHarness.successful_tool_events(
+                        harness, *args, **kwargs
+                    )
+                )
+                harness.assert_tools = Mock(side_effect=(
+                    lambda *args, **kwargs: runner.CaseHarness.assert_tools(
+                        harness, *args, **kwargs
+                    )
+                ))
+                with patch.object(runner.secrets, "token_hex", return_value="12345678"):
+                    runner.run_scheduler_provider_failure_retry_case(harness, case)
+                healthy = (
+                    "http://healthy-stub/v1" if provider_mode == "stub" else "http://healthy/v1"
+                )
+                self.assertEqual(endpoints, [healthy, "http://127.0.0.1:9", healthy])
+                harness.assert_tools.assert_called_once_with(
+                    "provider-retry-tools", 0, ["ListWorkItems", "CompleteWorkItem"],
+                    ["CreateWorkItem", "WaitFor"], message_id="parked",
+                )
+                calls = harness.method_calls
+                failed_snapshot = next(
+                    i for i, call in enumerate(calls)
+                    if call == unittest.mock.call.runtime_db_snapshot("provider-retry-failed")
+                )
+                self.assertEqual(calls[failed_snapshot + 1], unittest.mock.call.stop())
+                self.assertEqual(
+                    [
+                        call for call in calls
+                        if call == unittest.mock.call.request(
+                            "POST", "control", {"action": "stop"}
+                        )
+                    ],
+                    [unittest.mock.call.request("POST", "control", {"action": "stop"})],
+                    "agent stop is only safe before creating the recovery source",
+                )
+                self.assertTrue((Path(directory) / "provider-retry-parking.json").is_file())
 
     def test_manifest_rejects_unregistered_case(self) -> None:
         invalid = json.loads(json.dumps(self.manifest))

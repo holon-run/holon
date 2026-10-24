@@ -320,6 +320,12 @@ source when parked, and can continue reducer-only bookkeeping behind it. Its
 deadline participates in the existing run-loop recheck, without consuming a task
 result or moving its owner. A cancelled pre-dispatch build releases its probe;
 an in-flight unknown result retains its lease until controlled expiry.
+When an exact wait resolution advances the WorkItem source revision, the
+scheduler finalizes that transition before creating the provider guard and
+commits the same aligned admission plan. Dispatch still checks the canonical
+fences exactly. A changed wait or owner snapshot requires replanning the whole
+admission and releasing its unused reservation, rather than relaxing fences.
+An unrelated AgentState conflict may refresh that baseline with the same guard.
 
 Local context planning failures are not provider attempt failures. A recovery
 whose pinned minimum cannot fit terminates through the canonical aborted

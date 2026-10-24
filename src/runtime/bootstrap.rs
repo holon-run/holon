@@ -859,6 +859,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 claim_work_item_plan_status_before_commit: StdMutex::new(None),
                 #[cfg(test)]
+                claim_snapshot_before_commit: StdMutex::new(None),
+                #[cfg(test)]
                 terminal_tool_interjection_checkpoint:
                     super::TerminalToolInterjectionCheckpoint::default(),
                 transition_warnings: StdMutex::new(Vec::new()),

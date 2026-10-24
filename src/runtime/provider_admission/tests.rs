@@ -21,7 +21,9 @@ fn runtime_with_urls(urls: [&str; 2]) -> (tempfile::TempDir, RuntimeHandle) {
 }
 
 fn config_with_urls(home: &std::path::Path, urls: [&str; 2]) -> AppConfig {
-    let mut config = AppConfig::load_with_home(Some(home.to_path_buf())).unwrap();
+    // Resolve only after the fixture supplies its model and fake credentials.
+    let mut config =
+        AppConfig::load_with_home_for_config_inspection(Some(home.to_path_buf())).unwrap();
     config.default_model = ModelRouteRef::parse("openai@default/gpt-5.4").unwrap();
     config.fallback_models =
         vec![ModelRouteRef::parse("anthropic@default/claude-sonnet-4-6").unwrap()];
@@ -230,6 +232,271 @@ async fn cooling_primary_does_not_park_a_healthy_fallback() {
 }
 
 #[tokio::test]
+async fn exact_external_wait_dispatch_uses_committed_canonical_fences() {
+    external_wait_dispatch_with_claim_race(None).await;
+}
+
+#[tokio::test]
+async fn exact_external_wait_dispatch_replans_changed_wait_snapshot() {
+    external_wait_dispatch_with_claim_race(Some("wait")).await;
+}
+
+#[tokio::test]
+async fn exact_external_wait_dispatch_replans_changed_work_item_snapshot() {
+    external_wait_dispatch_with_claim_race(Some("work_item")).await;
+}
+
+#[tokio::test]
+async fn exact_external_wait_dispatch_retries_agent_state_without_replacing_admission() {
+    external_wait_dispatch_with_claim_race(Some("agent_state")).await;
+}
+
+async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
+    use crate::{
+        runtime::waiting::WaitForWakeKind,
+        types::{CallbackDeliveryMode, CallbackDeliveryPayload, ExternalTriggerScope},
+    };
+
+    let (_home, runtime) = runtime();
+    let chain = runtime
+        .provider_admission_chain(&runtime.agent_state().await.unwrap())
+        .unwrap()
+        .unwrap();
+    // An expired transport incident makes the primary reservation exclusive,
+    // without changing legacy quota selection or advancing scheduler time.
+    let past = runtime.now() - Duration::days(1);
+    let crate::runtime_db::provider_admission::ProviderAdmissionReservation::Granted(lease) =
+        runtime
+            .inner
+            .runtime_db
+            .reserve_provider_admission(&chain.candidates[0].scopes, past, PROBE_LEASE)
+            .unwrap()
+    else {
+        panic!("healthy transport");
+    };
+    runtime
+        .inner
+        .runtime_db
+        .record_provider_admission_failure(
+            &lease,
+            &chain.candidates[0].connection,
+            ProviderCooldownPolicy::Transport,
+            past,
+            None,
+            &chain.candidates[0].model.as_string(),
+        )
+        .unwrap();
+    let work = runtime
+        .create_work_item("resume after callback".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let trigger = runtime
+        .create_external_trigger(
+            "admission regression".into(),
+            "test".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::External,
+            None,
+            "wait for callback".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    // Model the committed yield; registration alone has no terminal attempt.
+    let mut protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    protocol.work_items.insert(
+        work.id.clone(),
+        crate::domain::execution_protocol::WorkItemExecutionRecord {
+            source_revision: wait.work_item.as_ref().unwrap().revision,
+            state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation: 1,
+                wait: crate::domain::execution_protocol::WaitReference {
+                    wait_id: wait.condition.id.clone(),
+                },
+            },
+        },
+    );
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
+                tx, &protocol,
+            )
+        })
+        .unwrap();
+    runtime
+        .deliver_callback(
+            &trigger.external_trigger_id,
+            CallbackDeliveryPayload {
+                body: None,
+                content_type: None,
+                correlation_id: None,
+                causation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    let observed = Arc::new(Mutex::new(None));
+    if let Some(race) = race {
+        let observed = observed.clone();
+        let work_id = work.id.clone();
+        let wait_id = wait.condition.id.clone();
+        *runtime.inner.claim_snapshot_before_commit.lock().unwrap() =
+            Some(Box::new(move |runtime, admission| {
+                let admission = admission.expect("gate must precede the claim snapshot race");
+                assert_eq!(admission.episode()?.total_requests, 0);
+                assert!(admission
+                    .state
+                    .lock()
+                    .unwrap()
+                    .lease
+                    .as_ref()
+                    .unwrap()
+                    .is_probe());
+                *observed.lock().unwrap() = Some((
+                    Arc::downgrade(admission),
+                    admission.attempt.attempt_id.clone(),
+                    admission.episode_key.clone(),
+                ));
+                match race {
+                    "agent_state" => {
+                        let mut state = runtime
+                            .inner
+                            .runtime_db
+                            .agent_states()
+                            .latest("default")?
+                            .expect("agent state");
+                        state.last_wake_reason = Some("concurrent snapshot update".into());
+                        runtime.inner.runtime_db.agent_states().upsert(&state)?;
+                    }
+                    "wait" => {
+                        let mut condition = runtime
+                            .inner
+                            .runtime_db
+                            .wait_conditions()
+                            .latest_for_agent("default")?
+                            .into_iter()
+                            .find(|condition| condition.id == wait_id)
+                            .expect("triggered wait");
+                        condition.updated_at += Duration::seconds(1);
+                        // Move only the OCC snapshot fence, preserving the same wake.
+                        runtime.inner.runtime_db.transaction(|tx| {
+                            tx.execute(
+                                "UPDATE wait_conditions SET updated_at = ?1, payload_json = ?2
+                                 WHERE wait_condition_id = ?3",
+                                rusqlite::params![
+                                    crate::runtime_db::repositories::timestamp(
+                                        condition.updated_at
+                                    ),
+                                    serde_json::to_string(&condition)?,
+                                    condition.id,
+                                ],
+                            )?;
+                            Ok(())
+                        })?;
+                    }
+                    "work_item" => {
+                        let mut work = runtime
+                            .inner
+                            .runtime_db
+                            .work_items()
+                            .latest(&work_id)?
+                            .expect("wait owner");
+                        let revision = work.revision;
+                        work.revision += 1;
+                        work.objective.push_str(" with concurrent update");
+                        runtime
+                            .inner
+                            .runtime_db
+                            .work_items()
+                            .update_expected(&work, revision)?;
+                    }
+                    _ => unreachable!(),
+                }
+                Ok(())
+            }));
+    }
+    let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    else {
+        panic!("exact external wait must resume");
+    };
+    assert_eq!(
+        scheduled.message.source_refs.get("wait_id"),
+        Some(&wait.condition.id)
+    );
+    let admission = scheduled.dispatch_plan.provider_admission.unwrap();
+    assert_eq!(
+        admission.model(),
+        &chain.candidates[0].model,
+        "replanning must retain the original eligible route"
+    );
+    assert_eq!(admission.episode().unwrap().total_requests, 0);
+    if let Some((old, attempt_id, episode_key)) = observed.lock().unwrap().as_ref() {
+        assert_eq!(
+            attempt_id, &admission.attempt.attempt_id,
+            "the same source retains its deterministic canonical identity"
+        );
+        if race == Some("agent_state") {
+            assert!(
+                old.upgrade().is_some(),
+                "AgentState retry must keep its valid guard"
+            );
+        } else {
+            assert!(
+                old.upgrade().is_none(),
+                "stale guard must release its lease"
+            );
+        }
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .provider_recovery_episode(episode_key)
+                .unwrap()
+                .unwrap()
+                .total_requests,
+            0,
+            "no dispatch before atomic claim"
+        );
+    }
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let committed = &protocol.attempts[&admission.attempt.attempt_id];
+    assert_eq!(
+        admission.attempt.admitted_fences, committed.admitted_fences,
+        "the preclaim guard must use the same aligned wait admission as the commit"
+    );
+    admission.before_dispatch().unwrap();
+    assert_eq!(admission.episode().unwrap().total_requests, 1);
+}
+
+#[tokio::test]
 async fn healthy_responses_do_not_apply_a_global_three_request_limit() {
     let (_home, runtime) = runtime();
     runtime.enqueue(operator()).await.unwrap();
@@ -373,7 +640,11 @@ async fn unknown_http_attempts_and_a_denied_retry_never_refill_the_budget() {
     let admission = scheduled.dispatch_plan.provider_admission.unwrap();
     admission.before_dispatch().unwrap();
     for _ in 0..3 {
-        assert!(admission.before_dispatch().is_err());
+        let error = admission.before_dispatch().unwrap_err();
+        assert!(
+            error.to_string().contains("ScopeAlreadyAttempted"),
+            "{error}"
+        );
     }
     admission
         .after_response(&Err(anyhow!("guard rejected a repeated quota scope")))

@@ -863,7 +863,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
-        let canonical_claim = match self.canonical_activation_plan(
+        let mut canonical_claim = match self.canonical_activation_plan(
             &projection,
             &persisted_message,
             &dispatch_plan,
@@ -939,6 +939,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Err(error);
             }
         };
+        let settle_reducer_only_wait =
+            canonical_claim.is_none() && persisted_message.kind == MessageKind::TaskResult;
+        let wait_transition = (canonical_claim.is_some() || settle_reducer_only_wait)
+            .then(|| {
+                self.runtime
+                    .wait_resolution_transition_for_message(&persisted_message)
+            })
+            .transpose()?
+            .flatten();
+        if let Some(plan) = canonical_claim.as_mut() {
+            // The guard and atomic claim must share the finalized wait fences.
+            align_execution_claim_with_wait_transition(
+                &mut plan.execution_protocol,
+                wait_transition.as_ref(),
+            )?;
+        }
         if let Some(plan) = canonical_claim.as_ref() {
             let planned_attempt =
                 plan.execution_protocol
@@ -1050,8 +1066,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } else {
             None
         };
-        let settle_reducer_only_wait =
-            canonical_claim.is_none() && persisted_message.kind == MessageKind::TaskResult;
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
                 Some(ExecutionAdmissionProvenance::Canonical {
@@ -1092,6 +1106,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         self.runtime
             .apply_claim_work_item_plan_status_before_commit()
             .await?;
+        #[cfg(test)]
+        {
+            let hook = self
+                .runtime
+                .inner
+                .claim_snapshot_before_commit
+                .lock()
+                .expect("claim snapshot hook poisoned")
+                .take();
+            if let Some(hook) = hook {
+                hook(self.runtime, dispatch_plan.provider_admission.as_ref())?;
+            }
+        }
 
         let (message, running_state, transition_commit) = {
             let queue_record = QueueEntryRecord {
@@ -1169,21 +1196,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 running_state.pending = guard.queue.len().saturating_sub(1);
                 scheduler::apply_running_projection(&mut running_state, run_id.clone());
                 running_state.last_wake_reason = Some(format!("{:?}", candidate.message.kind));
-                let mut execution_protocol = canonical_claim
+                let execution_protocol = canonical_claim
                     .as_ref()
                     .map(|plan| plan.execution_protocol.clone())
                     .unwrap_or_default();
-                let wait_transition = (canonical_claim.is_some() || settle_reducer_only_wait)
-                    .then(|| {
-                        self.runtime
-                            .wait_resolution_transition_for_message(&persisted_message)
-                    })
-                    .transpose()?
-                    .flatten();
-                align_execution_claim_with_wait_transition(
-                    &mut execution_protocol,
-                    wait_transition.as_ref(),
-                )?;
                 let timer_wake_claim = timer_wake_claim_for_message(
                     &self.runtime.inner.runtime_db,
                     &persisted_message,
@@ -1234,7 +1250,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 let mut commit = match commit_result {
                     Ok(commit) => commit,
                     Err(error) => {
-                        if scheduler_work_item_claim_conflict(&error) {
+                        if scheduler_work_item_claim_conflict(&error)
+                            || scheduler_wait_snapshot_conflict(&error, wait_transition.as_ref())
+                        {
                             drop(guard);
                             return Ok(PrepareMessageOutcome::Replan);
                         }
@@ -3131,6 +3149,41 @@ fn scheduler_work_item_claim_conflict(error: &anyhow::Error) -> bool {
             .is_some_and(|conflict| {
                 conflict.retryable() && conflict.domain() == "scheduler_claim_work_item"
             })
+    })
+}
+
+fn scheduler_wait_snapshot_conflict(
+    error: &anyhow::Error,
+    wait_transition: Option<&crate::runtime_db::transitions::QueueWaitTransition>,
+) -> bool {
+    let Some(wait) = wait_transition else {
+        return false;
+    };
+    error.chain().any(|source| {
+        let Some(conflict) = source.downcast_ref::<RuntimeStateTransitionConflict>() else {
+            return false;
+        };
+        if conflict.domain() == "wait_condition_trigger" {
+            return conflict.retryable() && conflict.record_id() == wait.expected.id;
+        }
+        let Some(crate::runtime_db::transitions::WorkItemMutation::Update {
+            record,
+            expected_revision,
+        }) = wait.work_item.as_ref()
+        else {
+            return false;
+        };
+        // Only a newer snapshot of this wait's owner invalidates the whole plan.
+        conflict.domain() == "work_item"
+            && conflict.record_id() == record.id
+            && matches!(
+                conflict.code(),
+                "revision_conflict" | "same_revision_payload_conflict"
+            )
+            && conflict.expected_revision() == Some(*expected_revision)
+            && conflict
+                .actual_revision()
+                .is_some_and(|actual| actual > *expected_revision)
     })
 }
 

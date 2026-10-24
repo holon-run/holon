@@ -478,9 +478,20 @@ struct RuntimeInner {
     claim_work_item_plan_status_before_commit:
         StdMutex<Option<(String, crate::types::WorkItemPlanStatus)>>,
     #[cfg(test)]
+    claim_snapshot_before_commit: StdMutex<Option<ClaimSnapshotHook>>,
+    #[cfg(test)]
     terminal_tool_interjection_checkpoint: TerminalToolInterjectionCheckpoint,
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
+
+#[cfg(test)]
+type ClaimSnapshotHook = Box<
+    dyn FnOnce(
+            &RuntimeHandle,
+            Option<&Arc<provider_admission::ProviderTurnAdmission>>,
+        ) -> Result<()>
+        + Send,
+>;
 
 #[cfg(test)]
 #[derive(Default)]
