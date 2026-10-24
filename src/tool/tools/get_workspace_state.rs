@@ -39,7 +39,9 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let _: GetWorkspaceStateArgs = parse_tool_args(NAME, input)?;
-    serialize_success(NAME, &runtime.workspace_state_result().await?)
+    let state = runtime.workspace_state_result().await?;
+    let _serialize = crate::diagnostics::attribution::WORKSPACE_STATE_SERIALIZE.start();
+    serialize_success(NAME, &state)
 }
 
 const DEFAULT_EXECUTION_ROOT_LIMIT: usize = 10;
@@ -51,6 +53,7 @@ pub(crate) fn render_for_model(
     result: &crate::tool::ToolResult,
     context: &ToolModelRenderContext<'_>,
 ) -> Result<String> {
+    let _render = crate::diagnostics::attribution::WORKSPACE_STATE_RENDER.start();
     let value = result
         .envelope
         .result
