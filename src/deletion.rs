@@ -775,6 +775,28 @@ impl RuntimeHost {
                 };
             }
         }
+        // A cleanup repair whose incarnation already settled and purged
+        // private history must not replay settlement writers: only residue
+        // re-purge can remain, so resume at the purge phase instead of the
+        // Quiesce gate, where the settlement short-circuit fails forever.
+        if job.mode == AgentDeletionMode::CleanupRepair
+            && job.phase == AgentDeletionPhase::Quiesce
+            && self
+                .agent_identity_record(&agent_id)?
+                .is_some_and(|identity| {
+                    crate::runtime_db::agent_deletion_cleanup::private_history_purge_proof_is_current(
+                        self.runtime_db(),
+                        &agent_id,
+                        identity.incarnation,
+                    )
+                })
+        {
+            debug!(
+                agent_id = %agent_id,
+                "cleanup repair resumes at the private history purge phase"
+            );
+            job.phase = AgentDeletionPhase::Index;
+        }
         job.status = AgentDeletionStatus::Running;
         job.attempts = job.attempts.saturating_add(1);
         job.last_error = None;

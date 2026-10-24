@@ -6115,7 +6115,16 @@ impl RuntimeHost {
     }
 
     fn ensure_legacy_public_agent_bootstraps(&self) -> Result<()> {
-        for identity in self.inner.registry.agent_identity_records()? {
+        // Non-Active identities must not regain legacy bootstrap rows:
+        // deletion purges `agent_bootstraps` as private history, and
+        // restoring a row for a Deleting/Deleted identity recreates residue.
+        for identity in self
+            .inner
+            .registry
+            .agent_identity_records()?
+            .into_iter()
+            .filter(|record| record.status == AgentRegistryStatus::Active)
+        {
             if identity.kind != AgentKind::Named
                 || identity.visibility != AgentVisibility::Public
                 || identity.ownership() != AgentOwnership::SelfOwned
