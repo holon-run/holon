@@ -805,10 +805,21 @@ impl LocalClient {
         agent_id: &str,
         cascade_private_children: bool,
     ) -> Result<AgentDeletionResponse> {
+        self.delete_agent_with_archive(agent_id, cascade_private_children, false)
+            .await
+    }
+
+    pub async fn delete_agent_with_archive(
+        &self,
+        agent_id: &str,
+        cascade_private_children: bool,
+        archive: bool,
+    ) -> Result<AgentDeletionResponse> {
         self.delete_control_json(
             &format!("/control/agents/{agent_id}"),
             &DeleteAgentRequest {
                 cascade_private_children,
+                archive,
             },
         )
         .await

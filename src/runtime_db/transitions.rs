@@ -4592,6 +4592,18 @@ mod tests {
             Some(first_job.clone())
         );
 
+        crate::runtime_db::agent_deletion_cleanup::settle_execution(
+            &db,
+            &child.agent_id,
+            child.incarnation,
+            Utc::now(),
+        )?;
+        crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+            &db,
+            &child.agent_id,
+            child.incarnation,
+            Utc::now(),
+        )?;
         let (_, completed_job) = db.agent_deletions().finalize(&first_job)?;
         assert!(!db.transitions().commit_task(&command(None))?.applied);
         assert_eq!(

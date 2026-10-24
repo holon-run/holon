@@ -658,6 +658,13 @@
                 "agent_id": {
                   "type": "string"
                 },
+                "archive_path": {
+                  "description": "Explicit user-retained export, outside the deleted AgentHome.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "attempts": {
                   "format": "uint32",
                   "minimum": 0.0,
@@ -722,6 +729,7 @@
                     "ingress",
                     "scheduler",
                     "workspace",
+                    "archive",
                     "index",
                     "home",
                     "finalize"

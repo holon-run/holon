@@ -8,8 +8,10 @@ status: accepted
 
 ## Incarnation-bound delivery (2026-10-16)
 
-Retained conversation history is shared by agent id across incarnations, while
-read requests and cursors remain incarnation-bound. A new canonical turn allocates
+Conversation records are keyed by agent id, while reads and cursors remain
+incarnation-bound. Deletion now clears private history before admitting a
+replacement; explicitly exported history is not mounted into its conversation.
+A new canonical turn allocates
 `max(persisted agent counter, retained turn indices, 0) + 1` in the same writer
 transaction that saves AgentState, TurnRecord and input assignments. Only a
 successful commit may publish the new in-memory turn or start provider work.
@@ -59,10 +61,10 @@ This does not change operator-input `expected_incarnation` admission, cache
 authorization, or the existing runtime/epoch/visibility fences.
 
 This binding identifies the admitted read, not the creation identity of every
-historical record. Deletion currently retains durable history keyed by agent id;
-a newly admitted replacement can therefore project retained history. The fence
-does not permit old clients or cursors to follow that replacement, and does not
-introduce per-incarnation history partitioning or deletion.
+historical record. The deletion lifecycle clears the prior identity's private
+history before replacement, without adding per-record incarnation partitions.
+The fence still prevents old clients, cursors and streams from following the
+replacement. Ordinary reads do not automatically repair ambiguous legacy data.
 
 ## Canonical source location and bidirectional history (2026-10-14)
 

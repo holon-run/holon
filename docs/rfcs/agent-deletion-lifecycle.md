@@ -213,7 +213,7 @@ restore an old AgentState or make old execution bindings valid.
 ## Cleanup Boundary
 
 Normal deletion advances through `Fence -> Quiesce -> Ingress -> Scheduler ->
-Workspace -> Index -> Home -> Finalize`. Cleanup repair starts at `Quiesce`
+Workspace -> Archive -> Index -> Home -> Finalize`. Cleanup repair starts at `Quiesce`
 and uses the same idempotent terminal-safe phases. Missing AgentHome state is a
 successful no-op; shared index cleanup does not depend on reopening or
 recreating the deleted agent's home.
@@ -232,7 +232,8 @@ sources become `Terminal` with that brief. Legacy completed sources without a
 brief retain existing terminal evidence, or remain non-runnable without
 inventing a brief. An agent with no incomplete WorkItems still releases its
 focus/attribution and retires stale execution demand. Historical attempts and
-outcomes are retained; a missing execution partition is not bootstrapped.
+outcomes are retained until private-history cleanup; a missing execution
+partition is not bootstrapped.
 These terminal-safe writes require an admitted deleting/deleted identity and
 do not reopen parent-cleanup admission or relax ordinary protocol write fences.
 
@@ -255,6 +256,68 @@ delete surface or the lifecycle-owning task's persisted
 `delete_on_terminal` disposition. Explicit parent cascade uses the same
 ensure-job transaction for `Active`, `Deleting`, and legacy `Deleted` children.
 Public named descendants never cascade automatically.
+
+## Private history and clean-slate recreation (2026-10-23)
+
+`stop` preserves resumable data. `delete` fences admission, stops the runtime and
+settles its execution before removing agent-owned private history. Quiescence
+interrupts open turns with an explicit no-Brief reason and aborts nonterminal
+queue/attempt/claim/activation evidence; it never makes an old input replayable
+or rewrites a successful terminal result. Parent cleanup retains its existing
+active-work and protected-resource checks.
+
+The settlement transaction also cancels both active and triggered waits, and
+closes destructive-operation recovery ownership as `owner_closed`. This terminal
+state does not assert that an externally dispatched command was cancelled or its
+target verified; deletion neither executes verification commands nor replays
+external effects. Previously verified operations remain verified. Settlement
+proof is valid only while no unresolved wait or nonterminal owned operation
+remains, so a legacy proof that omitted these families restarts at the
+cancellation gate rather than retrying `Index` indefinitely.
+Before purging operation payloads, the same transaction retains a global
+dispatch-fence tombstone keyed only by a hash of `operation_id`. It contains no
+agent, turn, command, verification target or result. Both operation admission
+paths reject reuse of a tombstoned id, including after recreation, so deleting
+private ownership evidence cannot authorize replay of an external side effect.
+
+Deletion removes private conversation, tools, tasks, waits, timers, WorkItems,
+runtime traces and their owned derived projections, as well as the home allowed
+by the selected deletion policy. Shared repositories, other agents' data and
+protected or ambiguously owned resources are not deletion authority. Keep only
+identity incarnation/revision tombstones, necessary deletion fencing and
+content-free cleanup evidence. Database cleanup is transactional; filesystem
+cleanup remains a separate retryable job phase. A failed phase cannot mark the
+job complete or allow a replacement.
+
+Foreign consumers of private rows block export and purge. A terminal child task
+with a persisted result copy and an exact target incarnation may retain its
+known invocation provenance and terminal observability identifiers unchanged:
+those identifiers are not live dependencies on the child's rows. Its canonical
+runtime-owned result message may retain the same copied metadata, bound to the
+parent task's exact result message, status and target. Active tasks,
+missing or mismatched generations, and unknown or nested references still fail
+closed; deletion never rewrites another agent's result to remove references.
+
+Recovery requires same-incarnation execution-settlement proof before resuming
+past `Quiesce`, and purge proof before resuming past `Index`. A legacy job
+without that proof restarts at its cancellation gate. A job with valid proof
+keeps its persisted phase, so retrying home cleanup cannot recreate private
+audit or execution rows after purge.
+
+Historical retention is explicit export, not an implicit backup or a data source
+for a replacement. An export failure must not proceed to destructive cleanup.
+The minimal operator entry point is `holon agent delete ID --archive`: admission
+persists a unique archive destination under the runtime's `archives/` directory,
+and the retryable `Archive` phase exports the fenced database snapshot and
+agent-home without following symlinks. It seals and validates the archive before
+`Index` removes any private history. The destination cannot be changed on a
+retry; enabling archival after deletion started is rejected. Archives are
+explicit user-retained files, never replacement context or implicit backups.
+Legacy `Deleted` identities whose old completed jobs retained private history
+must finish cleanup before the recreation writer transaction admits them.
+Already-`Active` legacy identities are not repaired by guessing record ages or
+mutating read APIs. Late callbacks, old cursors and bootstrap retries remain
+incarnation-fenced.
 
 ## Memory Index Admission
 

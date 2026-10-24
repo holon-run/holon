@@ -924,6 +924,9 @@ pub enum AgentCommands {
         /// Also delete private supervised child agents
         #[arg(long)]
         cascade_private_children: bool,
+        /// Export private history and AgentHome under the server's archives directory before cleanup
+        #[arg(long)]
+        archive: bool,
         /// Wait for the deletion job to complete
         #[arg(long)]
         wait: bool,
@@ -1174,6 +1177,26 @@ fn snapshot_entry_for_command(cmd: &clap::Command, path: &str) -> CommandSnapsho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_delete_archive_is_explicit() {
+        for (args, expected) in [
+            (vec!["holon", "agent", "delete", "retired", "--yes"], false),
+            (
+                vec!["holon", "agent", "delete", "retired", "--yes", "--archive"],
+                true,
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Commands::Agent {
+                command: Some(AgentCommands::Delete { archive, .. }),
+            } = cli.command
+            else {
+                panic!("expected agent delete");
+            };
+            assert_eq!(archive, expected);
+        }
+    }
 
     /// Sanity: the command tree must be buildable without panicking.
     #[test]

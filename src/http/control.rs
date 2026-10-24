@@ -1138,10 +1138,11 @@ pub async fn delete_agent(
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let (identity, job, created) = state
         .host
-        .begin_public_agent_deletion(
+        .begin_public_agent_deletion_with_archive(
             &agent_id,
             request.cascade_private_children,
             "authenticated_operator_control",
+            request.archive,
         )
         .await
         .map_err(agent_access_error)?;

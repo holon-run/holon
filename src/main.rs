@@ -6501,6 +6501,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
             agent_id,
             yes,
             cascade_private_children,
+            archive,
             wait,
             timeout,
             json,
@@ -6510,6 +6511,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 &agent_id,
                 yes,
                 cascade_private_children,
+                archive,
                 wait,
                 timeout,
                 json,
@@ -6631,6 +6633,7 @@ async fn handle_agent_delete(
     agent_id: &str,
     yes: bool,
     cascade_private_children: bool,
+    archive: bool,
     wait: bool,
     timeout: Option<u64>,
     json: bool,
@@ -6663,7 +6666,7 @@ async fn handle_agent_delete(
 
     // Initiate deletion
     let response = match client
-        .delete_agent(agent_id, cascade_private_children)
+        .delete_agent_with_archive(agent_id, cascade_private_children, archive)
         .await
     {
         Ok(resp) => resp,
@@ -6693,6 +6696,9 @@ async fn handle_agent_delete(
         "Deleting agent \"{agent_id}\" (phase: {})",
         format_deletion_phase(&response.job.phase)
     );
+    if let Some(path) = &response.job.archive_path {
+        eprintln!("Archive destination on the server: {}", path.display());
+    }
 
     if wait {
         let timeout_secs = timeout.unwrap_or(300);
@@ -6753,6 +6759,7 @@ fn format_deletion_phase(phase: &AgentDeletionPhase) -> &'static str {
         Ingress => "Ingress",
         Scheduler => "Scheduler",
         Workspace => "Workspace",
+        Archive => "Archive",
         Index => "Index",
         Home => "Home",
         Finalize => "Finalize",

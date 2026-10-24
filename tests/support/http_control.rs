@@ -269,6 +269,78 @@ pub async fn control_agent_delete_fences_runtime_and_is_idempotent() -> Result<(
     Ok(())
 }
 
+pub async fn control_agent_delete_archive_is_explicit_and_survives_recreation() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("archive-http", None).await?;
+    let old_home = host.config().data_dir.join("agents/archive-http");
+    std::fs::write(
+        old_home.join("memory/self.md"),
+        "explicitly retained memory",
+    )?;
+    host.spawn_daemon_deletion_coordinator();
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+    let deleted: serde_json::Value = client
+        .delete(format!("{base}/api/control/agents/archive-http"))
+        .json(&serde_json::json!({ "archive": true }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let archive = PathBuf::from(
+        deleted["job"]["archive_path"]
+            .as_str()
+            .expect("archive path"),
+    );
+    assert_eq!(
+        archive.parent(),
+        Some(host.config().data_dir.join("archives").as_path())
+    );
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/archive-http/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == "completed")
+        }
+    })
+    .await?;
+    assert!(!old_home.exists());
+    let sealed = std::fs::read(&archive)?;
+    assert!(!sealed.is_empty());
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(sealed.as_slice()));
+    let mut found_memory = false;
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        if entry.path()?.as_ref() == Path::new("agent-home/memory/self.md") {
+            let mut memory = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut memory)?;
+            assert_eq!(memory, "explicitly retained memory");
+            found_memory = true;
+        }
+    }
+    assert!(found_memory);
+    let recreated: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/archive-http/create"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(recreated["identity"]["incarnation"], 2);
+    assert_ne!(
+        std::fs::read_to_string(old_home.join("memory/self.md")).unwrap_or_default(),
+        "explicitly retained memory"
+    );
+    assert_eq!(std::fs::read(&archive)?, sealed);
+    host.shutdown_daemon_deletion_coordinator().await;
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_agent_delete_rejects_default_and_reports_unknown() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = Client::new();
@@ -404,18 +476,22 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
     Ok(())
 }
 
-pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversation_window(
-) -> Result<()> {
+pub async fn control_agent_reincarnation_clears_history_and_resets_turn_sequence() -> Result<()> {
     let agent_id = "reborn-turn-sequence";
+    let mut config = test_config();
+    // Exercise explicit HTTP turns without a default bootstrap introduction
+    // racing the prompt for the first turn of each incarnation.
+    config.providers.clear();
     let host = RuntimeHost::new_with_provider(
-        test_config(),
+        config,
         Arc::new(StubProvider::new("fresh incarnation result")),
     )?;
     attach_default_workspace(&host).await?;
     host.create_named_agent(agent_id, None).await?;
     let storage = host.agent_storage(agent_id)?;
 
-    // History exceeds the first-page limit, so restarting at one hides new turns.
+    // Old history exceeds one page; deletion must remove it rather than hide
+    // new-incarnation turns behind the old sequence.
     for index in 1..=22 {
         let mut turn = TurnRecord::new(agent_id, format!("historical-turn-{index}"), index);
         turn.terminal = Some(TurnTerminalSummary {
@@ -453,12 +529,13 @@ pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversatio
         5
     );
     assert_eq!(original["turns"][4]["key"]["turn_index"], 22);
-    let mut previous_cursor = original["next_before_cursor"]
+    let previous_cursor = original["next_before_cursor"]
         .as_str()
         .expect("history has older turns")
         .to_string();
 
-    for (incarnation, expected_index) in [(2_u64, 23_u64), (3, 24)] {
+    for incarnation in [2_u64, 3] {
+        let expected_index = 1_u64;
         let deleted: serde_json::Value = client
             .delete(format!("{base}/api/control/agents/{agent_id}"))
             .json(&serde_json::json!({}))
@@ -500,11 +577,8 @@ pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversatio
         let runtime = host.get_or_create_agent(agent_id).await?;
         let fresh = runtime.storage().read_agent()?.expect("fresh agent state");
         assert_eq!(fresh.pending, 0);
-        // Bootstrap recounts retained messages without restoring runtime state.
-        assert_eq!(
-            fresh.total_message_count,
-            runtime.storage().count_messages()?
-        );
+        assert_eq!(fresh.total_message_count, 0);
+        assert_eq!(runtime.storage().count_messages()?, 0);
         assert_eq!(fresh.total_input_tokens, 0);
         assert_eq!(fresh.total_output_tokens, 0);
         assert_eq!(fresh.total_model_rounds, 0);
@@ -516,8 +590,8 @@ pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversatio
         assert!(fresh.current_execution_binding.is_none());
         assert_eq!(
             runtime.storage().read_recent_turns(30)?.len() as u64,
-            expected_index - 1,
-            "reincarnation retains completed history, not live execution state"
+            0,
+            "reincarnation must not inherit conversation history"
         );
 
         let stale = client
@@ -590,7 +664,7 @@ pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversatio
             .expect("new prompt assigned to a real turn");
         assert_eq!(
             turn.turn_index, expected_index,
-            "new incarnation must continue the retained turn sequence"
+            "new incarnation must start a fresh turn sequence"
         );
         assert_eq!(
             runtime
@@ -635,7 +709,7 @@ pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversatio
                 .iter()
                 .map(|turn| turn["key"]["turn_index"].as_u64().expect("turn index"))
                 .collect::<Vec<_>>(),
-            (expected_index - 4..=expected_index).collect::<Vec<_>>()
+            vec![expected_index]
         );
         let visible = turns
             .iter()
@@ -669,10 +743,7 @@ pub async fn control_agent_reincarnation_preserves_turn_sequence_and_conversatio
             .await?;
         assert_eq!(returned.turn_id, brief.turn_id);
         assert_eq!(returned.text, brief.text);
-        previous_cursor = page["next_before_cursor"]
-            .as_str()
-            .expect("retained history still has older turns")
-            .to_string();
+        assert!(page["next_before_cursor"].is_null());
     }
 
     host.shutdown_daemon_deletion_coordinator().await;

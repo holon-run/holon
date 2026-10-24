@@ -10,6 +10,7 @@
 //! - [`repositories`]: domain repository implementations.
 //! - [`index_outbox`]: runtime index outbox repository.
 
+pub(crate) mod agent_deletion_cleanup;
 pub mod agent_list;
 pub mod agent_message_delivery;
 pub mod agent_relations;

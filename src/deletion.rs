@@ -22,6 +22,9 @@ use tracing::{debug, info, warn};
 use crate::host::RuntimeHost;
 use crate::types::*;
 
+#[path = "deletion_archive.rs"]
+mod archive;
+
 /// Authorization selects a policy, independent of the request's tool/CLI surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentDeletionPolicy {
@@ -313,8 +316,16 @@ impl RuntimeHost {
                 AgentRegistryStatus::Deleted => {
                     if existing_job.as_ref().is_some_and(|job| {
                         job.status == AgentDeletionStatus::Completed
-                            && job.mode == AgentDeletionMode::CleanupRepair
-                    }) {
+                    }) && self
+                        .runtime_db()
+                        .transaction(|tx| {
+                            crate::runtime_db::agent_deletion_cleanup::assert_private_history_cleared_tx(
+                                tx,
+                                &identity.agent_id,
+                            )
+                        })
+                        .is_ok()
+                    {
                         continue;
                     }
                     let (updated_identity, _, created) = self
@@ -739,6 +750,31 @@ impl RuntimeHost {
             "executing deletion job"
         );
 
+        // Legacy jobs can have advanced past Quiesce without ever settling or
+        // purging private history. Persist a restart at the cancellation gate,
+        // rather than skipping the new contract. A completed purge must not
+        // replay writers (including the Quiesce audit) and recreate residue.
+        if job.phase > AgentDeletionPhase::Quiesce {
+            let ready = if job.phase > AgentDeletionPhase::Index {
+                crate::runtime_db::agent_deletion_cleanup::assert_private_history_cleared(
+                    self.runtime_db(),
+                    &agent_id,
+                )
+            } else {
+                crate::runtime_db::agent_deletion_cleanup::assert_execution_settled(
+                    self.runtime_db(),
+                    &agent_id,
+                )
+            };
+            if let Err(error) = ready {
+                debug!(agent_id, %error, "restarting deletion without current cleanup proof");
+                job.phase = if job.mode == AgentDeletionMode::CleanupRepair {
+                    AgentDeletionPhase::Quiesce
+                } else {
+                    AgentDeletionPhase::Fence
+                };
+            }
+        }
         job.status = AgentDeletionStatus::Running;
         job.attempts = job.attempts.saturating_add(1);
         job.last_error = None;
@@ -757,7 +793,6 @@ impl RuntimeHost {
         // Execute each phase from the current one onward.
         let phases = AgentDeletionPhase::ALL;
         let start_idx = phases.iter().position(|p| *p == job.phase).unwrap_or(0);
-
         for phase in &phases[start_idx..] {
             // Skip if we've already advanced past this phase.
             if job.phase > *phase {
@@ -835,6 +870,7 @@ impl RuntimeHost {
             AgentDeletionPhase::Ingress => self.deletion_phase_ingress(agent_id).await,
             AgentDeletionPhase::Scheduler => self.deletion_phase_scheduler(agent_id).await,
             AgentDeletionPhase::Workspace => self.deletion_phase_workspace(agent_id).await,
+            AgentDeletionPhase::Archive => self.deletion_phase_archive(agent_id, job).await,
             AgentDeletionPhase::Index => self.deletion_phase_index(agent_id).await,
             AgentDeletionPhase::Home => self.deletion_phase_home(agent_id, policy).await,
             AgentDeletionPhase::Finalize => {
@@ -892,9 +928,6 @@ impl RuntimeHost {
         self.runtime_db()
             .timers()
             .cancel_active_for_agent(agent_id, Utc::now())?;
-        if policy == AgentDeletionPolicy::PreserveProtectedResources {
-            return Ok(());
-        }
         // Cascade private children first.
         if job.cascade_private_children {
             self.cascade_private_children_deletion(agent_id, job)
@@ -924,39 +957,22 @@ impl RuntimeHost {
             debug!(agent_id, count = tasks_count, "terminalized active tasks");
         }
 
-        // Cancel active wait conditions.
-        let active_waits = self
+        // Settlement cancels active and triggered waits atomically with its proof.
+        let waits_count = self
             .runtime_db()
             .wait_conditions()
-            .active_for_agent(agent_id)?;
-        let waits_count = active_waits.len();
-        for mut wait in active_waits {
-            wait.status = WaitConditionStatus::Cancelled;
-            wait.updated_at = now;
-            wait.cancelled_at = Some(now);
-            self.runtime_db().wait_conditions().upsert(&wait)?;
-        }
-        if waits_count > 0 {
-            debug!(
-                agent_id,
-                count = waits_count,
-                "cancelled active wait conditions"
-            );
-        }
+            .unresolved_for_agent(agent_id)?
+            .len();
 
-        // Abort pending queue entries to prevent orphaned queued messages.
-        let queue_aborted = self
-            .runtime_db()
-            .queue_entries()
-            .abort_pending_for_agent(agent_id)
-            .unwrap_or(0);
-        if queue_aborted > 0 {
-            debug!(
-                agent_id,
-                count = queue_aborted,
-                "aborted pending queue entries"
-            );
-        }
+        let identity = self
+            .agent_identity_record(agent_id)?
+            .ok_or_else(|| anyhow!("deletion identity not found"))?;
+        crate::runtime_db::agent_deletion_cleanup::settle_execution(
+            self.runtime_db(),
+            agent_id,
+            identity.incarnation,
+            now,
+        )?;
 
         // Emit audit event via storage if available.
         if let Some(storage) = storage {
@@ -966,7 +982,7 @@ impl RuntimeHost {
                     "agent_id": agent_id,
                     "tasks_cancelled": tasks_count,
                     "waits_cancelled": waits_count,
-                    "queue_entries_aborted": queue_aborted,
+                    "execution_settled": true,
                 }),
             ));
         }
@@ -1292,26 +1308,67 @@ impl RuntimeHost {
         self.check_agent_deletion_workspaces(agent_id, true).await
     }
 
-    /// Index: remove the agent's documents from the shared memory index.
+    async fn deletion_phase_archive(&self, agent_id: &str, job: &AgentDeletionJob) -> Result<()> {
+        let Some(destination) = &job.archive_path else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            destination
+                == &self
+                    .config()
+                    .data_dir
+                    .join("archives")
+                    .join(format!("{}.tar.gz", job.deletion_id)),
+            "agent_archive_destination_mismatch"
+        );
+        let identity = self
+            .agent_identity_record(agent_id)?
+            .ok_or_else(|| anyhow!("archive identity not found"))?;
+        anyhow::ensure!(
+            identity.status != AgentRegistryStatus::Active,
+            "agent_archive_requires_deletion_fence"
+        );
+        let binding = archive::ArchiveBinding {
+            agent_id: agent_id.into(),
+            incarnation: identity.incarnation,
+            deletion_id: job.deletion_id.clone(),
+        };
+        let destination = destination.clone();
+        let home = self.agent_data_dir(agent_id);
+        let db = self.runtime_db().clone();
+        let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+        tokio::task::spawn_blocking(move || {
+            let history = crate::runtime_db::agent_deletion_cleanup::export_private_history(
+                &db,
+                &binding.agent_id,
+                binding.incarnation,
+            )?;
+            archive::write_archive(&destination, &home, binding, &history)
+        })
+        .await??;
+        Ok(())
+    }
+
+    /// Index: clear private history only after any requested archive is sealed.
     async fn deletion_phase_index(&self, agent_id: &str) -> Result<()> {
         self.runtime_db()
             .runtime_index_outbox()
             .delete_all_for_agent(agent_id)?;
         // The memory index is a shared SQLite database. Remove all rows
         // belonging to this agent.
-        let storage = match self.agent_storage(&self.config().default_agent_id) {
-            Ok(s) => s,
-            Err(_) => {
-                debug!(
-                    agent_id,
-                    "shared index storage unavailable during index cleanup; skipping"
-                );
-                return Ok(());
-            }
-        };
+        let storage = self.agent_storage(&self.config().default_agent_id)?;
         crate::memory::index::delete_agent_memory_index_projection(
             &storage.shared_indexes_dir(),
             agent_id,
+        )?;
+        let identity = self
+            .agent_identity_record(agent_id)?
+            .ok_or_else(|| anyhow!("deletion identity not found"))?;
+        crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+            self.runtime_db(),
+            agent_id,
+            identity.incarnation,
+            Utc::now(),
         )?;
         debug!(agent_id, "removed agent from memory index");
         Ok(())
@@ -1850,6 +1907,7 @@ mod tests {
             requested_by: "test".into(),
             expected_identity_revision: 1,
             cascade_private_children: false,
+            archive_path: None,
             attempts,
             last_error: Some("database is locked".into()),
             next_attempt_at: None,

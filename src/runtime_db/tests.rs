@@ -6495,7 +6495,7 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(repeated_identity, deleted);
         assert_eq!(repeated_job, repair_job);
 
-        let (final_identity, completed) = db.agent_deletions().finalize(&repair_job)?;
+        let (final_identity, completed) = finalize_clean_deletion(&db, &repair_job)?;
         assert_eq!(final_identity, deleted);
         assert_eq!(completed.status, AgentDeletionStatus::Completed);
         assert_eq!(completed.mode, AgentDeletionMode::CleanupRepair);
@@ -6605,6 +6605,29 @@ CREATE TABLE working_memory_deltas (
         Ok(())
     }
 
+    fn finalize_clean_deletion(
+        db: &RuntimeDb,
+        job: &AgentDeletionJob,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob)> {
+        let identity = db
+            .agent_identities()
+            .latest(&job.agent_id)?
+            .expect("deletion identity");
+        crate::runtime_db::agent_deletion_cleanup::settle_execution(
+            db,
+            &job.agent_id,
+            identity.incarnation,
+            Utc::now(),
+        )?;
+        crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+            db,
+            &job.agent_id,
+            identity.incarnation,
+            Utc::now(),
+        )?;
+        db.agent_deletions().finalize(job)
+    }
+
     fn fully_delete_agent(
         db: &RuntimeDb,
         agent_id: &str,
@@ -6614,7 +6637,62 @@ CREATE TABLE working_memory_deltas (
         let (_, job, _) =
             db.agent_deletions()
                 .begin(agent_id, identity.revision, "operator:test", false)?;
-        db.agent_deletions().finalize(&job)
+        finalize_clean_deletion(db, &job)
+    }
+
+    #[test]
+    fn agent_deletion_finalize_requires_settlement_and_purge() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("finalize-proof", 0);
+        db.agent_identities().upsert(&identity)?;
+        let (deleting, job, _) = db.agent_deletions().begin(
+            "finalize-proof",
+            identity.revision,
+            "operator:test",
+            false,
+        )?;
+
+        assert!(db
+            .agent_deletions()
+            .finalize(&job)
+            .unwrap_err()
+            .to_string()
+            .contains("private history cleanup proof is missing"));
+        assert_eq!(
+            db.agent_identities().latest("finalize-proof")?,
+            Some(deleting.clone())
+        );
+        assert_eq!(
+            db.agent_deletions().latest_for_agent("finalize-proof")?,
+            Some(job.clone())
+        );
+
+        crate::runtime_db::agent_deletion_cleanup::settle_execution(
+            &db,
+            "finalize-proof",
+            deleting.incarnation,
+            Utc::now(),
+        )?;
+        assert!(db
+            .agent_deletions()
+            .finalize(&job)
+            .unwrap_err()
+            .to_string()
+            .contains("private history cleanup proof is stale or incomplete"));
+        assert_eq!(
+            db.agent_identities().latest("finalize-proof")?,
+            Some(deleting)
+        );
+        assert_eq!(
+            db.agent_deletions().latest_for_agent("finalize-proof")?,
+            Some(job.clone())
+        );
+
+        let (deleted, completed) = finalize_clean_deletion(&db, &job)?;
+        assert_eq!(deleted.status, AgentRegistryStatus::Deleted);
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        Ok(())
     }
 
     #[test]
@@ -6636,7 +6714,7 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(repair.mode, AgentDeletionMode::CleanupRepair);
         assert_eq!(repair.phase, AgentDeletionPhase::Quiesce);
 
-        let (_, completed_repair) = db.agent_deletions().finalize(&repair)?;
+        let (_, completed_repair) = finalize_clean_deletion(&db, &repair)?;
         let (_, repeated, created) = db.agent_deletions().begin(
             "repair-completed-delete",
             deleted.revision,
@@ -6827,9 +6905,25 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(tombstone.status, AgentRegistryStatus::Deleted);
         assert_eq!(job.status, AgentDeletionStatus::Completed);
 
-        // Leave a stale per-agent state row behind: the new incarnation
-        // must never observe it.
+        // Late private history invalidates the cleanup proof and must block
+        // reincarnation until it is purged again.
         db.agent_states().upsert(&AgentState::new("reborn"))?;
+        let error = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations("reborn", "operator:test", fresh_incarnation)
+            .unwrap_err();
+        assert!(error.to_string().contains("private history remains"));
+        assert_eq!(
+            db.agent_identities().latest("reborn")?,
+            Some(tombstone.clone())
+        );
+        assert!(db.agent_states().latest("reborn")?.is_some());
+        crate::runtime_db::agent_deletion_cleanup::purge_private_history(
+            &db,
+            "reborn",
+            tombstone.incarnation,
+            Utc::now(),
+        )?;
 
         let identity = db
             .agent_identities()
@@ -6965,7 +7059,7 @@ CREATE TABLE working_memory_deltas (
                 .as_ref(),
             Some(&second_job)
         );
-        let (tombstone_two, second_completed) = db.agent_deletions().finalize(&second_job)?;
+        let (tombstone_two, second_completed) = finalize_clean_deletion(&db, &second_job)?;
         assert_eq!(tombstone_two.status, AgentRegistryStatus::Deleted);
         assert_eq!(second_completed.status, AgentDeletionStatus::Completed);
 
@@ -7102,7 +7196,7 @@ CREATE TABLE working_memory_deltas (
             .agent_deletions()
             .latest_for_agent("mid-delete")?
             .expect("deletion job");
-        let (tombstone, _) = db.agent_deletions().finalize(&job)?;
+        let (tombstone, _) = finalize_clean_deletion(&db, &job)?;
         assert_eq!(tombstone.status, AgentRegistryStatus::Deleted);
         let mut implicit = agent_identity("mid-delete", 10);
         implicit.revision = tombstone.revision.saturating_add(1);

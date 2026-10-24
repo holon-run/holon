@@ -570,7 +570,10 @@ impl AgentIdentityRepository<'_> {
                 identity.agent_id
             );
             upsert_agent_identity_tx(tx, identity)?;
-            upsert_agent_bootstrap_tx(tx, bootstrap)?;
+            upsert_agent_bootstrap_tx(
+                tx,
+                &bootstrap.clone().for_incarnation(identity.incarnation),
+            )?;
             upsert_canonical_record_set_tx(tx, relations)
         })
     }
@@ -659,6 +662,7 @@ impl AgentIdentityRepository<'_> {
                     job.status
                 ));
             }
+            super::agent_deletion_cleanup::assert_private_history_cleared_tx(tx, agent_id)?;
             let (identity, bootstrap, relations) = build(&tombstone);
             anyhow::ensure!(
                 identity.agent_id == tombstone.agent_id,
@@ -696,7 +700,7 @@ impl AgentIdentityRepository<'_> {
                 "DELETE FROM agent_supervisions WHERE child_agent_id = ?1",
                 params![agent_id],
             )?;
-            upsert_agent_bootstrap_tx(tx, &bootstrap)?;
+            upsert_agent_bootstrap_tx(tx, &bootstrap.for_incarnation(identity.incarnation))?;
             upsert_canonical_record_set_tx(tx, &relations)?;
             append_audit_event_tx(
                 tx,
@@ -939,6 +943,44 @@ impl AgentBootstrapRepository<'_> {
     pub fn upsert(&self, record: &AgentBootstrapRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_agent_bootstrap_tx(tx, record))
+    }
+
+    pub(crate) fn update_if_current(
+        &self,
+        record: &AgentBootstrapRecord,
+        expected_revision: u64,
+        expected_incarnation: u64,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                [&record.agent_id],
+                |row| row.get(0),
+            )?;
+            let identity = decode_agent_identity_payload(&payload)?;
+            anyhow::ensure!(
+                identity.status == AgentRegistryStatus::Active
+                    && identity.incarnation == expected_incarnation
+                    && match record.incarnation {
+                        Some(value) => value == expected_incarnation,
+                        None => expected_incarnation == 1,
+                    },
+                "agent_bootstrap_stale_identity"
+            );
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM agent_bootstraps WHERE agent_id = ?1",
+                [&record.agent_id],
+                |row| row.get(0),
+            )?;
+            let current: AgentBootstrapRecord = serde_json::from_str(&payload)?;
+            anyhow::ensure!(
+                current.revision == expected_revision
+                    && current.created_at == record.created_at
+                    && current.incarnation == record.incarnation,
+                "agent_bootstrap_stale_revision"
+            );
+            upsert_agent_bootstrap_tx(tx, record)
+        })
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentBootstrapRecord>> {
@@ -1300,6 +1342,7 @@ pub(crate) fn ensure_agent_deletion_tx(
         requested_by: request.requested_by.clone(),
         expected_identity_revision,
         cascade_private_children: request.cascade_private_children,
+        archive_path: None,
         attempts: 0,
         last_error: None,
         next_attempt_at: None,
@@ -1355,8 +1398,25 @@ impl AgentDeletionRepository<'_> {
         requested_by: &str,
         cascade_private_children: bool,
     ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+        self.begin_with_archive(
+            agent_id,
+            expected_identity_revision,
+            requested_by,
+            cascade_private_children,
+            None,
+        )
+    }
+
+    pub(crate) fn begin_with_archive(
+        &self,
+        agent_id: &str,
+        expected_identity_revision: u64,
+        requested_by: &str,
+        cascade_private_children: bool,
+        archive_root: Option<&std::path::Path>,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
         self.db.transaction(|tx| {
-            ensure_agent_deletion_tx(
+            let (identity, mut job, created) = ensure_agent_deletion_tx(
                 tx,
                 &AgentDeletionRequest {
                     agent_id: agent_id.to_string(),
@@ -1364,7 +1424,23 @@ impl AgentDeletionRepository<'_> {
                     requested_by: requested_by.to_string(),
                     cascade_private_children,
                 },
-            )
+            )?;
+            if let Some(root) = archive_root {
+                if created {
+                    job.archive_path = Some(root.join(format!("{}.tar.gz", job.deletion_id)));
+                    tx.execute(
+                        "UPDATE agent_deletion_jobs SET payload_json = ?1
+                         WHERE deletion_id = ?2",
+                        params![serde_json::to_string(&job)?, job.deletion_id],
+                    )?;
+                } else {
+                    anyhow::ensure!(
+                        job.archive_path.is_some(),
+                        "agent_archive_not_requested: cannot enable archival after deletion started"
+                    );
+                }
+            }
+            Ok((identity, job, created))
         })
     }
 
@@ -1492,6 +1568,10 @@ impl AgentDeletionRepository<'_> {
                     identity.status
                 );
             }
+            super::agent_deletion_cleanup::assert_private_history_cleared_tx(
+                tx,
+                &completed_job.agent_id,
+            )?;
             let now = std::cmp::max(
                 Utc::now(),
                 std::cmp::max(identity.updated_at, completed_job.updated_at)

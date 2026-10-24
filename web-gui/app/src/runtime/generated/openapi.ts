@@ -2858,6 +2858,8 @@ export interface components {
             };
             job: {
                 agent_id: string;
+                /** @description Explicit user-retained export, outside the deleted AgentHome. */
+                archive_path?: string | null;
                 /** Format: uint32 */
                 attempts: number;
                 cascade_private_children: boolean;
@@ -2874,7 +2876,7 @@ export interface components {
                 /** Format: date-time */
                 next_attempt_at?: string | null;
                 /** @enum {string} */
-                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
                 /** @enum {string} */
                 status: "pending" | "running" | "retryable_failed" | "completed";
@@ -2912,6 +2914,8 @@ export interface components {
             };
             job?: {
                 agent_id: string;
+                /** @description Explicit user-retained export, outside the deleted AgentHome. */
+                archive_path?: string | null;
                 /** Format: uint32 */
                 attempts: number;
                 cascade_private_children: boolean;
@@ -2928,7 +2932,7 @@ export interface components {
                 /** Format: date-time */
                 next_attempt_at?: string | null;
                 /** @enum {string} */
-                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
                 /** @enum {string} */
                 status: "pending" | "running" | "retryable_failed" | "completed";
@@ -3109,6 +3113,8 @@ export interface components {
             created_at: string;
             deletion?: {
                 agent_id: string;
+                /** @description Explicit user-retained export, outside the deleted AgentHome. */
+                archive_path?: string | null;
                 /** Format: uint32 */
                 attempts: number;
                 cascade_private_children: boolean;
@@ -3125,7 +3131,7 @@ export interface components {
                 /** Format: date-time */
                 next_attempt_at?: string | null;
                 /** @enum {string} */
-                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
+                phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "archive" | "index" | "home" | "finalize";
                 requested_by: string;
                 /** @enum {string} */
                 status: "pending" | "running" | "retryable_failed" | "completed";
@@ -5669,6 +5675,8 @@ export interface components {
         };
         /** DeleteAgentRequest */
         DeleteAgentRequest: {
+            /** @default false */
+            archive: boolean;
             /** @default false */
             cascade_private_children: boolean;
         };

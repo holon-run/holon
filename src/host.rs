@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -581,9 +581,11 @@ fn bounded_bootstrap_error(error: &anyhow::Error) -> String {
 /// explicit `initial_message` (#2795): a runtime-owned, deterministic-id
 /// instruction that makes the new agent run one initialization turn so its
 /// conversation is not empty. Mirrors the `first_run_intro` contract.
-fn default_agent_bootstrap_initial_message(agent_id: &str) -> AgentBootstrapInitialMessage {
+fn default_agent_bootstrap_initial_message(
+    bootstrap: &AgentBootstrapRecord,
+) -> AgentBootstrapInitialMessage {
     AgentBootstrapInitialMessage {
-        message_id: format!("agent_bootstrap_message:{agent_id}"),
+        message_id: bootstrap.initial_message_id(),
         text: default_agent_bootstrap_initial_message_text().to_string(),
         authority_class: AuthorityClass::RuntimeInstruction,
         creator_agent_id: String::new(),
@@ -2219,14 +2221,16 @@ impl RuntimeHost {
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
-        let mut tasks = Vec::with_capacity(entries.len());
+        let mut tasks = VecDeque::with_capacity(entries.len());
         for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
-            tasks.push(entry.task);
+            tasks.push_back(entry.task);
         }
         if tokio::time::timeout(HOST_SHUTDOWN_GRACE, async {
-            for task in &mut tasks {
+            while let Some(task) = tasks.front_mut() {
                 let _ = task.await;
+                // Keep only unconsumed handles for timeout abort/join.
+                tasks.pop_front();
             }
         })
         .await
@@ -3319,6 +3323,22 @@ impl RuntimeHost {
         cascade_private_children: bool,
         requested_by: &str,
     ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
+        self.begin_public_agent_deletion_with_archive(
+            agent_id,
+            cascade_private_children,
+            requested_by,
+            false,
+        )
+        .await
+    }
+
+    pub async fn begin_public_agent_deletion_with_archive(
+        &self,
+        agent_id: &str,
+        cascade_private_children: bool,
+        requested_by: &str,
+        archive: bool,
+    ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
         self.validate_agent_id(agent_id)
             .map_err(PublicAgentError::Runtime)?;
         let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
@@ -3348,13 +3368,15 @@ impl RuntimeHost {
         }
         let (updated_identity, job, created) = {
             let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+            let archive_root = self.config().data_dir.join("archives");
             self.runtime_db()
                 .agent_deletions()
-                .begin(
+                .begin_with_archive(
                     agent_id,
                     identity.revision,
                     requested_by,
                     cascade_private_children,
+                    archive.then_some(archive_root.as_path()),
                 )
                 .map_err(PublicAgentError::Runtime)?
         };
@@ -4431,6 +4453,15 @@ impl RuntimeHost {
             .agent_bootstraps()
             .latest(agent_id)?
             .ok_or_else(|| anyhow!("agent {agent_id} has no bootstrap state to repair"))?;
+        anyhow::ensure!(
+            match bootstrap.incarnation {
+                Some(value) => value == identity.incarnation,
+                None =>
+                    identity.incarnation == 1
+                        || bootstrap.summary().status == AgentBootstrapStatus::Ready,
+            },
+            "agent_bootstrap_stale_identity"
+        );
 
         if bootstrap.template.status != AgentBootstrapStepStatus::Succeeded {
             let result = self.apply_agent_template_bootstrap(&bootstrap).await;
@@ -4508,6 +4539,14 @@ impl RuntimeHost {
         kind: AgentBootstrapStepKind,
         result: Result<()>,
     ) -> Result<()> {
+        let expected_revision = bootstrap.revision;
+        let expected_incarnation = self.active_agent_identity(&bootstrap.agent_id)?.incarnation;
+        anyhow::ensure!(
+            bootstrap
+                .incarnation
+                .is_none_or(|value| value == expected_incarnation),
+            "agent_bootstrap_stale_identity"
+        );
         let now = Utc::now();
         let succeeded = result.is_ok();
         {
@@ -4530,7 +4569,11 @@ impl RuntimeHost {
         }
         bootstrap.revision = bootstrap.revision.saturating_add(1);
         bootstrap.updated_at = now;
-        self.runtime_db().agent_bootstraps().upsert(bootstrap)
+        self.runtime_db().agent_bootstraps().update_if_current(
+            bootstrap,
+            expected_revision,
+            expected_incarnation,
+        )
     }
 
     async fn apply_agent_template_bootstrap(&self, bootstrap: &AgentBootstrapRecord) -> Result<()> {
@@ -4705,23 +4748,18 @@ impl RuntimeHost {
         let initial = match bootstrap.desired.initial_message.clone() {
             Some(initial) => initial,
             None if bootstrap.desired.default_initial_message => {
-                // The default initialization turn exists so a brand-new agent
-                // does not start with an empty conversation (#2795). Agents
-                // recreated after deletion keep their retained history, so
-                // they are not empty and must not get an intro turn; the
-                // existing-content checks also keep retries idempotent when
-                // the deterministic-id message was already enqueued.
-                let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
-                if runtime.storage().count_messages()? > 0
-                    || !runtime.storage().read_recent_turns(1)?.is_empty()
-                {
-                    return Ok(());
-                }
-                default_agent_bootstrap_initial_message(&bootstrap.agent_id)
+                default_agent_bootstrap_initial_message(bootstrap)
             }
             None => return Ok(()),
         };
         let runtime = self.get_or_create_agent(&bootstrap.agent_id).await?;
+        anyhow::ensure!(
+            match bootstrap.incarnation {
+                Some(incarnation) => runtime.instance_incarnation() == incarnation,
+                None => runtime.instance_incarnation() == 1,
+            },
+            "agent_bootstrap_stale_identity"
+        );
         let mut message = MessageEnvelope::new(
             bootstrap.agent_id.clone(),
             MessageKind::InternalFollowup,
@@ -13124,7 +13162,7 @@ mod tests {
         let parent = host.default_runtime().await.unwrap();
         let named_agent_id = "independent-no-bootstrap".to_string();
         let bootstrap_agent_id = "independent-bootstrap".to_string();
-        let bootstrap_message_id = format!("agent_bootstrap_message:{bootstrap_agent_id}");
+        let bootstrap_message_id = format!("agent_bootstrap_message:{bootstrap_agent_id}:1");
         let workspace_home = tempdir().unwrap();
         let workspace_path = workspace_home.path().to_path_buf();
         let workspace = host.ensure_workspace_entry(workspace_path.clone()).unwrap();
@@ -13311,7 +13349,7 @@ mod tests {
         let bootstrap = &messages[0];
         assert_eq!(
             bootstrap.id,
-            format!("agent_bootstrap_message:{agent_id}"),
+            format!("agent_bootstrap_message:{agent_id}:1"),
             "default bootstrap message must use the deterministic bootstrap id"
         );
         assert_eq!(bootstrap.kind, MessageKind::InternalFollowup);
@@ -13374,7 +13412,7 @@ mod tests {
         let messages = runtime.storage().read_recent_messages(10).unwrap();
         let bootstrap = messages
             .iter()
-            .find(|message| message.id == format!("agent_bootstrap_message:{agent_id}"))
+            .find(|message| message.id == format!("agent_bootstrap_message:{agent_id}:1"))
             .expect("explicit initial_message should still enqueue its bootstrap input");
         let metadata = bootstrap.metadata.as_ref().unwrap();
         assert!(
@@ -13411,6 +13449,8 @@ mod tests {
             "legacy creation without the default intent must stay silent even with a ready provider"
         );
     }
+
+    include!("host_deletion_tests.rs");
 
     #[tokio::test]
     async fn default_bootstrap_intent_is_dropped_without_ready_provider() {
@@ -15639,6 +15679,16 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
+        let child = AgentIdentityRecord::new(
+            "child_recover",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_agent_id.clone()),
+            Some("task-recover-child".into()),
+        )
+        .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
             .append_task(&TaskRecord {
@@ -15653,6 +15703,11 @@ mod tests {
                 summary: Some("delegated child".into()),
                 detail: Some(serde_json::json!({
                     "child_agent_id": "child_recover",
+                    "target": {
+                        "kind": "child_agent",
+                        "agent_id": child.agent_id,
+                        "incarnation": child.incarnation,
+                    },
                     "child_turn_baseline": 0,
                     "task_status": "running",
                 })),
@@ -15667,16 +15722,6 @@ mod tests {
             })
             .unwrap();
 
-        let child = AgentIdentityRecord::new(
-            "child_recover",
-            AgentKind::Child,
-            AgentVisibility::Private,
-            AgentOwnership::ParentSupervised,
-            AgentProfilePreset::PrivateChild,
-            Some(parent_agent_id.clone()),
-            Some("task-recover-child".into()),
-        )
-        .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
         host.runtime_db().agent_identities().upsert(&child).unwrap();
 
@@ -15771,7 +15816,7 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for canonical terminal child deletion to complete"
+                "timed out waiting for canonical terminal child deletion to complete: {deletion_job:?}"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
@@ -15780,6 +15825,15 @@ mod tests {
             crate::types::AgentDeletionStatus::Completed
         );
         assert_eq!(deletion_job.mode, crate::types::AgentDeletionMode::Delete);
+        assert_eq!(
+            runtime
+                .task_output("task-recover-child", false, 0)
+                .await
+                .unwrap()
+                .task
+                .output_preview,
+            output.task.output_preview
+        );
 
         runtime_task.abort();
         restarted.shutdown_daemon_deletion_coordinator().await;
@@ -16385,6 +16439,54 @@ mod tests {
             aborted.load(Ordering::SeqCst),
             "host shutdown should await the aborted runtime task"
         );
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_does_not_repoll_completed_tasks_after_grace_timeout() {
+        let (_home, host) = test_host();
+        host.default_runtime().await.unwrap();
+        append_public_identity(&host, "shutdown-peer");
+        host.get_or_create_agent("shutdown-peer").await.unwrap();
+
+        let completed_task = tokio::spawn(async {});
+        while !completed_task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let aborted = Arc::new(AtomicBool::new(false));
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let pending_task = {
+            let aborted = aborted.clone();
+            tokio::spawn(async move {
+                let _abort_observed = AbortObserved(aborted);
+                started.send(()).unwrap();
+                std::future::pending::<()>().await;
+            })
+        };
+        started_rx.await.unwrap();
+
+        let original_tasks = {
+            let mut registry = host.inner.runtimes.write().await;
+            let mut entries = registry.agents.values_mut();
+            assert_eq!(entries.len(), 2);
+            vec![
+                std::mem::replace(&mut entries.next().unwrap().task, completed_task),
+                std::mem::replace(&mut entries.next().unwrap().task, pending_task),
+            ]
+        };
+        for task in original_tasks {
+            task.abort();
+            let _ = task.await;
+        }
+
+        host.shutdown().await.unwrap();
+
+        assert!(
+            aborted.load(Ordering::SeqCst),
+            "the pending runtime task must be aborted and joined after the grace timeout"
+        );
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert!(registry.agents.is_empty());
     }
 
     #[tokio::test]
@@ -17128,7 +17230,7 @@ mod tests {
             assert!(!sweep.is_finished());
             // Commit admission and a failed Home attempt while the stale
             // enumerated candidate is waiting for the shared ownership fence.
-            let (_, mut job, _) = host
+            let (deleting, mut job, _) = host
                 .runtime_db()
                 .agent_deletions()
                 .begin_parent_cleanup(
@@ -17138,6 +17240,7 @@ mod tests {
                     parent.instance_incarnation(),
                 )
                 .unwrap();
+            host.cache_agent_identity(&deleting).unwrap();
             job.phase = AgentDeletionPhase::Home;
             host.runtime_db().agent_deletions().update(&job).unwrap();
             fs::remove_dir(&trash).unwrap();
@@ -17146,12 +17249,11 @@ mod tests {
             fs::write(trash.join("work/report.md"), "protected result").unwrap();
             drop(fence);
             assert!(!sweep.await.unwrap().unwrap());
-            assert!(host
-                .execute_deletion_job(job)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("unregistered_home_artifact"));
+            let error = host.execute_deletion_job(job).await.unwrap_err();
+            assert!(
+                error.to_string().contains("unregistered_home_artifact"),
+                "{error:#}"
+            );
             assert_eq!(host.sweep_orphan_agent_home_trash().await.unwrap(), 0);
             assert_eq!(
                 fs::read_to_string(trash.join("work/report.md")).unwrap(),
@@ -18533,9 +18635,8 @@ mod tests {
             .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
             .await
             .unwrap();
-        // Run the job to completion: admitted timers must be cancelled
-        // instead of surviving as active rows behind the deleted identity.
-        host.execute_deletion_job(job).await.unwrap();
+        // Inspect cancellation before the timer and wake history are purged.
+        pause_deletion_before_private_purge(&host, job).await;
         assert_eq!(
             host.runtime_db()
                 .timers()
@@ -18557,6 +18658,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(wake_status, "cancelled");
+        resume_deletion_after_archive_failure(&host, &child.agent_id).await;
+        assert!(host
+            .runtime_db()
+            .timers()
+            .latest("cleanup-active-timer")
+            .unwrap()
+            .is_none());
 
         // Protected artifacts still block.
         let child = retained_cleanup_fixture(&host, "parent-cleanup-protected-artifact");
@@ -19486,7 +19594,9 @@ mod tests {
                 > turn_before_final,
             "the final producer prompt must execute a real model turn"
         );
-        host.execute_deletion_job(job.clone()).await.unwrap();
+        host.execute_deletion_job(job.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{error:#}; retained task detail={:?}", task.detail));
         assert!(host
             .try_get_loaded_runtime(&identity.agent_id)
             .await
@@ -19614,6 +19724,7 @@ mod tests {
             .runtime_index_outbox()
             .produced_watermark_for_agent(&child.agent_id)
             .unwrap();
+        assert!(produced > 0);
 
         let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
         assert_eq!(outcome.created, 1);
@@ -19652,7 +19763,7 @@ mod tests {
                 .runtime_index_outbox()
                 .produced_watermark_for_agent(&child.agent_id)
                 .unwrap(),
-            produced
+            0
         );
     }
 
@@ -19676,10 +19787,24 @@ mod tests {
             .await
             .unwrap();
         assert!(created);
-        let (_, completed_delete) = host
-            .runtime_db()
+        // Persist an old Completed job without invoking the new cleanup gate.
+        let mut deleted = host
+            .agent_identity_record(&agent.agent_id)
+            .unwrap()
+            .unwrap();
+        deleted.status = AgentRegistryStatus::Deleted;
+        deleted.deleted_at = Some(Utc::now());
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&deleted)
+            .unwrap();
+        let mut completed_delete = delete_job;
+        completed_delete.status = AgentDeletionStatus::Completed;
+        completed_delete.phase = AgentDeletionPhase::Finalize;
+        completed_delete.completed_at = Some(Utc::now());
+        host.runtime_db()
             .agent_deletions()
-            .finalize(&delete_job)
+            .update(&completed_delete)
             .unwrap();
         assert_eq!(completed_delete.mode, AgentDeletionMode::Delete);
         host.runtime_db()
@@ -20156,10 +20281,10 @@ mod tests {
         host.runtime_db().agent_states().upsert(&state).unwrap();
 
         let (_, job, _) = host
-            .begin_public_agent_deletion("delete-work", false, "operator")
+            .begin_public_agent_deletion_with_archive("delete-work", false, "operator", true)
             .await
             .unwrap();
-        host.execute_deletion_job(job).await.unwrap();
+        pause_deletion_before_private_purge(&host, job).await;
 
         let completed = host
             .runtime_db()
@@ -20181,6 +20306,19 @@ mod tests {
             .unwrap();
         assert_eq!(state.current_work_item_id, None);
         assert_eq!(state.current_turn_work_item_id, None);
+        resume_deletion_after_archive_failure(&host, "delete-work").await;
+        assert!(host
+            .runtime_db()
+            .work_items()
+            .latest(&work_item.id)
+            .unwrap()
+            .is_none());
+        assert!(host
+            .runtime_db()
+            .agent_states()
+            .latest("delete-work")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -20249,7 +20387,7 @@ mod tests {
             .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
             .unwrap();
         let (_, mut job, _) = host
-            .begin_public_agent_deletion(agent_id, false, "operator")
+            .begin_public_agent_deletion_with_archive(agent_id, false, "operator", true)
             .await
             .unwrap();
         // Reenter at Scheduler after a crash; Fence/unload alone did not settle
@@ -20264,13 +20402,13 @@ mod tests {
                 .unwrap(),
             1
         );
-        host.execute_deletion_job(job.clone()).await.unwrap();
+        pause_deletion_before_private_purge(&host, job.clone()).await;
         assert_eq!(
             host.agent_identity_record(agent_id)
                 .unwrap()
                 .unwrap()
                 .status,
-            AgentRegistryStatus::Deleted
+            AgentRegistryStatus::Deleting
         );
         let records = host
             .runtime_db()
@@ -20323,6 +20461,7 @@ mod tests {
             .audit_events()
             .recent(Some(agent_id), 100)
             .unwrap();
+        // A replay before the retry deadline cannot duplicate terminalization.
         host.execute_deletion_job(job).await.unwrap();
         assert_eq!(
             host.runtime_db()
@@ -20345,6 +20484,19 @@ mod tests {
                 .unwrap(),
             audits
         );
+        resume_deletion_after_archive_failure(&host, agent_id).await;
+        assert!(host
+            .runtime_db()
+            .work_items()
+            .latest_for_agent(agent_id, 10)
+            .unwrap()
+            .is_empty());
+        assert!(host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -20417,13 +20569,13 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("cleanup_fenced"));
-            host.execute_deletion_job(job).await.unwrap();
+            pause_deletion_before_private_purge(&host, job).await;
             assert_eq!(
                 host.agent_identity_record(agent_id)
                     .unwrap()
                     .unwrap()
                     .status,
-                AgentRegistryStatus::Deleted
+                AgentRegistryStatus::Deleting
             );
             let retired = host
                 .runtime_db()
@@ -20439,10 +20591,10 @@ mod tests {
                 retired.work_items[&legacy[0].id],
                 execution.work_items[&legacy[0].id]
             );
-            for work in legacy {
+            for work in &legacy {
                 assert_eq!(
                     host.runtime_db().work_items().latest(&work.id).unwrap(),
-                    Some(work)
+                    Some(work.clone())
                 );
             }
             assert!(host
@@ -20453,6 +20605,21 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("cleanup_fenced"));
+            resume_deletion_after_archive_failure(&host, agent_id).await;
+            assert!(host
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(agent_id)
+                .unwrap()
+                .is_none());
+            for work in legacy {
+                assert!(host
+                    .runtime_db()
+                    .work_items()
+                    .latest(&work.id)
+                    .unwrap()
+                    .is_none());
+            }
             host.shutdown().await.unwrap();
         }
     }
@@ -20747,12 +20914,12 @@ mod tests {
             })
             .unwrap();
 
-        // Begin deletion and execute the full pipeline.
+        // Inspect terminalization before the private rows are purged.
         let (_, job, _) = host
-            .begin_public_agent_deletion("delete-queue-me", false, "operator")
+            .begin_public_agent_deletion_with_archive("delete-queue-me", false, "operator", true)
             .await
             .unwrap();
-        host.execute_deletion_job(job).await.unwrap();
+        pause_deletion_before_private_purge(&host, job).await;
 
         // Verify the queued entry was aborted.
         assert_eq!(
@@ -20764,6 +20931,13 @@ mod tests {
                 .status,
             QueueEntryStatus::Aborted
         );
+        resume_deletion_after_archive_failure(&host, "delete-queue-me").await;
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .latest("msg-queued-delete-1")
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
