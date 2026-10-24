@@ -67,3 +67,30 @@ requests under both strategies; their returned cache counts are fixtures, not
 upstream measurements. An earlier real Token Plan call reported cache reads
 without a marker-on/off comparison. Neither proves marker support or predicts
 cache hit rate, cost or latency after this default change.
+
+## Reviewed route defaults: DashScope Token Plan DeepSeek
+
+The #3698 configuration mechanism alone did not fix its original mixed-model
+case. As of 2026-10-24, these two exact routes also default to
+`cache_control=false`:
+
+- `dashscope@token-plan/deepseek-v4.1-flash`
+- `dashscope@token-plan/deepseek-v4-flash-0731`
+
+The issue's multi-day observations show cache reads but no explicit cache
+creation for these routes. This is a request-correctness default, not a promise
+that disabling markers improves their cache hit rate or billed input. Native
+DeepSeek documentation is not proof of how the DashScope gateway treats a
+marker. Other DeepSeek versions, ordinary DashScope API routes and Qwen retain
+their existing policies; user overrides still take precedence.
+
+The registry-path HTTP regression covers default/true/false/true requests for
+both routes and Qwen under both cache strategies, including diagnostics and
+preserved implicit-usage parsing. The ignored
+`live_token_plan_coding_review_uses_builtin_cache_policy` integration target
+performs a manually driven two-turn coding review on one explicitly selected
+Token Plan route. It checks the actual endpoint and built-in policy before
+calling, requires a public task file and an interactive follow-up, and reports
+real request diagnostics and upstream usage without rewriting user config.
+Its request diagnostics establish the outgoing policy, not whether the gateway
+would honor an explicit marker or guarantee a particular cache hit.

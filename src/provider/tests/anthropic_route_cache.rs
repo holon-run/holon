@@ -191,7 +191,18 @@ fn remove_cache_controls(value: &mut Value) {
 }
 
 #[tokio::test]
-async fn anthropic_dashscope_glm53_cache_control_ab_preserves_implicit_usage() {
+async fn anthropic_dashscope_route_cache_defaults_preserve_implicit_usage() {
+    for (route, default_enabled) in [
+        ("dashscope@token-plan/glm-5.3", false),
+        ("dashscope@token-plan/deepseek-v4.1-flash", false),
+        ("dashscope@token-plan/deepseek-v4-flash-0731", false),
+        ("dashscope@token-plan/qwen3.8-flash", true),
+    ] {
+        assert_dashscope_route_cache_control(route, default_enabled).await;
+    }
+}
+
+async fn assert_dashscope_route_cache_control(route: &str, default_enabled: bool) {
     let _env = crate::test_env::lock_env();
     let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_for_server = captured.clone();
@@ -217,7 +228,6 @@ async fn anthropic_dashscope_glm53_cache_control_ab_preserves_implicit_usage() {
     ))
     .await;
     let home = tempfile::tempdir().unwrap();
-    let route = "dashscope@token-plan/glm-5.3";
     let mut stored: HolonConfigFile = serde_json::from_value(json!({
         "model": {"default": route},
         "providers": {
@@ -246,9 +256,11 @@ async fn anthropic_dashscope_glm53_cache_control_ab_preserves_implicit_usage() {
                     .unwrap(),
                 );
             }
-            let enabled = override_value.unwrap_or(false);
+            let enabled = override_value.unwrap_or(default_enabled);
             let source = if override_value.is_some() {
                 AnthropicCacheControlSource::RouteOverride
+            } else if default_enabled {
+                AnthropicCacheControlSource::EndpointBuiltin
             } else {
                 AnthropicCacheControlSource::RouteBuiltin
             };
@@ -281,7 +293,7 @@ async fn anthropic_dashscope_glm53_cache_control_ab_preserves_implicit_usage() {
             assert_eq!(usage.read_input_tokens, 2048);
             assert_eq!(usage.creation_input_tokens, 0);
             let mut body = captured.lock().unwrap().last().unwrap().clone();
-            assert_eq!(body["model"], "glm-5.3");
+            assert_eq!(body["model"], route.rsplit('/').next().unwrap());
             assert_eq!(
                 serde_json::to_string(&body)
                     .unwrap()
@@ -290,6 +302,8 @@ async fn anthropic_dashscope_glm53_cache_control_ab_preserves_implicit_usage() {
             );
             if !enabled {
                 assert!(diagnostics.cache_breakpoints.is_empty());
+                assert!(body.get("metadata").is_none());
+                assert!(body.get("temperature").is_none());
             }
             remove_cache_controls(&mut body);
             if strategy == AnthropicCacheStrategy::ClaudeCodePromptCache {
