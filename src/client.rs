@@ -616,11 +616,33 @@ impl LocalClient {
         interval_ms: Option<u64>,
         summary: Option<String>,
     ) -> Result<TimerRecord> {
+        self.create_timer_schedule(
+            agent_id,
+            Some(duration_ms),
+            interval_ms,
+            None,
+            None,
+            summary,
+        )
+        .await
+    }
+
+    pub async fn create_timer_schedule(
+        &self,
+        agent_id: &str,
+        duration_ms: Option<u64>,
+        interval_ms: Option<u64>,
+        calendar_expression: Option<String>,
+        timezone: Option<String>,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/timers"),
             &CreateTimerRequest {
                 duration_ms,
                 interval_ms,
+                calendar_expression,
+                timezone,
                 summary,
                 authority_class: Some(AuthorityClass::OperatorInstruction),
             },

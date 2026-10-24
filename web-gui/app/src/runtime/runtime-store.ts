@@ -388,6 +388,8 @@ export interface RuntimeStoreState {
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   queryAgentRecentTasks: (agentId: string) => Promise<TaskSummary[]>;
+  queryAgentTimers: (agentId: string) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
+  cancelAgentTimer: (agentId: string, timerId: string) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"]>;
   reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
@@ -3090,6 +3092,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     const tasks = await request.client.getAgentRecentTasks(agentId);
     return isCurrentClientRequest(request) ? tasks : [];
+  },
+  queryAgentTimers: async (agentId) => {
+    const request = captureClientRequest();
+    const timers = await request.client.getAgentTimers(agentId);
+    return isCurrentClientRequest(request) ? timers : [];
+  },
+  cancelAgentTimer: async (agentId, timerId) => {
+    const request = captureClientRequest();
+    const timer = await request.client.cancelAgentTimer(agentId, timerId);
+    if (!isCurrentClientRequest(request)) return timer;
+    return timer;
   },
 
   refreshAgentState: async (agentId) => {

@@ -10,6 +10,7 @@ pub mod ids;
 pub mod startup;
 
 pub mod brief;
+pub mod calendar;
 pub mod cli;
 pub mod client;
 pub mod config;

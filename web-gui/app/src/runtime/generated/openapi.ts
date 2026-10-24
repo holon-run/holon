@@ -3664,6 +3664,12 @@ export interface components {
             /** @default [] */
             timers: {
                 agent_id: string;
+                calendar?: {
+                    /** @description A standard five-field cron expression. */
+                    expression: string;
+                    /** @description An IANA timezone name, for example `America/Los_Angeles`. */
+                    timezone: string;
+                } | null;
                 /** Format: date-time */
                 created_at: string;
                 /** Format: uint64 */
@@ -5637,11 +5643,13 @@ export interface components {
         CreateTimerRequest: {
             /** @enum {string|null} */
             authority_class?: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence" | null;
+            calendar_expression?: string | null;
             /** Format: uint64 */
-            duration_ms: number;
+            duration_ms?: number | null;
             /** Format: uint64 */
             interval_ms?: number | null;
             summary?: string | null;
+            timezone?: string | null;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         CreateWorkItemRequest: {
@@ -8279,6 +8287,12 @@ export interface components {
         /** TimerRecord */
         TimerRecord: {
             agent_id: string;
+            calendar?: {
+                /** @description A standard five-field cron expression. */
+                expression: string;
+                /** @description An IANA timezone name, for example `America/Los_Angeles`. */
+                timezone: string;
+            } | null;
             /** Format: date-time */
             created_at: string;
             /** Format: uint64 */

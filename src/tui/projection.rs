@@ -3701,6 +3701,7 @@ mod tests {
                 next_fire_at: Some(Utc::now()),
                 last_fired_at: None,
                 fire_count: 0,
+                calendar: None,
             }],
             work_items: {
                 let mut item =
