@@ -613,6 +613,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let started_at = std::time::Instant::now();
         self.reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
             .await?;
+        self.runtime.reconcile_context_budget_stops().await?;
         let mut replans = 0;
         loop {
             let candidate = {

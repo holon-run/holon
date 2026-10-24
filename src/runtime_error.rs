@@ -154,6 +154,58 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         // Do not copy outer error contexts that may contain rejected evidence.
         return rejection.descriptor();
     }
+    if let Some(crate::context::ContextPlanningError::PinnedMinimumOverBudget {
+        budget_estimated_tokens,
+        pinned_minimum_estimated_tokens,
+    }) = error.downcast_ref::<crate::context::ContextPlanningError>()
+    {
+        // Only typed numeric evidence is safe here; outer contexts may contain input text.
+        let mut safe_context = BTreeMap::from([
+            ("phase".into(), "context_build".into()),
+            (
+                "recovery_disposition".into(),
+                "stop_until_input_change".into(),
+            ),
+            (
+                "effective_budget_estimated_tokens".into(),
+                budget_estimated_tokens.to_string(),
+            ),
+            (
+                "pinned_minimum_estimated_tokens".into(),
+                pinned_minimum_estimated_tokens.to_string(),
+            ),
+            (
+                "deficit_estimated_tokens".into(),
+                pinned_minimum_estimated_tokens
+                    .saturating_sub(*budget_estimated_tokens)
+                    .to_string(),
+            ),
+        ]);
+        if let Some(budget) = error.downcast_ref::<crate::prompt::ContextBuildBudget>() {
+            safe_context.insert(
+                "configured_budget_estimated_tokens".into(),
+                budget.configured_estimated_tokens.to_string(),
+            );
+            safe_context.insert(
+                "runtime_time_reserved_tokens".into(),
+                budget.runtime_time_reserved_tokens.to_string(),
+            );
+        }
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Validation,
+            code: "context_pinned_minimum_over_budget".into(),
+            retryable: false,
+            operator_message: format!(
+                "context pinned minimum exceeds budget: budget={budget_estimated_tokens}, pinned_minimum={pinned_minimum_estimated_tokens}"
+            ),
+            recovery_hint: Some(
+                "Split new input or adjust the configured context budget within the model window; retry only after the input or budget changes. Provider fallback cannot fix this local planning failure."
+                    .into(),
+            ),
+            safe_context,
+            source_chain: Vec::new(),
+        };
+    }
     let source_chain = collect_runtime_error_source_chain(error);
 
     if let Some(runtime_error) = error.downcast_ref::<RuntimeError>().or_else(|| {
@@ -633,6 +685,80 @@ fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_budget_descriptor_preserves_typed_numeric_evidence_without_input() {
+        let error = AnyhowError::from(
+            crate::context::ContextPlanningError::PinnedMinimumOverBudget {
+                budget_estimated_tokens: 3968,
+                pinned_minimum_estimated_tokens: 6382,
+            },
+        )
+        .context(crate::prompt::ContextBuildBudget {
+            configured_estimated_tokens: 4096,
+            effective_estimated_tokens: 3968,
+            runtime_time_reserved_tokens: 128,
+        })
+        .context("INPUT_SECRET /private/input https://example.com/?token=SECRET");
+
+        assert!(error.is::<crate::context::ContextPlanningError>());
+        let descriptor = describe_runtime_error(&error);
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Validation);
+        assert_eq!(descriptor.code, "context_pinned_minimum_over_budget");
+        assert!(!descriptor.retryable);
+        assert_eq!(descriptor.safe_context["phase"], "context_build");
+        assert_eq!(
+            descriptor.safe_context["recovery_disposition"],
+            "stop_until_input_change"
+        );
+        assert_eq!(
+            descriptor.safe_context["configured_budget_estimated_tokens"],
+            "4096"
+        );
+        assert_eq!(
+            descriptor.safe_context["effective_budget_estimated_tokens"],
+            "3968"
+        );
+        assert_eq!(
+            descriptor.safe_context["runtime_time_reserved_tokens"],
+            "128"
+        );
+        assert_eq!(
+            descriptor.safe_context["pinned_minimum_estimated_tokens"],
+            "6382"
+        );
+        assert_eq!(descriptor.safe_context["deficit_estimated_tokens"], "2414");
+        assert!(descriptor.source_chain.is_empty());
+        let serialized = serde_json::to_string(&descriptor).unwrap();
+        for secret in ["INPUT_SECRET", "/private/input", "example.com", "SECRET"] {
+            assert!(!serialized.contains(secret), "{serialized}");
+        }
+    }
+
+    #[test]
+    fn context_budget_classification_requires_typed_planning_error() {
+        let descriptor = describe_runtime_error(&AnyhowError::msg(
+            "pinned_minimum_over_budget: budget=3968, pinned_minimum=6382",
+        ));
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Unknown);
+        assert_eq!(descriptor.code, "runtime_error");
+
+        let error = AnyhowError::from(
+            crate::context::ContextPlanningError::PinnedMinimumOverBudget {
+                budget_estimated_tokens: 8,
+                pinned_minimum_estimated_tokens: 9,
+            },
+        );
+        let descriptor = describe_runtime_error(&error);
+        assert_eq!(descriptor.code, "context_pinned_minimum_over_budget");
+        assert_eq!(
+            descriptor.safe_context["effective_budget_estimated_tokens"],
+            "8"
+        );
+        assert!(!descriptor
+            .safe_context
+            .contains_key("configured_budget_estimated_tokens"));
+    }
 
     #[test]
     fn archive_fetch_descriptor_keeps_safe_cause_with_long_package() {

@@ -551,6 +551,33 @@ pub struct SetWorkItemReadiness {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ContextBudgetStop {
+    pub source_revision: u64,
+    pub source_turn_id: String,
+    pub configured_estimated_tokens: usize,
+}
+
+impl ContextBudgetStop {
+    const PREFIX: &str = "context_pinned_minimum_over_budget:";
+
+    pub(crate) fn policy(&self) -> Result<String, serde_json::Error> {
+        Ok(format!("{}{}", Self::PREFIX, serde_json::to_string(self)?))
+    }
+
+    pub(crate) fn from_policy(policy: &str) -> Option<Self> {
+        serde_json::from_str(policy.strip_prefix(Self::PREFIX)?).ok()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecheckContextBudgetStop {
+    pub command_id: String,
+    pub work_item_id: String,
+    pub expected: WorkItemExecutionRecord,
+    pub configured_estimated_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumeWorkItemContinuation {
     pub command_id: String,
     pub work_item_id: String,
@@ -674,6 +701,7 @@ pub enum ExecutionProtocolCommand {
     RegisterWorkItem(Box<RegisterWorkItemExecution>),
     AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision),
     SetWorkItemReadiness(Box<SetWorkItemReadiness>),
+    RecheckContextBudgetStop(Box<RecheckContextBudgetStop>),
     SuspendWorkItemContinuation(Box<SuspendWorkItemContinuation>),
     ResumeWorkItemContinuation(Box<ResumeWorkItemContinuation>),
     ReconcileWorkItemContinuationYield(Box<ReconcileWorkItemContinuationYield>),
@@ -753,6 +781,50 @@ pub fn advance_work_item_source_revision(
         return Err("terminal WorkItem source revision cannot advance".into());
     }
     record.source_revision = command.source_revision;
+    assert_invariants(&next)?;
+    Ok(ExecutionTransition {
+        state: next,
+        references: vec![format!("work_item:{}", command.work_item_id)],
+    })
+}
+
+pub fn recheck_context_budget_stop(
+    state: &ExecutionProtocolState,
+    command: &RecheckContextBudgetStop,
+) -> Result<ExecutionTransition, String> {
+    assert_invariants(state)?;
+    if command.command_id.is_empty()
+        || command.work_item_id.is_empty()
+        || state.work_items.get(&command.work_item_id) != Some(&command.expected)
+    {
+        return Err("context budget recheck identity or WorkItem fence is stale".into());
+    }
+    let WorkItemExecutionState::Paused { reason, .. } = &command.expected.state else {
+        return Err("context budget recheck requires a paused WorkItem".into());
+    };
+    let stop = ContextBudgetStop::from_policy(reason)
+        .ok_or_else(|| "context budget recheck requires a typed budget stop".to_string())?;
+    if stop.source_revision == command.expected.source_revision
+        && stop.configured_estimated_tokens == command.configured_estimated_tokens
+    {
+        return Err("context budget recheck requires a changed input or budget".into());
+    }
+    let generation = command
+        .expected
+        .generation()
+        .checked_add(1)
+        .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?;
+    let mut next = state.clone();
+    next.work_items.insert(
+        command.work_item_id.clone(),
+        WorkItemExecutionRecord {
+            source_revision: command.expected.source_revision,
+            state: WorkItemExecutionState::Runnable {
+                generation,
+                recovery_ref: None,
+            },
+        },
+    );
     assert_invariants(&next)?;
     Ok(ExecutionTransition {
         state: next,
@@ -1513,6 +1585,57 @@ pub fn assert_invariants(state: &ExecutionProtocolState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_budget_recheck_requires_exact_pause_changed_condition_and_preserves_source() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        let expected = WorkItemExecutionRecord {
+            source_revision: 3,
+            state: WorkItemExecutionState::Paused {
+                generation: 5,
+                reason: ContextBudgetStop {
+                    source_revision: 3,
+                    source_turn_id: "turn-a".into(),
+                    configured_estimated_tokens: 4096,
+                }
+                .policy()
+                .unwrap(),
+            },
+        };
+        state.work_items.insert("work-a".into(), expected.clone());
+        let mut command = RecheckContextBudgetStop {
+            command_id: "budget-recheck-a".into(),
+            work_item_id: "work-a".into(),
+            expected,
+            configured_estimated_tokens: 4096,
+        };
+        assert!(recheck_context_budget_stop(&state, &command).is_err());
+        command.configured_estimated_tokens = 8192;
+        let resumed = recheck_context_budget_stop(&state, &command).unwrap();
+        assert_eq!(resumed.state.work_items["work-a"].source_revision, 3);
+        assert_eq!(
+            resumed.state.work_items["work-a"].state,
+            WorkItemExecutionState::Runnable {
+                generation: 6,
+                recovery_ref: None,
+            }
+        );
+        assert!(recheck_context_budget_stop(&resumed.state, &command).is_err());
+        command.configured_estimated_tokens = 4096;
+        command.expected.source_revision = 4;
+        state
+            .work_items
+            .insert("work-a".into(), command.expected.clone());
+        assert!(recheck_context_budget_stop(&state, &command).is_ok());
+        command.expected.state = WorkItemExecutionState::Paused {
+            generation: 5,
+            reason: "independent business blocker".into(),
+        };
+        state
+            .work_items
+            .insert("work-a".into(), command.expected.clone());
+        assert!(recheck_context_budget_stop(&state, &command).is_err());
+    }
 
     fn work_item_record(state: WorkItemExecutionState) -> WorkItemExecutionRecord {
         WorkItemExecutionRecord {

@@ -7,6 +7,7 @@ use crate::types::{
 };
 
 pub(super) struct RuntimeFailureArtifacts {
+    pub(super) descriptor: RuntimeErrorDescriptor,
     pub(super) brief: BriefRecord,
     pub(super) transcript: TranscriptEntry,
     pub(super) failure_summary: RuntimeFailureSummary,
@@ -269,7 +270,9 @@ impl RuntimeHandle {
 
         let mut artifact =
             Self::failure_artifact_for_runtime_error(message, failure_text, &descriptor, context);
-        if error.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
+        if error.is::<crate::runtime_error::IdleInputRecoveryRejection>()
+            || error.is::<crate::context::ContextPlanningError>()
+        {
             artifact.metadata.extend(descriptor.safe_context);
         }
         artifact
@@ -426,6 +429,7 @@ impl RuntimeHandle {
             }),
         );
         Ok(RuntimeFailureArtifacts {
+            descriptor,
             brief,
             transcript,
             failure_summary: RuntimeFailureSummary {

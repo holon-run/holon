@@ -5,6 +5,7 @@ mod callback;
 mod clock;
 mod closure;
 mod command_task;
+mod context_recovery;
 mod continuation;
 pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
@@ -959,6 +960,17 @@ fn execution_protocol_settlement_transition_from_facts(
             interrupted_at: record.updated_at.to_rfc3339(),
         })],
     };
+    if record.status == QueueEntryStatus::Aborted {
+        if let Some(transition) = context_recovery::context_budget_failure_settlement(
+            storage,
+            runtime_db,
+            record,
+            terminal_turn,
+            attempt,
+        )? {
+            return Ok(transition);
+        }
+    }
     if record.status != QueueEntryStatus::Processed {
         return Ok(interrupted("runtime_interrupted"));
     }
@@ -6485,6 +6497,7 @@ impl RuntimeHandle {
                     }
                     let mut turn_record = self.build_turn_record(&terminal).await?;
                     if let Some(artifacts) = failure_artifacts.as_ref() {
+                        turn_record.runtime_failure = Some(artifacts.descriptor.clone());
                         if !turn_record.produced_brief_ids.contains(&artifacts.brief.id) {
                             turn_record
                                 .produced_brief_ids

@@ -103,6 +103,9 @@ pub(super) fn validate_execution_commands_tx(
         if let ExecutionProtocolCommand::SetWorkItemReadiness(command) = command {
             validate_set_work_item_readiness(command, work_item_mutations, wait_conditions)?;
         }
+        if let ExecutionProtocolCommand::RecheckContextBudgetStop(command) = command {
+            validate_context_budget_stop_recheck(tx, agent_id, command)?;
+        }
         if let ExecutionProtocolCommand::SuspendWorkItemContinuation(command) = command {
             validate_suspend_work_item_continuation(tx, agent_id, command, continuations)?;
         }
@@ -306,6 +309,9 @@ fn reduce(
         ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
             execution_protocol::set_work_item_readiness(state, command)
         }
+        ExecutionProtocolCommand::RecheckContextBudgetStop(command) => {
+            execution_protocol::recheck_context_budget_stop(state, command)
+        }
         ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
             execution_protocol::suspend_work_item_continuation(state, command)
         }
@@ -352,6 +358,9 @@ fn command_identity(command: &ExecutionProtocolCommand) -> (&'static str, &str) 
         }
         ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
             ("set_work_item_readiness", &command.command_id)
+        }
+        ExecutionProtocolCommand::RecheckContextBudgetStop(command) => {
+            ("recheck_context_budget_stop", &command.command_id)
         }
         ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
             ("suspend_work_item_continuation", &command.command_id)
@@ -681,6 +690,35 @@ fn validate_set_work_item_readiness(
             }
         }
         _ => bail!("WorkItem readiness transition must target Runnable or Paused"),
+    }
+    Ok(())
+}
+
+fn validate_context_budget_stop_recheck(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    command: &execution_protocol::RecheckContextBudgetStop,
+) -> Result<()> {
+    let work: crate::types::WorkItemRecord = tx
+        .query_row(
+            "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2",
+            params![agent_id, command.work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|payload| serde_json::from_str(&payload))??;
+    let has_wait: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM wait_conditions
+         WHERE agent_id = ?1 AND work_item_id = ?2 AND status IN ('active', 'triggered'))",
+        params![agent_id, command.work_item_id],
+        |row| row.get(0),
+    )?;
+    if work.revision != command.expected.source_revision
+        || work.state != crate::types::WorkItemState::Open
+        || work.plan_status != crate::types::WorkItemPlanStatus::Ready
+        || work.blocked_by.is_some()
+        || has_wait
+    {
+        bail!("context budget recheck source is not eligible");
     }
     Ok(())
 }
@@ -1110,6 +1148,7 @@ impl RuntimeTransitionRepository<'_> {
             !matches!(
                 command,
                 ExecutionProtocolCommand::ReconcileWorkItemContinuationYield(_)
+                    | ExecutionProtocolCommand::RecheckContextBudgetStop(_)
                     | ExecutionProtocolCommand::RecoverInterruptedTaskResultClaim(_)
                     | ExecutionProtocolCommand::RecoverUnadvancedTaskResultClaim(_)
             )
