@@ -52,6 +52,30 @@ live occupancy and Git cleanup evidence when available.
 The result is derived from durable runtime state and refreshed against live Git
 state. Retained and removed artifacts remain inspectable.
 
+Each read uses a request-local Git inventory: `git worktree list` runs at most
+once per workspace with inspectable live Git roots, including a failed attempt.
+Each listed live root still gets its own status check. A later read retries the
+inventory; there is no cross-request cache or transactional snapshot across Git
+commands. Removed roots retain their durable evidence without Git inspection,
+and roots registered by the agent remain visible after detaching the binding.
+The inventory only enriches already visible registered roots; it does not add
+roots or expand the attached-workspace-or-registering-agent visibility rule.
+List failures preserve each root's historical branch/head/detached metadata and
+produce per-root inspection evidence. Missing roots and status failures remain
+local to the affected root, not cached workspace failures.
+Cleanup operations continue to perform their own fresh safety checks.
+
+Content-free `workspace.state.*` attribution stages distinguish initial agent
+lock wait and clone, registry reads, Git inventory and status, occupancy reads,
+and serialization/model rendering. Git timings include execution preparation,
+subprocess execution and parsing; list attempts count only actual inventory
+loads, status attempts only actual per-root status reads. The total stage covers
+state assembly only. Serialization and rendering measure delivery preparation,
+with rendering including payload clone/deserialization and budget retries,
+not result persistence or provider consumption. Timers include
+failed/cancelled attempts, nested durations overlap, and counts are cumulative
+non-transactional diagnostics rather than per-request latency percentiles.
+
 ## Binding Surface
 
 `AttachWorkspace { path }` discovers the stable workspace anchor and creates an

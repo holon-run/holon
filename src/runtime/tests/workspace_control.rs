@@ -963,3 +963,214 @@ async fn removed_path_reuse_gets_new_generation_and_old_id_cannot_remove_it() {
     assert_eq!(old_result.disposition, "already_removed");
     assert!(path.exists());
 }
+
+#[tokio::test]
+async fn workspace_state_refresh_preserves_retained_roots_and_removed_evidence() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let roots_dir = tempdir().unwrap();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let mut roots = std::collections::HashMap::new();
+    for label in [
+        "removed",
+        "missing",
+        "status-failed",
+        "clean",
+        "dirty",
+        "detached",
+        "other-agent",
+    ] {
+        let path = roots_dir.path().join(label);
+        if label == "detached" {
+            git(
+                repo.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    path.to_str().unwrap(),
+                    "main",
+                ],
+            );
+        } else {
+            git(
+                repo.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    label,
+                    path.to_str().unwrap(),
+                    "main",
+                ],
+            );
+        }
+        let switched = runtime
+            .switch_workspace_target(WorkspaceSwitchTarget::Path(path.clone()), None)
+            .await
+            .unwrap();
+        roots.insert(label, (switched.execution_root_id, path));
+    }
+    let removed = runtime
+        .remove_registered_worktree(&roots["removed"].0, None, WorktreeBranchPolicy::Keep, None)
+        .await
+        .unwrap();
+    assert!(removed.removed);
+    git(
+        repo.path(),
+        &["worktree", "remove", roots["missing"].1.to_str().unwrap()],
+    );
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "inventory-test",
+            roots["clean"].1.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(roots["dirty"].1.join("dirty.txt"), "dirty\n").unwrap();
+    // The inventory still lists this root, but its own status command fails.
+    std::fs::remove_file(roots["status-failed"].1.join(".git")).unwrap();
+    let repository = runtime.inner.runtime_db.execution_root_entries();
+    let mut other = repository.get(&roots["other-agent"].0).unwrap().unwrap();
+    other.worktree.as_mut().unwrap().registered_by_agent_id = Some("another-agent".into());
+    repository.upsert(&other).unwrap();
+    // Inventory results must not manufacture unregistered or unrelated roots.
+    let unregistered = roots_dir.path().join("unregistered");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            unregistered.to_str().unwrap(),
+            "main",
+        ],
+    );
+    runtime
+        .detach_workspace_with_fallback(&workspace.workspace_id)
+        .await
+        .unwrap();
+
+    let state = runtime.workspace_state_result().await.unwrap();
+    assert!(!state
+        .attached_workspace_ids
+        .contains(&workspace.workspace_id));
+    assert!(state
+        .workspaces
+        .iter()
+        .any(|entry| entry.workspace_id == workspace.workspace_id));
+    assert!(!state.execution_roots.iter().any(|entry| {
+        entry.execution_root_id == roots["other-agent"].0 || entry.filesystem_path == unregistered
+    }));
+    let root = |label: &str| {
+        state
+            .execution_roots
+            .iter()
+            .find(|entry| entry.execution_root_id == roots[label].0)
+            .unwrap()
+    };
+    let clean = root("clean").worktree.as_ref().unwrap();
+    assert_eq!(clean.branch.as_deref(), Some("clean"));
+    assert_eq!(
+        clean.head_commit.as_deref(),
+        Some(git(repo.path(), &["rev-parse", "main"]).as_str())
+    );
+    assert_eq!(clean.last_cleanup.as_ref().unwrap().status, "clean");
+    assert_eq!(
+        clean.last_cleanup.as_ref().unwrap().error.as_deref(),
+        Some("worktree is locked: inventory-test")
+    );
+    let dirty = root("dirty").worktree.as_ref().unwrap();
+    assert_eq!(dirty.last_cleanup.as_ref().unwrap().status, "dirty");
+    assert_eq!(
+        dirty.last_cleanup.as_ref().unwrap().changed_files,
+        ["dirty.txt"]
+    );
+    let detached = root("detached").worktree.as_ref().unwrap();
+    assert!(detached.detached);
+    assert!(detached.branch_ref.is_none());
+    assert_eq!(detached.last_cleanup.as_ref().unwrap().status, "clean");
+    let missing = root("missing").worktree.as_ref().unwrap();
+    assert_eq!(
+        missing.last_cleanup.as_ref().unwrap().status,
+        "inspection_failed"
+    );
+    assert_eq!(
+        missing.last_cleanup.as_ref().unwrap().error.as_deref(),
+        Some("worktree is missing from live git state")
+    );
+    let status_failed = root("status-failed").worktree.as_ref().unwrap();
+    let evidence = status_failed.last_cleanup.as_ref().unwrap();
+    assert_eq!(evidence.status, "inspection_failed");
+    assert!(evidence
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("not a git repository"));
+    assert_eq!(status_failed.branch.as_deref(), Some("status-failed"));
+    let tombstone = serde_json::to_value(root("removed")).unwrap();
+    assert!(root("removed").removed_at.is_some());
+
+    // Only the disposable fixture loses Git metadata; a later read must retry.
+    std::fs::rename(repo.path().join(".git"), repo.path().join("hidden-git")).unwrap();
+    let failed = runtime.workspace_state_result().await;
+    std::fs::rename(repo.path().join("hidden-git"), repo.path().join(".git")).unwrap();
+    let failed = failed.unwrap();
+    for label in ["missing", "status-failed", "clean", "dirty", "detached"] {
+        let entry = failed
+            .execution_roots
+            .iter()
+            .find(|entry| entry.execution_root_id == roots[label].0)
+            .unwrap();
+        let worktree = entry.worktree.as_ref().unwrap();
+        assert_eq!(
+            worktree.last_cleanup.as_ref().unwrap().status,
+            "inspection_failed"
+        );
+        let previous = root(label).worktree.as_ref().unwrap();
+        assert_eq!(worktree.branch, previous.branch);
+        assert_eq!(worktree.branch_ref, previous.branch_ref);
+        assert_eq!(worktree.head_commit, previous.head_commit);
+        assert_eq!(worktree.detached, previous.detached);
+    }
+    let removed_after_failure = failed
+        .execution_roots
+        .iter()
+        .find(|entry| entry.execution_root_id == roots["removed"].0)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(removed_after_failure).unwrap(),
+        tombstone
+    );
+
+    std::fs::remove_file(roots["dirty"].1.join("dirty.txt")).unwrap();
+    git(&roots["dirty"].1, &["checkout", "--detach"]);
+    let refreshed = runtime.workspace_state_result().await.unwrap();
+    let dirty = refreshed
+        .execution_roots
+        .iter()
+        .find(|entry| entry.execution_root_id == roots["dirty"].0)
+        .unwrap()
+        .worktree
+        .as_ref()
+        .unwrap();
+    assert!(dirty.detached);
+    assert!(dirty.branch_ref.is_none());
+    assert_eq!(dirty.last_cleanup.as_ref().unwrap().status, "clean");
+    let removed_after_refresh = refreshed
+        .execution_roots
+        .iter()
+        .find(|entry| entry.execution_root_id == roots["removed"].0)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(removed_after_refresh).unwrap(),
+        tombstone
+    );
+}

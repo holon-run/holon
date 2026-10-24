@@ -123,11 +123,55 @@ stages! {
     CHILDREN => "projection.state.children",
     IDENTITY => "projection.state.identity",
     ACTIVE_TASKS => "projection.state.active_tasks",
+    WORKSPACE_STATE_TOTAL => "workspace.state.total",
+    WORKSPACE_STATE_AGENT_LOCK => "workspace.state.agent_lock_wait",
+    WORKSPACE_STATE_AGENT_CLONE => "workspace.state.agent_clone",
+    WORKSPACE_STATE_ROOT_RECORDS => "workspace.state.root_records",
+    WORKSPACE_STATE_WORKSPACE_RECORDS => "workspace.state.workspace_records",
+    WORKSPACE_STATE_GIT_LIST => "workspace.state.git_list",
+    WORKSPACE_STATE_GIT_STATUS => "workspace.state.git_status",
+    WORKSPACE_STATE_OCCUPANCIES => "workspace.state.occupancies",
+    WORKSPACE_STATE_SERIALIZE => "workspace.state.serialize",
+    WORKSPACE_STATE_RENDER => "workspace.state.render",
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_state_stages_are_fixed_and_unique() {
+        let stages = snapshot()
+            .into_iter()
+            .filter(|stage| stage.name.starts_with("workspace.state."))
+            .map(|stage| stage.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            stages,
+            [
+                "workspace.state.total",
+                "workspace.state.agent_lock_wait",
+                "workspace.state.agent_clone",
+                "workspace.state.root_records",
+                "workspace.state.workspace_records",
+                "workspace.state.git_list",
+                "workspace.state.git_status",
+                "workspace.state.occupancies",
+                "workspace.state.serialize",
+                "workspace.state.render",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        );
+        assert_eq!(
+            snapshot()
+                .iter()
+                .filter(|stage| stage.name.starts_with("workspace.state."))
+                .count(),
+            stages.len()
+        );
+    }
 
     #[test]
     fn timer_records_attempt_rows_and_submillisecond_precision() {

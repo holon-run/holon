@@ -2,6 +2,7 @@ use super::*;
 
 use std::ffi::OsString;
 
+use crate::diagnostics::attribution;
 use crate::system::{
     CaptureSpec, ProcessHost, ProcessPurpose, ProcessRequest, ProgramInvocation, StdioSpec,
     WorkspaceView,
@@ -47,14 +48,53 @@ struct GitWorktreeRecord {
     locked: Option<String>,
 }
 
+#[derive(Default)]
+struct WorkspaceGitInventory {
+    workspaces: HashMap<String, std::result::Result<HashMap<PathBuf, GitWorktreeRecord>, String>>,
+}
+
+impl WorkspaceGitInventory {
+    async fn records(
+        &mut self,
+        workspace_id: &str,
+        load: impl std::future::Future<Output = Result<Vec<GitWorktreeRecord>>>,
+    ) -> &std::result::Result<HashMap<PathBuf, GitWorktreeRecord>, String> {
+        match self.workspaces.entry(workspace_id.to_owned()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(
+                load.await
+                    .map(|records| {
+                        records
+                            .into_iter()
+                            .map(|record| (record.path.clone(), record))
+                            .collect()
+                    })
+                    .map_err(|error| error.to_string()),
+            ),
+        }
+    }
+}
+
 impl RuntimeHandle {
     pub(crate) async fn workspace_state_result(&self) -> Result<WorkspaceStateResult> {
-        let state = self.agent_state().await?;
-        let all_roots = self
-            .inner
-            .runtime_db
-            .execution_root_entries()
-            .latest_all()?;
+        let _total = attribution::WORKSPACE_STATE_TOTAL.start();
+        let state = {
+            let lock_wait = attribution::WORKSPACE_STATE_AGENT_LOCK.start();
+            let guard = self.inner.agent.lock().await;
+            drop(lock_wait);
+            let _clone = attribution::WORKSPACE_STATE_AGENT_CLONE.start();
+            guard.state.clone()
+        };
+        let all_roots = {
+            let mut timer = attribution::WORKSPACE_STATE_ROOT_RECORDS.start();
+            let roots = self
+                .inner
+                .runtime_db
+                .execution_root_entries()
+                .latest_all()?;
+            timer.rows(roots.len());
+            roots
+        };
         let related_workspace_ids = all_roots
             .iter()
             .filter(|entry| {
@@ -70,10 +110,13 @@ impl RuntimeHandle {
             })
             .map(|entry| entry.workspace_id.clone())
             .collect::<HashSet<_>>();
-        let mut workspaces = self
-            .inner
-            .storage
-            .latest_workspace_entries()?
+        let workspaces = {
+            let mut timer = attribution::WORKSPACE_STATE_WORKSPACE_RECORDS.start();
+            let workspaces = self.inner.storage.latest_workspace_entries()?;
+            timer.rows(workspaces.len());
+            workspaces
+        };
+        let mut workspaces = workspaces
             .into_iter()
             .filter(|workspace| {
                 state
@@ -99,6 +142,7 @@ impl RuntimeHandle {
                         == Some(state.id.as_str())
             })
             .collect::<Vec<_>>();
+        let mut inventory = WorkspaceGitInventory::default();
         for entry in execution_roots.iter_mut().filter(|entry| {
             entry.root_kind == WorkspaceProjectionKind::GitWorktreeRoot
                 && entry.removed_at.is_none()
@@ -110,13 +154,26 @@ impl RuntimeHandle {
                 continue;
             };
             let inspection = async {
-                let record = self
-                    .git_worktree_records(workspace)
-                    .await?
-                    .into_iter()
-                    .find(|record| record.path == entry.filesystem_path)
+                let records = inventory
+                    .records(&workspace.workspace_id, async {
+                        let mut timer = attribution::WORKSPACE_STATE_GIT_LIST.start();
+                        let records = self.git_worktree_records(workspace).await?;
+                        timer.rows(records.len());
+                        Ok(records)
+                    })
+                    .await
+                    .as_ref()
+                    .map_err(|error| anyhow!("{error}"))?;
+                let record = records
+                    .get(&entry.filesystem_path)
+                    .cloned()
                     .ok_or_else(|| anyhow!("worktree is missing from live git state"))?;
-                let changed_files = self.changed_files(workspace, &record.path).await?;
+                let changed_files = {
+                    let mut timer = attribution::WORKSPACE_STATE_GIT_STATUS.start();
+                    let files = self.changed_files(workspace, &record.path).await?;
+                    timer.rows(files.len());
+                    files
+                };
                 Ok::<_, anyhow::Error>((record, changed_files))
             }
             .await;
@@ -188,9 +245,14 @@ impl RuntimeHandle {
                 .then_with(|| left.execution_root_id.cmp(&right.execution_root_id))
         });
 
-        let mut occupancies = match self.inner.host_bridge.as_ref() {
-            Some(bridge) => bridge.workspace_occupancies().await?,
-            None => self.inner.storage.latest_workspace_occupancies()?,
+        let mut occupancies = {
+            let mut timer = attribution::WORKSPACE_STATE_OCCUPANCIES.start();
+            let records = match self.inner.host_bridge.as_ref() {
+                Some(bridge) => bridge.workspace_occupancies().await?,
+                None => self.inner.storage.latest_workspace_occupancies()?,
+            };
+            timer.rows(records.len());
+            records
         };
         let root_ids = execution_roots
             .iter()
@@ -1579,5 +1641,72 @@ mod tests {
     fn sanitizes_worktree_label() {
         assert_eq!(sanitize_label("feature/issue 1224"), "feature-issue-1224");
         assert_eq!(sanitize_label("///"), "worktree");
+    }
+
+    #[tokio::test]
+    async fn workspace_git_inventory_loads_once_per_workspace() {
+        let mut inventory = WorkspaceGitInventory::default();
+        let calls = std::cell::Cell::new(0);
+        for path in ["/repo/first", "/repo/second"] {
+            let records = inventory
+                .records("workspace-one", async {
+                    calls.set(calls.get() + 1);
+                    Ok(vec![
+                        GitWorktreeRecord {
+                            path: PathBuf::from("/repo/first"),
+                            head: Some("first".into()),
+                            ..Default::default()
+                        },
+                        GitWorktreeRecord {
+                            path: PathBuf::from("/repo/second"),
+                            head: Some("second".into()),
+                            ..Default::default()
+                        },
+                    ])
+                })
+                .await
+                .as_ref()
+                .unwrap();
+            assert!(records.contains_key(Path::new(path)));
+        }
+        assert_eq!(calls.get(), 1);
+        let other = inventory
+            .records("workspace-two", async {
+                calls.set(calls.get() + 1);
+                Ok(Vec::new())
+            })
+            .await
+            .as_ref()
+            .unwrap();
+        assert!(other.is_empty());
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn workspace_git_inventory_reuses_failure_but_next_query_retries() {
+        let calls = std::cell::Cell::new(0);
+        let mut inventory = WorkspaceGitInventory::default();
+        for _ in 0..2 {
+            let error = inventory
+                .records("workspace", async {
+                    calls.set(calls.get() + 1);
+                    Err(anyhow!("inventory unavailable"))
+                })
+                .await
+                .as_ref()
+                .unwrap_err();
+            assert_eq!(error, "inventory unavailable");
+        }
+        assert_eq!(calls.get(), 1);
+
+        let mut next_query = WorkspaceGitInventory::default();
+        assert!(next_query
+            .records("workspace", async {
+                calls.set(calls.get() + 1);
+                Ok(Vec::new())
+            })
+            .await
+            .is_ok());
+        assert_eq!(calls.get(), 2);
     }
 }
