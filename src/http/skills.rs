@@ -18,7 +18,7 @@ pub async fn list_skills(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let skills = state
         .host
         .operator_agent_skills_view(&agent_id)
@@ -37,7 +37,7 @@ pub async fn install_skill(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::InstallSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -75,7 +75,7 @@ pub async fn add_skill_to_catalog(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::AddSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
         crate::skills::add_library_skill(&user_home, &request.kind)
@@ -95,7 +95,7 @@ pub async fn remove_skill_from_catalog(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::RemoveSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     crate::skills::remove_library_skill(&user_home, &request.name).map_err(error_response)?;
     Ok(Json(json!({
@@ -110,7 +110,7 @@ pub async fn reconcile_skill_catalog(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::ReconcileSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
@@ -125,7 +125,7 @@ pub async fn refresh_skill_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let roots = crate::skills::existing_skill_roots(
         Some(&user_home),
@@ -159,7 +159,7 @@ pub async fn update_skill_catalog(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::UpdateSkillRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     jobs::create_skill_update_job(state, request).await
 }
 
@@ -168,7 +168,7 @@ pub async fn check_skill_catalog(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::CheckSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let result = crate::skills::check_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
@@ -185,7 +185,7 @@ pub async fn enable_skill(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::EnableSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -223,7 +223,7 @@ pub async fn uninstall_skill(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::UninstallSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -254,7 +254,7 @@ pub async fn disable_skill(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::DisableSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -283,7 +283,7 @@ pub async fn skills_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
 
     let scope_filter = params.get("scope").and_then(|s| match s.as_str() {
         "agent" => Some(crate::types::SkillScope::Agent),
@@ -326,7 +326,7 @@ pub async fn skill_detail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
 
     // Parse skill_id to determine the search scope. Agent-scoped skill_ids
     // have the form `agent_home:{owner}:{hash}:{skill_name}`. Everything else
@@ -378,7 +378,7 @@ pub async fn agent_skill_detail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     agent_scoped_skill_detail(&agent_id, &skill_id, &state).await
 }
 

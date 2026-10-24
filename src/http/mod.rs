@@ -100,6 +100,8 @@ pub(crate) use crate::{
 mod agents;
 mod apps;
 mod auth;
+#[cfg(test)]
+mod authentication_tests;
 mod content_reports;
 mod control;
 mod conversation;
@@ -1120,8 +1122,10 @@ async fn origin_guard_middleware(
     request: AxumRequest<Body>,
     next: Next,
 ) -> AxumResponse {
-    if origin_guard_allows(&request, &state) {
-        return next.run(request).await;
+    match origin_guard_allows(&request, &state) {
+        Ok(true) => return next.run(request).await,
+        Ok(false) => {}
+        Err(error) => return authentication_error_response(error).into_response(),
     }
 
     http_error(
@@ -1134,15 +1138,18 @@ async fn origin_guard_middleware(
     .into_response()
 }
 
-fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
+fn origin_guard_allows(
+    request: &AxumRequest<Body>,
+    state: &AppState,
+) -> AuthenticationResult<bool> {
     if matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS
     ) {
-        return true;
+        return Ok(true);
     }
     if state.uses_trusted_local_admission() {
-        return true;
+        return Ok(true);
     }
     // Cookie Origin protection is opt-in so reverse-proxy deployments work
     // without requiring a deployment-specific public origin configuration.
@@ -1155,7 +1162,7 @@ fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
         .trusted_origins
         .is_empty()
     {
-        return true;
+        return Ok(true);
     }
 
     let path = request.uri().path();
@@ -1164,10 +1171,10 @@ fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
     let has_cookie = cookie_session_credential(request.headers()).is_some();
     if !requires_origin {
         if !has_cookie {
-            return true;
+            return Ok(true);
         }
-        if bearer_request_is_authorized(request.headers(), state) {
-            return true;
+        if bearer_request_is_authorized(request.headers(), state)? {
+            return Ok(true);
         }
     }
 
@@ -1178,15 +1185,25 @@ fn origin_guard_allows(request: &AxumRequest<Body>, state: &AppState) -> bool {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.eq_ignore_ascii_case("same-origin"))
         {
-            return true;
+            return Ok(true);
         }
 
         let Some(referer) = single_header_value(request.headers(), &REFERER) else {
-            return false;
+            return Ok(false);
         };
-        return origin_value_allowed(referer, request.headers(), state, true);
+        return Ok(origin_value_allowed(
+            referer,
+            request.headers(),
+            state,
+            true,
+        ));
     };
-    origin_value_allowed(origin, request.headers(), state, false)
+    Ok(origin_value_allowed(
+        origin,
+        request.headers(),
+        state,
+        false,
+    ))
 }
 
 fn single_header_value<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> {
@@ -1475,38 +1492,86 @@ pub(crate) fn projection_gate_error_response(
         }
     }
 }
-pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result<()> {
+#[derive(Debug)]
+pub(crate) enum AuthenticationError {
+    Rejected(&'static str),
+    Infrastructure(anyhow::Error),
+}
+
+impl std::fmt::Display for AuthenticationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(reason) => f.write_str(reason),
+            Self::Infrastructure(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+pub(crate) type AuthenticationResult<T> = std::result::Result<T, AuthenticationError>;
+
+pub(crate) fn authentication_error_response(
+    error: AuthenticationError,
+) -> (StatusCode, Json<Value>) {
+    match error {
+        AuthenticationError::Rejected(reason) => auth_required(reason),
+        AuthenticationError::Infrastructure(source) => error_response(source),
+    }
+}
+
+pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> AuthenticationResult<()> {
     if state.uses_trusted_local_admission() {
         return Ok(());
     }
     if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
         return authenticate_session(headers, state).map(|_| ());
     }
-    if session_credential(headers).is_some_and(|_| authenticate_session(headers, state).is_ok()) {
-        return Ok(());
-    }
+    let infrastructure_error = if session_credential(headers).is_some() {
+        match authenticate_session(headers, state) {
+            Ok(_) => return Ok(()),
+            Err(AuthenticationError::Rejected(_)) => None,
+            Err(error @ AuthenticationError::Infrastructure(_)) => Some(error),
+        }
+    } else {
+        None
+    };
     if !state.require_control_token {
         return Ok(());
     }
-    let config = state.host.config();
-    let expected_token = config
-        .control_token
-        .as_deref()
-        .ok_or_else(|| anyhow!("control token required but not configured"))?;
-    let provided = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| anyhow!("missing Authorization header"))?;
-    let token = provided
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| anyhow!("invalid Authorization scheme"))?;
-    if token != expected_token {
-        return Err(anyhow!("invalid control token"));
+    let static_result = (|| {
+        let config = state.host.config();
+        let expected_token =
+            config
+                .control_token
+                .as_deref()
+                .ok_or(AuthenticationError::Rejected(
+                    "control token required but not configured",
+                ))?;
+        let provided = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or(AuthenticationError::Rejected(
+                "missing Authorization header",
+            ))?;
+        let token = provided
+            .strip_prefix("Bearer ")
+            .ok_or(AuthenticationError::Rejected(
+                "invalid Authorization scheme",
+            ))?;
+        if token != expected_token {
+            return Err(AuthenticationError::Rejected("invalid control token"));
+        }
+        Ok(())
+    })();
+    match static_result {
+        Ok(()) => Ok(()),
+        Err(rejection) => Err(infrastructure_error.unwrap_or(rejection)),
     }
-    Ok(())
 }
 
-pub(crate) fn authorize_remote_access(headers: &HeaderMap, state: &AppState) -> Result<()> {
+pub(crate) fn authorize_remote_access(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> AuthenticationResult<()> {
     if state.uses_trusted_local_admission() {
         return Ok(());
     }
@@ -1536,14 +1601,21 @@ fn bearer_session_credential(headers: &HeaderMap) -> Option<String> {
     Some(token.to_string())
 }
 
-fn bearer_request_is_authorized(headers: &HeaderMap, state: &AppState) -> bool {
+fn bearer_request_is_authorized(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> AuthenticationResult<bool> {
     let Some(credential) = bearer_session_credential(headers) else {
-        return false;
+        return Ok(false);
     };
     if state.host.config().control_token.as_deref() == Some(credential.as_str()) {
-        return true;
+        return Ok(true);
     }
-    authenticate_session_credential(&credential, state).is_ok()
+    match authenticate_session_credential(&credential, state) {
+        Ok(_) => Ok(true),
+        Err(AuthenticationError::Rejected(_)) => Ok(false),
+        Err(error @ AuthenticationError::Infrastructure(_)) => Err(error),
+    }
 }
 
 fn cookie_session_credential(headers: &HeaderMap) -> Option<String> {
@@ -1582,18 +1654,28 @@ pub(crate) fn session_credential(headers: &HeaderMap) -> Option<String> {
 pub(crate) fn authenticate_session(
     headers: &HeaderMap,
     state: &AppState,
-) -> Result<crate::authentication::AuthSessionRecord> {
-    let mut last_error = anyhow!("missing session credential");
-    for credential in [
-        bearer_session_credential(headers),
-        cookie_session_credential(headers),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        match authenticate_session_credential(&credential, state) {
+) -> AuthenticationResult<crate::authentication::AuthSessionRecord> {
+    authenticate_session_credentials(
+        [
+            bearer_session_credential(headers),
+            cookie_session_credential(headers),
+        ]
+        .into_iter()
+        .flatten(),
+        |credential| authenticate_session_credential(credential, state),
+    )
+}
+
+fn authenticate_session_credentials(
+    credentials: impl IntoIterator<Item = String>,
+    mut authenticate: impl FnMut(&str) -> AuthenticationResult<crate::authentication::AuthSessionRecord>,
+) -> AuthenticationResult<crate::authentication::AuthSessionRecord> {
+    let mut last_error = AuthenticationError::Rejected("missing session credential");
+    for credential in credentials {
+        match authenticate(&credential) {
             Ok(session) => return Ok(session),
-            Err(error) => last_error = error,
+            Err(error @ AuthenticationError::Rejected(_)) => last_error = error,
+            Err(error @ AuthenticationError::Infrastructure(_)) => return Err(error),
         }
     }
     Err(last_error)
@@ -1602,34 +1684,39 @@ pub(crate) fn authenticate_session(
 fn authenticate_session_credential(
     credential: &str,
     state: &AppState,
-) -> Result<crate::authentication::AuthSessionRecord> {
+) -> AuthenticationResult<crate::authentication::AuthSessionRecord> {
     let digest = crate::authentication::digest_secret(credential);
     let session = state
         .host
         .runtime_db()
         .authentication()
-        .find_session(&digest)?
-        .ok_or_else(|| anyhow!("invalid or expired session"))?;
+        .find_session(&digest)
+        .map_err(AuthenticationError::Infrastructure)?
+        .ok_or(AuthenticationError::Rejected("invalid or expired session"))?;
     let config = state.host.config();
     let now = Utc::now();
     let idle_ttl = std::time::Duration::from_secs(config.auth.session.idle_ttl_seconds);
     if !session.is_active_at(now, idle_ttl) {
-        return Err(anyhow!("session is expired or revoked"));
+        return Err(AuthenticationError::Rejected(
+            "session is expired or revoked",
+        ));
     }
     if state
         .host
         .runtime_db()
         .authentication()
-        .find_user_by_id(&session.user_id)?
+        .find_user_by_id(&session.user_id)
+        .map_err(AuthenticationError::Infrastructure)?
         .is_some_and(|user| user.disabled_at.is_some())
     {
-        return Err(anyhow!("session user is disabled"));
+        return Err(AuthenticationError::Rejected("session user is disabled"));
     }
     state
         .host
         .runtime_db()
         .authentication()
-        .touch_session(&session.session_digest, now)?;
+        .touch_session(&session.session_digest, now)
+        .map_err(AuthenticationError::Infrastructure)?;
     Ok(session)
 }
 
@@ -1689,7 +1776,10 @@ impl ControlActor {
 /// Resolve the authenticated identity behind a control-plane request.
 /// `authorize_control` remains the gate; this answers *who* is acting so the
 /// enqueued message can carry user-level attribution.
-pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<ControlActor> {
+pub(crate) fn control_actor(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> AuthenticationResult<ControlActor> {
     if state.uses_trusted_local_admission() {
         return Ok(ControlActor::LocalControl);
     }
@@ -1714,8 +1804,11 @@ pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<Con
             .host
             .runtime_db()
             .authentication()
-            .find_user_by_id(&session.user_id)?
-            .ok_or_else(|| anyhow!("authenticated user not found"))?;
+            .find_user_by_id(&session.user_id)
+            .map_err(AuthenticationError::Infrastructure)?
+            .ok_or(AuthenticationError::Rejected(
+                "authenticated user not found",
+            ))?;
         return Ok(ControlActor::User {
             user_id: user.user_id,
             auth_method: session.auth_method,
@@ -1751,7 +1844,7 @@ async fn session_auth_middleware(
         && !anonymous
     {
         if let Err(error) = authenticate_session(request.headers(), &state) {
-            return auth_required(error.to_string()).into_response();
+            return authentication_error_response(error).into_response();
         }
     }
 
@@ -2379,35 +2472,38 @@ mod tests {
             builder.body(Body::empty()).unwrap()
         };
 
-        assert!(origin_guard_allows(
-            &request("/api/control/runtime/status", None),
-            &state
-        ));
+        assert!(
+            origin_guard_allows(&request("/api/control/runtime/status", None), &state).unwrap()
+        );
         assert!(origin_guard_allows(
             &request(
                 "/api/control/runtime/status",
                 Some("https://attacker.example")
             ),
             &state
-        ));
+        )
+        .unwrap());
         assert!(origin_guard_allows(
             &request("/apps/example", Some("https://holon.example")),
             &state
-        ));
+        )
+        .unwrap());
         assert!(origin_guard_allows(
             &request(
                 "/api/control/runtime/status",
                 Some("https://holon.example:8443")
             ),
             &state
-        ));
+        )
+        .unwrap());
         assert!(origin_guard_allows(
             &request(
                 "/api/control/runtime/status",
                 Some("http://holon.example:8443")
             ),
             &state
-        ));
+        )
+        .unwrap());
 
         let same_origin_fetch = Request::builder()
             .method("POST")
@@ -2417,7 +2513,7 @@ mod tests {
             .header("sec-fetch-site", "same-origin")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(&same_origin_fetch, &state));
+        assert!(origin_guard_allows(&same_origin_fetch, &state).unwrap());
 
         let same_origin_referer = Request::builder()
             .method("POST")
@@ -2427,7 +2523,7 @@ mod tests {
             .header(header::REFERER, "http://holon.example:8443/settings")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(&same_origin_referer, &state));
+        assert!(origin_guard_allows(&same_origin_referer, &state).unwrap());
 
         let browser_exchange_without_source = Request::builder()
             .method("POST")
@@ -2435,10 +2531,7 @@ mod tests {
             .header(header::AUTHORIZATION, "Bearer browser-credential")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(
-            &browser_exchange_without_source,
-            &state
-        ));
+        assert!(origin_guard_allows(&browser_exchange_without_source, &state).unwrap());
     }
 
     #[test]
@@ -2469,7 +2562,7 @@ mod tests {
             .header(header::ORIGIN, "https://admin.example:8443")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(&trusted_origin, &state));
+        assert!(origin_guard_allows(&trusted_origin, &state).unwrap());
 
         let untrusted_origin = Request::builder()
             .method("POST")
@@ -2479,7 +2572,7 @@ mod tests {
             .header(header::ORIGIN, "https://attacker.example")
             .body(Body::empty())
             .unwrap();
-        assert!(!origin_guard_allows(&untrusted_origin, &state));
+        assert!(!origin_guard_allows(&untrusted_origin, &state).unwrap());
 
         let browser_exchange_without_source = Request::builder()
             .method("POST")
@@ -2487,10 +2580,7 @@ mod tests {
             .header(header::AUTHORIZATION, "Bearer browser-credential")
             .body(Body::empty())
             .unwrap();
-        assert!(!origin_guard_allows(
-            &browser_exchange_without_source,
-            &state
-        ));
+        assert!(!origin_guard_allows(&browser_exchange_without_source, &state).unwrap());
 
         let native_exchange = Request::builder()
             .method("POST")
@@ -2498,7 +2588,7 @@ mod tests {
             .header(header::AUTHORIZATION, "Bearer native-credential")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(&native_exchange, &state));
+        assert!(origin_guard_allows(&native_exchange, &state).unwrap());
 
         let bearer_write = Request::builder()
             .method("POST")
@@ -2506,7 +2596,7 @@ mod tests {
             .header(header::AUTHORIZATION, "Bearer session-credential")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(&bearer_write, &state));
+        assert!(origin_guard_allows(&bearer_write, &state).unwrap());
 
         let (_home, host) = control_token_test_host_with_origin_guard();
         let state = AppState::for_tcp(host);
@@ -2517,7 +2607,7 @@ mod tests {
             .header(header::COOKIE, "holon_session=session")
             .body(Body::empty())
             .unwrap();
-        assert!(origin_guard_allows(&valid_bearer_with_cookie, &state));
+        assert!(origin_guard_allows(&valid_bearer_with_cookie, &state).unwrap());
 
         let invalid_bearer_with_cookie = Request::builder()
             .method("POST")
@@ -2526,7 +2616,7 @@ mod tests {
             .header(header::COOKIE, "holon_session=session")
             .body(Body::empty())
             .unwrap();
-        assert!(!origin_guard_allows(&invalid_bearer_with_cookie, &state));
+        assert!(!origin_guard_allows(&invalid_bearer_with_cookie, &state).unwrap());
     }
 
     #[tokio::test]
@@ -2931,7 +3021,7 @@ mod tests {
         (home, host)
     }
 
-    fn control_token_test_host_with_origin_guard() -> (tempfile::TempDir, RuntimeHost) {
+    pub(super) fn control_token_test_host_with_origin_guard() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         fs::write(
             home.path().join("config.json"),
@@ -3140,7 +3230,7 @@ mod tests {
         );
     }
 
-    fn oidc_test_host_with_session() -> (tempfile::TempDir, RuntimeHost, String) {
+    pub(super) fn oidc_test_host_with_session() -> (tempfile::TempDir, RuntimeHost, String) {
         let (home, host) = oidc_test_host();
         let now = chrono::Utc::now();
         let authentication = host.runtime_db().authentication();

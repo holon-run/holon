@@ -27,7 +27,7 @@ pub async fn tasks(
     headers: HeaderMap,
     Query(query): Query<TaskListQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -51,7 +51,7 @@ pub async fn task_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -85,7 +85,7 @@ pub async fn task_output(
     headers: HeaderMap,
     Query(query): Query<TaskOutputQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -130,7 +130,7 @@ pub async fn tool_execution(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -152,7 +152,7 @@ pub async fn tool_execution_artifact(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -224,7 +224,7 @@ pub async fn task_input(
     headers: HeaderMap,
     ApiJson(request): ApiJson<TaskInputRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -256,7 +256,7 @@ pub async fn task_stop(
     headers: HeaderMap,
     ApiJson(request): ApiJson<TaskStopRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -305,7 +305,7 @@ pub async fn create_command_task(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateCommandTaskRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
@@ -361,7 +361,7 @@ pub async fn create_work_item(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
@@ -398,7 +398,7 @@ pub async fn pick_work_item(
     headers: HeaderMap,
     ApiJson(request): ApiJson<PickWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
@@ -447,7 +447,7 @@ pub async fn update_work_item(
     headers: HeaderMap,
     ApiJson(request): ApiJson<UpdateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
@@ -524,7 +524,7 @@ pub async fn complete_work_item(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CompleteWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let report_text = request.report_text.trim();
     if report_text.is_empty() {
         return Err(bad_request("report_text must not be empty"));
@@ -604,7 +604,7 @@ pub async fn work_items(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -624,7 +624,7 @@ pub async fn work_item(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -654,7 +654,7 @@ pub async fn timers(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -671,7 +671,7 @@ pub async fn timer(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -696,7 +696,7 @@ pub async fn create_timer(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateTimerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -732,7 +732,7 @@ pub async fn cancel_timer(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CancelTimerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state

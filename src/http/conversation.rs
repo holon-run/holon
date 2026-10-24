@@ -296,7 +296,7 @@ pub async fn stream(
     Query(query): Query<ConversationStreamQuery>,
 ) -> AxumResponse {
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let expected_incarnation = match request_incarnation(&headers) {
         Ok(expected) => expected,
@@ -328,7 +328,7 @@ pub async fn stream(
     let (scope_principal, scope_entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(authority) => authority,
-            Err(error) => return auth_required(error.to_string()).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let host = state.host.clone();
     let mut live_rx = host.subscribe_events();
@@ -731,7 +731,7 @@ pub async fn locate(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let expected_incarnation = match request_incarnation(&headers) {
         Ok(expected) => expected,
@@ -740,7 +740,7 @@ pub async fn locate(
     let (principal, entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(authority) => authority,
-            Err(error) => return auth_required(error.to_string()).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let limits = state.conversation_read_limits.clone();
     let host = state.host.clone();
@@ -818,7 +818,7 @@ pub async fn summary(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let expected_incarnation = match request_incarnation(&headers) {
         Ok(expected) => expected,
@@ -832,7 +832,7 @@ pub async fn summary(
     let (scope_principal, scope_entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(authority) => authority,
-            Err(error) => return auth_required(error.to_string()).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let snapshot = match tokio::time::timeout(
         limits.timeout,
@@ -899,7 +899,7 @@ pub async fn activities(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let expected_incarnation = match request_incarnation(&headers) {
         Ok(expected) => expected,
@@ -921,7 +921,7 @@ pub async fn activities(
     let (scope_principal, scope_entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(authority) => authority,
-            Err(error) => return auth_required(error.to_string()).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let snapshot = match tokio::time::timeout(
         limits.timeout,
@@ -1012,7 +1012,7 @@ pub async fn shadow_diagnostics(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_control(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let limits = state.conversation_read_limits.clone();
     let turn_limit = query
@@ -1022,7 +1022,7 @@ pub async fn shadow_diagnostics(
     let (scope_principal, scope_entitlement) =
         match observer_sync::observer_principal_and_entitlement(&headers, &state) {
             Ok(authority) => authority,
-            Err(error) => return auth_required(error.to_string()).into_response(),
+            Err(error) => return authentication_error_response(error).into_response(),
         };
     let diagnostics: ConversationShadowDiagnostics = match tokio::time::timeout(
         limits.timeout,

@@ -18,10 +18,10 @@ use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
 // The projection-effect classification lives with the runtime event registry
 // (its source of truth); re-exported here to keep the S0 contract surface.
 use super::{
-    agents::load_observer_sync_verification, auth_required, authorize_remote_access,
-    error_response, http_error, projection_gate_error_response, serialize_json, traced_json_bytes,
-    traced_json_bytes_with_stale_marker, AppState, AxumResponse, HttpErrorEnvelope, IntoResponse,
-    ProjectionFailure, ProjectionGateError, ProjectionKey,
+    agents::load_observer_sync_verification, authentication_error_response,
+    authorize_remote_access, error_response, http_error, projection_gate_error_response,
+    serialize_json, traced_json_bytes, traced_json_bytes_with_stale_marker, AppState, AxumResponse,
+    HttpErrorEnvelope, IntoResponse, ProjectionFailure, ProjectionGateError, ProjectionKey,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use crate::runtime_event::ProjectionEffect;
@@ -313,11 +313,11 @@ pub async fn agent_roster_snapshot(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let (principal, entitlement) = match observer_principal_and_entitlement(&headers, &state) {
         Ok(authority) => authority,
-        Err(error) => return auth_required(error.to_string()).into_response(),
+        Err(error) => return authentication_error_response(error).into_response(),
     };
     let verification = load_observer_sync_verification(&state);
     if !advertised_observer_sync_capabilities(&verification).contains(&ROSTER_SNAPSHOT_CAPABILITY) {
@@ -447,7 +447,7 @@ pub async fn agent_roster_snapshot(
 pub(crate) fn observer_principal_and_entitlement(
     headers: &HeaderMap,
     state: &AppState,
-) -> anyhow::Result<(String, &'static str)> {
+) -> super::AuthenticationResult<(String, &'static str)> {
     if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
         Ok((
             super::control_actor(headers, state)?.principal_id(),
@@ -498,11 +498,11 @@ pub async fn agent_projection_snapshot(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let (principal, entitlement) = match observer_principal_and_entitlement(&headers, &state) {
         Ok(authority) => authority,
-        Err(error) => return auth_required(error.to_string()).into_response(),
+        Err(error) => return authentication_error_response(error).into_response(),
     };
     let verification = load_observer_sync_verification(&state);
     if !advertised_observer_sync_capabilities(&verification)

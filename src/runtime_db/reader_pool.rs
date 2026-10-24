@@ -64,6 +64,7 @@ struct Counters {
 #[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct ReaderPoolStats {
+    pub(crate) capacity: u32,
     pub(crate) connect_attempts: u64,
     pub(crate) connect_failures: u64,
     pub(crate) connections_opened: u64,
@@ -309,6 +310,13 @@ impl RuntimeDbReaderPool {
             .ok()
             .and_then(|pool| pool.as_ref().map(Pool::state));
         ReaderPoolStats {
+            capacity: self
+                .shared
+                .pool
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or(0, Pool::max_size),
             connect_attempts: stats.connect_attempts.load(Ordering::Relaxed),
             connect_failures: stats.connect_failures.load(Ordering::Relaxed),
             connections_opened: stats.connections_opened.load(Ordering::Relaxed),

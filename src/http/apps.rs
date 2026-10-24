@@ -83,7 +83,7 @@ async fn app_context(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
     Ok(Json(AppContext {
         sdk_version: SDK_VERSION,
@@ -101,7 +101,7 @@ async fn app_request(
     headers: HeaderMap,
     ApiJson(request): ApiJson<AppRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
     if request.version != SDK_VERSION {
         return Err(bad_request("unsupported app SDK request version"));
@@ -162,7 +162,7 @@ async fn app_events(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
     let mut events = state.host.subscribe_events();
     let storage = state
@@ -275,7 +275,7 @@ async fn serve_sdk(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
     let body = EmbeddedAppSdk::get("holon.js")
         .ok_or_else(|| service_unavailable("Holon App SDK artifact is unavailable"))?
@@ -333,7 +333,7 @@ async fn list_apps(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     validate_segment("agent_id", &agent_id)?;
 
     let agent_home = state.host.agent_data_dir(&agent_id);
@@ -418,7 +418,7 @@ async fn resolve_app(
     agent_id: &str,
     app_id: &str,
 ) -> Result<ResolvedApp, (StatusCode, Json<Value>)> {
-    authorize_remote_access(headers, state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(headers, state).map_err(authentication_error_response)?;
     validate_segment("agent_id", agent_id)?;
     validate_segment("app_id", app_id)?;
     let agent_home = state.host.agent_data_dir(agent_id);
