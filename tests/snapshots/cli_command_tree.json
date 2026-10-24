@@ -2602,6 +2602,13 @@
         "required": false
       },
       {
+        "long": "calendar-expression",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
         "long": "every-ms",
         "short": null,
         "default_value": null,
@@ -2610,6 +2617,13 @@
       },
       {
         "long": "summary",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "timezone",
         "short": null,
         "default_value": null,
         "possible_values": null,
@@ -2648,10 +2662,17 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
-        "required": true
+        "required": false
       },
       {
         "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "calendar-expression",
         "short": null,
         "default_value": null,
         "possible_values": null,
@@ -2666,6 +2687,13 @@
       },
       {
         "long": "summary",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "timezone",
         "short": null,
         "default_value": null,
         "possible_values": null,
