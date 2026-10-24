@@ -26,6 +26,7 @@ mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
 pub(crate) mod scheduler_executor;
+mod scoped_projection;
 mod subagent;
 mod task_result_recovery;
 mod task_state_reducer;

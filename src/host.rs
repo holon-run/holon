@@ -1,3 +1,5 @@
+mod scoped_projection;
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
@@ -2857,6 +2859,23 @@ impl RuntimeHost {
             .map(|entry| entry.runtime.clone())
     }
 
+    pub(crate) async fn try_get_loaded_runtime_scoped(
+        &self,
+        agent_id: &str,
+        db: &RuntimeDb,
+    ) -> Result<Option<RuntimeHandle>> {
+        let runtime = {
+            let registry = db.wait_for_memory_lock(self.inner.runtimes.read()).await?;
+            registry
+                .agents
+                .get(agent_id)
+                .filter(|entry| entry.accepts_host_access())
+                .map(|entry| entry.runtime.clone())
+        };
+        db.check_read_scope()?;
+        Ok(runtime)
+    }
+
     pub(crate) async fn try_get_operator_loaded_runtime(
         &self,
         agent_id: &str,
@@ -3552,6 +3571,8 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)
     }
 
+    // Unscoped reference path retained for scoped projection equivalence tests.
+    #[cfg(test)]
     pub(crate) async fn operator_agent_state_projection(
         &self,
         agent_id: &str,
@@ -5308,21 +5329,7 @@ impl RuntimeHost {
         &self,
         parent_agent_id: Option<&str>,
     ) -> Result<Vec<AgentListEntry>> {
-        let identities = self
-            .agent_identity_records()?
-            .into_iter()
-            .filter(|record| {
-                record.status == AgentRegistryStatus::Active
-                    && record.visibility == AgentVisibility::Public
-                    && parent_agent_id.map_or(true, |parent| {
-                        record
-                            .lineage_parent_agent_id
-                            .as_deref()
-                            .or(record.parent_agent_id.as_deref())
-                            == Some(parent)
-                    })
-            })
-            .collect::<Vec<_>>();
+        let identities = self.agent_list_identities(parent_agent_id)?;
         if identities.is_empty() {
             return Ok(Vec::new());
         }
@@ -5336,6 +5343,52 @@ impl RuntimeHost {
             .runtime_db()
             .agent_list_posture_rows_async(agent_ids)
             .await?;
+        self.agent_list_entries_from_rows(identities, rows, self.runtime_db())
+    }
+
+    /// Run inside a registered blocking worker; no hidden async SQL task.
+    pub(crate) fn list_agent_entries_for_parent_scoped(
+        &self,
+        parent_agent_id: Option<&str>,
+        db: &RuntimeDb,
+    ) -> Result<Vec<AgentListEntry>> {
+        db.check_read_scope()?;
+        let identities = self.agent_list_identities(parent_agent_id)?;
+        let agent_ids = identities
+            .iter()
+            .map(|record| record.agent_id.clone())
+            .collect::<Vec<_>>();
+        let rows = db.agent_list_posture_rows(&agent_ids)?;
+        self.agent_list_entries_from_rows(identities, rows, db)
+    }
+
+    fn agent_list_identities(
+        &self,
+        parent_agent_id: Option<&str>,
+    ) -> Result<Vec<AgentIdentityRecord>> {
+        Ok(self
+            .agent_identity_records()?
+            .into_iter()
+            .filter(|record| {
+                record.status == AgentRegistryStatus::Active
+                    && record.visibility == AgentVisibility::Public
+                    && parent_agent_id.map_or(true, |parent| {
+                        record
+                            .lineage_parent_agent_id
+                            .as_deref()
+                            .or(record.parent_agent_id.as_deref())
+                            == Some(parent)
+                    })
+            })
+            .collect())
+    }
+
+    fn agent_list_entries_from_rows(
+        &self,
+        identities: Vec<AgentIdentityRecord>,
+        rows: crate::runtime_db::agent_list::AgentListPostureRows,
+        db: &RuntimeDb,
+    ) -> Result<Vec<AgentListEntry>> {
         let mut rows_by_agent = rows
             .rows
             .into_iter()
@@ -5344,10 +5397,12 @@ impl RuntimeHost {
         let catalog = RuntimeModelCatalog::from_config(&self.config());
         let mut entries = Vec::new();
         for identity in identities {
+            db.check_read_cancellation()?;
             let row = rows_by_agent.remove(&identity.agent_id);
             entries.push(self.agent_list_entry_from_projection_row(&identity, row, &catalog));
         }
         entries.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
+        db.check_read_scope()?;
         Ok(entries)
     }
 
@@ -5561,11 +5616,21 @@ impl RuntimeHost {
     /// committed database read view. All-or-nothing: any per-Agent assembly
     /// failure fails the whole snapshot, and entries reflect committed
     /// canonical state instead of in-memory runtime watchers.
+    #[cfg(test)]
     pub(crate) fn agent_roster_snapshot(&self) -> Result<AgentRosterSnapshotData> {
-        let rows = self.runtime_db().agent_roster_snapshot_rows()?;
+        self.agent_roster_snapshot_scoped(self.runtime_db())
+    }
+
+    pub(crate) fn agent_roster_snapshot_scoped(
+        &self,
+        db: &RuntimeDb,
+    ) -> Result<AgentRosterSnapshotData> {
+        db.check_read_scope()?;
+        let rows = db.agent_roster_snapshot_rows()?;
         let catalog = RuntimeModelCatalog::from_config(&self.config());
         let mut agents = Vec::with_capacity(rows.rows.len());
         for row in rows.rows {
+            db.check_read_cancellation()?;
             let identity: AgentIdentityRecord =
                 serde_json::from_str(&row.identity_json).map_err(|error| {
                     anyhow!(
@@ -5619,6 +5684,7 @@ impl RuntimeHost {
                 latest_brief,
             });
         }
+        db.check_read_scope()?;
         Ok(AgentRosterSnapshotData {
             runtime_id: rows.runtime_id,
             event_log_epoch: rows.event_log_epoch,
@@ -5632,11 +5698,22 @@ impl RuntimeHost {
     /// public member, so unknown, private, and deleted identities stay
     /// indistinguishable. Assembly is all-or-nothing: an unreadable anchor
     /// fails the whole request instead of substituting placeholder facts.
+    #[cfg(test)]
     pub(crate) fn agent_projection_snapshot(
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentProjectionSnapshotData>> {
-        let rows = self.runtime_db().agent_projection_snapshot_rows(agent_id)?;
+        self.agent_projection_snapshot_scoped(agent_id, self.runtime_db())
+    }
+
+    pub(crate) fn agent_projection_snapshot_scoped(
+        &self,
+        agent_id: &str,
+        db: &RuntimeDb,
+    ) -> Result<Option<AgentProjectionSnapshotData>> {
+        db.check_read_scope()?;
+        let rows = db.agent_projection_snapshot_rows(agent_id)?;
+        db.check_read_scope()?;
         let row = match rows.row {
             Some(row) => row,
             None => return Ok(None),
@@ -5737,6 +5814,7 @@ impl RuntimeHost {
                 record_id: brief.brief_id.clone(),
             });
         }
+        db.check_read_scope()?;
         Ok(Some(AgentProjectionSnapshotData {
             runtime_id: rows.runtime_id,
             event_log_epoch: rows.event_log_epoch,
@@ -10133,6 +10211,16 @@ mod tests {
             .list_agent_entries_for_parent(Some("parent-agent"))
             .await
             .unwrap();
+        let scoped = host
+            .runtime_db()
+            .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(
+                std::time::Instant::now() + Duration::from_secs(30),
+            ));
+        assert_eq!(
+            entries,
+            host.list_agent_entries_for_parent_scoped(Some("parent-agent"), &scoped)
+                .unwrap()
+        );
         assert_eq!(
             entries
                 .iter()
@@ -10158,6 +10246,131 @@ mod tests {
             .upsert(&identity)
             .unwrap();
         identity
+    }
+
+    #[tokio::test]
+    async fn scoped_host_snapshots_and_list_match_ordinary_reads_and_reject_cancelled_empty_reads()
+    {
+        let (_home, host) = test_host();
+        append_public_identity(&host, "scoped-snapshot-agent");
+        host.runtime_db()
+            .agent_states()
+            .upsert(&AgentState::new("scoped-snapshot-agent"))
+            .unwrap();
+        let scope = crate::runtime_db::RuntimeDbReadScope::new(
+            std::time::Instant::now() + Duration::from_secs(30),
+        );
+        let scoped = host.runtime_db().with_read_scope(scope.clone());
+        assert_eq!(
+            host.agent_roster_snapshot().unwrap(),
+            host.agent_roster_snapshot_scoped(&scoped).unwrap()
+        );
+        assert_eq!(
+            host.agent_projection_snapshot("scoped-snapshot-agent")
+                .unwrap(),
+            host.agent_projection_snapshot_scoped("scoped-snapshot-agent", &scoped)
+                .unwrap()
+        );
+        assert_eq!(
+            host.list_agent_entries().await.unwrap(),
+            host.list_agent_entries_for_parent_scoped(None, &scoped)
+                .unwrap()
+        );
+        assert!(host
+            .agent_projection_snapshot_scoped("missing-agent", &scoped)
+            .unwrap()
+            .is_none());
+        assert!(host
+            .list_agent_entries_for_parent_scoped(Some("missing-parent"), &scoped)
+            .unwrap()
+            .is_empty());
+        scope.cancel();
+        for error in [
+            host.agent_roster_snapshot_scoped(&scoped).unwrap_err(),
+            host.agent_projection_snapshot_scoped("missing-agent", &scoped)
+                .unwrap_err(),
+            host.list_agent_entries_for_parent_scoped(Some("missing-parent"), &scoped)
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+                "{error:#}"
+            );
+        }
+        assert!(host.agent_roster_snapshot().is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_loaded_lookup_times_out_without_falling_back_to_unloaded() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let _runtime = host.get_or_create_agent(&agent_id).await.unwrap();
+        let held = host.inner.runtimes.write().await;
+        let scoped = host
+            .runtime_db()
+            .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(
+                std::time::Instant::now() + Duration::from_millis(50),
+            ));
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.try_get_loaded_runtime_scoped(&agent_id, &scoped),
+        )
+        .await
+        .unwrap()
+        .err()
+        .expect("lock timeout must be an error, not unloaded None");
+        assert!(
+            error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+            "{error:#}"
+        );
+        drop(held);
+        let healthy =
+            host.runtime_db()
+                .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(
+                    std::time::Instant::now() + Duration::from_secs(30),
+                ));
+        assert!(host
+            .try_get_loaded_runtime_scoped(&agent_id, &healthy)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(host
+            .try_get_loaded_runtime_scoped("missing-agent", &healthy)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn scoped_host_empty_reads_preserve_protection_failure_over_cancellation() {
+        let (_home, host) = test_host();
+        let scope = crate::runtime_db::RuntimeDbReadScope::new(
+            std::time::Instant::now() + Duration::from_secs(30),
+        );
+        let scoped = host.runtime_db().with_read_scope(scope.clone());
+        let mut wal = scoped.path().as_os_str().to_os_string();
+        wal.push("-wal");
+        std::fs::remove_file(std::path::PathBuf::from(wal)).unwrap();
+        scope.cancel();
+        let lookup_error = host
+            .try_get_loaded_runtime_scoped("missing-agent", &scoped)
+            .await
+            .err()
+            .expect("protection failure must not become unloaded None");
+        for error in [
+            host.agent_roster_snapshot_scoped(&scoped).unwrap_err(),
+            host.agent_projection_snapshot_scoped("missing-agent", &scoped)
+                .unwrap_err(),
+            host.list_agent_entries_for_parent_scoped(Some("missing-parent"), &scoped)
+                .unwrap_err(),
+            lookup_error,
+        ] {
+            assert!(
+                error.is::<crate::runtime_db::RuntimeDbProtectionError>(),
+                "{error:#}"
+            );
+        }
     }
 
     #[tokio::test]

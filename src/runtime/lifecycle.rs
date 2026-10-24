@@ -245,11 +245,27 @@ impl RuntimeHandle {
         runtime_error_override: Option<bool>,
         work_queue_projection: WorkQueueReadModel,
     ) -> Result<ClosureDecision> {
-        let projection = scheduler::SchedulerProjection::from_state_with_work_queue_at(
+        Self::closure_decision_with_storage_at(
             &self.inner.storage,
             state,
+            runtime_error_override,
             work_queue_projection,
             self.now(),
+        )
+    }
+
+    pub(super) fn closure_decision_with_storage_at(
+        storage: &AppStorage,
+        state: &AgentState,
+        runtime_error_override: Option<bool>,
+        work_queue_projection: WorkQueueReadModel,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<ClosureDecision> {
+        let projection = scheduler::SchedulerProjection::from_state_with_work_queue_at(
+            storage,
+            state,
+            work_queue_projection,
+            now,
         )?;
         let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
@@ -2135,7 +2151,7 @@ fn child_blocked_reason(
     })
 }
 
-fn build_child_agent_observability(
+pub(super) fn build_child_agent_observability(
     agent: &AgentState,
     waiting_reason: Option<WaitingReason>,
     latest_tasks: &[TaskRecord],

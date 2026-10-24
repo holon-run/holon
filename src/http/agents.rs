@@ -299,6 +299,40 @@ pub(crate) fn load_observer_sync_verification(
     verification
 }
 
+pub(crate) async fn load_observer_sync_verification_scoped(
+    state: &AppState,
+    deadline: tokio::time::Instant,
+) -> Result<ObserverSyncCapabilityVerification, ProjectionFailure> {
+    let db = state.host.runtime_db().clone();
+    state
+        .projection_gate
+        .preflight(deadline, move |scope| {
+            let _preflight = crate::diagnostics::attribution::CAPABILITY_PREFLIGHT.start();
+            let db = db.with_read_scope(scope);
+            db.check_read_scope()
+                .map_err(error_response)
+                .map_err(ProjectionFailure::from)?;
+            // Self-heal's writer transaction is not interrupted by read cancellation.
+            let foundations = db
+                .observer_sync_foundations_with_self_heal()
+                .map_err(error_response)
+                .map_err(ProjectionFailure::from)?;
+            db.check_read_scope()
+                .map_err(error_response)
+                .map_err(ProjectionFailure::from)?;
+            Ok(ObserverSyncCapabilityVerification {
+                runtime_identity_stable: foundations.runtime_identity_stable,
+                agent_identity_reserved: foundations.agent_identity_reserved,
+                roster_snapshot_verified: foundations.roster_snapshot_verified,
+                projection_snapshot_verified: foundations.projection_snapshot_verified,
+                event_projection_effect_complete: foundations.event_projection_effect_complete,
+                brief_atomic_linkage_verified: foundations.brief_atomic_linkage_verified,
+                conversation_read_verified: foundations.conversation_read_verified,
+            })
+        })
+        .await
+}
+
 pub async fn handshake(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -355,21 +389,39 @@ pub async fn list_agent_entries(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return authentication_error_response(error).into_response();
     }
+    let budget = super::projection_gate::DEFAULT_BUILD_BUDGET;
+    let deadline = tokio::time::Instant::now() + budget;
     // The projection cache key must distinguish parent filters; otherwise a
     // cached list built for one query would be served for every other query.
+    let host = state.host.clone();
     let result = state
         .projection_gate
-        .run(ProjectionKey::AgentsList(query.parent.clone()), || async {
-            let projection_started = std::time::Instant::now();
-            let agents = state
-                .host
-                .list_agent_entries_for_parent(query.parent.as_deref())
-                .await
-                .map_err(error_response)
-                .map_err(ProjectionFailure::from)?;
-            crate::diagnostics::record_projection_agents_list(projection_started.elapsed());
-            serialize_json("/agents/list", &agents).map_err(ProjectionFailure::from)
-        })
+        .run_owned(
+            ProjectionKey::AgentsList(query.parent.clone()),
+            deadline,
+            budget,
+            move |context| async move {
+                context
+                    .blocking(move |scope| {
+                        let db = host.runtime_db().with_read_scope(scope);
+                        let projection_started = std::time::Instant::now();
+                        let agents = host
+                            .list_agent_entries_for_parent_scoped(query.parent.as_deref(), &db)
+                            .map_err(error_response)
+                            .map_err(ProjectionFailure::from)?;
+                        crate::diagnostics::record_projection_agents_list(
+                            projection_started.elapsed(),
+                        );
+                        let bytes = serialize_json("/agents/list", &agents)
+                            .map_err(ProjectionFailure::from)?;
+                        db.check_read_scope()
+                            .map_err(error_response)
+                            .map_err(ProjectionFailure::from)?;
+                        Ok(bytes)
+                    })
+                    .await?
+            },
+        )
         .await;
     match result {
         Ok(bytes) => traced_json_bytes("/agents/list", started_at, bytes),

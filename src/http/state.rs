@@ -371,9 +371,19 @@ pub async fn agent_state(
         return authentication_error_response(error).into_response();
     }
     let key = ProjectionKey::AgentState(agent_id.clone());
-    let result = state
-        .projection_gate
-        .run(key, || build_agent_state_projection(&state, &agent_id))
+    let budget = super::projection_gate::DEFAULT_BUILD_BUDGET;
+    let deadline = tokio::time::Instant::now() + budget;
+    let gate = state.projection_gate.clone();
+    let handle = tokio::runtime::Handle::current();
+    let result = gate
+        .run_owned(key, deadline, budget, move |context| async move {
+            context
+                .blocking(move |scope| {
+                    let db = state.host.runtime_db().with_read_scope(scope);
+                    build_agent_state_projection(&state, &agent_id, &db, &handle)
+                })
+                .await?
+        })
         .await;
     match result {
         Ok(bytes) => traced_json_bytes("/agents/{agent_id}/state", started_at, bytes),
@@ -381,14 +391,21 @@ pub async fn agent_state(
     }
 }
 
-async fn build_agent_state_projection(
+fn build_agent_state_projection(
     state: &Arc<AppState>,
     agent_id: &str,
+    db: &crate::runtime_db::RuntimeDb,
+    handle: &tokio::runtime::Handle,
 ) -> Result<Bytes, ProjectionFailure> {
     let projection = state
         .host
-        .operator_agent_state_projection(agent_id, STATE_BOOTSTRAP_TASK_LIMIT, 50)
-        .await
+        .operator_agent_state_projection_scoped(
+            agent_id,
+            STATE_BOOTSTRAP_TASK_LIMIT,
+            50,
+            db,
+            handle,
+        )
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
     let waits = projection
@@ -419,7 +436,7 @@ async fn build_agent_state_projection(
         .collect::<Vec<_>>();
     crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
     let workspace_started = std::time::Instant::now();
-    let workspace = state_workspace_snapshot(&projection.agent, &state);
+    let workspace = state_workspace_snapshot(&projection.agent, db)?;
     crate::diagnostics::record_projection_state_workspace(workspace_started.elapsed());
     let mut agent_dto = crate::http_dto::SlimAgentDto {
         identity: projection.identity,
@@ -455,7 +472,10 @@ async fn build_agent_state_projection(
         state_projection_source = source.as_str(),
         "serializing public agent state projection"
     );
-    serialize_json(
+    db.check_read_scope()
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?;
+    let bytes = serialize_json(
         "/agents/{agent_id}/state",
         &crate::http_dto::AgentStateSnapshotDto {
             agent: agent_dto,
@@ -468,7 +488,11 @@ async fn build_agent_state_projection(
             workspace,
         },
     )
-    .map_err(ProjectionFailure::from)
+    .map_err(ProjectionFailure::from)?;
+    db.check_read_scope()
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?;
+    Ok(bytes)
 }
 
 fn slim_state_work_item_dto(
@@ -652,9 +676,22 @@ fn truncate_state_bootstrap_string(text: &str, limit: usize) -> String {
 
 fn state_workspace_snapshot(
     agent: &AgentState,
-    state: &AppState,
-) -> crate::http_dto::StateWorkspaceSnapshotDto {
-    let all_entries = state.host.workspace_entries().unwrap_or_default();
+    db: &crate::runtime_db::RuntimeDb,
+) -> Result<crate::http_dto::StateWorkspaceSnapshotDto, ProjectionFailure> {
+    db.check_read_scope()
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?;
+    let all_entries = match db.workspace_entries().latest_all() {
+        Ok(entries) => entries,
+        Err(error)
+            if error.is::<crate::runtime_db::RuntimeDbRetryableError>()
+                || error.is::<crate::runtime_db::RuntimeDbProtectionError>() =>
+        {
+            return Err(ProjectionFailure::from(error_response(error)));
+        }
+        // Registry enrichment has historically been best-effort for ordinary errors.
+        Err(_) => Vec::new(),
+    };
 
     use crate::types::AgentWorkspaceInfo;
     use std::collections::HashSet;
@@ -692,6 +729,9 @@ fn state_workspace_snapshot(
 
     // Add remaining attached workspaces (identity-only info from registry).
     for ws_id in &agent.attached_workspaces {
+        db.check_read_cancellation()
+            .map_err(error_response)
+            .map_err(ProjectionFailure::from)?;
         if seen_ids.contains(ws_id) {
             continue;
         }
@@ -729,9 +769,12 @@ fn state_workspace_snapshot(
         }
     }
 
-    crate::http_dto::StateWorkspaceSnapshotDto {
+    db.check_read_scope()
+        .map_err(error_response)
+        .map_err(ProjectionFailure::from)?;
+    Ok(crate::http_dto::StateWorkspaceSnapshotDto {
         workspaces: workspaces.into_iter().map(Into::into).collect(),
-    }
+    })
 }
 
 /// Merge projection_metadata and worktree_session into a unified WorktreeInfo.
@@ -783,6 +826,48 @@ mod tests {
         TranscriptEntryKind, WorkItemRecord, WorkItemState,
     };
     use serde_json::json;
+
+    #[test]
+    fn workspace_enrichment_propagates_scope_failure_but_preserves_ordinary_fallback() {
+        use crate::runtime_db::{RuntimeDb, RuntimeDbReadScope};
+        use std::time::{Duration, Instant};
+
+        let directory = tempfile::tempdir().unwrap();
+        let db = RuntimeDb::open_and_migrate(
+            directory.path().join("runtime.sqlite"),
+            directory.path().join("runtime.lock"),
+        )
+        .unwrap();
+        let mut agent = crate::types::AgentState::new("workspace-agent");
+        agent.attached_workspaces.push("workspace-a".into());
+        let healthy = super::state_workspace_snapshot(&agent, &db).unwrap();
+        assert_eq!(healthy.workspaces.len(), 1);
+        let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+        let scoped = db.with_read_scope(scope.clone());
+        // Cancellation happens after earlier state phases, at workspace enrichment.
+        scope.cancel();
+        let failure = super::state_workspace_snapshot(&agent, &scoped).unwrap_err();
+        assert_eq!(
+            failure.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(failure.retryable(), Some(true));
+        db.connection()
+            .unwrap()
+            .execute_batch("DROP TABLE workspace_entries")
+            .unwrap();
+        let fallback = super::state_workspace_snapshot(&agent, &db).unwrap();
+        assert_eq!(fallback.workspaces.len(), 1);
+        let expired = db.with_read_scope(RuntimeDbReadScope::new(
+            Instant::now() - Duration::from_secs(1),
+        ));
+        let failure = super::state_workspace_snapshot(&agent, &expired).unwrap_err();
+        assert_eq!(
+            failure.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(failure.retryable(), Some(true));
+    }
 
     #[test]
     fn state_bootstrap_omits_task_detail_and_slims_transcript_data() {

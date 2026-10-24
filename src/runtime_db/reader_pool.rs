@@ -192,6 +192,42 @@ impl RuntimeDbReaderPool {
         Ok(())
     }
 
+    pub(crate) fn check_read_scope(&self) -> Result<()> {
+        self.shared.control.ensure_protected()?;
+        self.check_scope(&self.scope)
+    }
+
+    /// Cheap assembly checkpoint; callers must fully check entry and success.
+    pub(crate) fn check_read_cancellation(&self) -> Result<()> {
+        if let Err(error) = self.check_scope(&self.scope) {
+            self.shared.control.ensure_protected()?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Await only a memory-lock acquisition, never an async SQL wrapper.
+    pub(crate) async fn wait_for_memory_lock<T>(
+        &self,
+        lock: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        self.check_read_scope()?;
+        let acquired = tokio::select! {
+            guard = lock => Some(guard),
+            () = RuntimeDbReadScope::cancelled(&self.scope) => None,
+            () = async {
+                match &self.scope {
+                    Some(scope) => tokio::time::sleep_until(scope.deadline().into()).await,
+                    None => std::future::pending().await,
+                }
+            } => None,
+        };
+        // Recheck even on success: an already-ready lock can race protection loss
+        // or cancellation. No SQL or reader checkout is needed for this check.
+        self.check_read_scope()?;
+        acquired.ok_or_else(|| anyhow!("scoped memory lock interrupted"))
+    }
+
     /// Only owned results may escape. Callers must not change connection hooks,
     /// authorizers or other connection-local configuration through the Rust API.
     pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {

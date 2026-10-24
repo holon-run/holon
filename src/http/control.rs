@@ -990,6 +990,7 @@ pub async fn runtime_shutdown(
         .runtime_service
         .as_ref()
         .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
+    state.close_projection_reads().await;
     graceful_runtime_shutdown(&state.host, runtime_service)
         .await
         .map_err(error_response)?;
