@@ -1,12 +1,19 @@
 //! Synthetic, bounded checks of the production latest-Brief SQL. Never opens a
 //! production database. The ignored test is a repeatable A/B/A measurement.
-use std::{fs, time::Instant};
+use std::{fs, path::Path, time::Instant};
 
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection, StatementStatus};
 use serde_json::{json, Value};
 
 use super::{
+    connection::{
+        configure_new_database_auto_vacuum, configure_persistent_database, open_connection,
+    },
+    migrations::{
+        apply_migration, current_schema_version, ensure_migration_table, schema_fingerprint,
+        Migration, MIGRATIONS,
+    },
     observer_sync::{AGENT_LATEST_BRIEF_SQL, AGENT_ROSTER_LATEST_BRIEFS_SQL},
     RuntimeDb,
 };
@@ -17,43 +24,45 @@ const DROP_INDEX_SQL: &str = "DROP INDEX IF EXISTS idx_briefs_agent_latest";
 const DATE: &str = "2026-01-01T00:00:00.000Z";
 
 fn seed(db: &RuntimeDb, hot_history: usize) -> Result<()> {
-    db.transaction(|tx| {
-        for (id, visibility, status) in [
-            ("hot", "public", "active"),
-            ("small", "public", "active"),
-            ("empty", "public", "active"),
-            ("hidden", "private", "active"),
-            ("deleted", "public", "deleted"),
-        ] {
-            tx.execute(
-                "INSERT INTO agent_identities
+    db.transaction(|tx| seed_rows(tx, hot_history))
+}
+
+fn seed_rows(connection: &Connection, hot_history: usize) -> Result<()> {
+    for (id, visibility, status) in [
+        ("hot", "public", "active"),
+        ("small", "public", "active"),
+        ("empty", "public", "active"),
+        ("hidden", "private", "active"),
+        ("deleted", "public", "deleted"),
+    ] {
+        connection.execute(
+            "INSERT INTO agent_identities
                  (agent_id, kind, visibility, status, created_at, updated_at, payload_json)
                  VALUES (?1, 'named', ?2, ?3, ?4, ?4, '{}')",
-                params![id, visibility, status, DATE],
-            )?;
-            let count = match id {
-                "hot" => hot_history,
-                "empty" => 0,
-                _ => 32,
-            };
-            let mut insert = tx.prepare(
-                "INSERT INTO briefs
+            params![id, visibility, status, DATE],
+        )?;
+        let count = match id {
+            "hot" => hot_history,
+            "empty" => 0,
+            _ => 32,
+        };
+        let mut insert = connection.prepare(
+            "INSERT INTO briefs
                  (evidence_id, agent_id, turn_id, created_at, kind, preview, payload_json)
                  VALUES (?1, ?2, ?3, ?4, 'result', 'synthetic', '{}')",
-            )?;
-            for row in 0..count {
-                // Fixed permutation: insertion/evidence order is not time order;
-                // timestamps tie across turns and agents.
-                insert.execute(params![
-                    format!("{id}-{row:08}"),
-                    id,
-                    format!("turn-{}", row % 4),
-                    format!("2026-01-{:02}T00:00:00.000Z", (row * 7 % 23) + 1),
-                ])?;
-            }
+        )?;
+        for row in 0..count {
+            // Fixed permutation: insertion/evidence order is not time order;
+            // timestamps tie across turns and agents.
+            insert.execute(params![
+                format!("{id}-{row:08}"),
+                id,
+                format!("turn-{}", row % 4),
+                format!("2026-01-{:02}T00:00:00.000Z", (row * 7 % 23) + 1),
+            ])?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 fn roster_briefs(connection: &Connection) -> Result<Vec<(String, String)>> {
@@ -75,7 +84,7 @@ fn plan(connection: &Connection, sql: &str, agent: bool) -> Result<Vec<String>> 
 }
 
 #[test]
-fn candidate_index_preserves_latest_brief_time_ties_and_visibility() -> Result<()> {
+fn latest_brief_index_preserves_time_ties_and_visibility() -> Result<()> {
     let root = tempfile::tempdir()?;
     let db = RuntimeDb::open_and_migrate(
         root.path().join("runtime.sqlite"),
@@ -135,6 +144,202 @@ fn candidate_index_preserves_latest_brief_time_ties_and_visibility() -> Result<(
         .unwrap()
         .latest_brief
         .is_none());
+    Ok(())
+}
+
+fn index_migration() -> &'static Migration {
+    MIGRATIONS
+        .iter()
+        .find(|migration| migration.name == "briefs_agent_latest_index")
+        .expect("latest-Brief index migration")
+}
+
+fn predecessor_database(path: &Path, hot_history: usize) -> Result<Connection> {
+    let mut connection = open_connection(path)?;
+    configure_new_database_auto_vacuum(&connection)?;
+    configure_persistent_database(&connection)?;
+    ensure_migration_table(&connection)?;
+    for migration in MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version < index_migration().version)
+    {
+        apply_migration(&mut connection, migration)?;
+    }
+    let transaction = connection.transaction()?;
+    seed_rows(&transaction, hot_history)?;
+    transaction.commit()?;
+    Ok(connection)
+}
+
+fn assert_index_schema(connection: &Connection) -> Result<()> {
+    let columns = connection
+        .prepare("PRAGMA index_xinfo(idx_briefs_agent_latest)")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, bool>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, _, key)| *key)
+        .map(|(name, descending, _)| (name.unwrap(), descending))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        columns,
+        vec![
+            ("agent_id".into(), 0),
+            ("created_at".into(), 1),
+            ("evidence_id".into(), 1),
+        ]
+    );
+    let integrity: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    assert_eq!(integrity, "ok");
+    Ok(())
+}
+
+fn brief_contents(connection: &Connection) -> Result<String> {
+    Ok(connection.query_row(
+        "SELECT json_group_array(json_array(
+            evidence_id, agent_id, turn_id, created_at, kind, preview, payload_json))
+         FROM (SELECT * FROM briefs ORDER BY evidence_id)",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+#[test]
+fn latest_brief_index_fresh_schema_matches_upgrade_and_reopen() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("upgrade.sqlite");
+    let connection = predecessor_database(&path, 256)?;
+    assert_eq!(
+        current_schema_version(&connection)?,
+        index_migration().version - 1
+    );
+    let before = brief_contents(&connection)?;
+    let latest = roster_briefs(&connection)?;
+    assert!(plan(&connection, AGENT_ROSTER_LATEST_BRIEFS_SQL, false)?
+        .iter()
+        .any(|detail| detail.contains("TEMP B-TREE")));
+    drop(connection);
+
+    let lock = path.with_extension("lock");
+    let upgraded = RuntimeDb::open_and_migrate(&path, &lock)?;
+    let connection = upgraded.connection()?;
+    assert_index_schema(&connection)?;
+    assert_eq!(brief_contents(&connection)?, before);
+    assert_eq!(roster_briefs(&connection)?, latest);
+    let fingerprint = schema_fingerprint(&connection)?;
+    let schema_cookie: i64 = connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+    let applied_at: String = connection.query_row(
+        "SELECT applied_at FROM schema_migrations WHERE version = ?1",
+        [index_migration().version],
+        |row| row.get(0),
+    )?;
+    drop(connection);
+    drop(upgraded);
+
+    let reopened = RuntimeDb::open_and_migrate(&path, &lock)?;
+    let connection = reopened.connection()?;
+    assert_index_schema(&connection)?;
+    assert_eq!(brief_contents(&connection)?, before);
+    assert_eq!(schema_fingerprint(&connection)?, fingerprint);
+    assert_eq!(
+        connection.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))?,
+        schema_cookie,
+        "reopening must not rebuild the index"
+    );
+    assert_eq!(
+        connection.query_row(
+            "SELECT applied_at FROM schema_migrations WHERE version = ?1",
+            [index_migration().version],
+            |row| row.get::<_, String>(0),
+        )?,
+        applied_at
+    );
+    let fresh = RuntimeDb::open_and_migrate(
+        root.path().join("fresh.sqlite"),
+        root.path().join("fresh.lock"),
+    )?;
+    let connection = fresh.connection()?;
+    assert_index_schema(&connection)?;
+    assert_eq!(schema_fingerprint(&connection)?, fingerprint);
+    Ok(())
+}
+
+#[test]
+fn latest_brief_index_migration_rolls_back_and_retries_atomically() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let mut connection = predecessor_database(&root.path().join("rollback.sqlite"), 256)?;
+    let before = brief_contents(&connection)?;
+    connection.execute_batch(&format!(
+        "CREATE TRIGGER reject_brief_index_marker BEFORE INSERT ON schema_migrations
+         WHEN NEW.version = {}
+         BEGIN SELECT RAISE(ABORT, 'injected migration marker failure'); END;",
+        index_migration().version
+    ))?;
+    let error = apply_migration(&mut connection, index_migration()).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("injected migration marker failure"));
+    assert_eq!(
+        current_schema_version(&connection)?,
+        index_migration().version - 1
+    );
+    let index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_briefs_agent_latest'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(index_count, 0, "index DDL must roll back with its marker");
+    assert_eq!(brief_contents(&connection)?, before);
+    connection.execute_batch("DROP TRIGGER reject_brief_index_marker")?;
+    apply_migration(&mut connection, index_migration())?;
+    assert_index_schema(&connection)?;
+    assert_eq!(
+        current_schema_version(&connection)?,
+        index_migration().version
+    );
+    let cookie: i64 = connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+    apply_migration(&mut connection, index_migration())?;
+    assert_eq!(
+        connection.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))?,
+        cookie
+    );
+    assert_eq!(brief_contents(&connection)?, before);
+    Ok(())
+}
+
+#[test]
+fn latest_brief_index_migration_accepts_missing_legacy_evidence_table() -> Result<()> {
+    let mut connection = Connection::open_in_memory()?;
+    ensure_migration_table(&connection)?;
+    let cookie: i64 = connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+    apply_migration(&mut connection, index_migration())?;
+    apply_migration(&mut connection, index_migration())?;
+    assert_eq!(
+        current_schema_version(&connection)?,
+        index_migration().version
+    );
+    let marker_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1 AND name = ?2",
+        params![index_migration().version, index_migration().name],
+        |row| row.get(0),
+    )?;
+    assert_eq!(marker_count, 1);
+    let schema_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE name IN ('briefs', 'idx_briefs_agent_latest')",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(schema_count, 0, "do not recreate missing legacy tables");
+    assert_eq!(
+        connection.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))?,
+        cookie
+    );
     Ok(())
 }
 
@@ -283,6 +488,72 @@ fn brief_latest_history_benchmark() -> Result<()> {
             "Diagnostics are cumulative and overlapping; pool stages are aggregate, not per-SQL attribution.",
             "No frontend traffic or HTTP leader measurements in this DB-only workload."
         ]})
+    );
+    Ok(())
+}
+
+/// Measures a real predecessor upgrade, not just standalone CREATE INDEX.
+#[test]
+#[ignore = "bounded synthetic upgrade/reopen measurement, not a timing assertion"]
+fn brief_latest_migration_benchmark() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let connection = predecessor_database(&root.path().join("predecessor.sqlite"), 8192)?;
+    let expected = brief_contents(&connection)?;
+    let snapshot = root.path().join("snapshot.sqlite");
+    connection.execute("VACUUM INTO ?1", [snapshot.to_str().unwrap()])?;
+    drop(connection);
+    let mut cases = Vec::new();
+    for round in 0..3 {
+        let path = root.path().join(format!("upgrade-{round}.sqlite"));
+        let lock = path.with_extension("lock");
+        fs::copy(&snapshot, &path)?;
+        let bytes_before = fs::metadata(&path)?.len();
+        let started = Instant::now();
+        let db = RuntimeDb::open_and_migrate(&path, &lock)?;
+        let upgrade_open_ns = started.elapsed().as_nanos();
+        let wal_after_upgrade =
+            fs::metadata(path.with_extension("sqlite-wal")).map_or(0, |metadata| metadata.len());
+        let connection = db.connection()?;
+        assert_index_schema(&connection)?;
+        assert_eq!(brief_contents(&connection)?, expected);
+        let cookie: i64 = connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+        let bytes_after = fs::metadata(&path)?.len();
+        drop(connection);
+        drop(db);
+
+        let started = Instant::now();
+        let reopened = RuntimeDb::open_and_migrate(&path, &lock)?;
+        let reopen_ns = started.elapsed().as_nanos();
+        let connection = reopened.connection()?;
+        assert_eq!(
+            connection.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))?,
+            cookie,
+            "reopen must not rebuild the index"
+        );
+        assert_eq!(brief_contents(&connection)?, expected);
+        cases.push(json!({
+            "round": round, "upgrade_open_ns": upgrade_open_ns, "reopen_ns": reopen_ns,
+            "database_bytes_before": bytes_before, "database_bytes_after": bytes_after,
+            "wal_bytes_after_upgrade": wal_after_upgrade,
+        }));
+    }
+    println!(
+        "brief_latest_migration_benchmark={}",
+        json!({
+            "schema": "holon.brief_latest_migration_benchmark.v1",
+            "sqlite": rusqlite::version(), "predecessor": index_migration().version - 1,
+            "target": super::migrations::max_known_migration_version(),
+            "hot_history": 8192, "other_history": 32, "briefs": 8288,
+            "debug_assertions": cfg!(debug_assertions), "cases": cases,
+            "limitations": [
+                "Synthetic bounded local fixture; no production rows, DDL or downtime estimate.",
+                "Upgrade timing includes open, migrations and verification, not only index creation.",
+                "Reopen timing includes normal startup checks; it is not index rebuild time.",
+                "Warm OS caches and shared-host noise remain; three runs are not tail percentiles.",
+                "Database/WAL snapshots are not peak temporary disk consumption."
+            ]
+        })
     );
     Ok(())
 }

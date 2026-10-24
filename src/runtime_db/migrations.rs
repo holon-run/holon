@@ -4053,6 +4053,12 @@ CREATE INDEX idx_task_result_recovery_paused
   WHERE recovery_paused_at IS NOT NULL AND state != 'settled';
 "#,
     },
+    Migration {
+        version: 85,
+        name: "briefs_agent_latest_index",
+        // Name-accepted legacy upgrades can lack historical evidence tables.
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4435,6 +4441,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == WORK_ITEM_AGENT_UPDATED_INDEX_NAME {
         migrate_work_item_agent_updated_index(transaction)?;
+    }
+    if migration.name == "briefs_agent_latest_index" {
+        migrate_briefs_agent_latest_index(transaction)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -6392,6 +6401,16 @@ fn migrate_work_item_agent_updated_index(connection: &Connection) -> Result<()> 
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_work_items_agent_updated
              ON work_items(agent_id, updated_at DESC, created_at DESC, work_item_id ASC);",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_briefs_agent_latest_index(connection: &Connection) -> Result<()> {
+    if table_exists_internal(connection, "briefs")? {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_briefs_agent_latest
+             ON briefs(agent_id, created_at DESC, evidence_id DESC);",
         )?;
     }
     Ok(())
