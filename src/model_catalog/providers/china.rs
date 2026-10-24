@@ -65,6 +65,10 @@ fn volcengine_route_definition(
         endpoint: ProviderEndpointId::parse(endpoint).expect("valid endpoint"),
         policy: BuiltInModelRoutePolicy {
             display_name: display_name.map(str::to_owned),
+            description: (model == "glm-5.2").then(|| {
+                "Legacy GLM-5.2 subscription ID forwards to GLM-5.3; not original GLM-5.2 service."
+                    .into()
+            }),
             capabilities: ModelCapabilityOverride {
                 // Coding Plan explicitly documents K2.7 images; Agent Plan
                 // eligibility alone is not evidence of the same capability.
@@ -251,6 +255,7 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("doubao-seed-2-0-pro-260215", None),
             ("doubao-seed-2-0-lite-260215", None),
             ("deepseek-v3-2-251201", None),
+            ("glm-5.2", None),
         ]
         .into_iter()
         .map(|(model, display_name)| {
@@ -268,7 +273,6 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             ("ark-code-latest", None),
             ("deepseek-v4-pro", None),
             ("deepseek-v4-flash", None),
-            ("kimi-k2.6", None),
             ("kimi-k2.7-code", None),
             ("glm-5.3", None),
             ("glm-5.2", None),
@@ -291,6 +295,9 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
             "kimi-k2.8-preview",
             "kimi-k3",
             "glm-latest",
+            "minimax-latest",
+            "kimi-latest",
+            "deepseek-latest",
         ]
         .into_iter()
         .map(|model| volcengine_route_definition("volcengine-agent", "plan", model, None)),
@@ -589,15 +596,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             "DeepSeek V4 Flash",
             1_000_000,
             8_192,
-            true,
-            false,
-        ),
-        catalog_model(
-            "volcengine-coding",
-            "kimi-k2.6",
-            "Kimi K2.6",
-            262_144,
-            32_768,
             true,
             false,
         ),
@@ -1250,8 +1248,19 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             reviewed_subscription_model("byteplus", "coding", model, name, reasoning, image)
         }),
     );
-    // Both Coding and Agent Plan independently document this alias.
+    // Both Coding and Agent Plan independently document these aliases.
     // The subscription routers below do not inherit underlying capabilities.
+    entries.extend(
+        [
+            ("minimax-latest", "MiniMax Latest"),
+            ("kimi-latest", "Kimi Latest"),
+            ("deepseek-latest", "DeepSeek Latest"),
+        ]
+        .into_iter()
+        .map(|(model, name)| {
+            reviewed_subscription_model("volcengine", "coding", model, name, false, false)
+        }),
+    );
     entries.extend([
         reviewed_subscription_model(
             "volcengine",
@@ -1387,17 +1396,60 @@ fn subscription_routers_do_not_inherit_underlying_model_capabilities() {
         for (provider, endpoint, model) in [
             ("dashscope", "token-plan", "auto"),
             ("stepfun", "plan", "step-router-v1"),
+            ("volcengine", "coding", "minimax-latest"),
+            ("volcengine", "plan", "minimax-latest"),
+            ("volcengine", "coding", "kimi-latest"),
+            ("volcengine", "plan", "kimi-latest"),
+            ("volcengine", "coding", "deepseek-latest"),
+            ("volcengine", "plan", "deepseek-latest"),
         ] {
             let route = ModelRouteRef::parse(&format!("{provider}@{endpoint}/{model}")).unwrap();
             assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
             let metadata = catalog.get(&route.model_ref()).unwrap();
             assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.default_max_output_tokens, None);
             assert_eq!(metadata.max_output_tokens_upper_limit, None);
             assert!(!metadata.capabilities.image_input);
             assert!(!metadata.capabilities.supports_reasoning);
             assert!(metadata.reasoning_effort_options.is_empty());
             let api = ModelRouteRef::parse(&format!("{provider}@default/{model}")).unwrap();
             assert!(catalog.get_route(&api).is_none(), "{}", api.as_string());
+        }
+    }
+}
+
+#[test]
+fn volcengine_retired_k26_does_not_remove_compatibility_or_future_retirements() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for endpoint in ["coding", "plan"] {
+            let retired =
+                ModelRouteRef::parse(&format!("volcengine@{endpoint}/kimi-k2.6")).unwrap();
+            assert!(catalog.get_route(&retired).is_none());
+            for model in ["glm-5.2", "kimi-k2.7-code", "minimax-m3"] {
+                let route =
+                    ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
+                assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+            }
+            let compatibility =
+                ModelRouteRef::parse(&format!("volcengine@{endpoint}/glm-5.2")).unwrap();
+            assert!(catalog
+                .get_route(&compatibility)
+                .unwrap()
+                .description
+                .as_deref()
+                .unwrap()
+                .contains("forwards to GLM-5.3"));
+        }
+        for peer in [
+            "dashscope@token-plan/kimi-k2.6",
+            "opencode-go@default/kimi-k2.6",
+        ] {
+            assert!(catalog
+                .get_route(&ModelRouteRef::parse(peer).unwrap())
+                .is_some());
         }
     }
 }

@@ -9,6 +9,128 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-24 incremental review
+
+- Refreshed models.dev revision
+  `3800890225bd879647209b9559344168f6e60f41a6b46a25c2e016707265f92b`.
+  The artifact has 1,081 models: 10 additions, 20 upstream removals, and five
+  changed records. These generic catalog removals do not retire independently
+  reviewed subscription routes. The supplement has 54 models (three new
+  drafts, 51 retained) and the same 16 explicit routes.
+- Compared all six added or changed OpenRouter records with this cycle's
+  [public model list](https://openrouter.ai/api/v1/models). Context and
+  `top_provider.max_completion_tokens` match for Kimi K3.1 Pro, MiniMax M3.1
+  Flash, Qwen 3.5 9B, Qwen 3.8 27B, GLM-5.3, and GLM-5.3-Flash. This is
+  a changed-record comparison, not a full-catalog zero-diff claim.
+- New generic draft `mistral/zai-glm-5-3-flash` has upstream context
+  1,048,576, output 131,072, and explicit effort options `low/high/max`.
+  Mistral's [model page](https://docs.mistral.ai/models/zai-glm-5-3-flash)
+  is discoverable with the exact ID and identifies an unmodified multimodal
+  model. Full-page retrieval failed with a TLS connection reset; exact limits
+  and effort values remain attributed to models.dev, not independently
+  verified Mistral contract values.
+- Two other generic drafts are `moonshot/kimi-k3.1-pro` and
+  `moonshot/kimi-k3.1-pro-highspeed`. The international [model list](https://platform.kimi.ai/docs/models),
+  [Chat API](https://platform.kimi.ai/docs/api/chat), and
+  [parameter table](https://platform.kimi.ai/docs/api/models-overview) independently
+  confirm both IDs at `api.moonshot.ai/v1`, 1,048,576 context, always-on thinking,
+  and top-level `reasoning_effort=low/high/max` (default `max`).
+  The API explicitly distinguishes the 131,072 default generation budget
+  from the configurable 1,048,576 ceiling. Preserve that distinction in
+  projection and retained supplements rather than using the upstream ceiling
+  as the runtime request default. No new subscription route is inferred.
+  The legacy `platform.moonshot.ai` documentation returned HTTP 403, but the
+  linked `platform.kimi.ai` pages and full Chat API Markdown were retrieved
+  successfully and explicitly use the international API base URL; these
+  findings do not rely on domestic Kimi API or Code Plan documentation.
+- Codex metadata is byte-identical to the previous cycle (SHA-256
+  `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`);
+  its path history still identifies revision `d63a9b83`. The existing
+  seven listed, non-retired models remain covered. Keep published default
+  context 272,000 distinct from maximum 872,000 and account-specific access.
+  Rechecked [lifecycle](https://learn.chatgpt.com/docs/models) information
+  still distinguishes ChatGPT-sign-in retirements from API-key access.
+- Rechecked DeepSeek's [pricing](https://api-docs.deepseek.com/quick_start/pricing/)
+  and [Responses contract](https://api-docs.deepseek.com/guides/responses_api/):
+  legacy Flash aliases, 1M/384K notation, image input, Pro-only server search,
+  and stateless Responses restrictions remain unchanged.
+
+### Endpoint-specific findings
+
+The two endpoint review groups re-fetched public evidence on October 23,
+20:34–20:41 UTC. No credentials or inference calls were used.
+
+- MiniMax's independently checked [international](https://platform.minimax.io/docs/guides/text-generation.md)
+  and [Chinese](https://platform.minimax.cn/docs/guides/text-generation.md)
+  model tables both list `MiniMax-M3` and `MiniMax-M3.1-Flash`. Add the
+  previously missing Chinese **default API** M3 route with context 1,000,000,
+  recommended output 131,072 and maximum output 524,288. Do not add M3 to
+  M Plan or copy M3.1's five effort options into M3.
+- Both regional Anthropic schemas
+  ([international](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md),
+  [China](https://platform.minimax.cn/docs/api-reference/text-chat-anthropic.md))
+  explicitly exclude M3/M3.1 from `cache_control` support. Set the built-in
+  **exact route** policy to false for each region's default M3/M3.1 and M Plan
+  M3.1. The legacy Preview subscription ID forwards to formal M3.1 according
+  to each region's [M Plan introduction](https://platform.minimax.io/docs/m-plan/intro.md)
+  ([China](https://platform.minimax.cn/docs/m-plan/intro.md)); apply the same
+  conservative default there, without claiming a separately exercised cache
+  contract. User route/provider overrides remain higher priority; implicit
+  caching and M2-family routes are unaffected.
+- The international [retirement FAQ](https://platform.minimax.io/docs/faq/models.md)
+  explicitly lists `MiniMax-M2`, `MiniMax-M2.1`, and
+  `MiniMax-M2.1-highspeed` as retired, without an effective date. Remove their
+  native international catalog entries and prevent supplement reintroduction,
+  not their aggregator counterparts or manually configured references.
+  Keep M2.5/M2.7: the same page's dated existing-API clause allows them until
+  **November 18, 2026**, despite its conflicting bottom retirement table.
+  Subscription migration on October 19 does not retire ordinary API access.
+- OpenCode Go's [pinned official endpoint table](https://raw.githubusercontent.com/anomalyco/opencode/755bbc743a497526262461852b52b0c7995e27d1/services/www/src/docs/content/console/go.mdx)
+  adds `kimi-k3.1-pro` for Go and Go Plus, **Chat only**. Register only that
+  protocol; token limits, modalities, and reasoning controls remain unknown,
+  not inherited from native Kimi or Kimi Code. Keep existing historical Go
+  IDs. Public Go discovery still returns 403, not retirement evidence.
+- Volcengine's separate [Coding retirement notice](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-model-deprecation.md)
+  and [Agent retirement notice](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-model-deprecation-announcement.md)
+  explicitly retired exact `kimi-k2.6` on **August 18, 2026, 14:00 UTC+8**.
+  Remove both subscription routes, including retained supplement routes,
+  without claiming ordinary API or other providers' retirement. Retain
+  `glm-5.2` as a documented compatibility ID forwarding to GLM-5.3, not as
+  original GLM-5.2 service.
+- Those independent notices also document `minimax-latest`, `kimi-latest`,
+  and `deepseek-latest`; add these subscription router aliases with unknown
+  token limits and no inherited model capabilities. Keep future retirements:
+  `kimi-k2.7-code` ends **October 28, 2026, 14:00 UTC+8** and lowercase
+  `minimax-m3` ends **November 2, 2026, 14:00 UTC+8**. Earlier new-user
+  cutoffs do not terminate existing users; do not infer retirement of
+  dated IDs or uppercase `MiniMax-M3` aliases.
+
+### Other registered endpoints and evidence boundaries
+
+| Endpoint(s) | Independently rechecked evidence and preserved boundary |
+|---|---|
+| `bigmodel@default`, `zai@default` | Separate [China](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md) / [international](https://docs.z.ai/devpack/latest-model.md) guides still confirm GLM-5.3/Flash and `low/high/max`. The 1,000,000 client context configuration is not proof of every historical model's service limit. Exact subscription output limits remain unconfirmed; no unregistered Chat/Responses or coding-plan endpoint is added. |
+| DashScope `@coding-plan`, `@coding-plan-intl` | Separate [China](https://help.aliyun.com/zh/model-studio/coding-plan) / [international](https://www.alibabacloud.com/help/en/model-studio/coding-plan) lists remain covered. Regional hosts and subscription credentials stay separate; current-list absence does not retire historical IDs. |
+| DashScope `@token-plan` | [Personal](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview) / [team](https://help.aliyun.com/zh/model-studio/token-plan-team-overview) lists remain covered, including dated DeepSeek. Keep `qwen3.8-max-preview` because requests forward to max. Team deployment URLs remain console-specific; the fixed local host is not claimed to cover every team deployment. Six previously unconfirmed supplement routes gain no new eligibility. Preserve exact GLM-5.3 cache policy and user precedence from #3705/#3706. |
+| MiniMax regional `@m-plan` | Separate [international](https://platform.minimax.io/docs/m-plan/quickstart.md) / [China](https://platform.minimax.cn/docs/m-plan/quickstart.md) credentials and two formal/legacy M3.1 IDs remain covered. Regional [existing Token Plan](https://platform.minimax.io/docs/m-plan/token-plan-notice.md) ([China](https://platform.minimax.cn/docs/m-plan/token-plan-notice.md)) access is not an unregistered token-plan endpoint. Preview output limits remain unknown. |
+| `xiaomi@token-plan` | [Subscription table](https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription) still confirms V2.6 Pro/Flash, not Ultraspeed eligibility. Official client catalog keeps 1,048,576 context and `none/low/medium/high`; [Responses](https://mimo.mi.com/docs/en-US/api/chat/responses) documents 131,072 output. No new regional endpoint or historical Ultraspeed retirement is inferred. |
+| `stepfun@plan` | [Reasoning integration](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md) still lists the five covered models. Step5/3.7 have three efforts; 2603 only low/high. “1M”/“250K” do not independently establish exact integer service limits; no Messages endpoint is added. |
+| `moonshot@default` | International [models](https://platform.kimi.ai/docs/models), [Chat API](https://platform.kimi.ai/docs/api/chat), and [parameters](https://platform.kimi.ai/docs/api/models-overview) confirm the two new generic K3.1 IDs, 1M context, `low/high/max`, default output 131,072 and configurable ceiling 1,048,576. The former `platform.moonshot.ai` retrieval failure no longer blocks these new official sources. |
+| Kimi Code | The separate [subscription model table](https://www.kimi.com/code/docs/en/kimi-code/models.html) names `k3.1-pro` / `k3.1-pro-highspeed` without the generic `kimi-` prefix, with `low/high/max` (default `max`) and tier-dependent 1M access. China/international hosts are `api.kimi.com/coding/v1` / `api.kimi.ai/coding/v1`; neither endpoint is registered. Do not copy generic output defaults/ceilings, model IDs, qualification, or credentials into them. |
+| `byteplus@coding` | Independent international [overview](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview) covers 13 IDs. GPT-OSS-120B remains Chat-only; do not apply mainland Volcengine retirement or interpret OpenCode configuration limits as service hard limits. |
+| Tencent PAYG `@default`, `@messages`, `@responses` | [Protocol table](https://cloud.tencent.com/document/product/1823/130079) covers 40 Chat / 37 Messages / 30 Responses IDs. All current rows are covered; Responses equals the local allowlist. Retain ten additional historical Chat IDs without retirement evidence. Guangzhou/Singapore hosts and credentials remain independent; unregistered personal/enterprise Token Plans do not qualify PAYG models or authorize new endpoints. |
+| OpenCode Go `@messages`, `@responses` | The pinned table's other registered protocol assignments match. Historical free IDs remain distinct. Gemini's Google protocol is unregistered; K3.1 is not added to these two endpoints. |
+| `kilocode@default` | [Public API](https://api.kilo.ai/api/gateway/models) confirms all five Auto routers and their limits. Small is paid; Free alone has no image input and may train on prompts. No fixed effort menu is inferred from reasoning-parameter support. |
+| `openrouter@default` Auto | [Public API](https://openrouter.ai/api/v1/models) still publishes `openrouter/auto`, context 2,000,000 and null maximum completion tokens. Short `auto` request compatibility remains unverified; do not migrate persistent references or label artifact fallback as a hard limit. |
+
+Final built-in snapshot regeneration and `models-dev refresh`/`validate` passed
+with 1,081 artifact models and 54 supplement models. The final locked
+`model_catalog` run passed 158 tests with one intentional snapshot-writer ignore;
+`route_cache` passed all 16 tests. Format, diff, and warning-free locked
+all-targets checks passed. Incremental independent review found no blocking
+defects; the GLM-5.2 forwarding descriptions are covered for both subscription
+endpoints in source, regression assertions, and the regenerated snapshot.
+
 ## 2026-10-23 incremental review
 
 - Refreshed models.dev revision

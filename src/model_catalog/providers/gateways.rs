@@ -295,6 +295,24 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             endpoint: None,
         },
     ];
+    entries.push(BuiltInModelMetadata {
+        model_ref: ModelRef::new(provider_id("opencode-go"), "kimi-k3.1-pro"),
+        display_name: "Kimi K3.1 Pro".into(),
+        description: "OpenCode Go and Go Plus Chat route; token limits, modalities, and reasoning controls are unconfirmed for this endpoint.".into(),
+        context_window_tokens: None,
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags::default(),
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    });
     entries.extend(opencode_go_models_dev_entries());
     entries
 }

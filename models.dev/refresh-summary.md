@@ -1,7 +1,7 @@
 # models.dev refresh summary
 
-- Supplement models: 51 (drafted this run: 0, retained: 51, removed: 0)
-- Deferred candidates: 205 (not auto-drafted; see below)
+- Supplement models: 54 (drafted this run: 0, retained: 54, removed: 0)
+- Deferred candidates: 190 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
@@ -33,13 +33,7 @@
 - `dashscope/qwen-vl-max` — ReleaseOutsideWindow (release 2024-04-08)
 - `dashscope/qwen-vl-ocr` — ReleaseOutsideWindow (release 2024-10-28)
 - `dashscope/qwen-vl-plus` — ReleaseOutsideWindow (release 2024-01-25)
-- `dashscope/qwen2-5-14b-instruct` — ReleaseOutsideWindow (release 2024-09)
-- `dashscope/qwen2-5-32b-instruct` — ReleaseOutsideWindow (release 2024-09)
-- `dashscope/qwen2-5-72b-instruct` — ReleaseOutsideWindow (release 2024-09)
-- `dashscope/qwen2-5-7b-instruct` — ReleaseOutsideWindow (release 2024-09)
 - `dashscope/qwen2-5-omni-7b` — ReleaseOutsideWindow (release 2024-12)
-- `dashscope/qwen2-5-vl-72b-instruct` — ReleaseOutsideWindow (release 2024-09)
-- `dashscope/qwen2-5-vl-7b-instruct` — ReleaseOutsideWindow (release 2024-09)
 - `dashscope/qwen3-14b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-235b-a22b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-32b` — ReleaseOutsideWindow (release 2025-04)
@@ -50,4 +44,10 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 165 more (see `holon models-dev audit`)
+- `dashscope/qwen3-next-80b-a3b-thinking` — ReleaseOutsideWindow (release 2025-09)
+- `dashscope/qwen3-omni-flash` — ReleaseOutsideWindow (release 2025-09-15)
+- `dashscope/qwen3-omni-flash-realtime` — ReleaseOutsideWindow (release 2025-09-15)
+- `dashscope/qwen3-vl-235b-a22b` — ReleaseOutsideWindow (release 2025-04)
+- `dashscope/qwen3-vl-30b-a3b` — ReleaseOutsideWindow (release 2025-04)
+- `dashscope/qwen3-vl-plus` — ReleaseOutsideWindow (release 2025-09-23)
+- … and 150 more (see `holon models-dev audit`)

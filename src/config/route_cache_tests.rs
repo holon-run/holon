@@ -297,6 +297,76 @@ fn route_cache_dashscope_glm53_default_is_scoped_and_overridable() {
 }
 
 #[test]
+fn route_cache_minimax_m3_defaults_are_exact_and_overridable() {
+    for (provider, subscription_provider) in [
+        ("minimax", "minimax-m-plan"),
+        ("minimax-cn", "minimax-cn-m-plan"),
+    ] {
+        for (endpoint, legacy_provider, model) in [
+            ("default", provider, "MiniMax-M3"),
+            ("default", provider, "MiniMax-M3.1-Flash"),
+            ("m-plan", subscription_provider, "MiniMax-M3.1-Flash"),
+            (
+                "m-plan",
+                subscription_provider,
+                "MiniMax-M3.1-Flash-Preview",
+            ),
+        ] {
+            let mut catalog = cache_catalog();
+            let route = format!("{provider}@{endpoint}/{model}");
+            assert_eq!(
+                cache_policy(&catalog, &route),
+                ResolvedAnthropicCachePolicy {
+                    cache_control: false,
+                    source: AnthropicCacheControlSource::RouteBuiltin,
+                },
+                "{route}"
+            );
+            catalog
+                .provider_cache_overrides
+                .insert(ProviderId::parse(legacy_provider).unwrap(), true);
+            assert_eq!(
+                cache_policy(&catalog, &route),
+                ResolvedAnthropicCachePolicy {
+                    cache_control: true,
+                    source: AnthropicCacheControlSource::ProviderOverride,
+                }
+            );
+            for enabled in [false, true] {
+                catalog.model_route_overrides.insert(
+                    ModelRouteRef::parse(&route).unwrap(),
+                    cache_override(Some(enabled)),
+                );
+                assert_eq!(
+                    cache_policy(&catalog, &route),
+                    ResolvedAnthropicCachePolicy {
+                        cache_control: enabled,
+                        source: AnthropicCacheControlSource::RouteOverride,
+                    }
+                );
+            }
+        }
+    }
+    let catalog = cache_catalog();
+    for peer in [
+        "minimax@default/MiniMax-M2.5",
+        "minimax@default/MiniMax-M2.7",
+        "minimax-cn@default/unreviewed",
+        "minimax@m-plan/unreviewed",
+        "dashscope@token-plan/glm-5.1",
+    ] {
+        assert_eq!(
+            cache_policy(&catalog, peer),
+            ResolvedAnthropicCachePolicy {
+                cache_control: true,
+                source: AnthropicCacheControlSource::EndpointBuiltin,
+            },
+            "{peer}"
+        );
+    }
+}
+
+#[test]
 fn route_cache_isolates_models_endpoints_providers_and_ignores_other_transports() {
     let mut catalog = cache_catalog();
     let a = "dashscope@token-plan/cache-a";
