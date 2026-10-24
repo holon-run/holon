@@ -101,6 +101,8 @@ pub use crate::runtime_db::types::{
     WorkspaceEntryRepository, WorkspaceOccupancyRepository,
 };
 #[cfg(test)]
+mod brief_latest_tests;
+#[cfg(test)]
 mod tests;
 
 use std::{

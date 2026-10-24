@@ -37,6 +37,10 @@ pub(crate) const AGENT_ROSTER_LATEST_BRIEFS_SQL: &str =
          LIMIT 1
      )
      WHERE i.status = 'active' AND i.visibility = 'public'";
+pub(crate) const AGENT_LATEST_BRIEF_SQL: &str =
+    "SELECT evidence_id, created_event_seq, created_at, preview FROM briefs
+     WHERE agent_id = ?1
+     ORDER BY created_at DESC, evidence_id DESC LIMIT 1";
 
 /// Principal and entitlement used to derive the runtime-local public scope
 /// for unauthenticated local mode.
@@ -705,22 +709,19 @@ fn collect_agent_projection_anchors(
             |row| row.get(0),
         )
         .optional()?;
-    let latest_brief = connection
-        .query_row(
-            "SELECT evidence_id, created_event_seq, created_at, preview FROM briefs
-             WHERE agent_id = ?1
-             ORDER BY created_at DESC, evidence_id DESC LIMIT 1",
-            [agent_id],
-            |row| {
+    let latest_brief = {
+        let _query = crate::diagnostics::attribution::AGENT_LATEST_BRIEF.start();
+        connection
+            .query_row(AGENT_LATEST_BRIEF_SQL, [agent_id], |row| {
                 Ok(AgentRosterLatestBriefRow {
                     brief_id: row.get(0)?,
                     created_event_seq: row.get(1)?,
                     created_at: row.get(2)?,
                     preview: row.get(3)?,
                 })
-            },
-        )
-        .optional()?;
+            })
+            .optional()?
+    };
 
     Ok(AgentProjectionSnapshotRows {
         runtime_id,
@@ -800,6 +801,7 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
 
     let mut latest_briefs: HashMap<String, AgentRosterLatestBriefRow> = HashMap::new();
     {
+        let _query = crate::diagnostics::attribution::ROSTER_LATEST_BRIEFS.start();
         // Drive the lookup from the bounded public roster so SQLite selects
         // one latest Brief per member instead of repeating the selector for
         // every historical Brief belonging to that member.
@@ -1452,6 +1454,7 @@ impl crate::runtime_db::RuntimeDb {
     /// Briefs, and the runtime identity metadata — inside one deferred read
     /// transaction, so all values share one committed database view.
     pub fn agent_roster_snapshot_rows(&self) -> Result<AgentRosterSnapshotRows> {
+        let _read = crate::diagnostics::attribution::ROSTER_READ.start();
         self.with_read(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
@@ -1471,6 +1474,7 @@ impl crate::runtime_db::RuntimeDb {
         &self,
         agent_id: &str,
     ) -> Result<AgentProjectionSnapshotRows> {
+        let _read = crate::diagnostics::attribution::AGENT_PROJECTION_READ.start();
         self.with_read(|connection| {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Deferred)?;

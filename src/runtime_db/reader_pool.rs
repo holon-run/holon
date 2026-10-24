@@ -11,6 +11,8 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{ffi::ErrorCode, Connection};
 use tokio::sync::Semaphore;
 
+use crate::diagnostics::attribution;
+
 use super::write_queue::RuntimeDbWriterState;
 use super::{RuntimeDbProtectionError, RuntimeDbRetryableError};
 
@@ -174,6 +176,7 @@ impl RuntimeDbReaderPool {
         deadline: Instant,
         f: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
+        let checkout = attribution::READER_CHECKOUT.start();
         let control = &self.shared.control;
         control.ensure_protected()?;
         let pool = self
@@ -201,9 +204,16 @@ impl RuntimeDbReaderPool {
                     .into()
             })
         })?;
+        drop(checkout);
+        // Declare the timer first so the lease is returned before it stops.
+        let _held = attribution::READER_LEASE.start();
         let mut lease = ReadLease { connection };
         control.ensure_protected()?;
-        let result = f(lease.connection.connection.as_mut().expect("live reader"));
+        let result = {
+            // The closure includes row decoding and transactions, not only SQL.
+            let _operation = attribution::READER_OPERATION.start();
+            f(lease.connection.connection.as_mut().expect("live reader"))
+        };
         if result.as_ref().err().is_some_and(is_broken_error) {
             lease.connection.broken = true;
         }
@@ -224,6 +234,7 @@ impl RuntimeDbReaderPool {
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        let admission = attribution::READER_ADMISSION.start();
         let deadline = Instant::now() + self.shared.budget;
         self.shared.control.ensure_protected()?;
         let permit = match tokio::time::timeout_at(
@@ -248,11 +259,14 @@ impl RuntimeDbReaderPool {
                 .into());
             }
         };
+        drop(admission);
         self.shared.control.ensure_protected()?;
         let reader = self.clone();
         let state = Arc::new(AtomicU8::new(0));
         let task_state = Arc::clone(&state);
+        let blocking_admission = attribution::READER_BLOCKING_ADMISSION.start();
         let mut task = tokio::task::spawn_blocking(move || {
+            drop(blocking_admission);
             let _permit = permit;
             // Cancellation and task start have a single linearization point.
             if task_state

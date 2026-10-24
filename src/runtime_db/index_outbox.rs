@@ -168,6 +168,7 @@ impl RuntimeIndexOutboxRepository<'_> {
     /// acknowledged and merely await GC.
     pub fn pending_count_for_agent(&self, agent_id: &str, after_change_seq: i64) -> Result<i64> {
         self.db.with_read(|connection| {
+            let _query = crate::diagnostics::attribution::INDEX_PENDING_COUNT.start();
             connection
                 .query_row(
                     "SELECT COUNT(*) FROM runtime_index_outbox
@@ -187,6 +188,7 @@ impl RuntimeIndexOutboxRepository<'_> {
         after_change_seq: i64,
     ) -> Result<Option<DateTime<Utc>>> {
         self.db.with_read(|connection| {
+            let _query = crate::diagnostics::attribution::INDEX_PENDING_OLDEST.start();
             let created_at: Option<String> = connection
                 .query_row(
                     "SELECT MIN(created_at) FROM runtime_index_outbox

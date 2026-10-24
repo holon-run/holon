@@ -166,6 +166,7 @@ impl ProjectionGate {
         }
 
         let decision = {
+            let _decision = diagnostics::attribution::PROJECTION_GATE.start();
             let mut entries = self.entries.lock().expect("projection gate lock poisoned");
             let now = Instant::now();
             match entries.get(&key) {
@@ -210,10 +211,12 @@ impl ProjectionGate {
         match decision {
             Decision::Ready(bytes) => Ok(bytes),
             Decision::Wait(flight) => {
+                let _wait = diagnostics::attribution::PROJECTION_FOLLOWER.start();
                 let waited = wait_for_flight(flight).await;
                 self.settle_retryable_failure(&fallback_key, waited)
             }
             Decision::Lead(mut guard) => {
+                let _build = diagnostics::attribution::PROJECTION_BUILD.start();
                 let result = build().await;
                 if result.is_err() {
                     diagnostics::record_projection_gate_failed();

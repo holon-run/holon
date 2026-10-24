@@ -95,6 +95,21 @@ stages! {
     SIDECAR => "db.connection.sidecar_check",
     SQLITE_OPEN => "db.connection.sqlite_open",
     CONFIGURE => "db.connection.configure",
+    READER_ADMISSION => "db.reader.async_admission",
+    READER_BLOCKING_ADMISSION => "db.reader.blocking_admission",
+    READER_CHECKOUT => "db.reader.checkout",
+    READER_LEASE => "db.reader.lease_held",
+    READER_OPERATION => "db.reader.operation",
+    ROSTER_READ => "projection.roster.read",
+    ROSTER_LATEST_BRIEFS => "projection.roster.latest_briefs_query",
+    AGENT_PROJECTION_READ => "projection.agent_anchors.read",
+    AGENT_LATEST_BRIEF => "projection.agent_anchors.latest_brief_query",
+    INDEX_PENDING_COUNT => "index.outbox.pending_count_query",
+    INDEX_PENDING_OLDEST => "index.outbox.pending_oldest_query",
+    CAPABILITY_PREFLIGHT => "http.projection.capability_preflight",
+    PROJECTION_GATE => "http.projection.gate_decision",
+    PROJECTION_FOLLOWER => "http.projection.follower_wait",
+    PROJECTION_BUILD => "http.projection.leader_build",
     WORK_QUEUE => "projection.work_queue",
     WORK_ITEMS => "projection.work_queue.latest_items",
     WAIT_QUERY => "projection.waits.active_all_query",
@@ -126,5 +141,31 @@ mod tests {
         assert_eq!(snapshot.rows, 7);
         assert!(snapshot.total_ns >= 100_000);
         assert_eq!(snapshot.total_ns, snapshot.max_ns);
+    }
+
+    #[test]
+    fn timer_records_failed_attempt_once() {
+        static STAGE: Stage = Stage::new("test.failed");
+        let attempt = || -> anyhow::Result<()> {
+            let _timer = STAGE.start();
+            anyhow::bail!("synthetic failure")
+        };
+        assert!(attempt().is_err());
+        assert_eq!(STAGE.snapshot().count, 1);
+    }
+
+    #[tokio::test]
+    async fn timer_records_cancelled_attempt_once() {
+        static STAGE: Stage = Stage::new("test.cancelled");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _timer = STAGE.start();
+            started_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(STAGE.snapshot().count, 1);
     }
 }
