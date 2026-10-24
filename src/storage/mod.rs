@@ -269,6 +269,16 @@ impl AppStorage {
         &self.data_dir
     }
 
+    /// Rebuild every read facade over the supplied DB without opening a writer.
+    pub(crate) fn read_only_with_db(&self, runtime_db: RuntimeDb) -> Result<Self> {
+        Self::new_with_scope_options(
+            self.data_dir.clone(),
+            self.agent_id.clone(),
+            StorageOpenMode::ReadOnly,
+            runtime_db,
+        )
+    }
+
     pub fn runtime_dir(&self) -> PathBuf {
         self.data_dir.join(RUNTIME_DIR)
     }

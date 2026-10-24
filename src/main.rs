@@ -1276,6 +1276,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         local_listener,
         tcp_router,
         unix_server,
+        projection_owner,
     ) = startup
         .observe("serve_startup", async {
             if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
@@ -1420,6 +1421,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             // state: one-time pairing tickets are minted over loopback and redeemed from
             // the advertised LAN or Tailscale address, so both sockets must serve the
             // same state instead of a per-listener copy.
+            let projection_owner = tcp_state.clone();
             let tcp_router = startup.observe_sync("router", || Ok(http::router(tcp_state)))?;
             startup.observe_sync("serving_ready", || {
                 runtime_service.mark_healthy();
@@ -1434,6 +1436,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 local_listener,
                 tcp_router,
                 unix_server,
+                projection_owner,
             ))
         })
         .await?;
@@ -1480,6 +1483,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 .map(|_| ())
                 .context("runtime servers failed")
         };
+        projection_owner.close_projection_reads().await;
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
         if let Some(exporter) = otlp_exporter {
@@ -1491,39 +1495,44 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
 
     #[cfg(not(unix))]
     {
-        if let Some(local) = local_listener {
-            let local_router = tcp_router.clone();
-            let local_server = axum::serve(
-                local,
-                local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
-            let tcp_server = axum::serve(
-                listener,
-                tcp_router
-                    .clone()
-                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
-            tokio::try_join!(tcp_server, local_server)
-                .map(|_| ())
-                .context("runtime servers failed")?;
-        } else {
-            axum::serve(
-                listener,
-                tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
-            .await
-            .context("HTTP server failed")?;
+        let result = async {
+            if let Some(local) = local_listener {
+                let local_router = tcp_router.clone();
+                let local_server = axum::serve(
+                    local,
+                    local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+                let tcp_server = axum::serve(
+                    listener,
+                    tcp_router
+                        .clone()
+                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+                tokio::try_join!(tcp_server, local_server)
+                    .map(|_| ())
+                    .context("runtime servers failed")?;
+            } else {
+                axum::serve(
+                    listener,
+                    tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+                .await
+                .context("HTTP server failed")?;
+            }
+            Ok::<(), anyhow::Error>(())
         }
+        .await;
+        projection_owner.close_projection_reads().await;
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
         if let Some(exporter) = otlp_exporter {
             exporter.shutdown()?;
         }
         diagnostics_writer.shutdown()?;
-        Ok(())
+        result
     }
 }
 

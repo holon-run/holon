@@ -373,7 +373,13 @@ impl AppState {
         self.pairing_tickets = other.pairing_tickets.clone();
         self.tailscale_serve_change = other.tailscale_serve_change.clone();
         self.loopback_http_addr = other.loopback_http_addr;
+        self.projection_gate = other.projection_gate.clone();
         self
+    }
+
+    /// Stop projection admission and join real workers before tearing down the host.
+    pub async fn close_projection_reads(&self) {
+        self.projection_gate.close_and_drain().await;
     }
 
     /// Record bound TCP listeners before publishing either control router.
@@ -3425,6 +3431,54 @@ mod tests {
                 .unwrap();
         assert_eq!(body["code"], "projection_busy");
         assert_eq!(body["retryable"], true);
+    }
+
+    #[tokio::test]
+    async fn listener_projection_owner_drains_real_worker_before_shutdown() {
+        use std::future::Future;
+
+        let (_home, host) = test_host();
+        let tcp = AppState::for_tcp(host.clone());
+        let unix = AppState::for_unix(host).share_listener_state_from(&tcp);
+        assert!(Arc::ptr_eq(&tcp.projection_gate, &unix.projection_gate));
+        let (started_tx, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let gate = tcp.projection_gate.clone();
+        let caller = tokio::spawn(async move {
+            gate.preflight(
+                tokio::time::Instant::now() + Duration::from_secs(30),
+                move |_| {
+                    started_tx.send(()).unwrap();
+                    released.blocking_recv().unwrap();
+                    Ok(())
+                },
+            )
+            .await
+        });
+        started.await.unwrap();
+        let mut drain = Box::pin(unix.close_projection_reads());
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        // Shared close stops admission, but the actual worker still blocks drain.
+        for state in [tcp.clone(), unix.clone()] {
+            let response = router(state)
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/agents/list")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+        release.send(()).unwrap();
+        drain.await;
+        assert!(caller.await.unwrap().is_err());
+        tcp.close_projection_reads().await;
     }
 
     #[tokio::test]

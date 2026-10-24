@@ -18,10 +18,10 @@ use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
 // The projection-effect classification lives with the runtime event registry
 // (its source of truth); re-exported here to keep the S0 contract surface.
 use super::{
-    agents::load_observer_sync_verification, authentication_error_response,
-    authorize_remote_access, error_response, http_error, projection_gate_error_response,
-    serialize_json, traced_json_bytes, traced_json_bytes_with_stale_marker, AppState, AxumResponse,
-    HttpErrorEnvelope, IntoResponse, ProjectionFailure, ProjectionGateError, ProjectionKey,
+    authentication_error_response, authorize_remote_access, error_response, http_error,
+    projection_gate_error_response, serialize_json, traced_json_bytes,
+    traced_json_bytes_with_stale_marker, AppState, AxumResponse, HttpErrorEnvelope, IntoResponse,
+    ProjectionFailure, ProjectionGateError, ProjectionKey,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use crate::runtime_event::ProjectionEffect;
@@ -319,7 +319,16 @@ pub async fn agent_roster_snapshot(
         Ok(authority) => authority,
         Err(error) => return authentication_error_response(error).into_response(),
     };
-    let verification = load_observer_sync_verification(&state);
+    let budget = state.roster_snapshot_limits.timeout;
+    let deadline = tokio::time::Instant::now() + budget;
+    let verification =
+        match super::agents::load_observer_sync_verification_scoped(&state, deadline).await {
+            Ok(verification) => verification,
+            Err(error) => {
+                diagnostics::record_roster_snapshot_failure();
+                return projection_gate_error_response("/agents/snapshot", error.into());
+            }
+        };
     if !advertised_observer_sync_capabilities(&verification).contains(&ROSTER_SNAPSHOT_CAPABILITY) {
         tracing::warn!(
             capability = "agents.roster-snapshot.v1",
@@ -345,88 +354,81 @@ pub async fn agent_roster_snapshot(
     let key = ProjectionKey::AgentsRosterSnapshot(principal.clone());
     let result = state
         .projection_gate
-        .run(key, || async {
-            let limits = gate_state.roster_snapshot_limits.clone();
-            let host = gate_state.host.clone();
-            let snapshot = match tokio::time::timeout(
-                limits.timeout,
-                tokio::task::spawn_blocking(move || host.agent_roster_snapshot()),
-            )
-            .await
-            {
-                Ok(joined) => joined
-                    .map_err(|error| ProjectionFailure::from(error_response(error.into())))?
-                    .map_err(|error| ProjectionFailure::from(error_response(error)))?,
-                Err(_) => {
-                    return Err(ProjectionFailure::from(http_error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        HttpErrorEnvelope::new(
-                            "roster_snapshot_timeout",
-                            format!(
-                                "roster snapshot assembly exceeded the {} second budget",
-                                limits.timeout.as_secs(),
-                            ),
-                        )
-                        .retryable(true),
-                    )));
-                }
-            };
-            if snapshot.agents.len() > limits.max_agents {
-                return Err(ProjectionFailure::from(http_error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    HttpErrorEnvelope::new(
-                        "roster_snapshot_too_large",
-                        "roster snapshot exceeds the maximum Agent count for one response",
-                    )
-                    .extension("agent_count", snapshot.agents.len())
-                    .extension("max_agents", limits.max_agents),
-                )));
-            }
-            let visibility_scope_id = observer_visibility_scope_for(
-                &snapshot.runtime_id,
-                &principal,
-                entitlement,
-                snapshot.visibility_policy_generation,
-            );
-            let snapshot = AgentRosterSnapshot {
-                contract_version: AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION,
-                runtime_id: snapshot.runtime_id,
-                event_log_epoch: snapshot.event_log_epoch,
-                visibility_scope_id,
-                agents: snapshot
-                    .agents
-                    .into_iter()
-                    .map(|entry| AgentRosterEntry {
-                        agent: entry.agent,
-                        event_window: AgentEventWindow {
-                            event_head_seq: entry.event_head_seq,
-                            oldest_retained_seq: entry.oldest_retained_seq,
-                        },
-                        latest_brief: entry.latest_brief.map(|brief| AgentLatestBrief {
-                            brief_id: brief.brief_id,
-                            created_event_seq: brief.created_event_seq,
-                            created_at: brief.created_at,
-                            preview: brief.preview,
-                        }),
-                    })
-                    .collect(),
-            };
-            let agent_count = snapshot.agents.len();
-            let bytes =
-                serialize_json("/agents/snapshot", &snapshot).map_err(ProjectionFailure::from)?;
-            if bytes.len() > limits.max_serialized_bytes {
-                return Err(ProjectionFailure::from(http_error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    HttpErrorEnvelope::new(
-                        "roster_snapshot_too_large",
-                        "roster snapshot exceeds the maximum serialized response size",
-                    )
-                    .extension("serialized_bytes", bytes.len())
-                    .extension("max_serialized_bytes", limits.max_serialized_bytes),
-                )));
-            }
-            diagnostics::record_roster_snapshot(started_at.elapsed(), agent_count, bytes.len());
-            Ok(bytes)
+        .run_owned(key, deadline, budget, move |context| async move {
+            context
+                .blocking(move |scope| {
+                    let limits = gate_state.roster_snapshot_limits.clone();
+                    let host = gate_state.host.clone();
+                    let db = host.runtime_db().with_read_scope(scope);
+                    let snapshot = host
+                        .agent_roster_snapshot_scoped(&db)
+                        .map_err(error_response)
+                        .map_err(ProjectionFailure::from)?;
+                    if snapshot.agents.len() > limits.max_agents {
+                        return Err(ProjectionFailure::from(http_error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            HttpErrorEnvelope::new(
+                                "roster_snapshot_too_large",
+                                "roster snapshot exceeds the maximum Agent count for one response",
+                            )
+                            .extension("agent_count", snapshot.agents.len())
+                            .extension("max_agents", limits.max_agents),
+                        )));
+                    }
+                    let visibility_scope_id = observer_visibility_scope_for(
+                        &snapshot.runtime_id,
+                        &principal,
+                        entitlement,
+                        snapshot.visibility_policy_generation,
+                    );
+                    let snapshot = AgentRosterSnapshot {
+                        contract_version: AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION,
+                        runtime_id: snapshot.runtime_id,
+                        event_log_epoch: snapshot.event_log_epoch,
+                        visibility_scope_id,
+                        agents: snapshot
+                            .agents
+                            .into_iter()
+                            .map(|entry| AgentRosterEntry {
+                                agent: entry.agent,
+                                event_window: AgentEventWindow {
+                                    event_head_seq: entry.event_head_seq,
+                                    oldest_retained_seq: entry.oldest_retained_seq,
+                                },
+                                latest_brief: entry.latest_brief.map(|brief| AgentLatestBrief {
+                                    brief_id: brief.brief_id,
+                                    created_event_seq: brief.created_event_seq,
+                                    created_at: brief.created_at,
+                                    preview: brief.preview,
+                                }),
+                            })
+                            .collect(),
+                    };
+                    let agent_count = snapshot.agents.len();
+                    let bytes = serialize_json("/agents/snapshot", &snapshot)
+                        .map_err(ProjectionFailure::from)?;
+                    if bytes.len() > limits.max_serialized_bytes {
+                        return Err(ProjectionFailure::from(http_error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            HttpErrorEnvelope::new(
+                                "roster_snapshot_too_large",
+                                "roster snapshot exceeds the maximum serialized response size",
+                            )
+                            .extension("serialized_bytes", bytes.len())
+                            .extension("max_serialized_bytes", limits.max_serialized_bytes),
+                        )));
+                    }
+                    diagnostics::record_roster_snapshot(
+                        started_at.elapsed(),
+                        agent_count,
+                        bytes.len(),
+                    );
+                    db.check_read_scope()
+                        .map_err(error_response)
+                        .map_err(ProjectionFailure::from)?;
+                    Ok(bytes)
+                })
+                .await?
         })
         .await;
     match result {
@@ -504,7 +506,19 @@ pub async fn agent_projection_snapshot(
         Ok(authority) => authority,
         Err(error) => return authentication_error_response(error).into_response(),
     };
-    let verification = load_observer_sync_verification(&state);
+    let budget = state.projection_snapshot_limits.timeout;
+    let deadline = tokio::time::Instant::now() + budget;
+    let verification =
+        match super::agents::load_observer_sync_verification_scoped(&state, deadline).await {
+            Ok(verification) => verification,
+            Err(error) => {
+                diagnostics::record_projection_snapshot_failure();
+                return projection_gate_error_response(
+                    "/agents/{agent_id}/projection-snapshot",
+                    error.into(),
+                );
+            }
+        };
     if !advertised_observer_sync_capabilities(&verification)
         .contains(&PROJECTION_SNAPSHOT_CAPABILITY)
     {
@@ -532,91 +546,76 @@ pub async fn agent_projection_snapshot(
     let boundary_agent_id = agent_id.clone();
     let result = state
         .projection_gate
-        .run(
+        .run_owned(
             ProjectionKey::AgentProjectionSnapshot(agent_id.clone(), principal.clone()),
-            || async {
-                let limits = gate_state.projection_snapshot_limits.clone();
-                let host = gate_state.host.clone();
-                let snapshot = match tokio::time::timeout(
-                    limits.timeout,
-                    tokio::task::spawn_blocking(move || {
-                        host.agent_projection_snapshot(&boundary_agent_id)
-                    }),
-                )
-                .await
-                {
-                    Ok(joined) => joined
-                        .map_err(|error| ProjectionFailure::from(error_response(error.into())))?
-                        .map_err(|error| ProjectionFailure::from(error_response(error)))?,
-                    Err(_) => {
-                        return Err(ProjectionFailure::from(http_error(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            HttpErrorEnvelope::new(
-                                "projection_snapshot_timeout",
-                                format!(
-                                    "projection snapshot assembly exceeded the {} second budget",
-                                    limits.timeout.as_secs(),
+            deadline,
+            budget,
+            move |context| async move {
+                context
+                    .blocking(move |scope| {
+                        let limits = gate_state.projection_snapshot_limits.clone();
+                        let host = gate_state.host.clone();
+                        let db = host.runtime_db().with_read_scope(scope);
+                        let snapshot = host
+                            .agent_projection_snapshot_scoped(&boundary_agent_id, &db)
+                            .map_err(error_response)
+                            .map_err(ProjectionFailure::from)?;
+                        let Some(snapshot) = snapshot else {
+                            // Unknown, private, and deleted identities share one
+                            // not-found shape: no runtime, epoch, or scope facts.
+                            return Err(ProjectionFailure::from(http_error(
+                                StatusCode::NOT_FOUND,
+                                HttpErrorEnvelope::new(
+                                    "agent_not_found",
+                                    "no accessible Agent for this request",
                                 ),
-                            )
-                            .retryable(true),
-                        )));
-                    }
-                };
-                let Some(snapshot) = snapshot else {
-                    // Unknown, private, and deleted identities share one
-                    // not-found shape: no runtime, epoch, or scope facts.
-                    return Err(ProjectionFailure::from(http_error(
-                        StatusCode::NOT_FOUND,
-                        HttpErrorEnvelope::new(
-                            "agent_not_found",
-                            "no accessible Agent for this request",
-                        ),
-                    )));
-                };
-                let visibility_scope_id = observer_visibility_scope_for(
-                    &snapshot.runtime_id,
-                    &principal,
-                    entitlement,
-                    snapshot.visibility_policy_generation,
-                );
-                let snapshot = AgentProjectionSnapshot {
-                    contract_version: AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION,
-                    runtime_id: snapshot.runtime_id,
-                    event_log_epoch: snapshot.event_log_epoch,
-                    visibility_scope_id,
-                    agent_id: snapshot.agent_id,
-                    snapshot_through_seq: snapshot.snapshot_through_seq,
-                    event_head_seq: snapshot.event_head_seq,
-                    oldest_retained_seq: snapshot.oldest_retained_seq,
-                    projection: AgentCanonicalProjection {
-                        agent: snapshot.agent,
-                        relations: snapshot.canonical_relations,
-                        current_work_item: snapshot.current_work_item.map(|work_item| {
-                            AgentWorkItemAnchor {
-                                work_item_id: work_item.work_item_id,
-                                state: work_item.state,
-                                plan_status: work_item.plan_status,
-                                revision: work_item.revision,
-                                updated_at: work_item.updated_at,
-                            }
-                        }),
-                        conversation: ConversationRevisionAnchors {
-                            latest_message_id: snapshot.conversation.latest_message_id,
-                            latest_transcript_entry_id: snapshot
-                                .conversation
-                                .latest_transcript_entry_id,
-                        },
-                        latest_brief: snapshot.latest_brief.map(|brief| AgentLatestBrief {
-                            brief_id: brief.brief_id,
-                            created_event_seq: brief.created_event_seq,
-                            created_at: brief.created_at,
-                            preview: brief.preview,
-                        }),
-                        hydration_tombstones: Vec::new(),
-                        hydration_references: snapshot
-                            .hydration_references
-                            .into_iter()
-                            .map(|reference| AgentHydrationKey {
+                            )));
+                        };
+                        let visibility_scope_id = observer_visibility_scope_for(
+                            &snapshot.runtime_id,
+                            &principal,
+                            entitlement,
+                            snapshot.visibility_policy_generation,
+                        );
+                        let snapshot = AgentProjectionSnapshot {
+                            contract_version: AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION,
+                            runtime_id: snapshot.runtime_id,
+                            event_log_epoch: snapshot.event_log_epoch,
+                            visibility_scope_id,
+                            agent_id: snapshot.agent_id,
+                            snapshot_through_seq: snapshot.snapshot_through_seq,
+                            event_head_seq: snapshot.event_head_seq,
+                            oldest_retained_seq: snapshot.oldest_retained_seq,
+                            projection: AgentCanonicalProjection {
+                                agent: snapshot.agent,
+                                relations: snapshot.canonical_relations,
+                                current_work_item: snapshot.current_work_item.map(|work_item| {
+                                    AgentWorkItemAnchor {
+                                        work_item_id: work_item.work_item_id,
+                                        state: work_item.state,
+                                        plan_status: work_item.plan_status,
+                                        revision: work_item.revision,
+                                        updated_at: work_item.updated_at,
+                                    }
+                                }),
+                                conversation: ConversationRevisionAnchors {
+                                    latest_message_id: snapshot.conversation.latest_message_id,
+                                    latest_transcript_entry_id: snapshot
+                                        .conversation
+                                        .latest_transcript_entry_id,
+                                },
+                                latest_brief: snapshot.latest_brief.map(|brief| AgentLatestBrief {
+                                    brief_id: brief.brief_id,
+                                    created_event_seq: brief.created_event_seq,
+                                    created_at: brief.created_at,
+                                    preview: brief.preview,
+                                }),
+                                hydration_tombstones: Vec::new(),
+                                hydration_references: snapshot
+                                    .hydration_references
+                                    .into_iter()
+                                    .map(|reference| {
+                                        AgentHydrationKey {
                                 record_kind: match reference.record_kind {
                                     crate::host::ObserverSyncRecordKindData::Message => {
                                         ObserverSyncRecordKind::Message
@@ -629,14 +628,16 @@ pub async fn agent_projection_snapshot(
                                     }
                                 },
                                 record_id: reference.record_id,
-                            })
-                            .collect(),
-                    },
-                };
-                let bytes = serialize_json("/agents/{agent_id}/projection-snapshot", &snapshot)
-                    .map_err(ProjectionFailure::from)?;
-                if bytes.len() > limits.max_serialized_bytes {
-                    return Err(ProjectionFailure::from(http_error(
+                            }
+                                    })
+                                    .collect(),
+                            },
+                        };
+                        let bytes =
+                            serialize_json("/agents/{agent_id}/projection-snapshot", &snapshot)
+                                .map_err(ProjectionFailure::from)?;
+                        if bytes.len() > limits.max_serialized_bytes {
+                            return Err(ProjectionFailure::from(http_error(
                         StatusCode::PAYLOAD_TOO_LARGE,
                         HttpErrorEnvelope::new(
                             "projection_snapshot_too_large",
@@ -645,9 +646,14 @@ pub async fn agent_projection_snapshot(
                         .extension("serialized_bytes", bytes.len())
                         .extension("max_serialized_bytes", limits.max_serialized_bytes),
                     )));
-                }
-                diagnostics::record_projection_snapshot(started_at.elapsed(), bytes.len());
-                Ok(bytes)
+                        }
+                        diagnostics::record_projection_snapshot(started_at.elapsed(), bytes.len());
+                        db.check_read_scope()
+                            .map_err(error_response)
+                            .map_err(ProjectionFailure::from)?;
+                        Ok(bytes)
+                    })
+                    .await?
             },
         )
         .await;
@@ -1111,7 +1117,10 @@ mod tests {
         #[tokio::test]
         async fn roster_snapshot_gates_on_durable_capability_verification() {
             let (_home, host) = roster_test_host().await;
-            let (status, _body) = get_snapshot(AppState::for_tcp(host.clone())).await;
+            let mut state = AppState::for_tcp(host.clone());
+            state.projection_gate =
+                Arc::new(crate::http::ProjectionGate::new(1, Duration::from_secs(60)));
+            let (status, _body) = get_snapshot(state.clone()).await;
             assert_eq!(status, StatusCode::OK);
             host.runtime_db()
                 .connection()
@@ -1122,7 +1131,8 @@ mod tests {
                     [],
                 )
                 .unwrap();
-            let (status, body) = get_snapshot(AppState::for_tcp(host)).await;
+            // The same gate still has warm bytes; capability revocation must win.
+            let (status, body) = get_snapshot(state).await;
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(body["code"], "capability_unavailable");
             assert!(body.get("agents").is_none());
@@ -1466,8 +1476,10 @@ mod tests {
         #[tokio::test]
         async fn projection_snapshot_gates_on_durable_capability_verification() {
             let (_home, host) = projection_test_host().await;
-            let (status, _body) =
-                get_projection_snapshot(AppState::for_tcp(host.clone()), "web").await;
+            let mut state = AppState::for_tcp(host.clone());
+            state.projection_gate =
+                Arc::new(crate::http::ProjectionGate::new(1, Duration::from_secs(60)));
+            let (status, _body) = get_projection_snapshot(state.clone(), "web").await;
             assert_eq!(status, StatusCode::OK);
             host.runtime_db()
                 .connection()
@@ -1478,7 +1490,7 @@ mod tests {
                     [],
                 )
                 .unwrap();
-            let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
+            let (status, body) = get_projection_snapshot(state, "web").await;
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(body["code"], "capability_unavailable");
             assert!(body.get("projection").is_none());

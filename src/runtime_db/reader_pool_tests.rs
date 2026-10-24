@@ -26,6 +26,153 @@ fn read_one(db: &RuntimeDb) -> Result<i64> {
     db.with_read(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get(0))?))
 }
 
+#[test]
+fn scoped_checkpoint_needs_no_reader_or_sql() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    db.check_read_scope()?;
+    let expired = RuntimeDbReadScope::new(Instant::now());
+    assert!(db
+        .with_read_scope(expired)
+        .check_read_scope()
+        .unwrap_err()
+        .is::<RuntimeDbRetryableError>());
+    let cancelled = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    cancelled.cancel();
+    assert!(db
+        .with_read_scope(cancelled)
+        .check_read_scope()
+        .unwrap_err()
+        .is::<RuntimeDbRetryableError>());
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    assert_eq!(read_one(&db)?, 1);
+    Ok(())
+}
+
+// The current-thread runtime must keep driving cancellation/timers while an
+// owned blocking worker uses Handle::block_on only to acquire a memory lock.
+#[tokio::test(flavor = "current_thread")]
+async fn scoped_memory_lock_deadline_and_cancel_allow_healthy_retry() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let lock = Arc::new(tokio::sync::Mutex::new(42));
+    let held = lock.lock().await;
+    for deadline in [true, false] {
+        let scope = RuntimeDbReadScope::new(
+            Instant::now()
+                + if deadline {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_secs(30)
+                },
+        );
+        let scoped = db.with_read_scope(scope.clone());
+        let lock = lock.clone();
+        let handle = tokio::runtime::Handle::current();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            handle.block_on(scoped.wait_for_memory_lock(lock.lock_owned()))
+        });
+        running.await?;
+        if !deadline {
+            scope.cancel();
+        }
+        let error = tokio::time::timeout(Duration::from_secs(5), worker)
+            .await??
+            .unwrap_err();
+        assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    drop(held);
+    let scoped = db.with_read_scope(RuntimeDbReadScope::new(
+        Instant::now() + Duration::from_secs(30),
+    ));
+    assert_eq!(*scoped.wait_for_memory_lock(lock.lock()).await?, 42);
+    assert_eq!(read_one(&db)?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_memory_lock_checks_cancel_after_acquisition() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let lock = tokio::sync::Mutex::new(42);
+    let error = db
+        .with_read_scope(scope.clone())
+        .wait_for_memory_lock(async {
+            scope.cancel();
+            lock.lock().await
+        })
+        .await
+        .unwrap_err();
+    assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
+    assert!(
+        lock.try_lock().is_ok(),
+        "failed acquisition leaked its guard"
+    );
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn scoped_memory_lock_and_checkpoint_preserve_protection_priority_without_sql() -> Result<()>
+{
+    let (_directory, db) = fixture(1)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let lock = tokio::sync::Mutex::new(42);
+    let mut wal = db.path().as_os_str().to_os_string();
+    wal.push("-wal");
+    let error = db
+        .with_read_scope(scope.clone())
+        .wait_for_memory_lock(async {
+            std::fs::remove_file(std::path::PathBuf::from(wal)).unwrap();
+            scope.cancel();
+            lock.lock().await
+        })
+        .await
+        .unwrap_err();
+    assert!(error.is::<RuntimeDbProtectionError>(), "{error:#}");
+    assert!(lock.try_lock().is_ok());
+    let error = db.with_read_scope(scope).check_read_scope().unwrap_err();
+    assert!(error.is::<RuntimeDbProtectionError>(), "{error:#}");
+    assert_eq!(
+        db.protection_status().state,
+        RuntimeDbProtectionState::Quarantined
+    );
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_assembly_checks_are_cheap_but_never_mask_lost_protection() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let scoped = db.with_read_scope(scope.clone());
+    scoped.check_read_scope()?;
+    let mut wal = db.path().as_os_str().to_os_string();
+    wal.push("-wal");
+    std::fs::remove_file(std::path::PathBuf::from(wal))?;
+    // No filesystem protection probe on a healthy per-member checkpoint.
+    db.check_read_cancellation()?;
+    scoped.check_read_cancellation()?;
+    assert_eq!(
+        db.protection_status().state,
+        RuntimeDbProtectionState::Protected
+    );
+    scope.cancel();
+    let error = scoped.check_read_cancellation().unwrap_err();
+    assert!(error.is::<RuntimeDbProtectionError>(), "{error:#}");
+    assert_eq!(
+        db.protection_status().state,
+        RuntimeDbProtectionState::Quarantined
+    );
+    let error = db.check_read_scope().unwrap_err();
+    assert!(error.is::<RuntimeDbProtectionError>(), "{error:#}");
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    Ok(())
+}
+
 // The first row proves the statement has started; the second step performs
 // bounded but expensive recursive SQL, not a Rust sleep standing in for SQLite.
 fn recursive_sql(

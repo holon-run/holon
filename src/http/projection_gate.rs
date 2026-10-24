@@ -12,10 +12,16 @@ use tokio::{
 };
 
 use crate::diagnostics;
+use crate::runtime_db::RuntimeDbReadScope;
+
+mod owned;
+mod preflight;
+use owned::BuildLease;
 
 const DEFAULT_MAX_LEADERS: usize = crate::config::DEFAULT_API_PROJECTION_MAX_LEADERS as usize;
 const DEFAULT_TTL: Duration =
     Duration::from_millis(crate::config::DEFAULT_API_PROJECTION_CACHE_TTL_MS);
+pub(crate) const DEFAULT_BUILD_BUDGET: Duration = Duration::from_secs(10);
 /// How long the last successful build for a projection key may be served as
 /// a stale fallback after a retryable (service-unavailable) assembly
 /// failure. Projection assembly budgets are ten seconds; one fallback window
@@ -73,7 +79,7 @@ impl From<(StatusCode, Json<Value>)> for ProjectionFailure {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ProjectionGateError {
     Build(ProjectionFailure),
     /// The assembly failed retryably and a fresh-enough last good projection
@@ -84,6 +90,7 @@ pub(crate) enum ProjectionGateError {
 }
 
 type ProjectionResult = Result<Bytes, ProjectionFailure>;
+type ProjectionDelivery = Result<Bytes, ProjectionGateError>;
 
 /// The stale fallback must not fire for every HTTP 503: this crate
 /// deliberately maps the non-retryable `runtime_db_quarantined` error onto
@@ -98,18 +105,26 @@ fn is_retryable_service_unavailable(failure: &ProjectionFailure) -> bool {
 #[derive(Debug, Clone)]
 enum FlightState {
     Pending,
-    Finished(ProjectionResult),
+    Finished(ProjectionDelivery),
 }
 
 #[derive(Debug)]
 struct Flight {
     state: watch::Sender<FlightState>,
+    scope: Option<RuntimeDbReadScope>,
+    deadline: Option<Instant>,
 }
 
 #[derive(Debug)]
 enum Entry {
-    InFlight { flight: Arc<Flight> },
-    Ready { bytes: Bytes, expires_at: Instant },
+    InFlight {
+        flight: Arc<Flight>,
+        waiters: HashMap<u64, Instant>,
+    },
+    Ready {
+        bytes: Bytes,
+        expires_at: Instant,
+    },
 }
 
 #[derive(Debug)]
@@ -118,13 +133,27 @@ struct StaleEntry {
     built_at: Instant,
 }
 
+#[derive(Debug, Default)]
+struct GateState {
+    entries: HashMap<ProjectionKey, Entry>,
+    stale: HashMap<ProjectionKey, StaleEntry>,
+    tasks: tokio::task::JoinSet<()>,
+    preflights: HashMap<u64, RuntimeDbReadScope>,
+    next_waiter: u64,
+    next_preflight: u64,
+    closed: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct ProjectionGate {
-    entries: Mutex<HashMap<ProjectionKey, Entry>>,
-    stale: Mutex<HashMap<ProjectionKey, StaleEntry>>,
+    state: Mutex<GateState>,
     leaders: Arc<Semaphore>,
+    preflight_workers: Arc<Semaphore>,
     ttl: Duration,
     stale_max_age: Duration,
+    drain: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    stale_deliveries: std::sync::atomic::AtomicU64,
 }
 
 impl Default for ProjectionGate {
@@ -140,14 +169,18 @@ impl ProjectionGate {
 
     fn new_with_stale_max_age(max_leaders: usize, ttl: Duration, stale_max_age: Duration) -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
-            stale: Mutex::new(HashMap::new()),
+            state: Mutex::new(GateState::default()),
             leaders: Arc::new(Semaphore::new(max_leaders)),
+            preflight_workers: Arc::new(Semaphore::new(preflight::MAX_WORKERS)),
             ttl,
             stale_max_age,
+            drain: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            stale_deliveries: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn run<F, Fut>(
         &self,
         key: ProjectionKey,
@@ -157,7 +190,6 @@ impl ProjectionGate {
         F: FnOnce() -> Fut,
         Fut: Future<Output = ProjectionResult>,
     {
-        let fallback_key = key.clone();
         enum Decision<'a> {
             Ready(Bytes),
             Wait(Arc<Flight>),
@@ -167,20 +199,24 @@ impl ProjectionGate {
 
         let decision = {
             let _decision = diagnostics::attribution::PROJECTION_GATE.start();
-            let mut entries = self.entries.lock().expect("projection gate lock poisoned");
+            let mut state = self.state.lock().expect("projection gate lock poisoned");
             let now = Instant::now();
-            match entries.get(&key) {
+            match state.entries.get(&key) {
+                _ if state.closed => {
+                    diagnostics::record_projection_gate_rejected();
+                    Decision::Reject
+                }
                 Some(Entry::Ready { bytes, expires_at }) if *expires_at > now => {
                     diagnostics::record_projection_gate_cache_hit();
                     Decision::Ready(bytes.clone())
                 }
-                Some(Entry::InFlight { flight }) => {
+                Some(Entry::InFlight { flight, .. }) => {
                     diagnostics::record_projection_gate_cache_miss();
                     diagnostics::record_projection_gate_joined_waiter();
                     Decision::Wait(Arc::clone(flight))
                 }
                 _ => {
-                    entries.retain(|_, entry| {
+                    state.entries.retain(|_, entry| {
                         !matches!(
                             entry,
                             Entry::Ready { expires_at, .. } if *expires_at <= now
@@ -189,12 +225,17 @@ impl ProjectionGate {
                     diagnostics::record_projection_gate_cache_miss();
                     match Arc::clone(&self.leaders).try_acquire_owned() {
                         Ok(permit) => {
-                            let (state, _) = watch::channel(FlightState::Pending);
-                            let flight = Arc::new(Flight { state });
-                            entries.insert(
+                            let (flight_state, _) = watch::channel(FlightState::Pending);
+                            let flight = Arc::new(Flight {
+                                state: flight_state,
+                                scope: None,
+                                deadline: None,
+                            });
+                            state.entries.insert(
                                 key.clone(),
                                 Entry::InFlight {
                                     flight: Arc::clone(&flight),
+                                    waiters: HashMap::new(),
                                 },
                             );
                             Decision::Lead(LeaderGuard::new(self, key, flight, permit))
@@ -212,8 +253,7 @@ impl ProjectionGate {
             Decision::Ready(bytes) => Ok(bytes),
             Decision::Wait(flight) => {
                 let _wait = diagnostics::attribution::PROJECTION_FOLLOWER.start();
-                let waited = wait_for_flight(flight).await;
-                self.settle_retryable_failure(&fallback_key, waited)
+                self.record_delivery(wait_for_flight(flight).await)
             }
             Decision::Lead(mut guard) => {
                 let _build = diagnostics::attribution::PROJECTION_BUILD.start();
@@ -221,36 +261,10 @@ impl ProjectionGate {
                 if result.is_err() {
                     diagnostics::record_projection_gate_failed();
                 }
-                guard.finish(result.clone());
-                self.settle_retryable_failure(&fallback_key, result)
+                self.record_delivery(guard.finish(result))
             }
             Decision::Reject => Err(ProjectionGateError::Rejected),
         }
-    }
-
-    /// A retryable assembly failure (service-unavailable class, e.g. the
-    /// roster snapshot budget timeout or a cancelled leader) still has a
-    /// usable answer when this key recently produced a fresh projection:
-    /// serve the last good bytes instead of failing the request. The
-    /// in-flight entry stays released, so the next caller rebuilds.
-    fn settle_retryable_failure(
-        &self,
-        key: &ProjectionKey,
-        result: ProjectionResult,
-    ) -> Result<Bytes, ProjectionGateError> {
-        if let Err(failure) = &result {
-            if is_retryable_service_unavailable(failure) {
-                if let Some(bytes) = self.fresh_stale_bytes(key) {
-                    tracing::warn!(
-                        status = %failure.status,
-                        "projection assembly failed retryably; serving the last good projection marked stale"
-                    );
-                    diagnostics::record_projection_gate_stale_served();
-                    return Err(ProjectionGateError::StaleServed(bytes));
-                }
-            }
-        }
-        result.map_err(ProjectionGateError::Build)
     }
 
     /// Model controls must not be overwritten by a cached pre-mutation snapshot.
@@ -261,27 +275,29 @@ impl ProjectionGate {
             }
             ProjectionKey::AgentsList(_) | ProjectionKey::AgentsRosterSnapshot(_) => true,
         };
-        self.entries
-            .lock()
-            .expect("projection gate lock poisoned")
-            .retain(|key, _| !affected(key));
-        self.stale
-            .lock()
-            .expect("projection gate lock poisoned")
-            .retain(|key, _| !affected(key));
-    }
-
-    fn fresh_stale_bytes(&self, key: &ProjectionKey) -> Option<Bytes> {
-        let mut stale = self.stale.lock().expect("projection gate lock poisoned");
-        match stale.get(key) {
-            Some(entry) if entry.built_at.elapsed() <= self.stale_max_age => {
-                Some(entry.bytes.clone())
+        let mut state = self.state.lock().expect("projection gate lock poisoned");
+        state.stale.retain(|key, _| !affected(key));
+        state.entries.retain(|key, entry| {
+            if !affected(key) {
+                return true;
             }
+            if let Entry::InFlight { flight, .. } = entry {
+                let _ = close_flight(flight, Err(ProjectionFailure::leader_cancelled().into()));
+            }
+            false
+        });
+    }
+}
+
+impl GateState {
+    fn fresh_stale_bytes(&mut self, key: &ProjectionKey, max_age: Duration) -> Option<Bytes> {
+        match self.stale.get(key) {
+            Some(entry) if entry.built_at.elapsed() <= max_age => Some(entry.bytes.clone()),
             Some(_) => {
                 // Expired fallback entries have no other cleanup path; drop
                 // them on access so long-lived processes do not accumulate
                 // per-key stale bytes without bound.
-                stale.remove(key);
+                self.stale.remove(key);
                 diagnostics::record_projection_gate_stale_expired();
                 None
             }
@@ -294,99 +310,139 @@ struct LeaderGuard<'a> {
     gate: &'a ProjectionGate,
     key: ProjectionKey,
     flight: Arc<Flight>,
-    _permit: OwnedSemaphorePermit,
+    _lease: Arc<BuildLease>,
     finished: bool,
 }
 
 impl<'a> LeaderGuard<'a> {
+    #[cfg(test)]
     fn new(
         gate: &'a ProjectionGate,
         key: ProjectionKey,
         flight: Arc<Flight>,
         permit: OwnedSemaphorePermit,
     ) -> Self {
+        Self::with_lease(gate, key, flight, Arc::new(BuildLease::new(permit)))
+    }
+
+    fn with_lease(
+        gate: &'a ProjectionGate,
+        key: ProjectionKey,
+        flight: Arc<Flight>,
+        lease: Arc<BuildLease>,
+    ) -> Self {
         diagnostics::record_projection_gate_leader_started();
         Self {
             gate,
             key,
             flight,
-            _permit: permit,
+            _lease: lease,
             finished: false,
         }
     }
 
-    fn finish(&mut self, result: ProjectionResult) {
+    fn finish(&mut self, result: ProjectionResult) -> ProjectionDelivery {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .expect("projection gate lock poisoned");
+        if self.flight.scope.is_some()
+            && entry_matches_flight(state.entries.get(&self.key), &self.flight)
+            && !owned::has_live_waiters(&state, &self.key, &self.flight)
         {
-            let mut entries = self
-                .gate
-                .entries
-                .lock()
-                .expect("projection gate lock poisoned");
-            if entry_matches_flight(entries.get(&self.key), &self.flight) {
-                match &result {
-                    Ok(bytes) => {
-                        let mut stale = self
-                            .gate
-                            .stale
-                            .lock()
-                            .expect("projection gate lock poisoned");
-                        // Sweep expired entries on insert. Cleanup on access
-                        // alone would let never-revisited keys (request-derived
-                        // per-agent projections) accumulate stale bytes without
-                        // bound in long-lived processes.
-                        let built_at = Instant::now();
-                        let max_age = self.gate.stale_max_age;
-                        let before = stale.len();
-                        stale.retain(|_, entry| entry.built_at.elapsed() <= max_age);
-                        diagnostics::record_projection_gate_stale_expired_by(
-                            (before - stale.len()) as u64,
-                        );
-                        stale.insert(
-                            self.key.clone(),
-                            StaleEntry {
-                                bytes: bytes.clone(),
-                                built_at,
-                            },
-                        );
-                        drop(stale);
-                        entries.insert(
-                            self.key.clone(),
-                            Entry::Ready {
-                                bytes: bytes.clone(),
-                                expires_at: Instant::now() + self.gate.ttl,
-                            },
-                        );
-                    }
-                    Err(_) => {
-                        entries.remove(&self.key);
+            state.entries.remove(&self.key);
+            let failure = match &result {
+                Err(failure) if !is_retryable_service_unavailable(failure) => failure.clone(),
+                _ if self
+                    .flight
+                    .deadline
+                    .is_some_and(|deadline| deadline <= Instant::now()) =>
+                {
+                    ProjectionFailure::deadline_exhausted()
+                }
+                _ => ProjectionFailure::leader_cancelled(),
+            };
+            let _ = close_flight(&self.flight, Err(failure.into()));
+        }
+        let delivery = if entry_matches_flight(state.entries.get(&self.key), &self.flight) {
+            match result {
+                Ok(bytes) => {
+                    // Sweep expired entries on insert. Cleanup on access
+                    // alone would let never-revisited keys (request-derived
+                    // per-agent projections) accumulate stale bytes without
+                    // bound in long-lived processes.
+                    let built_at = Instant::now();
+                    let max_age = self.gate.stale_max_age;
+                    let before = state.stale.len();
+                    state
+                        .stale
+                        .retain(|_, entry| entry.built_at.elapsed() <= max_age);
+                    diagnostics::record_projection_gate_stale_expired_by(
+                        (before - state.stale.len()) as u64,
+                    );
+                    state.stale.insert(
+                        self.key.clone(),
+                        StaleEntry {
+                            bytes: bytes.clone(),
+                            built_at,
+                        },
+                    );
+                    state.entries.insert(
+                        self.key.clone(),
+                        Entry::Ready {
+                            bytes: bytes.clone(),
+                            expires_at: Instant::now() + self.gate.ttl,
+                        },
+                    );
+                    Ok(bytes)
+                }
+                Err(failure) => {
+                    state.entries.remove(&self.key);
+                    // Bind fallback to this terminal decision, never to a
+                    // later cache generation observed by an awakened waiter.
+                    match is_retryable_service_unavailable(&failure)
+                        .then(|| state.fresh_stale_bytes(&self.key, self.gate.stale_max_age))
+                        .flatten()
+                    {
+                        Some(bytes) => Err(ProjectionGateError::StaleServed(bytes)),
+                        None => Err(ProjectionGateError::Build(failure)),
                     }
                 }
             }
-        }
-        self.flight
-            .state
-            .send_replace(FlightState::Finished(result));
+        } else {
+            Err(ProjectionFailure::leader_cancelled().into())
+        };
+        let delivery = close_flight(&self.flight, delivery);
         self.finished = true;
+        delivery
     }
 }
 
 impl Drop for LeaderGuard<'_> {
     fn drop(&mut self) {
         if !self.finished {
-            let failure = ProjectionFailure::leader_cancelled();
-            {
-                let mut entries = self
-                    .gate
-                    .entries
-                    .lock()
-                    .expect("projection gate lock poisoned");
-                if entry_matches_flight(entries.get(&self.key), &self.flight) {
-                    entries.remove(&self.key);
-                }
-            }
-            self.flight
+            let mut state = self
+                .gate
                 .state
-                .send_replace(FlightState::Finished(Err(failure)));
+                .lock()
+                .expect("projection gate lock poisoned");
+            let delivery = if entry_matches_flight(state.entries.get(&self.key), &self.flight) {
+                state.entries.remove(&self.key);
+                match self
+                    .flight
+                    .scope
+                    .is_none()
+                    .then(|| state.fresh_stale_bytes(&self.key, self.gate.stale_max_age))
+                    .flatten()
+                {
+                    Some(bytes) => Err(ProjectionGateError::StaleServed(bytes)),
+                    None => Err(ProjectionFailure::leader_cancelled().into()),
+                }
+            } else {
+                Err(ProjectionFailure::leader_cancelled().into())
+            };
+            let _ = close_flight(&self.flight, delivery);
             diagnostics::record_projection_gate_cancelled();
         }
         diagnostics::record_projection_gate_leader_finished();
@@ -396,18 +452,55 @@ impl Drop for LeaderGuard<'_> {
 fn entry_matches_flight(entry: Option<&Entry>, flight: &Arc<Flight>) -> bool {
     matches!(
         entry,
-        Some(Entry::InFlight { flight: current }) if Arc::ptr_eq(current, flight)
+        Some(Entry::InFlight { flight: current, .. }) if Arc::ptr_eq(current, flight)
     )
 }
 
-async fn wait_for_flight(flight: Arc<Flight>) -> ProjectionResult {
+impl From<ProjectionFailure> for ProjectionGateError {
+    fn from(failure: ProjectionFailure) -> Self {
+        Self::Build(failure)
+    }
+}
+
+/// Called only under the gate state lock. Terminal delivery is immutable even
+/// when an invalidated worker finishes after a replacement flight has started.
+fn close_flight(flight: &Flight, delivery: ProjectionDelivery) -> ProjectionDelivery {
+    if let FlightState::Finished(committed) = &*flight.state.borrow() {
+        return committed.clone();
+    }
+    flight
+        .state
+        .send_replace(FlightState::Finished(delivery.clone()));
+    if let Some(scope) = &flight.scope {
+        scope.cancel();
+    }
+    delivery
+}
+
+impl ProjectionGate {
+    fn record_delivery(&self, delivery: ProjectionDelivery) -> ProjectionDelivery {
+        if matches!(&delivery, Err(ProjectionGateError::StaleServed(_))) {
+            tracing::warn!(
+                "projection assembly failed retryably; serving the last good projection marked stale"
+            );
+            diagnostics::record_projection_gate_stale_served();
+            // Keep per-gate assertions independent of concurrent requests.
+            #[cfg(test)]
+            self.stale_deliveries
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        delivery
+    }
+}
+
+async fn wait_for_flight(flight: Arc<Flight>) -> ProjectionDelivery {
     let mut state = flight.state.subscribe();
     loop {
         if let FlightState::Finished(result) = state.borrow().clone() {
             return result;
         }
         if state.changed().await.is_err() {
-            return Err(ProjectionFailure::leader_cancelled());
+            return Err(ProjectionFailure::leader_cancelled().into());
         }
     }
 }
@@ -422,6 +515,131 @@ mod tests {
 
     fn roster_key() -> ProjectionKey {
         ProjectionKey::AgentsRosterSnapshot("principal".into())
+    }
+
+    // Hold the same guard used by run so tests can fix either lock order
+    // without scheduler sleeps or a probabilistic concurrent race.
+    fn pending_leader(gate: &ProjectionGate, key: ProjectionKey) -> LeaderGuard<'_> {
+        let permit = Arc::clone(&gate.leaders).try_acquire_owned().unwrap();
+        let (state, _) = watch::channel(FlightState::Pending);
+        let flight = Arc::new(Flight {
+            state,
+            scope: None,
+            deadline: None,
+        });
+        gate.state.lock().unwrap().entries.insert(
+            key.clone(),
+            Entry::InFlight {
+                flight: Arc::clone(&flight),
+                waiters: HashMap::new(),
+            },
+        );
+        LeaderGuard::new(gate, key, flight, permit)
+    }
+
+    #[tokio::test]
+    async fn invalidate_before_finish_prevents_fresh_and_stale_publication() {
+        tokio::time::pause();
+        for result in [
+            Ok(Bytes::from_static(b"invalidated")),
+            Err(service_unavailable_failure()),
+        ] {
+            let gate = ProjectionGate::new(1, Duration::from_millis(250));
+            gate.run(roster_key(), || async { Ok(Bytes::from_static(b"old")) })
+                .await
+                .unwrap();
+            tokio::time::advance(Duration::from_millis(251)).await;
+            let mut leader = pending_leader(&gate, roster_key());
+            let flight = Arc::clone(&leader.flight);
+
+            gate.invalidate_agent("agent");
+            assert!(matches!(
+                leader.finish(result),
+                Err(ProjectionGateError::Build(_))
+            ));
+            assert!(matches!(
+                wait_for_flight(flight).await,
+                Err(ProjectionGateError::Build(_))
+            ));
+            let state = gate.state.lock().unwrap();
+            assert!(state.entries.is_empty());
+            assert!(state.stale.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_flight_delivery_never_reads_a_replacement_fallback() {
+        tokio::time::pause();
+        let gate = ProjectionGate::new(2, Duration::from_millis(250));
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"old")) })
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(251)).await;
+        let mut leader = pending_leader(&gate, roster_key());
+        let flight = Arc::clone(&leader.flight);
+        assert!(matches!(
+            leader.finish(Err(service_unavailable_failure())),
+            Err(ProjectionGateError::StaleServed(_))
+        ));
+
+        gate.invalidate_agent("agent");
+        gate.run(roster_key(), || async {
+            Ok(Bytes::from_static(b"replacement"))
+        })
+        .await
+        .unwrap();
+        match wait_for_flight(flight).await {
+            Err(ProjectionGateError::StaleServed(bytes)) => {
+                assert_eq!(bytes, Bytes::from_static(b"old"));
+            }
+            other => panic!("expected the committed old fallback, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_before_invalidate_keeps_delivery_but_removes_cache() {
+        let gate = ProjectionGate::new(1, Duration::from_millis(250));
+        let mut leader = pending_leader(&gate, roster_key());
+        let flight = Arc::clone(&leader.flight);
+        assert_eq!(
+            leader.finish(Ok(Bytes::from_static(b"committed"))).unwrap(),
+            Bytes::from_static(b"committed")
+        );
+        gate.invalidate_agent("agent");
+        assert_eq!(
+            wait_for_flight(flight).await.unwrap(),
+            Bytes::from_static(b"committed")
+        );
+        let state = gate.state.lock().unwrap();
+        assert!(state.entries.is_empty());
+        assert!(state.stale.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalidated_guard_drop_cannot_remove_or_close_replacement() {
+        let gate = ProjectionGate::new(2, Duration::from_millis(250));
+        let old_leader = pending_leader(&gate, roster_key());
+        let old_flight = Arc::clone(&old_leader.flight);
+        gate.invalidate_agent("agent");
+        let mut replacement = pending_leader(&gate, roster_key());
+        let new_flight = Arc::clone(&replacement.flight);
+        drop(old_leader);
+
+        assert!(entry_matches_flight(
+            gate.state.lock().unwrap().entries.get(&roster_key()),
+            &new_flight
+        ));
+        assert!(matches!(
+            wait_for_flight(old_flight).await,
+            Err(ProjectionGateError::Build(_))
+        ));
+        replacement
+            .finish(Ok(Bytes::from_static(b"replacement")))
+            .unwrap();
+        assert_eq!(
+            wait_for_flight(new_flight).await.unwrap(),
+            Bytes::from_static(b"replacement")
+        );
     }
 
     #[tokio::test]
@@ -513,9 +731,11 @@ mod tests {
         .await
         .unwrap();
 
-        let entries = gate.entries.lock().unwrap();
-        assert!(!entries.contains_key(&ProjectionKey::AgentState("removed-agent".into())));
-        assert!(entries.contains_key(&ProjectionKey::AgentsList(None)));
+        let state = gate.state.lock().unwrap();
+        assert!(!state
+            .entries
+            .contains_key(&ProjectionKey::AgentState("removed-agent".into())));
+        assert!(state.entries.contains_key(&ProjectionKey::AgentsList(None)));
     }
 
     #[tokio::test]
@@ -665,6 +885,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(retry, Bytes::from_static(b"retry"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_current_leader_preserves_valid_stale_delivery() {
+        tokio::time::pause();
+        let gate = ProjectionGate::new(1, Duration::from_millis(250));
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"first")) })
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(251)).await;
+
+        let leader = pending_leader(&gate, roster_key());
+        let flight = Arc::clone(&leader.flight);
+        drop(leader);
+
+        match wait_for_flight(flight).await {
+            Err(ProjectionGateError::StaleServed(bytes)) => {
+                assert_eq!(bytes, Bytes::from_static(b"first"));
+            }
+            other => panic!(
+                "expected cancelled leader's stale fallback, got {:?}",
+                other
+            ),
+        }
+        assert_eq!(
+            gate.run(roster_key(), || async { Ok(Bytes::from_static(b"retry")) })
+                .await
+                .unwrap(),
+            Bytes::from_static(b"retry")
+        );
     }
 
     #[tokio::test]
@@ -862,9 +1112,10 @@ mod tests {
         // per-key stale bytes forever; the expiration stays observable via
         // the stale_expired diagnostics counter.
         assert!(gate
-            .stale
+            .state
             .lock()
             .expect("projection gate lock poisoned")
+            .stale
             .is_empty());
         let snapshot = diagnostics::performance_snapshot();
         assert!(snapshot.projection_gate.stale_expired >= 1);
@@ -897,17 +1148,39 @@ mod tests {
         .await
         .unwrap();
 
-        let stale = gate.stale.lock().expect("projection gate lock poisoned");
-        assert!(!stale.contains_key(&roster_key()));
-        assert!(stale.contains_key(&ProjectionKey::AgentProjectionSnapshot(
-            "agent-1".to_string(),
-            "principal".to_string()
-        )));
-        drop(stale);
+        let state = gate.state.lock().expect("projection gate lock poisoned");
+        assert!(!state.stale.contains_key(&roster_key()));
+        assert!(state
+            .stale
+            .contains_key(&ProjectionKey::AgentProjectionSnapshot(
+                "agent-1".to_string(),
+                "principal".to_string()
+            )));
+        drop(state);
         let expired_after = diagnostics::performance_snapshot()
             .projection_gate
             .stale_expired;
         assert!(expired_after >= expired_before + 1);
+    }
+
+    #[tokio::test]
+    async fn stale_delivery_test_counts_are_isolated_per_gate() {
+        tokio::time::pause();
+        let gate = ProjectionGate::new(1, Duration::from_millis(1));
+        let other = ProjectionGate::new(1, Duration::from_millis(1));
+        gate.run(roster_key(), || async { Ok(Bytes::from_static(b"first")) })
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(2)).await;
+        assert!(matches!(
+            gate.run(roster_key(), || async {
+                Err(service_unavailable_failure())
+            })
+            .await,
+            Err(ProjectionGateError::StaleServed(_))
+        ));
+        assert_eq!(gate.stale_deliveries.load(Ordering::Relaxed), 1);
+        assert_eq!(other.stale_deliveries.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -920,9 +1193,7 @@ mod tests {
             .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
 
-        let served_before = diagnostics::performance_snapshot()
-            .projection_gate
-            .stale_served;
+        let served_before = gate.stale_deliveries.load(Ordering::Relaxed);
         let surfaced = gate
             .run(roster_key(), || async {
                 Err(ProjectionFailure {
@@ -938,15 +1209,15 @@ mod tests {
         match surfaced {
             Err(ProjectionGateError::Build(failure)) => {
                 assert_eq!(failure.status, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(failure.error_code(), Some("runtime_db_quarantined"));
+                assert_eq!(failure.retryable(), Some(false));
             }
             other => panic!(
                 "expected the quarantine failure to surface, got {:?}",
                 other
             ),
         }
-        let served_after = diagnostics::performance_snapshot()
-            .projection_gate
-            .stale_served;
+        let served_after = gate.stale_deliveries.load(Ordering::Relaxed);
         assert_eq!(served_before, served_after);
     }
 

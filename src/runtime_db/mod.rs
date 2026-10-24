@@ -646,6 +646,23 @@ impl RuntimeDb {
         db
     }
 
+    pub(crate) fn check_read_scope(&self) -> Result<()> {
+        self.readers.check_read_scope()
+    }
+
+    /// Between assembly rows only; full protection checks guard entry/exit.
+    pub(crate) fn check_read_cancellation(&self) -> Result<()> {
+        self.readers.check_read_cancellation()
+    }
+
+    /// Only pass an in-memory lock acquisition, not a future that performs SQL.
+    pub(crate) async fn wait_for_memory_lock<T>(
+        &self,
+        lock: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        self.readers.wait_for_memory_lock(lock).await
+    }
+
     /// Call only at a synchronous/blocking boundary; never nest reader checkouts.
     pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         self.readers.with_read(f)
