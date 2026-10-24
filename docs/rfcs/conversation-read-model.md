@@ -6,6 +6,18 @@ status: accepted
 
 # RFC: Conversation Read Model
 
+## HTTP cache boundary for agent reads (2026-10-24)
+
+Agent state, identity detail and event-page routes return `Cache-Control:
+no-store` on success and handler errors, including deletion tombstones. These
+URLs can name a replacement incarnation; an HTTP cache must not preserve a
+previous identity's response. The GUI also requests event pages with
+`cache: "no-store"` (as it already does for identity and state), bypassing any
+negative responses cached before this server policy was deployed.
+
+This does not change deletion/503 semantics, incarnation fences, conversation
+ETag revalidation, application-level caches or static asset caching.
+
 ## Incarnation-bound delivery (2026-10-16)
 
 Conversation records are keyed by agent id, while reads and cursors remain

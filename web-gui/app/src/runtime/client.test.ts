@@ -1314,8 +1314,8 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
 
-  it("fetches an agent event window and decodes legacy envelopes with pagination parameters", async () => {
-    const seen: string[] = [];
+  it("fetches an agent event window without HTTP caching and decodes legacy envelopes with pagination parameters", async () => {
+    const seen: Array<{ url: string; cache: RequestCache | undefined }> = [];
     const responseBody = {
       events: [
         {
@@ -1331,9 +1331,9 @@ describe("createRuntimeClient", () => {
       cursor_seq: 819,
       transport_padding: "界".repeat(64),
     };
-    const fetchImpl = async (input: RequestInfo | URL) => {
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      seen.push(url);
+      seen.push({ url, cache: init?.cache });
       if (url.endsWith("/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info")) {
         return Response.json(responseBody, {
           headers: { "x-holon-event-contract-version": "3" },
@@ -1367,7 +1367,37 @@ describe("createRuntimeClient", () => {
         responseBytes: new TextEncoder().encode(JSON.stringify(responseBody)).byteLength,
       }),
     );
-    expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info"]);
+    expect(seen).toEqual([{
+      url: "http://example.test:7878/api/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info",
+      cache: "no-store",
+    }]);
+  });
+
+  it.each([
+    { status: 410, code: "agent_deleted" },
+    { status: 503, code: "runtime_db_busy" },
+  ])("preserves event-page $status errors while bypassing old cached responses", async ({ status, code }) => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Response.json({ code, error: code }, {
+        status,
+        headers: status === 503 ? { "Retry-After": "2" } : {},
+      }));
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    await expect(client.getAgentEvents("agent-one", { limit: 100, order: "desc" }))
+      .rejects.toMatchObject({
+        status,
+        code,
+        retryAfterSeconds: status === 503 ? 2 : undefined,
+      });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://example.test:7878/api/agents/agent-one/events?limit=100&order=desc",
+      expect.objectContaining({ cache: "no-store" }),
+    );
   });
 
   it("installs skills through the generic job API", async () => {
