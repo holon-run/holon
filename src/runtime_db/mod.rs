@@ -24,6 +24,7 @@ pub mod destructive_operations;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
+mod read_scope;
 mod reader_pool;
 #[cfg(test)]
 mod reader_pool_tests;
@@ -100,6 +101,7 @@ pub use crate::runtime_db::types::{
     WorkItemContinuationRepository, WorkItemDelegationRepository, WorkItemRepository,
     WorkspaceEntryRepository, WorkspaceOccupancyRepository,
 };
+pub use read_scope::RuntimeDbReadScope;
 #[cfg(test)]
 mod brief_latest_tests;
 #[cfg(test)]
@@ -634,6 +636,14 @@ impl RuntimeDb {
 
     pub fn connection(&self) -> Result<Connection> {
         self.writer.open_connection()
+    }
+
+    /// Derive a facade with scoped pooled reads. Writers and unscoped clones are
+    /// unchanged; Rust closures must cooperate outside SQLite execution.
+    pub fn with_read_scope(&self, scope: RuntimeDbReadScope) -> Self {
+        let mut db = self.clone();
+        db.readers = db.readers.with_scope(scope);
+        db
     }
 
     /// Call only at a synchronous/blocking boundary; never nest reader checkouts.

@@ -2,11 +2,11 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::{RuntimeDb, RuntimeDbRetryableError};
+use super::{RuntimeDb, RuntimeDbReadScope, RuntimeDbRetryableError};
 // Only the protection-loss regression test below exercises these types, and
 // it runs on Linux where the WAL sidecar can be removed underneath the pool.
 #[cfg(target_os = "linux")]
@@ -24,6 +24,262 @@ fn fixture(capacity: u32) -> Result<(tempfile::TempDir, RuntimeDb)> {
 
 fn read_one(db: &RuntimeDb) -> Result<i64> {
     db.with_read(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get(0))?))
+}
+
+// The first row proves the statement has started; the second step performs
+// bounded but expensive recursive SQL, not a Rust sleep standing in for SQLite.
+fn recursive_sql(
+    connection: &mut rusqlite::Connection,
+    started: impl FnOnce() -> Result<()>,
+    interrupted: &AtomicBool,
+) -> Result<()> {
+    let mut statement = connection.prepare(
+        "WITH RECURSIVE n(x) AS (
+             VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 100000000
+         ) SELECT 0 UNION ALL SELECT sum(x) FROM n",
+    )?;
+    let mut rows = statement.query([])?;
+    assert_eq!(rows.next()?.expect("first row").get::<_, i64>(0)?, 0);
+    started()?;
+    let result = rows.next();
+    interrupted.store(
+        matches!(
+            &result,
+            Err(rusqlite::Error::SqliteFailure(code, _))
+                if code.code == rusqlite::ErrorCode::OperationInterrupted
+        ),
+        Ordering::SeqCst,
+    );
+    result?;
+    Ok(())
+}
+
+#[test]
+fn scoped_cancellation_interrupts_started_sql_and_reuses_capacity_one() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let scoped = db.with_read_scope(scope.clone());
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let observed = interrupted.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        scoped.with_read(|connection| {
+            recursive_sql(connection, || Ok(started_tx.send(())?), &observed)
+        })
+    });
+    started_rx.recv_timeout(Duration::from_secs(5))?;
+    scope.cancel();
+    let error = worker.join().expect("read thread panicked").unwrap_err();
+    assert!(error.is::<RuntimeDbRetryableError>());
+    assert!(interrupted.load(Ordering::SeqCst), "{error:#}");
+    assert_eq!(read_one(&db)?, 1);
+    let stats = db.reader_pool_stats_for_tests();
+    assert_eq!(stats.connections_opened, 1);
+    assert_eq!(stats.connections_dropped, 0);
+    Ok(())
+}
+
+#[test]
+fn scoped_deadline_interrupts_sql_not_only_checkout() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    read_one(&db)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_millis(500));
+    let interrupted = AtomicBool::new(false);
+    let started = AtomicBool::new(false);
+    let error = db
+        .with_read_scope(scope)
+        .with_read(|connection| {
+            recursive_sql(
+                connection,
+                || {
+                    started.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+                &interrupted,
+            )
+        })
+        .expect_err("execution must respect the explicit deadline");
+    assert!(started.load(Ordering::SeqCst));
+    assert!(interrupted.load(Ordering::SeqCst), "{error:#}");
+    assert!(error.is::<RuntimeDbRetryableError>());
+    assert_eq!(read_one(&db)?, 1);
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
+#[test]
+fn late_scope_cancellation_does_not_interrupt_the_next_lease() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let old = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    assert_eq!(read_one(&db.with_read_scope(old.clone()))?, 1);
+    db.with_read(|connection| {
+        let mut statement = connection.prepare(
+            "WITH RECURSIVE n(x) AS (
+                 VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 10000
+             ) SELECT 0 UNION ALL SELECT sum(x) FROM n",
+        )?;
+        let mut rows = statement.query([])?;
+        assert!(rows.next()?.is_some());
+        old.cancel();
+        assert_eq!(rows.next()?.unwrap().get::<_, i64>(0)?, 50005000);
+        Ok(())
+    })?;
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
+#[test]
+fn scoped_checks_reject_expired_entry_and_cancelled_success_but_not_writers() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let expired = RuntimeDbReadScope::new(Instant::now());
+    assert!(db
+        .with_read_scope(expired.clone())
+        .with_read::<()>(|_| panic!("expired scope cannot execute"))
+        .unwrap_err()
+        .is::<RuntimeDbRetryableError>());
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 0);
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let error = db
+        .with_read_scope(scope.clone())
+        .with_read(|_| {
+            scope.cancel();
+            Ok(42)
+        })
+        .expect_err("cancelled work cannot return successful values");
+    assert!(error.is::<RuntimeDbRetryableError>());
+    db.with_read_scope(expired)
+        .connection()?
+        .execute_batch("CREATE TABLE scope_writer_probe (id INTEGER)")?;
+    assert_eq!(read_one(&db)?, 1);
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_scoped_read_interrupts_sql_without_cancelling_parent() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let scoped = db.with_read_scope(scope.clone());
+    let worker_db = scoped.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let running = tokio::spawn(async move {
+        worker_db
+            .with_read_async(move |connection| {
+                let interrupted = AtomicBool::new(false);
+                let result = recursive_sql(
+                    connection,
+                    || {
+                        let _ = started_tx.send(());
+                        Ok(())
+                    },
+                    &interrupted,
+                );
+                let _ = finished_tx.send(interrupted.load(Ordering::SeqCst));
+                result
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), started_rx).await??;
+    running.abort();
+    assert!(running.await.unwrap_err().is_cancelled());
+    assert!(tokio::time::timeout(Duration::from_secs(5), finished_rx).await??);
+    assert!(!scope.is_cancelled());
+    scoped.with_read_async(|_| Ok(())).await?;
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropped_scoped_future_retains_blocking_capacity_until_exit() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let scoped = db.with_read_scope(scope.clone());
+    let worker_db = scoped.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let running = tokio::spawn(async move {
+        worker_db
+            .with_read_async(move |_| {
+                let _ = started_tx.send(());
+                release_rx.recv_timeout(Duration::from_secs(5))?;
+                Ok(42)
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), started_rx).await??;
+    running.abort();
+    assert!(running.await.unwrap_err().is_cancelled());
+    assert_eq!(db.reader_pool_stats_for_tests().available_admission, 0);
+    let error = scoped.with_read_async(|_| Ok(())).await.unwrap_err();
+    assert!(error.is::<RuntimeDbRetryableError>());
+    assert_eq!(db.reader_pool_stats_for_tests().available_admission, 0);
+    assert!(!scope.is_cancelled(), "single-future drop cancelled parent");
+    release_tx.send(())?;
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        scoped.with_read_async(|connection| {
+            Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
+        }),
+    )
+    .await??;
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    assert_eq!(db.reader_pool_stats_for_tests().available_admission, 1);
+    Ok(())
+}
+
+#[test]
+fn scoped_panic_and_unfinished_transaction_discard_the_lease() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    read_one(&db)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let scoped = db.with_read_scope(scope.clone());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = scoped.with_read::<()>(|_| {
+            scope.cancel();
+            panic!("synthetic scoped reader panic")
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(read_one(&db)?, 1);
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 2);
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    assert!(db
+        .with_read_scope(scope.clone())
+        .with_read(|connection| {
+            connection.execute_batch("BEGIN")?;
+            scope.cancel();
+            Ok(())
+        })
+        .is_err());
+    assert_eq!(read_one(&db)?, 1);
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 3);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_cancellation_never_masks_protection_loss() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    read_one(&db)?;
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+    let mut wal = db.path().as_os_str().to_os_string();
+    wal.push("-wal");
+    let error = db
+        .with_read_scope(scope.clone())
+        .with_read(|_| {
+            std::fs::remove_file(std::path::PathBuf::from(&wal))?;
+            scope.cancel();
+            Ok(42)
+        })
+        .unwrap_err();
+    assert!(error.is::<RuntimeDbProtectionError>(), "{error:#}");
+    assert!(!error.is::<RuntimeDbRetryableError>());
+    assert_eq!(
+        db.protection_status().state,
+        RuntimeDbProtectionState::Quarantined
+    );
+    Ok(())
 }
 
 #[test]
