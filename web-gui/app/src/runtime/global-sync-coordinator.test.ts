@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  GlobalSyncCoordinator,
   ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS,
   retryDelayWithServerHintMs,
+  type GlobalSyncStoreSet,
+  type GlobalSyncStoreState,
 } from "./global-sync-coordinator";
-import { createRuntimeClient } from "./client";
+import {
+  createRuntimeClient,
+  RuntimeHttpError,
+  type AgentRosterSnapshotDto,
+  type AgentRosterSnapshotResult,
+  type GlobalEventStreamOptions,
+} from "./client";
 import { AgentSessionRepository } from "./agent-session-repository";
 import { useRuntimeStore, type AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState } from "./session-projection";
@@ -621,6 +630,8 @@ describe("authoritative discovery cutover", () => {
         agents: [],
       },
     });
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -774,6 +785,7 @@ describe("authoritative discovery cutover", () => {
   });
 
   it("coalesces a roster hint that arrives while the snapshot is in flight", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
       sessionStorage: new MemoryStorage(),
@@ -830,6 +842,9 @@ describe("authoritative discovery cutover", () => {
     ));
     releaseFirst!(jsonResponse(rosterSnapshot(["agent-a"])));
 
+    await vi.advanceTimersByTimeAsync(999);
+    expect(snapshotRequests).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(snapshotRequests).toBe(2));
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().discovery).toMatchObject({
@@ -914,15 +929,12 @@ describe("authoritative discovery cutover", () => {
     { status: 500, envelope: { error: "snapshot assembly failed" } },
     { status: 503, envelope: RUNTIME_DB_BUSY_ENVELOPE },
   ])("keeps the last roster and retries without logging out on an HTTP $status snapshot failure", async ({ status, envelope }) => {
-    const retryCallbacks: Array<() => void> = [];
+    vi.useFakeTimers();
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
       sessionStorage: new MemoryStorage(),
-      setTimeout: (callback: () => void, delay?: number) => {
-        if (delay === 1_000) retryCallbacks.push(callback);
-        return retryCallbacks.length;
-      },
-      clearTimeout: () => undefined,
+      setTimeout,
+      clearTimeout,
       location: { hostname: "localhost", protocol: "http:" },
     });
     let snapshotRequests = 0;
@@ -968,14 +980,14 @@ describe("authoritative discovery cutover", () => {
     });
     // A failed or partial snapshot never purges the previous roster.
     expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a", "agent-b"]);
-    expect(retryCallbacks.length).toBeGreaterThanOrEqual(1);
+    expect(useRuntimeStore.getState().discovery.retryAt).toBeGreaterThan(Date.now());
 
     expect(useRuntimeStore.getState().currentUser).toEqual({ userId: "test-user", authMethod: "token" });
     expect(useRuntimeStore.getState().bootstrap.connection.authRequired).not.toBe(true);
     expect(useRuntimeStore.getState().discovery.unauthorizedReason).toBeUndefined();
     expect(useRuntimeStore.getState().globalStreamStatus).not.toBe("unauthorized");
 
-    for (const retry of retryCallbacks.splice(0)) retry();
+    await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().discovery).toMatchObject({
         mode: "authoritative",
@@ -987,15 +999,12 @@ describe("authoritative discovery cutover", () => {
   });
 
   it("escalates extended transient snapshot failure streaks without purging the roster", async () => {
-    const retryCallbacks: Array<() => void> = [];
+    vi.useFakeTimers();
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
       sessionStorage: new MemoryStorage(),
-      setTimeout: (callback: () => void, _delay?: number) => {
-        retryCallbacks.push(callback);
-        return retryCallbacks.length;
-      },
-      clearTimeout: () => undefined,
+      setTimeout,
+      clearTimeout,
       location: { hostname: "localhost", protocol: "http:" },
     });
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -1039,16 +1048,11 @@ describe("authoritative discovery cutover", () => {
       (useRuntimeStore.getState().discovery?.retryAttempt ?? 0)
         < ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS
     ) {
-      const pending = retryCallbacks.splice(0);
-      expect(pending.length).toBeGreaterThan(0);
-      for (const retry of pending) retry();
-      await vi.waitFor(() => {
-        expect(
-          (useRuntimeStore.getState().discovery?.retryAttempt ?? 0)
-            >= ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS
-            || retryCallbacks.length > 0,
-        ).toBe(true);
-      });
+      const attempt = useRuntimeStore.getState().discovery.retryAttempt;
+      const retryAt = useRuntimeStore.getState().discovery.retryAt!;
+      expect(retryAt).toBeGreaterThan(Date.now());
+      await vi.advanceTimersByTimeAsync(retryAt - Date.now());
+      expect(useRuntimeStore.getState().discovery.retryAttempt).toBe(attempt + 1);
     }
     expect(useRuntimeStore.getState().discovery).toMatchObject({
       mode: "authoritative",
@@ -1156,15 +1160,13 @@ throw new Error(`Unexpected request: ${url}`);
   });
 
   it("repeats the roster snapshot on every successful reconnect", async () => {
-    const retryCallbacks: Array<() => void> = [];
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
       sessionStorage: new MemoryStorage(),
-      setTimeout: (callback: () => void, delay?: number) => {
-        if (delay == null || delay >= 900) retryCallbacks.push(callback);
-        return retryCallbacks.length;
-      },
-      clearTimeout: () => undefined,
+      setTimeout,
+      clearTimeout,
       location: { hostname: "localhost", protocol: "http:" },
     });
     let snapshotRequests = 0;
@@ -1202,12 +1204,15 @@ throw new Error(`Unexpected request: ${url}`);
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().discovery.freshness).toBe("fresh");
     });
-    retryCallbacks.length = 0;
-
     // The server closes the stream: the reconnect must repeat the snapshot.
-    streams[0].close();
-    await vi.waitFor(() => expect(retryCallbacks.length).toBeGreaterThanOrEqual(1));
-    retryCallbacks.shift()?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    streams.at(-1)!.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(snapshotRequests).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(snapshotRequests).toBe(2));
   });
 
@@ -1516,6 +1521,340 @@ function errorJsonResponse(status: number, body: unknown): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+describe("roster refresh cadence", () => {
+  let cleanup: (() => void) | undefined;
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  function harness() {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    type State = GlobalSyncStoreState & {
+      bootstrap: { agents: Array<{ id: string; latestBrief?: string }> };
+    };
+    let state: State = {
+      bootstrap: { agents: [] },
+      globalStreamStatus: "idle",
+      discovery: { mode: "pending", freshness: "fresh", retryAttempt: 0 },
+      sessionsByAgentId: {},
+    };
+    const get = () => state;
+    const set: GlobalSyncStoreSet<State> = (update) => {
+      state = { ...state, ...(typeof update === "function" ? update(state) : update) };
+    };
+    let generation = 0;
+    let active = 0;
+    let maxActive = 0;
+    const starts: number[] = [];
+    const completions: number[] = [];
+    const streams: GlobalEventStreamOptions[] = [];
+    const heads = new Map<string, number>();
+    const client = createRuntimeClient({ mode: "local" });
+    vi.spyOn(client, "streamGlobalEvents").mockImplementation((options) => {
+      streams.push(options);
+      return { close: vi.fn() };
+    });
+    const eventRequests = vi.spyOn(client, "getAgentEvents").mockImplementation(async (agentId, options) => {
+      const after = options?.afterSeq ?? 0;
+      const head = heads.get(agentId) ?? 5;
+      return {
+        contract_version: 3,
+        agent_id: agentId,
+        event_log_epoch: "epoch-1",
+        events: Array.from({ length: Math.max(0, head - after) }, (_, i) => ({
+          id: `${agentId}-${after + i + 1}`,
+          agent_id: agentId,
+          event_seq: after + i + 1,
+          event_log_epoch: "epoch-1",
+          ts: "2026-08-10T00:00:00Z",
+          type: "legacy_event",
+          payload: {},
+        })),
+        has_newer: false,
+        has_older: false,
+        order: "asc",
+        limit: 100,
+      };
+    });
+    const result = (ids = ["agent-a", "agent-b"], preview = "latest"): AgentRosterSnapshotResult => ({
+      snapshot: rosterSnapshot(ids, {
+        agents: ids.map((id) => ({
+          agent: listEntry(id),
+          event_window: { event_head_seq: heads.get(id) ?? 5, oldest_retained_seq: 0 },
+          latest_brief: { preview },
+        })),
+      }) as unknown as AgentRosterSnapshotDto,
+      projectionStale: false,
+    });
+    const response = vi.fn<() => Promise<AgentRosterSnapshotResult>>(async () => result());
+    const applySnapshot = vi.fn((_set, snapshot: AgentRosterSnapshotDto) => {
+      const agents = snapshot.agents.map((entry) => ({
+        id: entry.agent.identity.agent_id,
+        latestBrief: entry.latest_brief?.preview,
+      }));
+      const omitted = state.bootstrap.agents.filter((old) => !agents.some((next) => next.id === old.id));
+      for (const { id } of omitted) delete state.sessionsByAgentId[id];
+      for (const { id } of agents) {
+        state.sessionsByAgentId[id] ??= sessionState({ eventSeqs: [1], eventLogEpoch: "epoch-1" });
+      }
+      set({ bootstrap: { agents } });
+      return omitted.map(({ id }) => id);
+    });
+    const coordinator = new GlobalSyncCoordinator<State>({
+      captureClientRequest: () => ({ client, generation }),
+      isCurrentClientRequest: (request) => request.generation === generation,
+      fetchRosterSnapshot: async () => {
+        starts.push(Date.now());
+        maxActive = Math.max(maxActive, ++active);
+        try {
+          return await response();
+        } finally {
+          active -= 1;
+          completions.push(Date.now());
+        }
+      },
+      applyRosterSnapshot: applySnapshot,
+      registerAgentRecovery: vi.fn(),
+      applyStreamEvents: (_set, id, events) => {
+        const session = state.sessionsByAgentId[id];
+        session.eventSeqs = [...new Set([...session.eventSeqs, ...events.map((event) => event.event_seq!)])];
+      },
+      setAgentLiveStatus: vi.fn(),
+      setStreamState: vi.fn(),
+    });
+    cleanup = () => coordinator.closeForResume(set);
+    const stream = () => streams.at(-1)!;
+    return {
+      coordinator, get, set, response, result, starts, completions, eventRequests, applySnapshot, heads, streams,
+      maxActive: () => maxActive,
+      hint: (id = "agent-a") => stream().onRosterHint(id),
+      refresh: () => coordinator.refreshRoster(get, set),
+      stream,
+      open: async () => {
+        coordinator.start(get, set);
+        stream().onOpen?.(3);
+        await vi.advanceTimersByTimeAsync(0);
+      },
+      switchSubject: () => {
+        generation += 1;
+        coordinator.resetForClientChange();
+        set({ bootstrap: { agents: [] }, sessionsByAgentId: {}, discovery: {
+          mode: "pending", freshness: "fresh", retryAttempt: 0,
+        } });
+      },
+    };
+  }
+
+  it("bounds ten seconds of continuous hints without debouncing or idle extra refreshes", async () => {
+    const h = harness();
+    await h.open();
+    const start = Date.now();
+    expect(h.starts).toEqual([start]);
+    for (let i = 0; i < 400; i += 1) {
+      h.hint(i % 2 ? "agent-a" : "agent-b");
+      // Explicit local changes share the same cadence, not an escape hatch.
+      if (i % 4 === 0) h.refresh();
+      await vi.advanceTimersByTimeAsync(25);
+    }
+    expect(h.starts).toEqual(Array.from({ length: 11 }, (_, i) => start + i * 1_000));
+    expect(h.starts.length).toBeLessThanOrEqual(11);
+    expect(h.maxActive()).toBe(1);
+    expect(h.starts.at(-1)! - (start + 9_975)).toBeLessThanOrEqual(1_000);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.starts).toHaveLength(11);
+  });
+
+  it("waits a second after a slow flight and keeps exactly one trailing batch with every hinted recovery", async () => {
+    const h = harness();
+    const first = deferred<AgentRosterSnapshotResult>();
+    h.response.mockImplementationOnce(() => first.promise);
+    await h.open();
+    h.hint("agent-a");
+    h.hint("agent-b");
+    h.hint("agent-c");
+    h.refresh();
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(h.starts).toHaveLength(1);
+    first.resolve(h.result());
+    await vi.advanceTimersByTimeAsync(0);
+    h.heads.set("agent-a", 6);
+    h.heads.set("agent-b", 6);
+    h.heads.set("agent-c", 6);
+    h.response.mockImplementation(async () => h.result(["agent-a", "agent-b", "agent-c"], "updated brief"));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(h.starts).toHaveLength(1);
+    h.hint("agent-b");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.starts).toHaveLength(2);
+    expect(h.starts[1] - h.completions[0]).toBe(1_000);
+    expect(h.maxActive()).toBe(1);
+    expect(h.get().bootstrap.agents).toEqual(["agent-a", "agent-b", "agent-c"].map((id) => ({
+      id, latestBrief: "updated brief",
+    })));
+    for (const id of ["agent-a", "agent-b", "agent-c"]) {
+      expect(h.get().sessionsByAgentId[id].eventSeqs).toContain(6);
+      expect(h.eventRequests.mock.calls.some(([agentId, options]) => agentId === id && options?.order === "asc")).toBe(true);
+    }
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.starts).toHaveLength(2);
+    // An unhinted explicit delete still refreshes authoritative membership.
+    h.response.mockImplementation(async () => h.result(["agent-c"]));
+    h.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.starts).toHaveLength(3);
+    expect(h.get().bootstrap.agents.map(({ id }) => id)).toEqual(["agent-c"]);
+    expect(h.get().sessionsByAgentId["agent-a"]).toBeUndefined();
+  });
+
+  it("keeps stale snapshots stale and hints cannot shorten their exponential retry wait", async () => {
+    const h = harness();
+    h.response.mockImplementationOnce(async () => ({ ...h.result(), projectionStale: true }));
+    h.response.mockImplementationOnce(async () => ({ ...h.result(), projectionStale: true }));
+    await h.open();
+    expect(h.get().discovery).toMatchObject({ freshness: "stale", retryAttempt: 1 });
+    for (let i = 0; i < 10; i += 1) {
+      h.hint();
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(h.starts).toHaveLength(2);
+    expect(h.get().discovery).toMatchObject({ freshness: "stale", retryAttempt: 2 });
+    h.refresh();
+    h.hint();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(h.starts).toHaveLength(2);
+    expect(h.get().discovery.freshness).toBe("stale");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.starts).toHaveLength(3);
+    expect(h.get().discovery.freshness).toBe("fresh");
+  });
+
+  it.each([429, 503])("honors %i Retry-After across hints, local changes and stream reopen", async (status) => {
+    const h = harness();
+    h.response.mockRejectedValueOnce(new RuntimeHttpError(
+      "GET", "/agents/snapshot", status, "busy", "projection_busy", 5,
+    ));
+    await h.open();
+    expect(h.get().discovery).toMatchObject({ freshness: "stale", retryAttempt: 1 });
+    for (let i = 0; i < 49; i += 1) {
+      h.hint("agent-b");
+      h.refresh();
+      if (i === 20) h.stream().onOpen?.(3);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await vi.advanceTimersByTimeAsync(99);
+    expect(h.starts).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.starts).toHaveLength(2);
+    expect(h.starts[1] - h.starts[0]).toBe(5_000);
+    expect(h.get().discovery.freshness).toBe("fresh");
+    expect(h.get().sessionsByAgentId["agent-b"].eventSeqs).toContain(5);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.starts).toHaveLength(2);
+  });
+
+  it("refreshes on successful reconnect without letting an open or local change bypass cooldown", async () => {
+    const h = harness();
+    await h.open();
+    h.stream().onOpen?.(3);
+    h.refresh();
+    h.hint();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(h.starts).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.starts).toHaveLength(2);
+    h.stream().onClose?.();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.streams).toHaveLength(2);
+    await h.open();
+    expect(h.starts).toHaveLength(3);
+    expect(h.get().globalStreamStatus).toBe("streaming");
+    expect(h.maxActive()).toBe(1);
+  });
+
+  it("makes roster 401 terminal even when later hints and local changes arrive", async () => {
+    const h = harness();
+    h.response.mockRejectedValueOnce(new RuntimeHttpError("GET", "/agents/snapshot", 401, "denied", "auth_required"));
+    await h.open();
+    for (let i = 0; i < 50; i += 1) {
+      h.hint();
+      h.refresh();
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(h.starts).toHaveLength(1);
+    expect(h.get().discovery).toMatchObject({ freshness: "unauthorized", retryAt: undefined });
+  });
+
+  it("keeps stream 401 terminal when a successful in-flight snapshot settles", async () => {
+    const h = harness();
+    const first = deferred<AgentRosterSnapshotResult>();
+    h.response.mockImplementationOnce(() => first.promise);
+    await h.open();
+    h.hint("agent-c");
+    h.stream().onError?.(new RuntimeHttpError("GET", "/events/stream", 401, "denied", "auth_required"));
+    first.resolve(h.result());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.applySnapshot).not.toHaveBeenCalled();
+    expect(h.starts).toHaveLength(1);
+    expect(h.get().globalStreamStatus).toBe("unauthorized");
+    expect(h.get().discovery.freshness).toBe("unauthorized");
+  });
+
+  it("discards old responses, hinted agents and callbacks after a subject reset", async () => {
+    const h = harness();
+    const first = deferred<AgentRosterSnapshotResult>();
+    h.response.mockImplementationOnce(() => first.promise);
+    await h.open();
+    h.hint("agent-a");
+    const oldStream = h.stream();
+    h.switchSubject();
+    h.response.mockImplementation(async () => h.result(["agent-c"]));
+    await h.open();
+    first.resolve(h.result());
+    oldStream.onRosterHint("agent-a");
+    oldStream.onOpen?.(3);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.starts).toHaveLength(2);
+    expect(h.applySnapshot).toHaveBeenCalledTimes(1);
+    expect(h.get().bootstrap.agents.map(({ id }) => id)).toEqual(["agent-c"]);
+    expect(h.eventRequests.mock.calls.every(([id]) => id === "agent-c")).toBe(true);
+  });
+
+  it.each(["stop", "closeForResume", "resetForClientChange"] as const)(
+    "clears a pending timer and recovery batch on %s",
+    async (method) => {
+      const h = harness();
+      await h.open();
+      h.hint("agent-b");
+      const requests = h.eventRequests.mock.calls.length;
+      if (method === "resetForClientChange") h.coordinator.resetForClientChange();
+      else h.coordinator[method](h.set);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(h.starts).toHaveLength(1);
+      expect(h.eventRequests).toHaveBeenCalledTimes(requests);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+});
 
 describe("retryDelayWithServerHintMs", () => {
   it("keeps the computed backoff when no server hint is present", () => {
