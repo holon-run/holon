@@ -30,14 +30,20 @@ pub async fn web_or_not_found_handler(
             }
         }
         if accepts_spa_html(request_path, &headers) {
-            if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc
-                && super::authenticate_session(&headers, &state).is_err()
-            {
-                return (
-                    StatusCode::FOUND,
-                    [(LOCATION, HeaderValue::from_static("/login"))],
-                )
-                    .into_response();
+            if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
+                match super::authenticate_session(&headers, &state) {
+                    Ok(_) => {}
+                    Err(AuthenticationError::Rejected(_)) => {
+                        return (
+                            StatusCode::FOUND,
+                            [(LOCATION, HeaderValue::from_static("/login"))],
+                        )
+                            .into_response();
+                    }
+                    Err(error @ AuthenticationError::Infrastructure(_)) => {
+                        return authentication_error_response(error).into_response();
+                    }
+                }
             }
             if request_path.is_empty() && state.host.bootstrap_mode_active() {
                 return (

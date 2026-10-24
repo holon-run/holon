@@ -229,7 +229,7 @@ pub async fn runtime_decision_test(
     headers: HeaderMap,
     Json(request): Json<RuntimeDecisionTestRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
 
     let runtime = state.host.default_runtime().await.map_err(error_response)?;
     let question = request
@@ -286,7 +286,7 @@ pub async fn runtime_decision_local_onnx_preset(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     let status =
         crate::runtime::decision_models::local_onnx_preset_status(&config.home_dir, &preset)
@@ -299,7 +299,7 @@ pub async fn runtime_decision_local_onnx_preset_download(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let home_dir = state.host.config().home_dir.clone();
     let status = tokio::task::spawn_blocking(move || {
         crate::runtime::decision_models::download_local_onnx_preset(&home_dir, &preset)
@@ -315,7 +315,7 @@ pub async fn runtime_decision_local_onnx_preset_cancel(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let home_dir = state.host.config().home_dir.clone();
     let status = tokio::task::spawn_blocking(move || {
         crate::runtime::decision_models::cancel_local_onnx_preset(&home_dir, &preset)
@@ -334,7 +334,7 @@ pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime_service = state
         .runtime_service
         .as_ref()
@@ -363,7 +363,7 @@ pub async fn runtime_readiness(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime_service = state
         .runtime_service
         .as_ref()
@@ -390,7 +390,7 @@ pub async fn runtime_performance(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     Ok(Json(diagnostics::performance_snapshot()))
 }
 
@@ -398,7 +398,7 @@ pub async fn runtime_metrics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     Ok((
         [(CONTENT_TYPE, crate::openmetrics::CONTENT_TYPE)],
         crate::openmetrics::render(&diagnostics::performance_snapshot()),
@@ -409,7 +409,7 @@ pub async fn runtime_traces(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     Ok(Json(crate::observability::recent_trace_summaries()))
 }
 
@@ -418,7 +418,7 @@ pub async fn runtime_trace(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let trace = if let Some(trace) = crate::observability::recent_trace(&trace_id) {
         Some(trace)
     } else {
@@ -443,7 +443,7 @@ pub async fn runtime_trace_search(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     if query.query.trim().is_empty() {
         return Err(bad_request("trace search query must not be empty"));
     }
@@ -480,7 +480,7 @@ pub async fn scheduler_repair_inspect(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let inspection = state
         .host
         .public_agent_scheduler_repair_inspection(&agent_id)
@@ -494,7 +494,7 @@ pub async fn scheduler_repair_apply(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::runtime::SchedulerRepairRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -617,7 +617,7 @@ pub async fn runtime_config(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let before_reload = RuntimeConfigReloadStatus::from_host(&state.host);
     let config = state.host.config();
     let reload = RuntimeConfigReloadStatus::from_host(&state.host);
@@ -659,7 +659,7 @@ pub async fn runtime_config_update(
     headers: HeaderMap,
     ApiJson(request): ApiJson<RuntimeConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     let stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
     let mut candidate = stored.clone();
@@ -762,7 +762,7 @@ pub async fn runtime_config_migrate_model_routes(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ModelConfigMigrationRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     let report = crate::model_config_migration::migrate_model_config_routes(
         &config.config_file_path,
@@ -894,7 +894,7 @@ pub async fn list_credentials(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profiles = list_credential_profiles_at(&path).map_err(error_response)?;
@@ -920,7 +920,7 @@ pub async fn set_credential(
     Path(profile): Path<String>,
     ApiJson(request): ApiJson<SetCredentialRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let kind = CredentialKind::parse(&request.kind).map_err(error_response)?;
@@ -949,7 +949,7 @@ pub async fn delete_credential(
     headers: HeaderMap,
     Path(profile): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profile_status = remove_credential_profile_at(&path, &profile).map_err(error_response)?;
@@ -985,7 +985,7 @@ pub async fn runtime_shutdown(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime_service = state
         .runtime_service
         .as_ref()
@@ -1002,7 +1002,7 @@ pub async fn create_agent(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let mut created = state
@@ -1063,7 +1063,7 @@ pub async fn agent_detail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let detail = state
         .host
         .operator_agent_detail(&agent_id)
@@ -1075,7 +1075,7 @@ pub async fn agent_tree(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     Ok(Json(
         state
             .host
@@ -1090,7 +1090,7 @@ pub async fn repair_agent(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let (detail, receiver) = state
         .host
         .repair_public_agent_background(&agent_id)
@@ -1121,7 +1121,7 @@ pub async fn rename_agent(
     headers: HeaderMap,
     ApiJson(request): ApiJson<RenameAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let detail = state
         .host
         .rename_public_agent(&agent_id, &request.name, "authenticated_operator_control")
@@ -1135,7 +1135,7 @@ pub async fn delete_agent(
     headers: HeaderMap,
     ApiJson(request): ApiJson<DeleteAgentRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let (identity, job, created) = state
         .host
         .begin_public_agent_deletion_with_archive(
@@ -1162,7 +1162,7 @@ pub async fn agent_deletion_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let (identity, job) = state
         .host
         .public_agent_deletion_status(&agent_id)
@@ -1182,7 +1182,7 @@ pub async fn control(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ControlRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let action = request.action.clone();
@@ -1215,7 +1215,7 @@ pub async fn abort_current_run(
     headers: HeaderMap,
     ApiJson(request): ApiJson<AbortCurrentRunRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let mode = match request.mode.as_deref().unwrap_or("stop_after_abort") {
         "stop_after_abort" => CurrentRunAbortMode::StopAfterAbort,
         "idle_after_abort" => CurrentRunAbortMode::IdleAfterAbort,
@@ -1257,7 +1257,7 @@ pub async fn attach_workspace(
     headers: HeaderMap,
     ApiJson(request): ApiJson<AttachWorkspaceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let workspace = state
@@ -1302,7 +1302,7 @@ pub async fn exit_workspace(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ExitWorkspaceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -1337,7 +1337,7 @@ pub async fn detach_workspace(
     headers: HeaderMap,
     ApiJson(request): ApiJson<DetachWorkspaceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let workspace_id = request.workspace_id.trim().to_string();
@@ -1377,7 +1377,7 @@ pub async fn get_agent_timezone(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -1398,7 +1398,7 @@ pub async fn set_agent_timezone(
     headers: HeaderMap,
     ApiJson(request): ApiJson<SetAgentTimezoneRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     crate::prompt::time::parse_timezone(&request.timezone)
@@ -1439,7 +1439,7 @@ pub async fn clear_agent_timezone(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ClearAgentTimezoneRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     let runtime = state
@@ -1478,7 +1478,7 @@ pub async fn set_agent_model(
     headers: HeaderMap,
     ApiJson(request): ApiJson<SetAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let model = ModelRouteRef::parse_compatible(&request.model)
         .map_err(|error| bad_request(error.to_string()))?;
     let runtime = state
@@ -1508,7 +1508,7 @@ pub async fn clear_agent_model(
     headers: HeaderMap,
     ApiJson(_request): ApiJson<ClearAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -1531,7 +1531,7 @@ pub async fn reset_callback(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_operator_agent(&agent_id)
@@ -1558,8 +1558,8 @@ pub async fn control_prompt(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ControlPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let actor = control_actor(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let actor = control_actor(&headers, &state).map_err(authentication_error_response)?;
     let runtime = state
         .host
         .get_agent_for_operator_prompt(&agent_id)
@@ -2354,7 +2354,7 @@ pub async fn create_operator_transport_binding(
     headers: HeaderMap,
     ApiJson(request): ApiJson<OperatorTransportBindingRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let target_agent_id = request.target_agent_id.unwrap_or_else(|| agent_id.clone());
     if target_agent_id != agent_id {
         return Err(bad_request(
@@ -2403,7 +2403,7 @@ pub async fn operator_ingress(
     headers: HeaderMap,
     ApiJson(request): ApiJson<OperatorIngressRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let text = require_non_empty(request.text, "text")?;
     let actor_id = require_non_empty(request.actor_id, "actor_id")?;
     let binding_id = require_non_empty(request.binding_id, "binding_id")?;
@@ -2505,7 +2505,7 @@ pub async fn control_debug_prompt(
     headers: HeaderMap,
     ApiJson(request): ApiJson<DebugPromptRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let effective_trust = request
         .authority_class
@@ -2563,7 +2563,7 @@ pub async fn control_wake(
     headers: HeaderMap,
     ApiJson(request): ApiJson<ControlWakeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     if request.reason.trim().is_empty() {
         return Err(forbidden("wake reason may not be empty"));
     }

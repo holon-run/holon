@@ -33,6 +33,16 @@ If `Origin` is absent, `Sec-Fetch-Site: same-origin` or a same-origin
 `Referer` is accepted as a fallback. Otherwise the request fails closed with
 HTTP `403` and machine code `csrf_origin_rejected`.
 
+Bearer authorization and the Origin guard return a fallible decision:
+allowed, definitively rejected, or unable to complete authentication. They
+must propagate session/user lookup and session-touch infrastructure errors
+through the shared authentication error mapper, not collapse them to
+`false` and report a misleading CSRF rejection. A retryable database failure
+therefore retains `503 runtime_db_busy`; other infrastructure errors retain
+their ordinary runtime classification. An error never grants admission or
+skips required Origin checks. A genuine untrusted browser source still
+receives `403 csrf_origin_rejected`.
+
 ## Configuration
 
 `api.csrf.trusted_origins` is an optional list of explicit `http://` or

@@ -11,7 +11,7 @@ pub async fn templates_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
 
     let config = state.host.config();
     let user_home = crate::agent_template::user_home_dir().ok();
@@ -51,7 +51,7 @@ pub async fn sync_template_remote_sources(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::SyncTemplateRemoteSourcesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
     super::jobs::create_template_remote_source_sync_job(state, request).await
 }
 
@@ -64,7 +64,7 @@ pub async fn template_detail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
 
     let user_home = crate::agent_template::user_home_dir().ok();
     let config = state.host.config();
@@ -119,7 +119,7 @@ pub async fn check_template(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::CheckTemplateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
 
     // Handle github_url validation (URL format check only, no download).
     if let Some(url) = request.github_url.as_deref().filter(|s| !s.is_empty()) {
@@ -183,7 +183,7 @@ pub async fn install_template(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::InstallTemplateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
 
     let github_url = request.github_url.trim().to_string();
     if github_url.is_empty() {
@@ -214,7 +214,7 @@ pub async fn remove_template(
     headers: HeaderMap,
     ApiJson(request): ApiJson<crate::types::RemoveTemplateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
 
     let template_id = request.template_id.trim().to_string();
     if template_id.is_empty() {

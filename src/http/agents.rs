@@ -56,7 +56,7 @@ pub async fn root(
             return Ok(response);
         }
     }
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let default_agent = state
         .host
         .configured_default_agent_id()
@@ -73,7 +73,7 @@ pub async fn models_handler(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let mut config = (*state.host.config()).clone();
     load_model_discovery_cache(&mut config).await?;
     models_response("/models", started_at, &config)
@@ -84,7 +84,7 @@ pub async fn refresh_models_handler(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let mut config = (*state.host.config()).clone();
     load_model_discovery_cache(&mut config).await?;
     let cache_path = discovery_cache_path(&config.home_dir);
@@ -159,7 +159,7 @@ pub async fn search(
     ApiJson(request): ApiJson<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let query = request.query.trim().to_string();
     if query.is_empty() {
         return Err(bad_request("query must not be empty"));
@@ -200,7 +200,7 @@ pub async fn memory_get(
     ApiJson(request): ApiJson<MemoryGetRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let source_ref = request.source_ref.trim();
     if source_ref.is_empty() {
         return Err(bad_request("source_ref must not be empty"));
@@ -272,6 +272,7 @@ fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
 pub(crate) fn load_observer_sync_verification(
     state: &AppState,
 ) -> ObserverSyncCapabilityVerification {
+    let _preflight = crate::diagnostics::attribution::CAPABILITY_PREFLIGHT.start();
     let mut verification = ObserverSyncCapabilityVerification::default();
     match state
         .host
@@ -302,7 +303,7 @@ pub async fn handshake(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let config = state.host.config();
     Ok(Json(HandshakeResponse {
         ok: true,
@@ -352,7 +353,7 @@ pub async fn list_agent_entries(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     // The projection cache key must distinguish parent filters; otherwise a
     // cached list built for one query would be served for every other query.

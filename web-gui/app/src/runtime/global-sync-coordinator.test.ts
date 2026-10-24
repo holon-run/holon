@@ -25,6 +25,16 @@ const OBSERVER_SYNC_CAPABILITIES = [
   "briefs.atomic-created-event.v1",
 ];
 
+const RUNTIME_DB_BUSY_ENVELOPE = {
+  ok: false,
+  error: "runtime database operation reader pool checkout is temporarily unavailable",
+  code: "runtime_db_busy",
+  domain: "storage",
+  retryable: true,
+  hint: "retry the operation",
+  context: { operation: "reader pool checkout" },
+};
+
 function stubAuthenticatedFetch(fetchMock: typeof fetch): void {
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://localhost");
@@ -389,7 +399,10 @@ describe("global event stream auth rejection", () => {
     expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
   });
 
-  it("keeps bounded reconnect backoff after a non-auth stream failure", async () => {
+  it.each([
+    { code: "internal", envelope: { error: "daemon restarting", code: "internal" } },
+    { code: "runtime_db_busy", envelope: RUNTIME_DB_BUSY_ENVELOPE },
+  ])("keeps bounded reconnect backoff without logging out after a 503 $code stream failure", async ({ envelope }) => {
     const reconnectCallbacks: Array<() => void> = [];
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
@@ -412,7 +425,7 @@ describe("global event stream auth rejection", () => {
       }
       if (url.pathname.endsWith("/events/stream")) {
         streamRequests += 1;
-        return Promise.resolve(errorJsonResponse(503, { error: "daemon restarting", code: "internal" }));
+        return Promise.resolve(errorJsonResponse(503, envelope));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -427,6 +440,11 @@ describe("global event stream auth rejection", () => {
     });
     expect(streamRequests).toBe(1);
 
+    expect(useRuntimeStore.getState().currentUser).toEqual({ userId: "test-user", authMethod: "token" });
+    expect(useRuntimeStore.getState().bootstrap.connection.authRequired).not.toBe(true);
+    expect(useRuntimeStore.getState().discovery.freshness).not.toBe("unauthorized");
+    expect(useRuntimeStore.getState().discovery.unauthorizedReason).toBeUndefined();
+
     // A transport-style failure still schedules exactly one reconnect.
     expect(reconnectCallbacks.length).toBeGreaterThanOrEqual(1);
     reconnectCallbacks.shift()?.();
@@ -436,6 +454,8 @@ describe("global event stream auth rejection", () => {
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
     });
+    expect(useRuntimeStore.getState().currentUser?.userId).toBe("test-user");
+    expect(useRuntimeStore.getState().bootstrap.connection.authRequired).not.toBe(true);
   });
 
   it("keeps terminal unauthorized discovery when a roster failure settles after the stream 401 (#3299)", async () => {
@@ -905,7 +925,10 @@ describe("authoritative discovery cutover", () => {
     expect(snapshotCalls).toBeGreaterThanOrEqual(2);
   });
 
-  it("keeps the last roster and marks discovery stale on a transient snapshot failure", async () => {
+  it.each([
+    { status: 500, envelope: { error: "snapshot assembly failed" } },
+    { status: 503, envelope: RUNTIME_DB_BUSY_ENVELOPE },
+  ])("keeps the last roster and retries without logging out on an HTTP $status snapshot failure", async ({ status, envelope }) => {
     vi.useFakeTimers();
     vi.stubGlobal("window", {
       localStorage: new MemoryStorage(),
@@ -926,7 +949,7 @@ describe("authoritative discovery cutover", () => {
       if (url.pathname.endsWith("/agents/snapshot")) {
         snapshotRequests += 1;
         if (snapshotRequests === 1) {
-          return Promise.resolve(errorJsonResponse(500, { error: "snapshot assembly failed" }));
+          return Promise.resolve(errorJsonResponse(status, envelope));
         }
         return Promise.resolve(jsonResponse(rosterSnapshot(["agent-a", "agent-b"])));
       }
@@ -959,6 +982,11 @@ describe("authoritative discovery cutover", () => {
     expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a", "agent-b"]);
     expect(useRuntimeStore.getState().discovery.retryAt).toBeGreaterThan(Date.now());
 
+    expect(useRuntimeStore.getState().currentUser).toEqual({ userId: "test-user", authMethod: "token" });
+    expect(useRuntimeStore.getState().bootstrap.connection.authRequired).not.toBe(true);
+    expect(useRuntimeStore.getState().discovery.unauthorizedReason).toBeUndefined();
+    expect(useRuntimeStore.getState().globalStreamStatus).not.toBe("unauthorized");
+
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(useRuntimeStore.getState().discovery).toMatchObject({
@@ -966,6 +994,8 @@ describe("authoritative discovery cutover", () => {
         freshness: "fresh",
       });
     });
+    expect(snapshotRequests).toBe(2);
+    expect(useRuntimeStore.getState().currentUser?.userId).toBe("test-user");
   });
 
   it("escalates extended transient snapshot failure streaks without purging the roster", async () => {

@@ -11,7 +11,7 @@ pub async fn events(
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let order = query.order.unwrap_or(EventPageOrder::Desc);
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -82,7 +82,7 @@ pub async fn message(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -105,7 +105,7 @@ pub async fn messages_batch_get(
     headers: HeaderMap,
     ApiJson(request): ApiJson<BatchGetMessagesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -138,7 +138,7 @@ pub async fn events_stream(
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
     let after_seq = query.after_seq;
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -225,7 +225,7 @@ pub async fn global_events_stream(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     if state.require_control_token {
-        authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+        authorize_control(&headers, &state).map_err(authentication_error_response)?;
     }
     let mut rx = state.host.subscribe_events();
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);

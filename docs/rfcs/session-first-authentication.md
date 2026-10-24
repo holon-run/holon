@@ -46,6 +46,53 @@ Interactive clients should use a cookie jar or an equivalent secure session
 store. A bearer form may be supported by protocol adapters, but it carries
 the opaque session rather than a long-lived control token.
 
+### Request authentication failures
+
+The HTTP authentication boundary distinguishes two failure classes:
+
+- `Rejected`: missing, invalid, expired, or revoked credentials, disabled
+  users, and existing static-token rejection reasons.
+- `Infrastructure`: a dependency failed while checking a credential or
+  resolving its actor. Session lookup, user lookup, and updating session
+  last-seen time preserve the original error chain in this class; updating
+  last-seen time is not best-effort.
+
+Session authentication tries an opaque Bearer session before the session
+cookie. Only `Rejected` permits trying the next supplied session credential.
+`Infrastructure` stops that search immediately, so a later credential
+rejection cannot overwrite a storage failure. A stale Bearer session can
+still fall back to a valid cookie when storage is healthy.
+
+In `local` mode, trusted-local admission and requests whose existing policy
+does not require a control token retain their independent admission rules.
+Where a control token is required, the configured static control Bearer is
+also an independent credential: admission requires its existing strict
+scheme/token match, even if session validation encountered an infrastructure
+failure. Missing or invalid static credentials must not replace a preceding
+infrastructure error with an authentication rejection. Static admission does
+not bypass subsequent database-dependent actor resolution or business
+operations, including the existing actor rules for mixed Bearer/cookie
+requests. `oidc` mode requires a session and never falls back to a configured
+static control token.
+
+All HTTP authentication exits preserve this classification, including
+protected APIs, OIDC middleware, session identity/logout, and pairing
+admission. `Rejected` retains the existing `401 auth_required` reason and
+hint contract. `Infrastructure` uses the ordinary runtime error mapper
+without first converting its source to a string. Retryable runtime database
+failures therefore return `503 runtime_db_busy`, `domain: storage`,
+`retryable: true`, and the original safe `context.operation` (for example,
+`reader pool checkout`). Database quarantine keeps its dedicated `503`
+contract; non-retryable internal/storage failures retain their existing
+classification, normally `500`, rather than becoming authentication
+rejections or synthetic retryable busy errors.
+
+OIDC HTML entrypoints redirect to login only for `Rejected`. Infrastructure
+failures return the service error without a login redirect or session-cookie
+invalidation. Clients must treat `503 runtime_db_busy` as a temporary service
+failure, not as logout or a terminal authentication rejection. These rules
+do not relax credential, disabled-user, or Origin checks.
+
 ### Bootstrap and recovery credentials
 
 Static control credentials are bootstrap/recovery credentials, not the normal

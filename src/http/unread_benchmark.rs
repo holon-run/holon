@@ -30,7 +30,7 @@ impl<S: Subscriber> Layer<S> for Phases {
 
 async fn legacy_brief_read_states(state: Arc<AppState>, headers: HeaderMap) -> AxumResponse {
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let scope_started = Instant::now();
     let roster = state.host.agent_roster_snapshot().unwrap();

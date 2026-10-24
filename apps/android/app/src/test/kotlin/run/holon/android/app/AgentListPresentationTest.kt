@@ -31,6 +31,20 @@ class AgentListPresentationTest {
         assertEquals(listOf("current", "popular"), commonModelOptions(options, agents, "current").map { it.model })
     }
 
+    @Test fun `model picker hides unavailable models but keeps the current model visible`() {
+        val options = listOf(
+            HolonModelOption("usable", "Usable", "provider"),
+            HolonModelOption("missing", "Missing", "provider", available = false, unavailableReason = "credential_missing"),
+            HolonModelOption("current", "Current", "provider", available = false, unavailableReason = "credential_missing"),
+        )
+
+        assertEquals(
+            listOf("usable", "current"),
+            modelPickerOptions(options, "current").map { it.model },
+        )
+        assertTrue(modelPickerOptions(options, "other").none { it.model == "missing" })
+    }
+
     @Test fun `inline turn and tool expansion are not navigation destinations`() {
         val state = HolonUiState(selectedAgent = agent(), selectedTurn = snapshot().turns.single())
         assertEquals(BackTarget.Agents, state.backTarget())

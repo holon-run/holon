@@ -530,3 +530,180 @@ async fn failed_deletion_archive_preserves_source_and_blocks_recreation() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn host_restart_does_not_rebuild_bootstrap_row_for_deleted_tombstone() {
+    let fixture = provider_test_config(Some("dummy-token"));
+    let host = RuntimeHost::new(fixture.config.clone()).unwrap();
+    let agent_id = "restart-bootstrap-tombstone";
+    host.default_runtime().await.unwrap();
+    host.create_public_named_agent_with_name(
+        agent_id,
+        None,
+        None,
+        None,
+        None,
+        AgentBootstrapExecution::Inline,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(host
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .unwrap()
+        .is_some());
+
+    let (_, job, _) = host
+        .begin_public_agent_deletion(agent_id, false, "test")
+        .await
+        .unwrap();
+    host.execute_deletion_job(job).await.unwrap();
+    let completed = host
+        .runtime_db()
+        .agent_deletions()
+        .latest_for_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.status, AgentDeletionStatus::Completed);
+    assert_eq!(
+        host.agent_identity_record(agent_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRegistryStatus::Deleted
+    );
+    assert!(host
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .unwrap()
+        .is_none());
+    drop(host);
+
+    // Restart semantics: constructing a fresh Host on the same data dir must
+    // not restore the purged bootstrap row for the Deleted tombstone.
+    let restarted = RuntimeHost::new(fixture.config).unwrap();
+    assert!(restarted
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        restarted
+            .agent_identity_record(agent_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRegistryStatus::Deleted
+    );
+    let tombstone_job = restarted
+        .runtime_db()
+        .agent_deletions()
+        .latest_for_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(tombstone_job.status, AgentDeletionStatus::Completed);
+    assert_eq!(tombstone_job.deletion_id, completed.deletion_id);
+    let outcome = restarted
+        .scan_legacy_deletion_residue_batch()
+        .await
+        .unwrap();
+    assert_eq!(outcome.created, 0);
+    assert_eq!(
+        restarted
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(agent_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentDeletionStatus::Completed
+    );
+    crate::runtime_db::agent_deletion_cleanup::assert_private_history_cleared(
+        restarted.runtime_db(),
+        agent_id,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cleanup_repair_repurges_residue_after_completed_purge() {
+    let fixture = provider_test_config(Some("dummy-token"));
+    let host = RuntimeHost::new(fixture.config).unwrap();
+    let agent_id = "repair-repurge-bootstrap-residue";
+    host.default_runtime().await.unwrap();
+    host.create_public_named_agent_with_name(
+        agent_id,
+        None,
+        None,
+        None,
+        None,
+        AgentBootstrapExecution::Inline,
+        true,
+    )
+    .await
+    .unwrap();
+    let (_, job, _) = host
+        .begin_public_agent_deletion(agent_id, false, "test")
+        .await
+        .unwrap();
+    host.execute_deletion_job(job).await.unwrap();
+    crate::runtime_db::agent_deletion_cleanup::assert_private_history_cleared(
+        host.runtime_db(),
+        agent_id,
+    )
+    .unwrap();
+
+    // Replay the incident: a legacy writer restores a purged private row
+    // after the deletion already completed.
+    host.runtime_db()
+        .agent_bootstraps()
+        .upsert(&AgentBootstrapRecord::legacy_ready(agent_id))
+        .unwrap();
+
+    let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
+    assert_eq!(outcome.created, 1);
+    let repair = host
+        .runtime_db()
+        .agent_deletions()
+        .latest_for_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repair.mode, AgentDeletionMode::CleanupRepair);
+
+    host.execute_deletion_job(repair.clone()).await.unwrap();
+
+    // The repair converged: the residue is purged again and the tombstone
+    // job completes instead of retrying at the Quiesce gate forever.
+    assert!(host
+        .runtime_db()
+        .agent_bootstraps()
+        .latest(agent_id)
+        .unwrap()
+        .is_none());
+    let finished = host
+        .runtime_db()
+        .agent_deletions()
+        .latest_for_agent(agent_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.status, AgentDeletionStatus::Completed);
+    assert_eq!(finished.deletion_id, repair.deletion_id);
+    assert_eq!(
+        host.agent_identity_record(agent_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        AgentRegistryStatus::Deleted
+    );
+    crate::runtime_db::agent_deletion_cleanup::assert_private_history_cleared(
+        host.runtime_db(),
+        agent_id,
+    )
+    .unwrap();
+    let repeated = host.scan_legacy_deletion_residue_batch().await.unwrap();
+    assert_eq!(repeated.created, 0);
+}

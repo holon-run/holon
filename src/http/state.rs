@@ -34,7 +34,7 @@ fn authorize_default_route(
     headers: &HeaderMap,
     state: &AppState,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    authorize_remote_access(headers, state).map_err(|err| auth_required(err.to_string()))
+    authorize_remote_access(headers, state).map_err(authentication_error_response)
 }
 
 pub async fn enqueue_default(
@@ -42,7 +42,7 @@ pub async fn enqueue_default(
     headers: HeaderMap,
     ApiJson(request): ApiJson<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let agent_id = resolve_default_agent_id(&state)?;
     let trace_context = trace_context_from_headers(&headers)?;
     enqueue_internal(
@@ -61,7 +61,7 @@ pub async fn enqueue(
     headers: HeaderMap,
     ApiJson(request): ApiJson<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let trace_context = trace_context_from_headers(&headers)?;
     enqueue_internal(
         state,
@@ -329,7 +329,7 @@ async fn agent_summary(
     detail: AgentSummaryDetail,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     if matches!(detail, AgentSummaryDetail::Compact) {
         let projection = state
             .host
@@ -368,7 +368,7 @@ pub async fn agent_state(
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
-        return auth_required(error.to_string()).into_response();
+        return authentication_error_response(error).into_response();
     }
     let key = ProjectionKey::AgentState(agent_id.clone());
     let result = state
@@ -1246,7 +1246,7 @@ pub async fn briefs(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -1262,7 +1262,7 @@ pub async fn brief(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let Some((identity, brief)) = state
         .host
         .runtime_db()
@@ -1299,7 +1299,7 @@ pub async fn briefs_batch_get(
     headers: HeaderMap,
     ApiJson(request): ApiJson<BatchGetBriefsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -1360,7 +1360,7 @@ pub async fn transcript(
     headers: HeaderMap,
     Query(query): Query<LimitQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -1376,7 +1376,7 @@ pub async fn transcript_entry(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -1397,7 +1397,7 @@ pub async fn transcript_batch_get(
     headers: HeaderMap,
     ApiJson(request): ApiJson<BatchGetTranscriptEntriesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let storage = state
         .host
         .operator_agent_read_storage(&agent_id)
@@ -1424,7 +1424,7 @@ pub async fn worktree_summary(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let summary = state
         .host
         .public_agent_worktree_summary(&agent_id)

@@ -35,6 +35,10 @@ internal fun commonModelOptions(options: List<HolonModelOption>, agents: List<Ag
             .thenByDescending { usage[it.model] ?: 0 }.thenBy { it.displayName.lowercase() })
 }
 
+/** Hide models that cannot be selected, but keep the agent's current model visible for explanation. */
+internal fun modelPickerOptions(options: List<HolonModelOption>, currentModel: String): List<HolonModelOption> =
+    options.filter { it.available || it.model == currentModel }
+
 internal fun HolonUiState.hasStandaloneActivity(): Boolean =
     selectedActivity != null && (fullScreenTurn || selectedTurn == null) &&
         selectedWorkItem == null && selectedBrief == null && agentSection == AgentSection.Results

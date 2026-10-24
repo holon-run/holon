@@ -5,6 +5,8 @@ import {
   createRuntimeClient,
   resolveRuntimeApiBase,
   httpRetryAfterMs,
+  isAuthRejectionError,
+  isAuthRequiredError,
   isTimeoutAbortError,
   projectModelOptions,
   REQUIRED_OBSERVER_SYNC_CAPABILITIES,
@@ -354,6 +356,45 @@ describe("createRuntimeClient", () => {
       fetchImpl: (async () => Response.json({ error: "unavailable" }, { status })) as typeof fetch,
     });
     await expect(client.getCurrentUser({ strict: true })).rejects.toMatchObject({ status });
+  });
+
+  it.each([
+    {
+      status: 503,
+      envelope: {
+        ok: false,
+        error: "runtime database operation reader pool checkout is temporarily unavailable",
+        code: "runtime_db_busy",
+        domain: "storage",
+        retryable: true,
+        hint: "retry the operation",
+        context: { operation: "reader pool checkout" },
+      },
+      authRejected: false,
+    },
+    {
+      status: 401,
+      envelope: { ok: false, error: "session expired", code: "auth_required" },
+      authRejected: true,
+    },
+  ])("classifies the original HTTP $status session envelope without converting storage failure to auth rejection (#3711)", async ({
+    status, envelope, authRejected,
+  }) => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () => Response.json(envelope, { status })) as typeof fetch,
+    });
+    const error = await client.getCurrentUser({ strict: true }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(error).toMatchObject({ name: "RuntimeHttpError", status, code: envelope.code });
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(envelope.error);
+    expect(isAuthRequiredError(error)).toBe(authRejected);
+    expect(isAuthRejectionError(error)).toBe(authRejected);
   });
 
   it("omits the display name for the local control identity", async () => {

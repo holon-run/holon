@@ -233,6 +233,7 @@ internal object UiCopy {
         刷新模型|Refresh models
         搜索模型|Search models
         暂无模型目录，请刷新后重试|No model catalog yet. Refresh and try again.
+        暂无可用模型，请配置凭证后刷新|No usable models. Configure credentials and refresh.
         应用到此 Agent|Apply to this Agent
         待应用：|Pending: 
         当前不可用|Currently unavailable
