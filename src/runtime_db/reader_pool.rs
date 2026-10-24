@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 use crate::diagnostics::attribution;
 
 use super::write_queue::RuntimeDbWriterState;
-use super::{RuntimeDbProtectionError, RuntimeDbRetryableError};
+use super::{RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
 
 const DEFAULT_CAPACITY: u32 = 4;
 const DEFAULT_BUDGET: Duration = Duration::from_millis(250);
@@ -23,6 +23,7 @@ const LOG_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub(crate) struct RuntimeDbReaderPool {
     shared: Arc<ReaderPoolShared>,
+    scope: Option<RuntimeDbReadScope>,
 }
 
 struct ReaderPoolShared {
@@ -74,6 +75,7 @@ pub(crate) struct ReaderPoolStats {
     pub(crate) checkout_timeouts: u64,
     pub(crate) current_connections: u32,
     pub(crate) idle_connections: u32,
+    pub(crate) available_admission: usize,
 }
 
 struct ReaderManager {
@@ -163,23 +165,53 @@ impl RuntimeDbReaderPool {
                 control,
             }
         });
-        Self { shared }
+        Self {
+            shared,
+            scope: None,
+        }
+    }
+
+    pub(crate) fn with_scope(&self, scope: RuntimeDbReadScope) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            scope: Some(scope),
+        }
+    }
+
+    fn acquisition_deadline(&self) -> Instant {
+        let deadline = Instant::now() + self.shared.budget;
+        self.scope
+            .as_ref()
+            .map_or(deadline, |scope| deadline.min(scope.deadline()))
+    }
+
+    fn check_scope(&self, scope: &Option<RuntimeDbReadScope>) -> Result<()> {
+        if let Some(scope) = scope {
+            scope.check(&self.shared.control.writer.path)?;
+        }
+        Ok(())
     }
 
     /// Only owned results may escape. Callers must not change connection hooks,
     /// authorizers or other connection-local configuration through the Rust API.
     pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        self.read_until(Instant::now() + self.shared.budget, f)
+        self.read_until(
+            self.acquisition_deadline(),
+            self.scope.as_ref().map(RuntimeDbReadScope::child),
+            f,
+        )
     }
 
     fn read_until<T>(
         &self,
         deadline: Instant,
+        scope: Option<RuntimeDbReadScope>,
         f: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
         let checkout = attribution::READER_CHECKOUT.start();
         let control = &self.shared.control;
         control.ensure_protected()?;
+        self.check_scope(&scope)?;
         let pool = self
             .shared
             .pool
@@ -189,6 +221,7 @@ impl RuntimeDbReaderPool {
             .ok_or_else(|| anyhow!("runtime db reader pool is closed"))?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            self.check_scope(&scope)?;
             control.timeout();
             return Err(RuntimeDbRetryableError::new(
                 "reader pool checkout",
@@ -200,21 +233,44 @@ impl RuntimeDbReaderPool {
         let connection = pool.get_timeout(remaining).map_err(|error| {
             control.timeout();
             // In particular, do not turn quarantine evidence into a timeout string.
-            control.ensure_protected().err().unwrap_or_else(|| {
-                RuntimeDbRetryableError::new("reader pool checkout", &control.writer.path, error)
+            control
+                .ensure_protected()
+                .and_then(|_| self.check_scope(&scope))
+                .err()
+                .unwrap_or_else(|| {
+                    RuntimeDbRetryableError::new(
+                        "reader pool checkout",
+                        &control.writer.path,
+                        error,
+                    )
                     .into()
-            })
+                })
         })?;
         drop(checkout);
         // Declare the timer first so the lease is returned before it stops.
         let _held = attribution::READER_LEASE.start();
-        let mut lease = ReadLease { connection };
+        let mut lease = ReadLease {
+            connection,
+            progress_handler: false,
+        };
         control.ensure_protected()?;
+        self.check_scope(&scope)?;
+        if let Some(scope) = scope.clone() {
+            lease.progress_handler = true;
+            lease
+                .connection
+                .connection
+                .as_ref()
+                .expect("live reader")
+                .progress_handler(1000, Some(move || scope.is_cancelled()));
+        }
         let result = {
             // The closure includes row decoding and transactions, not only SQL.
             let _operation = attribution::READER_OPERATION.start();
             f(lease.connection.connection.as_mut().expect("live reader"))
         };
+        // Cleanup SQL must not inherit the operation's expired/cancelled hook.
+        lease.clear_progress_handler();
         if result.as_ref().err().is_some_and(is_broken_error) {
             lease.connection.broken = true;
         }
@@ -228,6 +284,10 @@ impl RuntimeDbReaderPool {
             return result
                 .and_then(|_| Err(anyhow!("runtime db reader returned with dirty state")));
         }
+        // Protection/corruption evidence must not become a retryable cancellation.
+        if !result.as_ref().err().is_some_and(is_broken_error) {
+            self.check_scope(&scope)?;
+        }
         result
     }
 
@@ -236,14 +296,22 @@ impl RuntimeDbReaderPool {
         f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let admission = attribution::READER_ADMISSION.start();
-        let deadline = Instant::now() + self.shared.budget;
+        let deadline = self.acquisition_deadline();
+        let scope = self.scope.as_ref().map(RuntimeDbReadScope::child);
         self.shared.control.ensure_protected()?;
-        let permit = match tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            Arc::clone(&self.shared.admission).acquire_owned(),
-        )
-        .await
-        {
+        self.check_scope(&scope)?;
+        let admitted = tokio::select! {
+            result = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                Arc::clone(&self.shared.admission).acquire_owned(),
+            ) => result,
+            () = RuntimeDbReadScope::cancelled(&scope) => {
+                self.shared.control.ensure_protected()?;
+                self.check_scope(&scope)?;
+                unreachable!("cancelled scope must reject the read");
+            }
+        };
+        let permit = match admitted {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => {
                 self.shared.control.ensure_protected()?;
@@ -252,6 +320,7 @@ impl RuntimeDbReaderPool {
             Err(_) => {
                 self.shared.control.timeout();
                 self.shared.control.ensure_protected()?;
+                self.check_scope(&scope)?;
                 return Err(RuntimeDbRetryableError::new(
                     "reader pool admission",
                     &self.shared.control.writer.path,
@@ -262,7 +331,9 @@ impl RuntimeDbReaderPool {
         };
         drop(admission);
         self.shared.control.ensure_protected()?;
+        self.check_scope(&scope)?;
         let reader = self.clone();
+        let task_scope = scope.clone();
         let state = Arc::new(AtomicU8::new(0));
         let task_state = Arc::clone(&state);
         let blocking_admission = attribution::READER_BLOCKING_ADMISSION.start();
@@ -276,20 +347,22 @@ impl RuntimeDbReaderPool {
             {
                 bail!("runtime db read cancelled before execution");
             }
-            reader.read_until(deadline, f)
+            reader.read_until(deadline, task_scope, f)
         });
         let _cancel = CancelQueuedRead {
             state: Arc::clone(&state),
             abort: task.abort_handle(),
+            scope: scope.clone(),
         };
-        let joined = match tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            &mut task,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => {
+        let joined = tokio::select! {
+            result = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline), &mut task,
+            ) => result.ok(),
+            () = RuntimeDbReadScope::cancelled(&scope) => None,
+        };
+        let joined = match joined {
+            Some(result) => result,
+            None => {
                 if state
                     .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
@@ -297,6 +370,7 @@ impl RuntimeDbReaderPool {
                     task.abort();
                     self.shared.control.timeout();
                     self.shared.control.ensure_protected()?;
+                    self.check_scope(&scope)?;
                     return Err(RuntimeDbRetryableError::new(
                         "reader pool blocking admission",
                         &self.shared.control.writer.path,
@@ -304,13 +378,17 @@ impl RuntimeDbReaderPool {
                     )
                     .into());
                 }
-                // Started work retains its lease; acquisition is not an SQL deadline.
+                // Started work retains its real permit and lease until it exits.
+                // Only an explicit scope makes execution cancellable.
                 task.await
             }
         };
+        self.shared.control.ensure_protected()?;
         let result =
             joined.map_err(|error| anyhow!("runtime db blocking read task failed: {error}"))?;
-        self.shared.control.ensure_protected()?;
+        if !result.as_ref().err().is_some_and(is_broken_error) {
+            self.check_scope(&scope)?;
+        }
         result
     }
 
@@ -338,6 +416,7 @@ impl RuntimeDbReaderPool {
             checkout_timeouts: stats.checkout_timeouts.load(Ordering::Relaxed),
             current_connections: state.as_ref().map_or(0, |state| state.connections),
             idle_connections: state.map_or(0, |state| state.idle_connections),
+            available_admission: self.shared.admission.available_permits(),
         }
     }
 
@@ -350,10 +429,14 @@ impl RuntimeDbReaderPool {
 struct CancelQueuedRead {
     state: Arc<AtomicU8>,
     abort: tokio::task::AbortHandle,
+    scope: Option<RuntimeDbReadScope>,
 }
 
 impl Drop for CancelQueuedRead {
     fn drop(&mut self) {
+        if let Some(scope) = &self.scope {
+            scope.cancel();
+        }
         let _ = self
             .state
             .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
@@ -363,10 +446,25 @@ impl Drop for CancelQueuedRead {
 
 struct ReadLease {
     connection: PooledConnection<ReaderManager>,
+    progress_handler: bool,
+}
+
+impl ReadLease {
+    fn clear_progress_handler(&mut self) {
+        if self.progress_handler {
+            self.connection
+                .connection
+                .as_ref()
+                .expect("live reader")
+                .progress_handler(0, None::<fn() -> bool>);
+            self.progress_handler = false;
+        }
+    }
 }
 
 impl Drop for ReadLease {
     fn drop(&mut self) {
+        self.clear_progress_handler();
         if std::thread::panicking() {
             self.connection.broken = true;
         }
@@ -749,7 +847,7 @@ mod tests {
         let calls = AtomicU64::new(0);
         for _ in 0..3 {
             let error = pool
-                .read_until(Instant::now() + Duration::from_millis(30), |_| {
+                .read_until(Instant::now() + Duration::from_millis(30), None, |_| {
                     calls.fetch_add(1, Ordering::Relaxed);
                     Ok(())
                 })
@@ -777,10 +875,14 @@ mod tests {
         reject.store(false, Ordering::Release);
         release_tx.send(())?;
         assert_eq!(
-            pool.read_until(Instant::now() + Duration::from_secs(4), |connection| {
-                calls.fetch_add(1, Ordering::Relaxed);
-                Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
-            })?,
+            pool.read_until(
+                Instant::now() + Duration::from_secs(4),
+                None,
+                |connection| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
+                }
+            )?,
             1
         );
         let stats = pool.stats();
@@ -912,7 +1014,11 @@ mod tests {
 
         // Checkout times out, but an already-started pool connect still owns protection.
         assert!(pool
-            .read_until(Instant::now() + Duration::from_millis(100), |_| Ok(()))
+            .read_until(
+                Instant::now() + Duration::from_millis(100),
+                None,
+                |_| Ok(())
+            )
             .is_err());
         opened_rx.recv_timeout(Duration::from_secs(2))?;
         drop(db);
