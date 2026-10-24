@@ -75,7 +75,12 @@ excluded from stepped/decoded execution timing; sort and VM-step counters,
 roster reads through the default reader pool, serial writer commits, index
 build time and database/WAL end snapshots are reported separately.
 
-This is deliberately not a production migration/capacity benchmark, peak
+The separately runnable `brief_latest_migration_benchmark` uses the same bounded
+history in a real predecessor schema and measures complete upgrade opens and
+successful reopens. See the [index decision](../implementation-decisions/roster-brief-index-measurement-gate.md)
+for the accepted write cost, migration semantics and downgrade boundary.
+
+Neither is a production migration/capacity benchmark, peak
 temporary-disk measurement, HTTP load test or frontend request-count test.
 Run it alone before interpreting global diagnostic deltas; shared-host noise
 and warm filesystem caches remain even with an identical logical snapshot.
