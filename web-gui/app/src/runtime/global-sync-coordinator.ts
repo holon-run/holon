@@ -116,7 +116,7 @@ export const ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS = 6;
 
 const GLOBAL_BACKFILL_MAX_PAGES = 10;
 const GLOBAL_BACKFILL_CONCURRENCY = 4;
-/** Low-rate safety net: full roster reconciliation at most this often. */
+const ROSTER_REFRESH_INTERVAL_MS = 1_000;
 
 /**
  * Fresh sessions never seed catch-up further behind the authoritative roster
@@ -155,9 +155,16 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   /** Authoritative discovery cycle (W4): in-flight snapshot + coalescing. */
   private rosterRefreshPromise: Promise<void> | undefined;
   private rosterDirty = false;
+  private readonly rosterHintedAgents = new Set<string>();
+  private rosterQueuedRefresh: { promise: Promise<void>; resolve: () => void } | undefined;
   private rosterIdentity: RosterDiscoveryIdentity | undefined;
-  private rosterRetryTimer: number | undefined;
+  /** One timer covers both the completion-based cadence and server backoff. */
+  private rosterRefreshTimer: number | undefined;
+  private rosterRefreshNotBefore = 0;
+  private rosterRetryAt = 0;
   private rosterRetryAttempt = 0;
+  private rosterAuthRejected = false;
+  private rosterGeneration = 0;
 
   constructor(private readonly dependencies: GlobalSyncCoordinatorDependencies<State>) {}
 
@@ -168,34 +175,40 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     const trace = createRuntimeTrace("stream.connect", { trigger: "stream.connect" });
     const connectSpan = startRuntimeSpan(trace, "sse.connect");
     const request = this.dependencies.captureClientRequest();
+    const generation = this.rosterGeneration;
+    const isCurrent = () => generation === this.rosterGeneration
+      && this.dependencies.isCurrentClientRequest(request);
     const subscription = request.client.streamGlobalEvents({
       onOpen: () => {
-        if (!this.dependencies.isCurrentClientRequest(request)) return;
+        if (!isCurrent()) return;
         this.globalStreamReconnectAttempt = 0;
         this.streamAuthRejected = false;
+        this.rosterAuthRejected = false;
         connectSpan.end("ok");
         this.scheduleStaleWatchdog(get, set);
         // Discovery first: the authoritative roster (when the capability is
         // served) settles before per-agent catch-up registers its agents.
         // Every successful reconnect repeats the roster snapshot.
-        void Promise.resolve().then(() => this.beginDiscovery(get, set, request));
+        void Promise.resolve().then(() => {
+          if (isCurrent()) return this.beginDiscovery(get, set, request);
+        });
       },
       onActivity: () => {
-        if (!this.dependencies.isCurrentClientRequest(request)) return;
+        if (!isCurrent()) return;
         this.scheduleStaleWatchdog(get, set);
       },
       onRosterHint: (agentId) => {
-        if (!this.dependencies.isCurrentClientRequest(request)) return;
+        if (!isCurrent()) return;
         this.scheduleStaleWatchdog(get, set);
         this.noteRosterHint(get, set, agentId);
       },
       onClose: () => {
-        if (this.dependencies.isCurrentClientRequest(request)) {
+        if (isCurrent()) {
           this.scheduleReconnect(get, set, "global event stream closed");
         }
       },
       onError: (error) => {
-        if (this.dependencies.isCurrentClientRequest(request)) {
+        if (isCurrent()) {
           if (isAuthRejectionError(error)) {
             this.handleStreamAuthRejection(get, set, error.message);
             return;
@@ -211,7 +224,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   stop(set: GlobalSyncStoreSet<State>): void {
     this.globalEventStream?.close();
     this.globalEventStream = undefined;
-    this.clearRosterRetrySchedule();
+    this.cancelRosterRefresh();
     if (this.globalStreamReconnectTimer != null) {
       window.clearTimeout(this.globalStreamReconnectTimer);
       this.globalStreamReconnectTimer = undefined;
@@ -309,103 +322,116 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     set: GlobalSyncStoreSet<State>,
     request: ClientRequest,
   ): Promise<void> {
+    const generation = this.rosterGeneration;
     await this.refreshRosterInner(get, set, request, "stream_open");
     if (
       !this.dependencies.isCurrentClientRequest(request)
+      || generation !== this.rosterGeneration
+      || this.rosterAuthRejected
+      || this.streamAuthRejected
       || !this.globalEventStream
     ) return;
     await this.catchUp(get, set, request);
   }
 
-  private async refreshRosterInner(
+  private refreshRosterInner(
     get: () => State,
     set: GlobalSyncStoreSet<State>,
     request: ClientRequest,
     trigger: string,
   ): Promise<void> {
-    if (this.rosterRefreshPromise) {
-      // A hint while the snapshot is in flight coalesces into exactly one
-      // additional refresh inside the running cycle.
-      this.rosterDirty = true;
-      return this.rosterRefreshPromise;
+    if (
+      !this.dependencies.isCurrentClientRequest(request)
+      || !this.globalEventStream
+      || this.streamAuthRejected
+      || this.rosterAuthRejected
+    ) return Promise.resolve();
+    this.rosterDirty = true;
+    if (!this.rosterQueuedRefresh) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      this.rosterQueuedRefresh = { promise, resolve };
     }
+    const pending = this.rosterQueuedRefresh.promise;
+    this.scheduleRosterRefresh(get, set, request, trigger);
+    return pending;
+  }
+
+  private scheduleRosterRefresh(
+    get: () => State,
+    set: GlobalSyncStoreSet<State>,
+    request: ClientRequest,
+    trigger: string,
+  ): void {
+    if (
+      this.rosterRefreshPromise
+      || this.rosterRefreshTimer != null
+      || !this.rosterDirty
+      || !this.globalEventStream
+      || this.streamAuthRejected
+      || this.rosterAuthRejected
+      || !this.dependencies.isCurrentClientRequest(request)
+    ) return;
+    const generation = this.rosterGeneration;
+    const isCurrent = () => generation === this.rosterGeneration
+      && this.dependencies.isCurrentClientRequest(request)
+      && !this.streamAuthRejected
+      && !this.rosterAuthRejected;
+    const delay = Math.max(this.rosterRefreshNotBefore, this.rosterRetryAt) - Date.now();
+    if (delay > 0) {
+      // Hints never move this deadline: continuous traffic cannot debounce
+      // discovery forever, nor undercut a Retry-After deadline.
+      this.rosterRefreshTimer = window.setTimeout(() => {
+        this.rosterRefreshTimer = undefined;
+        if (isCurrent()) this.scheduleRosterRefresh(get, set, request, trigger);
+      }, delay);
+      return;
+    }
+    this.rosterDirty = false;
+    const queued = this.rosterQueuedRefresh;
+    this.rosterQueuedRefresh = undefined;
+    const hintedAgents = Array.from(this.rosterHintedAgents);
+    this.rosterHintedAgents.clear();
     const span = startRuntimeSpan(
       createRuntimeTrace("roster.refresh", { trigger }),
       "roster.snapshot",
     );
     const cycle = (async () => {
-      let refreshAgain = true;
-      let settledFromSnapshot = false;
-      let lastServedStale = false;
-      while (
-        refreshAgain
-        && this.dependencies.isCurrentClientRequest(request)
-        && this.globalEventStream
-      ) {
-        refreshAgain = false;
-        this.rosterDirty = false;
-        let snapshot: AgentRosterSnapshotDto;
-        try {
-          const result = await this.dependencies.fetchRosterSnapshot(request);
-          snapshot = result.snapshot;
-          lastServedStale = result.projectionStale;
-        } catch (error) {
-          if (!this.dependencies.isCurrentClientRequest(request)) return;
-          span.end("error");
-          this.handleRosterSnapshotFailure(get, set, error);
-          return;
-        }
-        if (!this.dependencies.isCurrentClientRequest(request)) return;
-        settledFromSnapshot = true;
-        this.clearRosterRetrySchedule();
-        this.rosterRetryAttempt = 0;
-        const identity: RosterDiscoveryIdentity = {
-          runtimeId: snapshot.runtime_id,
-          visibilityScopeId: snapshot.visibility_scope_id,
-          eventLogEpoch: snapshot.event_log_epoch,
-        };
-        const omittedAgentIds = await this.dependencies.applyRosterSnapshot(
-          set,
-          snapshot,
-          { previousIdentity: this.rosterIdentity, request },
-        );
-        if (!this.dependencies.isCurrentClientRequest(request)) return;
-        this.rosterIdentity = identity;
-        for (const agentId of omittedAgentIds) {
-          this.unregister(agentId);
-        }
-        const rosterEntries = rosterAgentEntries(snapshot);
-        for (const { agentId, eventWindow } of rosterEntries) {
-          this.rosterEventWindows.set(agentId, eventWindow);
-          this.dependencies.registerAgentRecovery(agentId, {
-            eventHeadSeq: eventWindow.eventHeadSeq,
-            oldestRetainedSeq: eventWindow.oldestRetainedSeq,
-          });
-        }
-        this.hydrateCatchUpCursors(identity);
-        this.reseedCatchUpBaselines(get);
-        // Align in-memory subscriptions with the applied roster.
-        this.syncRoster(get, set);
-        if (this.rosterDirty) refreshAgain = true;
-        span.end("ok", { agentCount: snapshot.agents.length, omitted: omittedAgentIds.length });
+      const result = await this.dependencies.fetchRosterSnapshot(request);
+      if (!isCurrent()) return;
+      const { snapshot, projectionStale } = result;
+      const identity: RosterDiscoveryIdentity = {
+        runtimeId: snapshot.runtime_id,
+        visibilityScopeId: snapshot.visibility_scope_id,
+        eventLogEpoch: snapshot.event_log_epoch,
+      };
+      const omittedAgentIds = await this.dependencies.applyRosterSnapshot(
+        set,
+        snapshot,
+        { previousIdentity: this.rosterIdentity, request },
+      );
+      if (!isCurrent()) return;
+      this.rosterIdentity = identity;
+      for (const agentId of omittedAgentIds) this.unregister(agentId);
+      for (const { agentId, eventWindow } of rosterAgentEntries(snapshot)) {
+        this.rosterEventWindows.set(agentId, eventWindow);
+        this.dependencies.registerAgentRecovery(agentId, {
+          eventHeadSeq: eventWindow.eventHeadSeq,
+          oldestRetainedSeq: eventWindow.oldestRetainedSeq,
+        });
       }
-      // A cycle that never applied a snapshot (for example a roster retry
-      // firing while the stream is down and reconnecting) must not mark
-      // discovery fresh; the previous stale state stays authoritative
-      // until a real snapshot settles.
-      if (!this.dependencies.isCurrentClientRequest(request)) return;
-      if (!settledFromSnapshot) {
-        span.end("skipped", { reason: "stream_unavailable" });
-        return;
-      }
-      if (this.streamAuthRejected) {
-        // The stream hit a terminal auth rejection while this cycle was in
-        // flight; its unauthorized state stays authoritative instead of a
-        // racing snapshot settle flipping discovery back to fresh (#3299).
-        span.end("skipped", { reason: "stream_unauthorized" });
-        return;
-      }
-      if (lastServedStale) {
+      this.hydrateCatchUpCursors(identity);
+      this.reseedCatchUpBaselines(get);
+      this.syncRoster(get, set);
+      // A batch retains every hinted id, including agents first discovered
+      // by this snapshot. Hints arriving in flight belong to the next batch.
+      void runWithConcurrencyLimit(hintedAgents, GLOBAL_BACKFILL_CONCURRENCY, async (agentId) => {
+        if (isCurrent() && this.globalEventStream && this.subscribedAgents.has(agentId)) {
+          await this.recoverRegisteredAgent(get, set, agentId, request);
+        }
+      }, isCurrent);
+      span.end("ok", { agentCount: snapshot.agents.length, omitted: omittedAgentIds.length });
+      if (projectionStale) {
         // The runtime served its last good projection marked stale (via
         // x-holon-projection-stale). The applied roster stays usable, but
         // discovery must not present it as fresh authoritative data; keep
@@ -413,7 +439,8 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         // fresh snapshot settles.
         this.rosterRetryAttempt += 1;
         const delay = retryDelayWithServerHintMs(this.rosterRetryAttempt);
-        if (this.rosterRetryTimer != null) window.clearTimeout(this.rosterRetryTimer);
+        this.rosterRetryAt = Date.now() + delay;
+        this.rosterDirty = true;
         set((state) => ({
           discovery: {
             ...state.discovery,
@@ -425,19 +452,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
             retryAt: Date.now() + delay,
           },
         } as Partial<State>));
-        this.rosterRetryTimer = window.setTimeout(() => {
-          this.rosterRetryTimer = undefined;
-          void this.refreshRosterInner(
-            get,
-            set,
-            this.dependencies.captureClientRequest(),
-            "roster_retry",
-          );
-        }, delay);
         return;
       }
-      // Discovery is marked fresh only after the settle of the last
-      // (possibly coalesced) successful refresh.
+      this.rosterRetryAt = 0;
+      this.rosterRetryAttempt = 0;
       set((state) => ({
         discovery: {
           ...state.discovery,
@@ -450,16 +468,24 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
           retryAt: undefined,
         },
       } as Partial<State>));
-    })();
+    })().catch((error: unknown) => {
+      if (!isCurrent()) return;
+      // Failed fetches or applies must not consume pending event recovery.
+      hintedAgents.forEach((agentId) => this.rosterHintedAgents.add(agentId));
+      span.end("error");
+      this.handleRosterSnapshotFailure(set, error);
+    });
     const tracked = cycle.finally(() => {
-      if (this.rosterRefreshPromise === tracked) this.rosterRefreshPromise = undefined;
+      queued?.resolve();
+      if (generation !== this.rosterGeneration || this.rosterRefreshPromise !== tracked) return;
+      this.rosterRefreshPromise = undefined;
+      this.rosterRefreshNotBefore = Date.now() + ROSTER_REFRESH_INTERVAL_MS;
+      if (isCurrent()) this.scheduleRosterRefresh(get, set, request, "roster_trailing");
     });
     this.rosterRefreshPromise = tracked;
-    return tracked;
   }
 
   private handleRosterSnapshotFailure(
-    get: () => State,
     set: GlobalSyncStoreSet<State>,
     error: unknown,
   ): void {
@@ -474,7 +500,12 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       // Authorization failed: the cached roster must stop being presented
       // as currently authorized data. No automatic retries; a successful
       // reauthentication followed by a reconnect restarts discovery.
-      this.clearRosterRetrySchedule();
+      this.rosterAuthRejected = true;
+      this.clearRosterRefreshSchedule();
+      this.rosterDirty = false;
+      this.rosterHintedAgents.clear();
+      this.rosterQueuedRefresh?.resolve();
+      this.rosterQueuedRefresh = undefined;
       this.rosterRetryAttempt = 0;
       set((state) => ({
         discovery: {
@@ -493,7 +524,8 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     // stale, and retry with bounded backoff. Nothing is purged.
     this.rosterRetryAttempt += 1;
     const delay = retryDelayWithServerHintMs(this.rosterRetryAttempt, error);
-    if (this.rosterRetryTimer != null) window.clearTimeout(this.rosterRetryTimer);
+    this.rosterRetryAt = Date.now() + delay;
+    this.rosterDirty = true;
     set((state) => ({
       discovery: {
         ...state.discovery,
@@ -504,22 +536,27 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         retryAt: Date.now() + delay,
       },
     } as Partial<State>));
-    this.rosterRetryTimer = window.setTimeout(() => {
-      this.rosterRetryTimer = undefined;
-      void this.refreshRosterInner(
-        get,
-        set,
-        this.dependencies.captureClientRequest(),
-        "roster_retry",
-      );
-    }, delay);
   }
 
-  private clearRosterRetrySchedule(): void {
-    if (this.rosterRetryTimer != null) {
-      window.clearTimeout(this.rosterRetryTimer);
-      this.rosterRetryTimer = undefined;
+  private clearRosterRefreshSchedule(): void {
+    if (this.rosterRefreshTimer != null) {
+      window.clearTimeout(this.rosterRefreshTimer);
+      this.rosterRefreshTimer = undefined;
     }
+  }
+
+  private cancelRosterRefresh(): void {
+    this.rosterGeneration += 1;
+    this.clearRosterRefreshSchedule();
+    this.rosterQueuedRefresh?.resolve();
+    this.rosterQueuedRefresh = undefined;
+    this.rosterRefreshPromise = undefined;
+    this.rosterDirty = false;
+    this.rosterHintedAgents.clear();
+    this.rosterRefreshNotBefore = 0;
+    this.rosterRetryAt = 0;
+    this.rosterRetryAttempt = 0;
+    this.rosterAuthRejected = false;
   }
 
   /**
@@ -529,33 +566,16 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
    */
   private noteRosterHint(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string | undefined): void {
     if (!this.globalEventStream) return;
-    if (this.rosterRefreshPromise) {
-      this.rosterDirty = true;
-      return;
-    }
+    if (this.streamAuthRejected || this.rosterAuthRejected) return;
+    if (agentId) this.rosterHintedAgents.add(agentId);
     const known = agentId != null && this.subscribedAgents.has(agentId);
     const request = this.dependencies.captureClientRequest();
-    const refresh = this.refreshRosterInner(
+    void this.refreshRosterInner(
       get,
       set,
       request,
       known ? "safety_reconciliation" : "unknown_agent_hint",
     );
-    if (known && agentId) {
-      void refresh.then(() => {
-        if (
-          this.dependencies.isCurrentClientRequest(request)
-          && this.subscribedAgents.has(agentId)
-        ) {
-          void this.recoverRegisteredAgent(
-            get,
-            set,
-            agentId,
-            request,
-          );
-        }
-      });
-    }
   }
 
   retryAgentSync(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string): void {
@@ -651,6 +671,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   }
 
   cancelClientGenerationWork(): void {
+    this.cancelRosterRefresh();
     for (const timer of this.backfillRetryTimers.values()) window.clearTimeout(timer);
     this.backfillRetryTimers.clear();
     this.backfillRetryAttempts.clear();
@@ -662,11 +683,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.cancelClientGenerationWork();
     this.globalEventStream?.close();
     this.globalEventStream = undefined;
-    this.clearRosterRetrySchedule();
-    this.rosterRefreshPromise = undefined;
-    this.rosterDirty = false;
     this.rosterIdentity = undefined;
-    this.rosterRetryAttempt = 0;
     this.rosterEventWindows.clear();
     // Stored cursors stay in sessionStorage; identity + epoch checks decide
     // whether they are still valid after the client re-discovers the daemon.
@@ -690,7 +707,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
 
   closeForResume(set: GlobalSyncStoreSet<State>): void {
     this.stop(set);
-    this.clearRosterRetrySchedule();
     for (const timer of this.streamFlushTimers.values()) window.clearTimeout(timer);
     this.streamFlushTimers.clear();
     this.pendingStreamEvents.clear();
@@ -1077,7 +1093,11 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.globalEventStream?.close();
     this.globalEventStream = undefined;
     this.streamAuthRejected = true;
-    this.clearRosterRetrySchedule();
+    this.clearRosterRefreshSchedule();
+    this.rosterDirty = false;
+    this.rosterHintedAgents.clear();
+    this.rosterQueuedRefresh?.resolve();
+    this.rosterQueuedRefresh = undefined;
     this.rosterRetryAttempt = 0;
     if (this.globalStreamReconnectTimer != null) {
       window.clearTimeout(this.globalStreamReconnectTimer);
