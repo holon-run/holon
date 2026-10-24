@@ -53,6 +53,16 @@ pub struct PromptSection {
     pub stability: PromptStability,
 }
 
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error(
+    "context build failed: configured_budget={configured_estimated_tokens}, effective_budget={effective_estimated_tokens}, runtime_time_reservation={runtime_time_reserved_tokens}"
+)]
+pub(crate) struct ContextBuildBudget {
+    pub configured_estimated_tokens: usize,
+    pub effective_estimated_tokens: usize,
+    pub runtime_time_reserved_tokens: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptCacheIdentity {
     pub agent_id: String,
@@ -730,7 +740,18 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         &time_reserved_config,
         agent_home,
         default_external_ingress,
-    )?;
+    )
+    .map_err(|error| {
+        if error.is::<crate::context::ContextPlanningError>() {
+            error.context(ContextBuildBudget {
+                configured_estimated_tokens: config.prompt_budget_estimated_tokens,
+                effective_estimated_tokens: time_reserved_config.prompt_budget_estimated_tokens,
+                runtime_time_reserved_tokens: time::RUNTIME_TIME_RESERVED_TOKENS,
+            })
+        } else {
+            error
+        }
+    })?;
     let system_sections = build_system_sections(
         identity,
         current_message,

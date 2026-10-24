@@ -1772,7 +1772,256 @@ async fn provider_recovery_pinned_root_minimum_fails_closed_before_provider_requ
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("pinned_minimum_over_budget"));
+    let descriptor = describe_runtime_error(&error);
+    assert_eq!(
+        descriptor.domain,
+        crate::runtime_error::RuntimeErrorDomain::Validation
+    );
+    assert_eq!(descriptor.code, "context_pinned_minimum_over_budget");
+    assert!(!descriptor.retryable);
+    assert_eq!(
+        descriptor.safe_context["configured_budget_estimated_tokens"],
+        (minimum - 1).to_string()
+    );
+    assert_eq!(
+        descriptor.safe_context["effective_budget_estimated_tokens"],
+        (minimum - 1 - crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS).to_string()
+    );
+    assert!(provider_attempt_timeline(&error).is_none());
+    assert!(runtime
+        .maybe_defer_provider_lineage_failure("default", 0, &error, None, None, 0, false, true,)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn context_budget_failure_settles_without_dispatch_or_provider_recovery() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut config = context_config();
+    config.prompt_budget_estimated_tokens = crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS;
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 0,
+        }),
+        "default".into(),
+        config,
+    )
+    .unwrap();
+    let message = trusted_operator_prompt(None, "CONTEXT_BUDGET_INPUT_SECRET");
+    runtime.enqueue(message.clone()).await.unwrap();
+    let runner = tokio::spawn(runtime.clone().run());
+    wait_for_audit_events(
+        &runtime,
+        64,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "runtime_error" && event.data["message_id"] == message.id
+            })
+        },
+        "typed context failure settlement",
+    )
+    .await;
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
+    assert!(requests.lock().await.is_empty());
+    let entries = runtime.storage().latest_queue_entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, QueueEntryStatus::Aborted);
+    let events = runtime.storage().read_recent_events(128).unwrap();
+    let failure = events
+        .iter()
+        .find(|event| event.kind == "runtime_error")
+        .unwrap();
+    assert_eq!(failure.data["domain"], "validation");
+    assert_eq!(failure.data["code"], "context_pinned_minimum_over_budget");
+    assert_eq!(failure.data["retryable"], false);
+    assert_eq!(failure.data["safe_context"]["phase"], "context_build");
+    assert_eq!(
+        failure.data["safe_context"]["effective_budget_estimated_tokens"],
+        "0"
+    );
+    assert!(!failure
+        .data
+        .to_string()
+        .contains("CONTEXT_BUDGET_INPUT_SECRET"));
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event.kind.as_str(),
+            "provider_attempt_failed"
+                | "provider_recovery_enqueued"
+                | "provider_quota_incident_opened"
+        )
+    }));
+    let state = runtime.agent_state().await.unwrap();
+    let artifact = state
+        .last_runtime_failure
+        .unwrap()
+        .failure_artifact
+        .unwrap();
+    assert_eq!(artifact.kind, "context_pinned_minimum_over_budget");
+    assert_eq!(artifact.metadata["phase"], "context_build");
+    assert_eq!(artifact.metadata["runtime_time_reserved_tokens"], "128");
+    assert_eq!(
+        state.last_turn_terminal.unwrap().kind,
+        TurnTerminalKind::Aborted
+    );
+}
+
+#[tokio::test]
+async fn context_budget_stop_survives_ticks_restart_and_rechecks_only_after_budget_change() {
+    use crate::domain::execution_protocol::{ExecutionAttemptState, WorkItemExecutionState};
+
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = Arc::new(crate::runtime::clock::TestClock::new(Utc::now()));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut config = context_config();
+    config.prompt_budget_estimated_tokens = crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS;
+    let provider = Arc::new(SourceBoundRecoveryProvider {
+        requests: requests.clone(),
+        failures: 0,
+    });
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        config.clone(),
+        clock.clone(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item(
+            "context budget stopped work".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            vec![TodoItem {
+                text: "pending work".into(),
+                state: TodoItemState::Pending,
+            }],
+        )
+        .await
+        .unwrap();
+    let mut tick = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue bounded work".into(),
+        },
+    );
+    bind_autonomous_work_queue_tick(&mut tick, &work, "queued_available");
+    runtime.enqueue(tick.clone()).await.unwrap();
+    let runner = tokio::spawn(runtime.clone().run());
+    wait_for_audit_events(
+        &runtime,
+        128,
+        |events| {
+            events
+                .iter()
+                .any(|event| event.kind == "runtime_error" && event.data["message_id"] == tick.id)
+        },
+        "context stop for canonical owner",
+    )
+    .await;
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        protocol.work_items[&work.id].state,
+        WorkItemExecutionState::Paused { .. }
+    ));
+    assert!(protocol
+        .attempts
+        .values()
+        .all(|attempt| attempt.state != ExecutionAttemptState::Open));
+    let stopped_turns = runtime.storage().read_recent_turns(16).unwrap();
+    assert_eq!(stopped_turns.len(), 1);
+    assert_eq!(
+        stopped_turns[0].runtime_failure.as_ref().unwrap().code,
+        "context_pinned_minimum_over_budget"
+    );
+    assert!(requests.lock().await.is_empty());
+    drop(runtime);
+
+    let restarted = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        config,
+        clock.clone(),
+    )
+    .unwrap();
+    restarted
+        .control(crate::types::ControlAction::Start)
+        .await
+        .unwrap();
+    // Expiring the generic queued-work backoff is not an input/budget change.
+    clock.advance(std::time::Duration::from_secs(120));
+    for _ in 0..5 {
+        restarted.reconcile_context_budget_stops().await.unwrap();
+        assert!(!restarted
+            .maybe_emit_pending_system_tick(None)
+            .await
+            .unwrap());
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(&restarted)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Idle
+        ));
+    }
+    assert!(requests.lock().await.is_empty());
+    assert_eq!(restarted.storage().read_recent_turns(16).unwrap().len(), 1);
+    *restarted.inner.context_config.write().await = context_config();
+    restarted.reconcile_context_budget_stops().await.unwrap();
+    let protocol = restarted
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        protocol.work_items[&work.id].state,
+        WorkItemExecutionState::Runnable { .. }
+    ));
+    assert!(restarted
+        .maybe_emit_pending_system_tick(None)
+        .await
+        .unwrap());
+    execute_source_bound_round(&restarted, false).await;
     assert_eq!(requests.lock().await.len(), 1);
 }
 
@@ -2750,6 +2999,9 @@ fn persist_execution_transition_only(
             }
             ExecutionProtocolCommand::SetWorkItemReadiness(command) => {
                 crate::domain::execution_protocol::set_work_item_readiness(&state, &command)
+            }
+            ExecutionProtocolCommand::RecheckContextBudgetStop(command) => {
+                crate::domain::execution_protocol::recheck_context_budget_stop(&state, &command)
             }
             ExecutionProtocolCommand::SuspendWorkItemContinuation(command) => {
                 crate::domain::execution_protocol::suspend_work_item_continuation(&state, &command)
@@ -6625,6 +6877,182 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
         crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
             crate::domain::execution_protocol::WorkItemOutcome::Continue,
         )
+    );
+}
+
+#[tokio::test]
+async fn context_budget_stop_keeps_admitted_revision_and_recheck_obeys_durable_waits() {
+    use crate::domain::execution_protocol::{
+        ContextBudgetStop, ExecutionProtocolCommand, RecheckContextBudgetStop,
+        WorkItemExecutionState,
+    };
+    use crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome;
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let config = context_config();
+    let configured_budget = config.prompt_budget_estimated_tokens;
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        config,
+    )
+    .unwrap();
+    let owner = runtime
+        .create_work_item(
+            "old source snapshot".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue claimed source".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &owner, "queued_available");
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    let updated = runtime
+        .update_work_item_fields(
+            owner.id.clone(),
+            Some("new source while old context fails".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    finish_claimed_test_run(&runtime).await;
+    let mut terminal = terminal_transition(&message, Some(&owner.id));
+    terminal.terminal.kind = TurnTerminalKind::Aborted;
+    terminal.terminal.no_brief_reason = Some(TurnNoBriefReason::Aborted);
+    terminal.turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
+        &terminal.terminal,
+    ));
+    terminal.turn_record.runtime_failure = Some(describe_runtime_error(
+        &anyhow::Error::from(
+            crate::context::ContextPlanningError::PinnedMinimumOverBudget {
+                budget_estimated_tokens: configured_budget - 128,
+                pinned_minimum_estimated_tokens: configured_budget + 1,
+            },
+        )
+        .context(crate::prompt::ContextBuildBudget {
+            configured_estimated_tokens: configured_budget,
+            effective_estimated_tokens: configured_budget - 128,
+            runtime_time_reserved_tokens: 128,
+        }),
+    ));
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Aborted,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let expected = protocol.work_items[&owner.id].clone();
+    assert_eq!(expected.source_revision, updated.revision);
+    let WorkItemExecutionState::Paused { reason, .. } = &expected.state else {
+        panic!("failed context must stop its owner")
+    };
+    let stop = ContextBudgetStop::from_policy(reason).unwrap();
+    assert_eq!(
+        stop.source_revision, owner.revision,
+        "do not absorb concurrent source changes"
+    );
+    let mut wait = task_wait_condition_for_work_item("context-recheck-wait", &owner.id);
+    runtime.storage().append_wait_condition(&wait).unwrap();
+    let command =
+        ExecutionProtocolCommand::RecheckContextBudgetStop(Box::new(RecheckContextBudgetStop {
+            command_id: "context-budget-concurrent-source-recheck".into(),
+            work_item_id: owner.id.clone(),
+            expected: expected.clone(),
+            configured_estimated_tokens: configured_budget,
+        }));
+    assert!(matches!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_execution_protocol_recovery_plan("default", &[command.clone()], &[],)
+            .unwrap(),
+        ExecutionProtocolRecoveryCommitOutcome::Rejected { .. }
+    ));
+    wait.status = WaitConditionStatus::Cancelled;
+    wait.cancelled_at = Some(Utc::now());
+    runtime.storage().append_wait_condition(&wait).unwrap();
+    assert!(matches!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_execution_protocol_recovery_plan("default", &[command.clone()], &[],)
+            .unwrap(),
+        ExecutionProtocolRecoveryCommitOutcome::Applied(true)
+    ));
+    // Repeated delivery reads back the same command result, not a second generation.
+    assert!(matches!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_execution_protocol_recovery_plan("default", &[command], &[],)
+            .unwrap(),
+        ExecutionProtocolRecoveryCommitOutcome::Applied(false)
+    ));
+    let resumed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.work_items[&owner.id].source_revision,
+        updated.revision
+    );
+    assert_eq!(
+        resumed.work_items[&owner.id].generation(),
+        expected.generation() + 1
     );
 }
 

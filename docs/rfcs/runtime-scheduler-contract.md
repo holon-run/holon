@@ -26,6 +26,14 @@ This RFC does not propose a large rewrite as the first step. It defines the
 contract Holon should converge toward and the tests that should guard the
 existing implementation while it is refactored.
 
+Local pinned-context over-budget failure uses the existing canonical
+`WorkItemOutcome::Failed` / paused readiness boundary, not a new retry timer or
+provider incident. The typed failure is committed with queue/turn settlement.
+Only a changed source revision or configured context budget may automatically
+reconsider that pause, with a typed canonical readiness recheck and independent
+wait/blocker checks. See the
+[context budget stop contract](./context-candidate-budget-planner.md#8-over-budget-failure).
+
 ## Target Admission Protocol
 
 [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)

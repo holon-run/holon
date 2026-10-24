@@ -2482,6 +2482,9 @@ pub struct TurnRecord {
     pub completed_work_item_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting_condition_ids: Vec<String>,
+    /// Typed local failure evidence, committed with the aborted turn and attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_failure: Option<crate::runtime_error::RuntimeErrorDescriptor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TurnTerminalSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2514,6 +2517,7 @@ impl TurnRecord {
             delivery_summary_ids: Vec::new(),
             completed_work_item_ids: Vec::new(),
             waiting_condition_ids: Vec::new(),
+            runtime_failure: None,
             terminal: None,
             replay: None,
             destructive_operation_id: None,

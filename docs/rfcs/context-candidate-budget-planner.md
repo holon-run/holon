@@ -158,8 +158,39 @@ The diagnostic includes:
 - required pinned minimum
 
 The planner must not silently omit a pinned candidate or exceed the hard cap.
-This is the narrow Context build error boundary; it does not introduce a global
-runtime error taxonomy.
+The typed planning error must survive prompt assembly and runtime settlement.
+Runtime diagnostics classify this local failure as `validation`,
+`context_pinned_minimum_over_budget`, `retryable=false`, with
+`phase=context_build` and `recovery_disposition=stop_until_input_change`.
+They include the effective budget, pinned minimum and deficit. Prompt assembly
+also supplies the configured budget and runtime-time reservation. Diagnostics
+must not copy input text or arbitrary outer error contexts.
+
+A local planning failure is not evidence of provider unavailability. It must not
+enqueue a provider fallback or update quota/transport incidents, including when
+it occurs while rebuilding a previously admitted provider recovery. That attempt
+settles through the existing aborted queue/turn boundary. Repeated scheduler
+wakes do not make the failed source eligible again; unchanged WorkItem focus is
+not a new source. Relevant input or budget changes may be validated again, but
+an operator "continue" cannot make the same minimum fit.
+
+For a WorkItem-owned failed turn, its typed runtime failure is persisted in the
+Turn record in the same transaction as the aborted queue entry and a canonical
+`WorkItemOutcome::Failed` settlement. Its policy records the source revision,
+source turn and configured budget. This leaves the WorkItem canonically paused,
+not runnable with an interrupted replay anchor. The scheduler may change that
+specific pause to runnable only after the budget or source revision changes,
+using a typed `RecheckContextBudgetStop` command in the existing canonical
+recovery transaction. It validates unchanged source identity and independent
+wait/blocker eligibility in that transaction without mutating the source
+revision just to change readiness. Independent waits, blockers,
+non-ready plans and terminal WorkItems remain ineligible. Conversation/lifecycle
+failures retain their existing aborted settlement and do not claim a WorkItem
+merely because it is focused.
+
+This diagnostic/stop contract does not itself introduce input compaction or
+budget-aware admission. Those require a truthful, recoverable minimum before
+new inputs are claimed; existing admitted inputs must not be silently truncated.
 
 ## 9. Recent-Turn Boundary
 

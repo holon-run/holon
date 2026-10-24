@@ -4,6 +4,7 @@ mod planner;
 mod render;
 mod replay_reference;
 pub(crate) use planner::ContextPlanEvidence;
+pub(crate) use planner::ContextPlanningError;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
 // Re-import budget helpers for use within this module.
 use budget::{estimate_text_tokens, truncate_section_content};

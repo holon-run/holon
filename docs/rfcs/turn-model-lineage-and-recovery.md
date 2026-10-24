@@ -243,6 +243,13 @@ and surface the failure to the operator instead of creating an infinite recovery
 loop. Holon must also prevent fallback loops where each new turn retries the
 same failed primary model instead of promoting the next candidate.
 
+Local context planning failures are not provider attempt failures. A recovery
+whose pinned minimum cannot fit terminates through the canonical aborted
+queue/turn settlement without dispatching another request or enqueueing another
+fallback. Its typed validation diagnostic preserves the effective budget and
+required minimum; it does not create or clear shared provider incidents. See
+[over-budget failure](./context-candidate-budget-planner.md#8-over-budget-failure).
+
 ### 5.6 Recovery Selection Is Message-Bound
 
 The fallback route is carried by a typed directive on the runtime-owned recovery
