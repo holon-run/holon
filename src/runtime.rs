@@ -940,6 +940,51 @@ fn canonical_matching_terminal_turn(
     Ok(None)
 }
 
+fn provider_failure_exact_wait(
+    storage: &AppStorage,
+    state: &crate::domain::execution_protocol::ExecutionProtocolState,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    message: &MessageEnvelope,
+    terminal_turn: &TurnRecord,
+    work_item_id: &str,
+) -> Result<Option<crate::domain::execution_protocol::WaitReference>> {
+    use crate::domain::execution_protocol::{ExecutionSourceIdentity, WaitReference};
+
+    if !matches!(
+        terminal_turn
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::DeferredToFallback | TurnTerminalKind::ProviderFailedNeedsRecovery)
+    ) {
+        return Ok(None);
+    }
+    let (wait_id, root_message) = match &attempt.source.identity {
+        ExecutionSourceIdentity::TriggeredWait {
+            wait_id,
+            trigger_message_id,
+            ..
+        } if trigger_message_id == &message.id => (wait_id.clone(), message.clone()),
+        ExecutionSourceIdentity::RuntimeRecovery { .. } => {
+            let source = provider_recovery::resolve(storage, message, state)?;
+            if !source.matches_attempt(message, terminal_turn, attempt, state, |id| {
+                storage.read_turn_by_id(id)
+            })? {
+                return Ok(None);
+            }
+            let Some(wait_id) = source.exact_wait_id() else {
+                return Ok(None);
+            };
+            (wait_id.to_owned(), source.root_message)
+        }
+        _ => return Ok(None),
+    };
+    Ok(
+        provider_recovery::resolved_exact_wait(storage, &root_message, work_item_id, &wait_id)?
+            .map(|_| WaitReference { wait_id }),
+    )
+}
+
 fn execution_protocol_settlement_transition_from_facts(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
@@ -974,6 +1019,15 @@ fn execution_protocol_settlement_transition_from_facts(
         })],
     };
     if record.status == QueueEntryStatus::Aborted {
+        if let Some(transition) = provider_admission::local_dispatch_failure_settlement(
+            storage,
+            runtime_db,
+            record,
+            terminal_turn,
+            attempt,
+        )? {
+            return Ok(transition);
+        }
         if let Some(transition) = context_recovery::context_budget_failure_settlement(
             storage,
             runtime_db,
@@ -1157,12 +1211,23 @@ fn execution_protocol_settlement_transition_from_facts(
                                             "work_item_execution_revision_mismatch",
                                         ));
                                     }
+                                    let failed_exact_wait = provider_failure_exact_wait(
+                                        storage,
+                                        &state,
+                                        attempt,
+                                        &message,
+                                        &terminal_turn,
+                                        work_item_id,
+                                    )?;
                                     ExecutionOutcome::WorkItem(
-                                        match work_item.blocked_by.as_ref() {
-                                            Some(reason) => WorkItemOutcome::Pause {
+                                        match (failed_exact_wait, work_item.blocked_by.as_ref()) {
+                                            // The provider hop has not fulfilled this exact
+                                            // source; a business blocker cannot consume it.
+                                            (Some(wait), _) => WorkItemOutcome::Wait { wait },
+                                            (None, Some(reason)) => WorkItemOutcome::Pause {
                                                 reason: reason.clone(),
                                             },
-                                            None => WorkItemOutcome::Continue,
+                                            (None, None) => WorkItemOutcome::Continue,
                                         },
                                     )
                                 }
@@ -2764,7 +2829,9 @@ fn runtime_error_queue_settlement(
                 .downcast_ref::<task_state_reducer::TaskTransitionRetryExhausted>()
                 .is_some()
         });
-    if retry_task_result {
+    if provider_admission::is_parked_dispatch_rejection(error) {
+        (QueueEntryStatus::Interrupted, "provider_dispatch_parked")
+    } else if retry_task_result {
         (
             QueueEntryStatus::Interrupted,
             "task_transition_retry_exhausted",
@@ -5765,6 +5832,69 @@ impl RuntimeHandle {
         unreachable!("settlement OCC retry loop always returns or errors")
     }
 
+    async fn restore_parked_provider_source(&self, message_id: &str) -> Result<()> {
+        let source = self
+            .inner
+            .storage
+            .read_message_by_id(message_id)?
+            .context("parked provider source message missing")?;
+        for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            let mut guard = self.inner.agent.lock().await;
+            let durable = self
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest_for_incarnation(&source.agent_id, self.inner.identity_incarnation)?
+                .context("parked provider agent state missing")?;
+            let missing = guard
+                .queue
+                .peek_next_matching(|queued| queued.id == source.id)
+                .is_none();
+            let mut restored = durable.clone();
+            restored.pending = guard.queue.len() + usize::from(missing);
+            // Readback may confirm a commit whose in-memory effects never ran.
+            // Change only pending against the latest durable control-plane state.
+            let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+                agent_id: source.agent_id.clone(),
+                agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(durable)),
+                    record: Box::new(restored.clone()),
+                },
+                audit_events: Vec::new(),
+                fault: None,
+            };
+            let (mut rebased, _) =
+                rebase_committed_agent_state(&guard.last_persisted_state, &restored, &guard.state)?;
+            rebased.pending = restored.pending;
+            let mut commit = match self
+                .inner
+                .runtime_db
+                .transitions()
+                .commit_agent_posture(&command)
+            {
+                Ok(commit) => commit,
+                Err(error)
+                    if attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                        && retryable_enqueue_conflict(&error, &source.agent_id) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if missing {
+                guard.queue.push(source);
+            }
+            guard.state = rebased;
+            guard.last_persisted_state = restored;
+            commit.effects.agent_state = None;
+            drop(guard);
+            self.apply_transition_commit(commit).await;
+            self.inner.notify.notify_one();
+            return Ok(());
+        }
+        unreachable!("parked source OCC retry loop always returns or errors")
+    }
+
     fn terminal_settlement_readback(
         &self,
         record: &QueueEntryRecord,
@@ -6578,14 +6708,23 @@ impl RuntimeHandle {
                                 .unwrap_or(u64::MAX),
                         )
                         .await;
-                    if let Err(error) = settlement {
-                        if execution_settlement_conflict(&error) {
-                            crate::diagnostics::record_missing_terminal_turn_detected();
-                            if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                return Ok(());
-                            }
+                    match settlement {
+                        Ok(TerminalSettlementDisposition::Intended)
+                            if provider_admission::is_parked_dispatch_rejection(&err) =>
+                        {
+                            // Claim removed the source; retain it for the existing parking deadline.
+                            self.restore_parked_provider_source(&message.id).await?;
                         }
-                        return Err(error);
+                        Ok(_) => {}
+                        Err(error) => {
+                            if execution_settlement_conflict(&error) {
+                                crate::diagnostics::record_missing_terminal_turn_detected();
+                                if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                                    return Ok(());
+                                }
+                            }
+                            return Err(error);
+                        }
                     }
                     let failed_state = {
                         let mut guard = self.inner.agent.lock().await;

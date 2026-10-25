@@ -142,6 +142,54 @@ async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content
 }
 
 #[tokio::test(start_paused = true)]
+async fn paused_diagnostic_preserves_deferred_reason_with_legacy_budget_default() {
+    for reason in [
+        Some("provider_dispatch_rejected"),
+        Some("recovery_budget_exhausted"),
+        None,
+    ] {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let record = pending_command_result(
+            &runtime,
+            "paused-task",
+            harness.now() - chrono::Duration::seconds(2000),
+        );
+        exhaust(&runtime, &record);
+        let mut paused = runtime
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(&record.message_id)
+            .unwrap()
+            .unwrap();
+        paused.deferred_reason = reason.map(str::to_owned);
+        runtime
+            .runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE task_result_settlements SET payload_json = ?2 WHERE result_identity = ?1",
+                rusqlite::params![
+                    paused.result_identity,
+                    serde_json::to_string(&paused).unwrap()
+                ],
+            )
+            .unwrap();
+
+        runtime
+            .publish_paused_task_result_diagnostics("default")
+            .unwrap();
+        let briefs = runtime.storage().read_recent_briefs(20).unwrap();
+        assert_eq!(briefs.len(), 1);
+        assert!(briefs[0].text.contains(&format!(
+            "reason={},",
+            reason.unwrap_or("recovery_budget_exhausted")
+        )));
+        assert!(!briefs[0].text.contains("secret command output"));
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn paused_diagnostics_drain_beyond_scanner_batch_without_a_timer() {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();

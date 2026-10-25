@@ -452,6 +452,18 @@ writes audit evidence in the same transaction.
 A normal typed conflict must not cause an unbounded queue-head retry, agent
 restart loop, or lane reservation leak.
 
+A final provider dispatch guard refusal is a local execution conflict, not a
+remote-provider failure. An aborted turn with typed local-dispatch evidence
+settles its still-owned WorkItem lane to `NeedsRepair`; lifecycle/conversation
+attempts pause. A proven availability refusal instead persists queue parking
+at the original provider deadline and interrupts the same source for canonical
+replay, preserving its recovery root and budget. Other refusals must not take
+the generic interruption-to-runnable path, enqueue model fallback, or fulfill
+an unresolved task-result obligation. Repair stops atomically pause the selected
+unfulfilled result ledger, rather than invalidating it through an aborted source.
+Canonical settlement compares the same
+attempt and generation, so an obsolete refusal cannot mutate a replacement.
+
 Every FIFO queue head has one explicit disposition:
 
 - `consume` when admission succeeds;

@@ -53,7 +53,7 @@ pub(crate) use registry::{
     ProviderContextManagement, ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 pub(crate) use retry::sanitize_transport_url;
-pub(crate) use transports::OpenAiBearerAuth;
+pub(crate) use transports::{is_dispatch_guard_rejected, OpenAiBearerAuth};
 pub use transports::{
     AnthropicProvider, GeminiProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider,
     OpenAiProvider,

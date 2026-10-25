@@ -257,7 +257,9 @@ impl RuntimeHandle {
         context: RuntimeErrorContext,
     ) -> FailureArtifact {
         let descriptor = describe_runtime_error(error);
-        if let Some(timeline) = provider_attempt_timeline(error) {
+        if let Some(timeline) = provider_attempt_timeline(error)
+            .filter(|_| !crate::provider::is_dispatch_guard_rejected(error))
+        {
             if !timeline.attempts.is_empty() {
                 return Self::failure_artifact_for_provider_timeline(
                     failure_text,
@@ -272,6 +274,7 @@ impl RuntimeHandle {
             Self::failure_artifact_for_runtime_error(message, failure_text, &descriptor, context);
         if error.is::<crate::runtime_error::IdleInputRecoveryRejection>()
             || error.is::<crate::context::ContextPlanningError>()
+            || crate::provider::is_dispatch_guard_rejected(error)
         {
             artifact.metadata.extend(descriptor.safe_context);
         }

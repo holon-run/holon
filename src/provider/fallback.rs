@@ -15,6 +15,7 @@ use super::{
         provider_retry_jitter_seed, ProviderRetryDelay, RetryDisposition,
         PROVIDER_RATE_LIMIT_MAX_RETRIES,
     },
+    transports::is_dispatch_guard_rejected,
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
     ProviderGenerateImageRequest, ProviderGenerateImageResponse, ProviderNativeWebSearchRequest,
@@ -30,17 +31,288 @@ pub(super) struct FallbackProvider {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use anyhow::{anyhow, Result};
     use async_trait::async_trait;
+    use axum::{http::StatusCode, routing::post, Json, Router};
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::provider::{
-        ModelBlock, ProviderCacheUsage, ProviderNativeWebSearchKind, ProviderPromptFrame,
-        ProviderQuotaIdentity,
+    use crate::config::{
+        ProviderAuthConfig, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
+        ProviderTransportKind,
     };
+    use crate::provider::{
+        provider_attempt_timeline, AnthropicProvider, GeminiProvider, ModelBlock,
+        OpenAiChatCompletionsProvider, OpenAiProvider, ProviderCacheUsage, ProviderDispatchGuard,
+        ProviderNativeWebSearchKind, ProviderPromptFrame, ProviderQuotaIdentity,
+    };
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("local dispatch denied")]
+    struct GuardDenied;
+
+    #[derive(Debug)]
+    struct RejectAfterDispatches {
+        allowed: usize,
+        calls: AtomicUsize,
+    }
+
+    impl ProviderDispatchGuard for RejectAfterDispatches {
+        fn before_dispatch(&self) -> Result<()> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) >= self.allowed {
+                return Err(GuardDenied.into());
+            }
+            Ok(())
+        }
+    }
+
+    struct GuardedProvider {
+        provider: Arc<dyn AgentProvider>,
+        guard: Arc<dyn ProviderDispatchGuard>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for GuardedProvider {
+        async fn complete_turn(
+            &self,
+            mut request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            request.dispatch_guard = Some(self.guard.clone());
+            self.provider.complete_turn(request).await
+        }
+    }
+
+    fn http_candidate(
+        base_url: &str,
+        home_dir: &std::path::Path,
+        transport: ProviderTransportKind,
+    ) -> ProviderCandidate {
+        let id = match transport {
+            ProviderTransportKind::AnthropicMessages => ProviderId::anthropic(),
+            ProviderTransportKind::GeminiGenerateContent => ProviderId::gemini(),
+            _ => ProviderId::openai(),
+        };
+        let config = ProviderRuntimeConfig {
+            id: id.clone(),
+            route_provider: id.clone(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport,
+            base_url: base_url.into(),
+            auth: ProviderAuthConfig::default(),
+            credential: Some("test-key".into()),
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        };
+        let provider: Arc<dyn AgentProvider> = match transport {
+            ProviderTransportKind::OpenAiResponses => Arc::new(
+                OpenAiProvider::from_runtime_config(&config, "test", 128, home_dir).unwrap(),
+            ),
+            ProviderTransportKind::OpenAiChatCompletions => Arc::new(
+                OpenAiChatCompletionsProvider::from_runtime_config(&config, "test", 128, home_dir)
+                    .unwrap(),
+            ),
+            ProviderTransportKind::AnthropicMessages => Arc::new(
+                AnthropicProvider::from_runtime_config(&config, "test", 128, home_dir, false)
+                    .unwrap(),
+            ),
+            ProviderTransportKind::GeminiGenerateContent => Arc::new(
+                GeminiProvider::from_runtime_config(&config, "test", 128, home_dir).unwrap(),
+            ),
+            _ => panic!("unsupported test transport"),
+        };
+        ProviderCandidate {
+            model_ref: format!("{}/test", id.as_str()),
+            provider_name: id.as_str().into(),
+            resolved_image_input: false,
+            provider,
+        }
+    }
+
+    async fn http_failure_server(
+        status: StatusCode,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    (
+                        status,
+                        Json(serde_json::json!({"error": {"message": "remote failure"}})),
+                    )
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base_url, requests, server)
+    }
+
+    #[tokio::test]
+    async fn dispatch_guard_rejection_bypasses_provider_failure_and_fallback() {
+        let home = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        for transport in [
+            ProviderTransportKind::OpenAiResponses,
+            ProviderTransportKind::OpenAiChatCompletions,
+            ProviderTransportKind::AnthropicMessages,
+            ProviderTransportKind::GeminiGenerateContent,
+        ] {
+            let guard = Arc::new(RejectAfterDispatches {
+                allowed: 0,
+                calls: AtomicUsize::new(0),
+            });
+            let provider = FallbackProvider {
+                candidates: vec![
+                    http_candidate(&base_url, home.path(), transport),
+                    scripted_candidate("openai/fallback", vec![ScriptedFailure::Succeed]),
+                ],
+            };
+            let mut request = plain_turn_request();
+            request.dispatch_guard = Some(guard.clone());
+            let error = provider
+                .complete_turn_with_diagnostics(request)
+                .await
+                .unwrap_err();
+            assert!(
+                is_dispatch_guard_rejected(&error),
+                "{transport:?}: {error:#}"
+            );
+            assert!(error.is::<GuardDenied>());
+            assert!(provider_attempt_timeline(&error).is_none());
+            assert!(provider_transport_diagnostics(&error).is_none());
+            assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+                .await
+                .is_err(),
+            "local denial must not send HTTP"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_guard_rejection_preserves_prior_http_retry_diagnostics() {
+        let home = tempfile::tempdir().unwrap();
+        let (base_url, requests, server) =
+            http_failure_server(StatusCode::SERVICE_UNAVAILABLE).await;
+        let guard = Arc::new(RejectAfterDispatches {
+            allowed: 1,
+            calls: AtomicUsize::new(0),
+        });
+        let mut candidate = http_candidate(
+            &base_url,
+            home.path(),
+            ProviderTransportKind::OpenAiResponses,
+        );
+        // Inject the transport guard separately so the outer fallback exercises a same-route retry.
+        candidate.provider = Arc::new(GuardedProvider {
+            provider: candidate.provider.clone(),
+            guard: guard.clone(),
+        });
+        let inner = FallbackProvider {
+            candidates: vec![
+                candidate,
+                scripted_candidate("openai/fallback", vec![ScriptedFailure::Succeed]),
+            ],
+        };
+        let provider = FallbackProvider {
+            candidates: vec![ProviderCandidate {
+                model_ref: "openai/test".into(),
+                provider_name: "openai".into(),
+                resolved_image_input: false,
+                provider: Arc::new(inner),
+            }],
+        };
+        let error = provider
+            .complete_turn_with_diagnostics(plain_turn_request())
+            .await
+            .unwrap_err()
+            .context("outer request");
+        server.abort();
+        assert!(is_dispatch_guard_rejected(&error));
+        assert!(error.chain().any(|source| source.is::<GuardDenied>()));
+        let timeline = provider_attempt_timeline(&error).unwrap();
+        assert_eq!(timeline.attempts.len(), 1);
+        assert_eq!(
+            timeline.attempts[0].outcome,
+            ProviderAttemptOutcome::Retrying
+        );
+        assert_eq!(
+            timeline.attempts[0].failure_kind.as_deref(),
+            Some("server_error")
+        );
+        assert!(!timeline.attempts[0].advanced_to_fallback);
+        assert!(timeline.pending_fallback_model_ref.is_none());
+        assert!(timeline.pending_fallback_disposition.is_none());
+        assert_eq!(
+            provider_transport_diagnostics(&error).unwrap().status,
+            Some(503)
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn genuine_http_failures_still_defer_to_fallback() {
+        for (status, kind) in [
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            (StatusCode::SERVICE_UNAVAILABLE, "server_error"),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let (base_url, requests, server) = http_failure_server(status).await;
+            let guard = Arc::new(RejectAfterDispatches {
+                allowed: usize::MAX,
+                calls: AtomicUsize::new(0),
+            });
+            let provider = FallbackProvider {
+                candidates: vec![
+                    http_candidate(
+                        &base_url,
+                        home.path(),
+                        ProviderTransportKind::OpenAiResponses,
+                    ),
+                    scripted_candidate("openai/fallback", vec![ScriptedFailure::Succeed]),
+                ],
+            };
+            let mut request = plain_turn_request();
+            request.dispatch_guard = Some(guard.clone());
+            let error = provider
+                .complete_turn_with_diagnostics(request)
+                .await
+                .unwrap_err();
+            server.abort();
+            assert!(!is_dispatch_guard_rejected(&error));
+            let timeline = provider_attempt_timeline(&error).unwrap();
+            assert_eq!(timeline.attempts.len(), 1);
+            assert_eq!(timeline.attempts[0].failure_kind.as_deref(), Some(kind));
+            assert!(timeline.attempts[0].advanced_to_fallback);
+            assert_eq!(
+                timeline.pending_fallback_model_ref.as_deref(),
+                Some("openai/fallback")
+            );
+            assert!(timeline.pending_fallback_disposition.is_some());
+            assert_eq!(
+                provider_transport_diagnostics(&error).unwrap().status,
+                Some(status.as_u16())
+            );
+            assert_eq!(requests.load(Ordering::SeqCst), 1);
+            assert_eq!(guard.calls.load(Ordering::SeqCst), 1);
+        }
+    }
 
     #[derive(Clone)]
     struct PolicyProvider {
@@ -1079,6 +1351,25 @@ impl AgentProvider for FallbackProvider {
                     return Ok((response, Some(diagnostics)));
                 }
                 Err(error) => {
+                    if is_dispatch_guard_rejected(&error) {
+                        if timeline.is_empty() {
+                            return Err(error);
+                        }
+                        // Preserve prior HTTP attempts without recording a local denial as IO.
+                        return Err(provider_turn_error(
+                            error.to_string(),
+                            ProviderAttemptTimeline {
+                                aggregated_token_usage: aggregate_attempt_token_usage(&timeline),
+                                attempts: timeline,
+                                requested_model_ref,
+                                active_model_ref: None,
+                                winning_model_ref: None,
+                                pending_fallback_model_ref: None,
+                                pending_fallback_disposition: None,
+                            },
+                            error,
+                        ));
+                    }
                     let classification = classify_provider_error(&error);
                     let retry_after = provider_error_retry_after(&error);
                     if request.dispatch_guard.is_none()

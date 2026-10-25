@@ -267,7 +267,7 @@ impl RuntimeHandle {
                     crate::types::BriefKind::Failure,
                     format!(
                         "Automatic task-result recovery paused: task={}, result={}, owner={}, \
-                     root={}, reason=recovery_budget_exhausted, attempts={}/{}. \
+                     root={}, reason={}, attempts={}/{}. \
                      The result remains pending. Operator repair: \
                      holon debug scheduler-recovery --agent {} --apply --rearm-task-result {}",
                         record.task_id,
@@ -277,6 +277,10 @@ impl RuntimeHandle {
                             .last_recovery_root_attempt_id
                             .as_deref()
                             .unwrap_or("unknown"),
+                        record
+                            .deferred_reason
+                            .as_deref()
+                            .unwrap_or("recovery_budget_exhausted"),
                         record.recovery_attempts,
                         crate::runtime_db::task_result_settlement::TASK_RESULT_RECOVERY_LIMIT,
                         agent_id,

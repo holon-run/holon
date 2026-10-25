@@ -2731,6 +2731,22 @@ impl RuntimeTransitionRepository<'_> {
             }
             if let Some(turn_record) = command.turn_record.as_ref() {
                 upsert_turn_record_tx(tx, turn_record)?;
+                if command.operation == QueueOperation::Settle {
+                    for execution_command in &execution_protocol_transition.commands {
+                        if let crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(
+                            settlement,
+                        ) = execution_command
+                        {
+                            crate::runtime_db::task_result_settlement::pause_local_dispatch_rejected_tx(
+                                tx,
+                                queue_record,
+                                turn_record,
+                                &settlement.outcome.attempt_id,
+                                task_result_settlement,
+                            )?;
+                        }
+                    }
+                }
             }
             for brief in &command.brief_evidence {
                 insert_brief_evidence_tx(tx, brief)?;

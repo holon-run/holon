@@ -451,6 +451,9 @@ impl RuntimeHandle {
         side_effect_boundary_crossed: bool,
         persist_terminal: bool,
     ) -> Result<Option<AgentLoopOutcome>> {
+        if crate::provider::is_dispatch_guard_rejected(error) {
+            return Ok(None);
+        }
         let Some(timeline) = provider_attempt_timeline(error).cloned() else {
             return Ok(None);
         };
@@ -934,7 +937,8 @@ impl RuntimeHandle {
         let result = match boundary {
             Ok(()) => self.complete_turn_with_abort(provider, request).await,
             Err(error) => Err(error),
-        };
+        }
+        .map_err(|error| self.local_provider_dispatch_error(error));
         let completed_at = Utc::now();
         let duration_ms = started.elapsed().as_millis() as u64;
         (
@@ -2401,6 +2405,9 @@ impl TurnExecution<'_> {
                                     .await?;
                                 return Err(err);
                             }
+                            if crate::provider::is_dispatch_guard_rejected(&err) {
+                                return Err(err);
+                            }
                             if let Some(recovered_prompt) = runtime.try_context_length_recovery(
                                 agent_id,
                                 round,
@@ -2780,6 +2787,9 @@ impl TurnExecution<'_> {
                                         persist_terminal,
                                     )
                                     .await?;
+                                return Err(err);
+                            }
+                            if crate::provider::is_dispatch_guard_rejected(&err) {
                                 return Err(err);
                             }
                             if let Some(recovered_prompt) = runtime.try_context_length_recovery(
