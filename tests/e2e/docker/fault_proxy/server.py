@@ -181,7 +181,14 @@ def database(*, task_result=False, route_throttle=False):
                     "tasks", "messages", "briefs", "wait_conditions",
                     "execution_protocol_attempts", "execution_protocol_outcomes",
                 }):
-            rows[table] = [dict(r) for r in db.execute(f'SELECT * FROM "{table}" LIMIT 500')]
+            cursor = db.execute(f'SELECT * FROM "{table}"')
+            rows[table] = []
+            # Task-result drills can outgrow 500 messages during real backoff.
+            # Keep one read transaction, reading every row in bounded batches.
+            while batch := cursor.fetchmany(500):
+                rows[table].extend(dict(r) for r in batch)
+                if not task_result:
+                    break
             if counts[table] > len(rows[table]):
                 truncated.append(table)
     print(json.dumps({"counts": counts, "rows": rows, "truncated_tables": truncated},

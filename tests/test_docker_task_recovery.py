@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import copy
 import importlib
+import io
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from datetime import datetime, timezone
+from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
 from scripts.docker_e2e import task_recovery as recovery
@@ -338,6 +341,174 @@ class RecoveryOracleTests(unittest.TestCase):
                         broken, agent_id="parent", task_id="task-1",
                         parent_turn_id="parent-turn",
                     )
+
+
+def scanner_lineage():
+    snapshot = runner_tests.LiveAcceptanceEvidenceTests().task_snapshot()
+    snapshot["messages"].append({
+        "message_id": "scanner-wake", "payload_json": json.dumps({
+            "kind": "internal_followup", "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "task_result_recovery"},
+            "source_refs": {
+                "task_result_identity": "result-identity-1",
+                "task_result_message_id": "result-1",
+                "task_result_parent_turn_id": "parent-turn",
+                "task_result_rejoin_generation": "1",
+            },
+        }),
+    })
+    row = snapshot["execution_protocol_attempts"][0]
+    attempt = oracle.payload(row)
+    snapshot["execution_protocol_attempts"].append({
+        **row, "attempt_id": "scanner-attempt",
+        "payload_json": json.dumps({
+            **attempt, "attempt_id": "scanner-attempt", "turn_id": "scanner-turn",
+            "source_message_id": "scanner-wake",
+            "source": {"identity": {
+                "kind": "internal_followup", "message_id": "scanner-wake",
+            }},
+        }),
+    })
+    snapshot["turn_records"].append({
+        "agent_id": "parent", "turn_id": "scanner-turn",
+        "terminal_kind": "deferred_to_fallback", "current_work_item_id": None,
+        "trigger_message_id": "scanner-wake",
+        "payload_json": json.dumps({"idle_input_batch": {
+            "activation_id": "scanner-attempt",
+            "items": [{"message_id": "scanner-wake"}, {"message_id": "result-1"}],
+        }}),
+    })
+    row["payload_json"] = json.dumps({
+        **attempt, "source_message_id": "lineage-wake",
+        "source": {"identity": {"kind": "runtime_recovery"}},
+        "recovery_of_attempt_id": "scanner-attempt",
+    })
+    turn = snapshot["turn_records"][0]
+    turn["trigger_message_id"] = "lineage-wake"
+    turn["payload_json"] = json.dumps({"input_message_ids": ["lineage-wake", "scanner-wake"]})
+    snapshot["messages"].append({
+        "message_id": "lineage-wake", "payload_json": json.dumps({
+            "kind": "internal_followup", "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "model_lineage_recovery"},
+            "source_refs": {"source_message_id": "scanner-wake", "source_turn_id": "scanner-turn"},
+        }),
+    })
+    brief = snapshot["briefs"][0]
+    brief["message_id"] = "lineage-wake"
+    brief["payload_json"] = json.dumps({
+        **oracle.payload(brief), "related_message_id": "lineage-wake",
+    })
+    return snapshot
+
+
+class ModelLineageTests(unittest.TestCase):
+    def check(self, snapshot):
+        return oracle.require_task_reentry(
+            snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
+        )
+
+    def test_complete_scanner_ancestry_preserves_actual_task_model_input(self):
+        self.check(scanner_lineage())
+
+    def test_already_completed_ancestor_is_duplicate_consumption(self):
+        snapshot = scanner_lineage()
+        snapshot["turn_records"][-1]["terminal_kind"] = "completed"
+        with self.assertRaisesRegex(AssertionError, "duplicate"):
+            self.check(snapshot)
+
+    def test_scanner_only_and_unrelated_model_input_remain_red(self):
+        snapshot = scanner_lineage()
+        source_turn = snapshot["turn_records"][-1]
+        batch = oracle.payload(source_turn)
+        batch["idle_input_batch"]["items"] = [{"message_id": "scanner-wake"}]
+        source_turn["payload_json"] = json.dumps(batch)
+        with self.assertRaisesRegex(AssertionError, "source causality"):
+            self.check(snapshot)
+        unrelated = copy.deepcopy(source_turn)
+        unrelated.update(turn_id="unrelated-turn", trigger_message_id="unrelated")
+        unrelated["payload_json"] = json.dumps({"idle_input_batch": {
+            "activation_id": "unrelated-attempt", "items": [{"message_id": "result-1"}],
+        }})
+        snapshot["turn_records"].append(unrelated)
+        with self.assertRaisesRegex(AssertionError, "source causality"):
+            self.check(snapshot)
+
+    def test_lineage_owner_identity_batch_and_missing_or_cyclic_parent_are_fenced(self):
+        for mutation in (
+            "owner", "agent", "attempt-id", "batch-activation", "turn-owner",
+            "turn-trigger", "missing-parent", "cycle",
+        ):
+            with self.subTest(mutation=mutation):
+                snapshot = scanner_lineage()
+                row = snapshot["execution_protocol_attempts"][-1]
+                attempt = oracle.payload(row)
+                turn = snapshot["turn_records"][-1]
+                if mutation == "owner":
+                    attempt["binding"] = {"kind": "work_item", "work_item_id": "foreign"}
+                elif mutation == "agent":
+                    attempt["agent_id"] = "foreign"
+                elif mutation == "attempt-id":
+                    attempt["attempt_id"] = "foreign"
+                elif mutation == "batch-activation":
+                    value = oracle.payload(turn)
+                    value["idle_input_batch"]["activation_id"] = "foreign"
+                    turn["payload_json"] = json.dumps(value)
+                elif mutation == "turn-owner":
+                    turn["current_work_item_id"] = "foreign"
+                elif mutation == "turn-trigger":
+                    turn["trigger_message_id"] = "foreign"
+                elif mutation == "missing-parent":
+                    snapshot["execution_protocol_attempts"].pop()
+                else:
+                    attempt.update(
+                        source={"identity": {"kind": "runtime_recovery"}},
+                        recovery_of_attempt_id="scanner-attempt",
+                    )
+                row["payload_json"] = json.dumps(attempt)
+                with self.assertRaises(AssertionError):
+                    self.check(snapshot)
+
+
+
+class DatabaseCaptureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "tests/e2e/docker/openai_stub"))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "task_result_fault_fixture", ROOT / "tests/e2e/docker/fault_proxy/server.py")
+            cls.helper = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cls.helper)
+        finally:
+            sys.path.pop(0)
+
+    def test_task_snapshot_preserves_all_rows_without_changing_default_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runtime.sqlite"
+            with sqlite3.connect(path) as db:
+                for table in recovery.TABLES | {"queue_entries"}:
+                    db.execute(f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY)')
+                for table in ("messages", "queue_entries"):
+                    db.executemany(f'INSERT INTO "{table}" VALUES (?)',
+                                   ((i,) for i in range(1001)))
+            before = path.read_bytes()
+            for complete in (False, True):
+                with self.subTest(task_result=complete), \
+                        patch.object(self.helper, "Path", return_value=Path(tmp)), \
+                        redirect_stdout(io.StringIO()) as output:
+                    self.helper.database(task_result=complete)
+                    captured = json.loads(output.getvalue())
+                    if complete:
+                        snapshot = recovery.unwrap_database(captured)
+                        for table in ("messages", "queue_entries"):
+                            self.assertEqual(len(snapshot[table]), 1001)
+                            self.assertEqual(snapshot[table][-1]["id"], 1000)
+                            self.assertEqual(captured["counts"][table], 1001)
+                        self.assertEqual(captured["truncated_tables"], [])
+                    else:
+                        self.assertEqual(len(captured["rows"]["queue_entries"]), 500)
+                        self.assertIn("queue_entries", captured["truncated_tables"])
+            self.assertEqual(path.read_bytes(), before)
 
 
 class ProviderFixtureTests(unittest.TestCase):

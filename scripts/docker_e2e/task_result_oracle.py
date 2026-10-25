@@ -287,7 +287,8 @@ def require_task_reentry(
         f"activation/turn trigger mismatch: {attempt}",
     )
     causal = attempt
-    seen = set()
+    model_input_turns = [(attempt["attempt_id"], turn)]
+    seen = {attempt["attempt_id"]}
     while causal.get("source", {}).get("identity", {}).get("kind") == "runtime_recovery":
         predecessor = causal.get("recovery_of_attempt_id")
         require(predecessor and predecessor not in seen, "missing/cyclic replay source")
@@ -296,9 +297,22 @@ def require_task_reentry(
             payload(row) for row in snapshot["execution_protocol_attempts"]
             if row["agent_id"] == agent_id and row["attempt_id"] == predecessor
         ]
-        require(len(parents) == 1 and parents[0].get("binding") == binding,
+        require(len(parents) == 1 and parents[0].get("binding") == binding
+                and parents[0].get("attempt_id") == predecessor
+                and parents[0].get("agent_id") == agent_id,
                 "replay source changed execution owner")
         causal = parents[0]
+        source_turns = [
+            row for row in snapshot["turn_records"]
+            if row["agent_id"] == agent_id and row["turn_id"] == causal.get("turn_id")
+        ]
+        require(
+            len(source_turns) == 1
+            and source_turns[0].get("current_work_item_id") == record["work_item_id"]
+            and source_turns[0]["trigger_message_id"] == causal.get("source_message_id"),
+            "replay source lost its original owner turn",
+        )
+        model_input_turns.append((predecessor, source_turns[0]))
     source = causal.get("source", {}).get("identity", {})
     causal_message_id = causal.get("source_message_id")
     direct = source == {
@@ -317,15 +331,20 @@ def require_task_reentry(
         and row["message_id"] != record["message_id"]
     ]
     refs = recovery[0].get("source_refs", {}) if len(recovery) == 1 else {}
-    stored_turn = payload(turn) if "payload_json" in turn else {}
-    batches = list(stored_turn.get("live_input_batches", []))
-    if stored_turn.get("idle_input_batch"):
-        batches.append(stored_turn["idle_input_batch"])
+    # Recovery may retain the original model input on an interrupted ancestor,
+    # not the final turn. Only the validated execution chain can supply it.
+    batches = []
+    for activation_id, input_turn in model_input_turns:
+        stored_turn = payload(input_turn) if "payload_json" in input_turn else {}
+        inputs = list(stored_turn.get("live_input_batches", []))
+        if stored_turn.get("idle_input_batch"):
+            inputs.append(stored_turn["idle_input_batch"])
+        batches.extend((activation_id, batch) for batch in inputs)
     task_in_model_input = any(
-        batch.get("activation_id") == record["activation_id"]
+        batch.get("activation_id") == activation_id
         and (record["message_id"] in {item["message_id"] for item in batch["items"]}
              or record["result_identity"] in batch.get("result_identities", []))
-        for batch in batches
+        for activation_id, batch in batches
     )
     scanner = (
         source.get("kind") in {"internal_followup", "triggered_wait"}
@@ -355,11 +374,12 @@ def require_task_reentry(
             item["message_id"]
             for batch in stored.get("live_input_batches", []) for item in batch["items"]
         ]
-        if row["trigger_message_id"] == record["message_id"] or record["message_id"] in inputs:
+        if (row["turn_id"] == turn["turn_id"]
+                or row["trigger_message_id"] == record["message_id"]
+                or record["message_id"] in inputs):
             successful.append(row)
     require(
-        len(successful) <= 1
-        and (not direct or len(successful) == 1),
+        len(successful) == 1,
         f"task result caused duplicate successful consumption: {successful}",
     )
     if require_completion:
