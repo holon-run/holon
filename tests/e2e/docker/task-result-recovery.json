@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "recovery_limit": 5,
+  "backoff_seconds": [60, 120, 240, 480],
+  "suites": {
+    "fast": ["exact-success", "fallback-success"],
+    "slow": ["fifth-success", "exhausted", "restart-backoff", "restart-fifth"]
+  },
+  "cases": {
+    "exact-success": {"goal": 0, "outcome": "success", "timeout_seconds": 180},
+    "fallback-success": {"goal": 0, "outcome": "success", "fallback": true, "timeout_seconds": 180},
+    "fifth-success": {"goal": 5, "outcome": "success", "fallback": true, "timeout_seconds": 1800},
+    "exhausted": {"goal": 5, "outcome": "exhausted", "timeout_seconds": 1800},
+    "restart-backoff": {"goal": 5, "outcome": "success", "restart": "backoff", "timeout_seconds": 1800},
+    "restart-fifth": {"goal": 5, "outcome": "success", "restart": "fifth", "timeout_seconds": 1800}
+  },
+  "pending_coverage": [
+    "controlled exact-first versus scanner-first admission requires a daemon-side test barrier",
+    "an explicit sixth-root rejection, rather than only observing persistent pause",
+    "a coexisting valid obligation must not be starved by an exhausted obligation"
+  ]
+}

@@ -211,21 +211,9 @@ class FaultRun:
                "HOLON_PROVIDER_HTTP_TIMEOUT_SECS": str(http_timeout),
                "HOLON_PROVIDER_RESPONSE_BODY_TIMEOUT_SECS": str(body_timeout),
                "HOLON_PROVIDER_STREAM_IDLE_TIMEOUT_MS": str(idle_timeout)}
-        self.container(self.daemon, self.args.image, control, "serve", "--listen",
-                       "0.0.0.0:7878", env=env, mounts=[f"{self.volume}:/var/lib/holon"])
-        self.docker("network", "connect", front, self.daemon)
-        self.docker("network", "disconnect", control, self.daemon)
-        self.docker("network", "connect", "--alias", "daemon", control, self.daemon)
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            try:
-                readiness = self.api("GET", "/api/control/runtime/readiness")
-                if readiness.get("healthy") is True:
-                    break
-            except (subprocess.SubprocessError, AssertionError, ValueError):
-                time.sleep(.25)
-        else:
-            raise AssertionError("isolated daemon readiness failed")
+        self.daemon_env = env
+        self.start_daemon()
+        readiness = self.wait_ready()
         write_json(self.evidence / "readiness.json", readiness)
         version = self.docker("exec", self.daemon, "holon", "--version").stdout.strip()
         write_json(self.evidence / "build.json",
@@ -262,6 +250,27 @@ class FaultRun:
                     "body_timeout_seconds": body_timeout,
                     "idle_timeout_ms": idle_timeout,
                     "default_deadlines_tested": False, "workload": "W1"})
+
+    def start_daemon(self):
+        control, front, _ = self.networks
+        self.container(self.daemon, self.args.image, control, "serve", "--listen",
+                       "0.0.0.0:7878", env=self.daemon_env,
+                       mounts=[f"{self.volume}:/var/lib/holon"])
+        self.docker("network", "connect", front, self.daemon)
+        self.docker("network", "disconnect", control, self.daemon)
+        self.docker("network", "connect", "--alias", "daemon", control, self.daemon)
+
+    def wait_ready(self):
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                readiness = self.api("GET", "/api/control/runtime/readiness")
+                if readiness.get("healthy") is True:
+                    return readiness
+            except (subprocess.SubprocessError, AssertionError, ValueError):
+                pass
+            time.sleep(.25)
+        raise AssertionError("isolated daemon readiness failed")
 
     def observe(self):
         state = self.api("GET", "/api/agents/qa/state")
@@ -350,7 +359,8 @@ class FaultRun:
                 (self.evidence / f"{name}.log").write_text(
                     redact_evidence(result.stdout + result.stderr))
         if self.controller in self.containers:
-            result = attempt("exec", self.controller, "python", SCRIPT, "database")
+            result = attempt("exec", self.controller, "python", SCRIPT,
+                             getattr(self, "database_mode", "database"))
             if result is not None and result.returncode == 0:
                 try:
                     write_json(self.evidence / "database.json", json.loads(result.stdout))

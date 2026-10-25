@@ -4174,7 +4174,7 @@ def run_scheduler_task_wait_resume_case(
         f"task/wait completion brief mismatch: {result_brief}",
     )
 
-    snapshot = harness.runtime_db_snapshot("scheduler-task-wait")
+    snapshot = live_snapshot(harness, "scheduler-task-wait")
     turns = [
         row
         for row in snapshot["turn_records"]
@@ -4270,6 +4270,22 @@ def run_scheduler_task_wait_resume_case(
         f"canonical rejoin did not use the deterministic restart TaskResult: {restart_messages}",
     )
     restart_message_id = restart_messages[0]["message_id"]
+    from .task_result_oracle import require_result_brief
+
+    require_result_brief(
+        snapshot, agent_id=harness.agent_id, turn_id=final_turn_id,
+        message_id=final_message_id, work_item_id=work_item_id,
+        brief_id=result_brief_id,
+    )
+    settlements = [
+        row for row in snapshot["task_result_settlements"]
+        if row["message_id"] == restart_message_id
+    ]
+    require(len(settlements) == 1, "restart result has no unique settlement")
+    require_live_task_reentry(
+        snapshot, agent_id=harness.agent_id, task_id=settlements[0]["task_id"],
+        parent_turn_id=settlements[0]["parent_turn_id"], require_completion=False,
+    )
     task_result_turns = [
         row for row in turns if row["trigger_message_id"] == restart_message_id
     ]
@@ -5919,7 +5935,7 @@ def live_snapshot(harness: CaseHarness, label: str) -> dict[str, Any]:
         connection.row_factory = sqlite3.Row
         for table in (
             "tasks", "task_result_settlements", "agent_message_deliveries",
-            "transcript_entries",
+            "transcript_entries", "task_result_recovery_admissions",
         ):
             snapshot[table] = sqlite_rows(connection, f"SELECT * FROM {table}")
     finally:
@@ -5990,66 +6006,16 @@ def require_live_command_waiting_report(
 
 
 def require_live_task_reentry(
-    snapshot: dict[str, Any], *, agent_id: str, task_id: str, parent_turn_id: str
+    snapshot: dict[str, Any], *, agent_id: str, task_id: str, parent_turn_id: str,
+    captured: dict[str, Any] | None = None, require_completion: bool = True,
 ) -> dict[str, Any]:
-    settlements = [
-        row for row in snapshot["task_result_settlements"]
-        if row["task_id"] == task_id and row["agent_id"] == agent_id
-    ]
-    require(
-        len(settlements) == 1
-        and bool(settlements[0]["result_identity"])
-        and settlements[0]["state"] == "settled"
-        and settlements[0]["disposition"] == "model_delivered"
-        and settlements[0]["parent_turn_id"] == parent_turn_id,
-        f"task result was not settled exactly once by its original parent: {settlements}",
+    from .task_result_oracle import require_task_reentry
+
+    return require_task_reentry(
+        snapshot, agent_id=agent_id, task_id=task_id,
+        parent_turn_id=parent_turn_id, captured=captured,
+        require_completion=require_completion,
     )
-    settlement = settlements[0]
-    waits = [
-        row for row in snapshot["wait_conditions"]
-        if row["agent_id"] == agent_id and row["subject_ref"] == task_id
-    ]
-    require(
-        len(waits) == 1 and waits[0]["status"] == "resolved"
-        and waits[0]["last_turn_id"] == parent_turn_id
-        and waits[0]["trigger_message_id"] == settlement["message_id"],
-        f"exact task wait did not resolve through its result identity: {waits}",
-    )
-    messages = [
-        json.loads(row["payload_json"]) for row in snapshot["messages"]
-        if row["message_id"] == settlement["message_id"]
-    ]
-    require(
-        len(messages) == 1 and messages[0]["kind"] == "task_result"
-        and messages[0]["origin"] == {"kind": "task", "task_id": task_id}
-        and messages[0]["metadata"]["task_id"] == task_id,
-        f"task result identity/provenance mismatch: {messages}",
-    )
-    turns = [
-        row for row in snapshot["turn_records"]
-        if row["agent_id"] == agent_id
-        and row["trigger_message_id"] == settlement["message_id"]
-    ]
-    require(
-        len(turns) == 1 and turns[0]["turn_id"] != parent_turn_id
-        and turns[0]["terminal_kind"] == "completed",
-        f"task result did not cause a real, distinct completed re-entry: {turns}",
-    )
-    tasks = [
-        json.loads(row["payload_json"]) for row in snapshot["tasks"]
-        if row["task_id"] == task_id
-    ]
-    require(
-        len(tasks) == 1
-        and tasks[0]["id"] == task_id
-        and tasks[0]["detail"]["rejoin_obligation_id"] == task_id
-        and tasks[0]["detail"]["rejoin_generation"] == settlement["rejoin_generation"]
-        and tasks[0]["detail"]["parent_turn_id"] == parent_turn_id
-        and tasks[0].get("work_item_id") == settlement["work_item_id"]
-        == waits[0]["work_item_id"],
-        f"task/wait/result owner migrated: {tasks}",
-    )
-    return tasks[0]
 
 
 def run_live_command_observation_case(

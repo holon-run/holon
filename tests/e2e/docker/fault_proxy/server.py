@@ -19,9 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "openai_stub"))
 from server import response, text_item  # noqa: E402
+from task_recovery import RecoveryScenario  # noqa: E402
 
 LOCK = threading.Lock()
 RECORDS: list[dict] = []
+RECOVERY = RecoveryScenario()
 
 
 def setting(name, default):
@@ -60,6 +62,12 @@ class Mock(BaseHTTPRequestHandler):
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         side = self.path.split("/")[1]
+        if setting("TASK_RESULT_RECOVERY", False):
+            status, body = RECOVERY.consume_gated(payload, side, record)
+            record(layer="mock_http", side=side, status=status, model=payload.get("model"),
+                   stream=payload.get("stream", False))
+            self.reply(status, body)
+            return
         status = int(setting(f"STATUS_{side.upper()}", "200"))
         record(layer="mock_http", side=side, status=status, model=payload.get("model"),
                stream=payload.get("stream", False))
@@ -140,7 +148,7 @@ def request():
         print(json.dumps({"status": error.code, "body": raw}))
 
 
-def database():
+def database(*, task_result=False):
     candidates = list(Path("/evidence-home").glob("**/runtime.sqlite"))
     if len(candidates) != 1:
         raise RuntimeError(f"expected one isolated runtime database, found {len(candidates)}")
@@ -152,8 +160,12 @@ def database():
               for t in tables if not t.startswith("sqlite_")}
     rows, truncated = {}, []
     for table in tables:
-        if any(word in table for word in ("turn", "work_item", "queue", "recovery",
-                                          "settlement", "provider_admission")):
+        if (any(word in table for word in ("turn", "work_item", "queue", "recovery",
+                                          "settlement", "provider_admission"))
+                or task_result and table in {
+                    "tasks", "messages", "briefs", "wait_conditions",
+                    "execution_protocol_attempts", "execution_protocol_outcomes",
+                }):
             rows[table] = [dict(r) for r in db.execute(f'SELECT * FROM "{table}" LIMIT 500')]
             if counts[table] > len(rows[table]):
                 truncated.append(table)
@@ -177,6 +189,8 @@ def main():
         request()
     elif mode == "database":
         database()
+    elif mode == "task-result-database":
+        database(task_result=True)
     else:
         raise SystemExit("unknown fixture mode")
 

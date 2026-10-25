@@ -74,9 +74,53 @@ jobs:
           cache-from: type=gha,scope=holon-docker
           cache-to: type=gha,mode=max,scope=holon-docker
 
+  task-result-recovery-required:
+    name: Task-result recovery required (${{ matrix.case }})
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: release-e2e
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [fifth-success, exhausted, restart-backoff, restart-fifth]
+    env:
+      CANDIDATE_IMAGE: ${{ needs.candidate.outputs.image }}@${{ needs.candidate.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare isolated candidate and fixture images
+        run: |
+          docker pull "${CANDIDATE_IMAGE}"
+          docker build -t holon-openai-responses-stub:local tests/e2e/docker/openai_stub
+      - name: Run real-policy recovery hard gate
+        run: |
+          python3 scripts/docker-task-result-recovery.py \
+            --image "${CANDIDATE_IMAGE}" \
+            --python-image holon-openai-responses-stub:local \
+            --expected-revision "${{ needs.candidate.outputs.sha }}" \
+            --suite slow --case "${{ matrix.case }}" --timeout 1800 \
+            --evidence-dir "target/docker-e2e/task-result-${{ matrix.case }}"
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-result-recovery-${{ matrix.case }}
+          path: target/docker-e2e/task-result-${{ matrix.case }}
+
   core:
     name: Real LLM core suite
-    needs: candidate
+    needs: [candidate, task-result-recovery-required]
     runs-on: ubuntu-latest
     environment: release-e2e
     permissions:

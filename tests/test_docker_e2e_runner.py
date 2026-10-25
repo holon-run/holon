@@ -20,7 +20,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts/docker_e2e/runner.py"
-SPEC = importlib.util.spec_from_file_location("docker_e2e_runner", RUNNER_PATH)
+SPEC = importlib.util.spec_from_file_location("scripts.docker_e2e.runner", RUNNER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
@@ -4065,7 +4065,7 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
             with sqlite3.connect(state / "runtime.sqlite") as connection:
                 for table in (
                     "tasks", "task_result_settlements", "agent_message_deliveries",
-                    "transcript_entries", "queue_entries",
+                    "transcript_entries", "queue_entries", "task_result_recovery_admissions",
                 ):
                     connection.execute(f"CREATE TABLE {table} (message_id TEXT)")
             queues = [{"message_id": "original", "status": "queued"}]
@@ -4261,7 +4261,8 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
                 "state": "settled", "disposition": "model_delivered",
                 "parent_turn_id": "parent-turn", "message_id": "result-1",
                 "work_item_id": None, "result_identity": "result-identity-1",
-                "rejoin_generation": 1,
+                "rejoin_generation": 1, "activation_id": "attempt-1",
+                "settled_at": "2026-10-25T13:00:00Z",
             }],
             "wait_conditions": [{
                 "agent_id": "parent", "subject_ref": "task-1",
@@ -4278,6 +4279,39 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
             "turn_records": [{
                 "agent_id": "parent", "trigger_message_id": "result-1",
                 "turn_id": "reentry-turn", "terminal_kind": "completed",
+                "current_work_item_id": None,
+            }],
+            "briefs": [{
+                "evidence_id": "brief-1", "agent_id": "parent",
+                "turn_id": "reentry-turn", "message_id": "result-1",
+                "work_item_id": None, "kind": "result",
+                "payload_json": json.dumps({
+                    "id": "brief-1", "kind": "result", "agent_id": "parent",
+                    "turn_id": "reentry-turn", "related_message_id": "result-1",
+                    "text": "COMPLETION-MARKER",
+                }),
+            }],
+            "work_items": [],
+            "execution_protocol_attempts": [{
+                "agent_id": "parent", "attempt_id": "attempt-1",
+                "lifecycle_state": "settled", "terminal_outcome_id": "outcome-1",
+                "payload_json": json.dumps({
+                    "attempt_id": "attempt-1", "agent_id": "parent",
+                    "turn_id": "reentry-turn", "source_message_id": "result-1",
+                    "binding": {"kind": "agent_lifecycle", "agent_id": "parent"},
+                    "source": {"identity": {
+                        "kind": "task_result", "task_id": "task-1",
+                        "result_message_id": "result-1",
+                    }, "generation": 1},
+                }),
+            }],
+            "execution_protocol_outcomes": [{
+                "agent_id": "parent", "outcome_id": "outcome-1",
+                "attempt_id": "attempt-1",
+                "payload_json": json.dumps({
+                    "attempt_id": "attempt-1", "outcome_id": "outcome-1",
+                    "outcome": {"owner": "conversation", "outcome": {"kind": "replied"}},
+                }),
             }],
             "tasks": [{
                 "task_id": "task-1",
@@ -4318,6 +4352,81 @@ class LiveAcceptanceEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "exactly once"):
             runner.require_live_task_reentry(
                 duplicated, agent_id="parent", task_id="task-1",
+                parent_turn_id="parent-turn",
+            )
+
+    def test_task_reentry_rejects_false_positive_completion_evidence(self) -> None:
+        mutations = [
+            ("task_result_settlements", "settled_at", None),
+            ("task_result_settlements", "activation_id", "foreign-activation"),
+            ("task_result_settlements", "disposition", "invalid_or_stale"),
+            ("task_result_settlements", "state", "caller_admitted"),
+            ("briefs", "kind", "failure"),
+            ("briefs", "agent_id", "other-agent"),
+            ("briefs", "turn_id", "parent-turn"),
+            ("briefs", "message_id", "other-result"),
+            ("briefs", "work_item_id", "other-owner"),
+            ("execution_protocol_attempts", "lifecycle_state", "open"),
+            ("execution_protocol_outcomes", "attempt_id", "other-attempt"),
+        ]
+        for table, field, value in mutations:
+            with self.subTest(table=table, field=field):
+                snapshot = self.task_snapshot()
+                snapshot[table][0][field] = value
+                with self.assertRaises(AssertionError):
+                    runner.require_live_task_reentry(
+                        snapshot, agent_id="parent", task_id="task-1",
+                        parent_turn_id="parent-turn",
+                    )
+        for field, value in [
+            ("source_message_id", "foreign-result"),
+            ("turn_id", "foreign-turn"),
+            ("source", {"identity": {"kind": "queue_message"}, "generation": 1}),
+        ]:
+            with self.subTest(attempt_field=field):
+                snapshot = self.task_snapshot()
+                attempt = json.loads(snapshot["execution_protocol_attempts"][0]["payload_json"])
+                attempt[field] = value
+                snapshot["execution_protocol_attempts"][0]["payload_json"] = json.dumps(attempt)
+                with self.assertRaises(AssertionError):
+                    runner.require_live_task_reentry(
+                        snapshot, agent_id="parent", task_id="task-1",
+                        parent_turn_id="parent-turn",
+                    )
+        failure_only = self.task_snapshot()
+        failure_only["briefs"][0]["kind"] = "failure"
+        brief = json.loads(failure_only["briefs"][0]["payload_json"])
+        brief["kind"] = "failure"
+        failure_only["briefs"][0]["payload_json"] = json.dumps(brief)
+        with self.assertRaises(AssertionError):
+            runner.require_live_task_reentry(
+                failure_only, agent_id="parent", task_id="task-1",
+                parent_turn_id="parent-turn",
+            )
+
+    def test_task_reentry_accepts_failed_attempts_and_successor_wait(self) -> None:
+        snapshot = self.task_snapshot()
+        snapshot["turn_records"].insert(0, {
+            "agent_id": "parent", "trigger_message_id": "result-1",
+            "turn_id": "failed-attempt-turn", "terminal_kind": "failed",
+        })
+        snapshot["wait_conditions"].append({
+            **snapshot["wait_conditions"][0],
+            "last_turn_id": "failed-attempt-turn",
+        })
+        runner.require_live_task_reentry(
+            snapshot, agent_id="parent", task_id="task-1",
+            parent_turn_id="parent-turn",
+        )
+
+    def test_task_reentry_rejects_duplicate_successful_consumption(self) -> None:
+        snapshot = self.task_snapshot()
+        snapshot["turn_records"].append({
+            **snapshot["turn_records"][0], "turn_id": "duplicate-success",
+        })
+        with self.assertRaises(AssertionError):
+            runner.require_live_task_reentry(
+                snapshot, agent_id="parent", task_id="task-1",
                 parent_turn_id="parent-turn",
             )
 

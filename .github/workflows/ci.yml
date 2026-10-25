@@ -39,6 +39,7 @@ on:
       - "build.rs"
       - "scripts/docker-smoke.sh"
       - "scripts/docker-e2e.py"
+      - "scripts/docker-task-result-recovery.py"
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
       - ".github/workflows/e2e-scheduler-nightly.yml"
@@ -89,6 +90,7 @@ on:
       - "build.rs"
       - "scripts/docker-smoke.sh"
       - "scripts/docker-e2e.py"
+      - "scripts/docker-task-result-recovery.py"
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
       - ".github/workflows/e2e-scheduler-nightly.yml"
@@ -158,6 +160,7 @@ jobs:
               - 'build.rs'
               - 'scripts/docker-smoke.sh'
               - 'scripts/docker-e2e.py'
+              - 'scripts/docker-task-result-recovery.py'
               - 'scripts/docker-live-acceptance.py'
               - 'scripts/docker_e2e/**'
               - '.github/workflows/e2e-scheduler-nightly.yml'
@@ -1045,7 +1048,7 @@ jobs:
       - docker
     if: always() && (needs.docker.result == 'success' || needs.docker.result == 'skipped') && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -1088,6 +1091,15 @@ jobs:
             --timeout 120 \
             --evidence-dir target/docker-e2e/scheduler-required
 
+      - name: Run owned task-result fast hard gate
+        run: |
+          python3 scripts/docker-task-result-recovery.py \
+            --image holon:scheduler-required \
+            --python-image holon-openai-responses-stub:local \
+            --expected-revision "$(git rev-parse HEAD)" \
+            --suite fast --timeout 180 \
+            --evidence-dir target/docker-e2e/task-result-fast
+
       - name: Verify required reports
         run: |
           python3 - <<'PY'
@@ -1109,7 +1121,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scheduler-e2e-required
-          path: target/docker-e2e/scheduler-required
+          path: |
+            target/docker-e2e/scheduler-required
+            target/docker-e2e/task-result-fast
 
   timing:
     name: CI Timing
