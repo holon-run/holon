@@ -18619,6 +18619,23 @@
               "message": {
                 "type": "string"
               },
+              "reply_deadline_at": {
+                "description": "Missing on historical tasks: retain unlimited waiting.",
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requester_incarnation": {
+                "description": "Required for runtime-derived replies, never inferred on recovery.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "summary": {
                 "type": "string"
               },

@@ -1624,7 +1624,7 @@
       "stability": "stable"
     },
     {
-      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request\ncreated it, and a `TaskHandle`. `target` is a strict discriminated union: use\n`kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional\n`template`, `workspace_mode`, and `model`. `initial_message` is required.\n\nFor `existing_agent`, the handle waits for the first later durable message from\nthat agent. The message satisfies the wait but is not a business-completion\nresult, and concurrent waits may observe the same later message. The target is\nnever reconfigured or reparented.\n\nFor `new_subagent`, the handle remains a result-bearing supervised child task.\nCaller provenance and authority are bound by the current runtime context and\ncannot be supplied in the request.\n\nA newly invoked reusable subagent is retained after its invocation completes.\nThe current supervising parent owns cleanup: reuse it while needed, then call\n`DeleteAgent` with the current identity incarnation. Creation requires no TTL.\n",
+      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request\ncreated it, and a `TaskHandle`. `target` is a strict discriminated union: use\n`kind=existing_agent` with `agent_id` and optional `reply_timeout_ms`, or `kind=new_subagent` with optional\n`template`, `workspace_mode`, and `model`. `initial_message` is required.\n\nFor `existing_agent`, the handle waits for the first later durable message from\nthat agent, or a runtime-derived final brief strictly bound to this request.\nExplicit messages remain preferred; concurrent waits may observe the same\nexplicit message. Neither channel proves business completion. The target is\nnever reconfigured or reparented. `target.reply_timeout_ms` defaults to 1800000\n(30 minutes); 0 means unlimited. The deadline survives restart. Expiry fails\nonly the wait with `reply_timeout`, without stopping the agent or resending work.\n\nFor `new_subagent`, the handle remains a result-bearing supervised child task.\nCaller provenance and authority are bound by the current runtime context and\ncannot be supplied in the request.\n\nA newly invoked reusable subagent is retained after its invocation completes.\nThe current supervising parent owns cleanup: reuse it while needed, then call\n`DeleteAgent` with the current identity incarnation. Creation requires no TTL.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {
@@ -1644,6 +1644,15 @@
                   "kind": {
                     "const": "existing_agent",
                     "type": "string"
+                  },
+                  "reply_timeout_ms": {
+                    "description": "Defaults to 30 minutes; 0 means unlimited. Survives restart.",
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
