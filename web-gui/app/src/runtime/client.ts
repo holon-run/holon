@@ -3199,6 +3199,8 @@ function stringValue(value: unknown): string | undefined {
 export class RuntimeHttpError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly hint?: string;
+  readonly context?: Record<string, string>;
   readonly retryAfterSeconds?: number;
   /**
    * Known rich cursor extensions from `cursor_not_found` bodies (S2): the
@@ -3218,6 +3220,8 @@ export class RuntimeHttpError extends Error {
     status: number,
     reason?: string,
     code?: string,
+    hint?: string,
+    context?: Record<string, string>,
     retryAfterSeconds?: number,
     cursorExtensions?: RuntimeHttpError["cursorExtensions"],
   ) {
@@ -3225,6 +3229,8 @@ export class RuntimeHttpError extends Error {
     this.name = "RuntimeHttpError";
     this.status = status;
     this.code = code;
+    this.hint = hint;
+    this.context = context;
     this.retryAfterSeconds = retryAfterSeconds;
     this.cursorExtensions = cursorExtensions;
   }
@@ -3238,6 +3244,8 @@ async function httpRequestError(method: string, path: string, response: Response
     response.status,
     envelope?.error,
     envelope?.code,
+    envelope?.hint,
+    envelope?.context,
     parseRetryAfterSeconds(response),
     envelope?.extensions,
   );
@@ -3262,7 +3270,13 @@ export function httpRetryAfterMs(error: unknown): number | undefined {
 async function readErrorEnvelope(
   response: Response,
 ): Promise<
-  | { error?: string; code?: string; extensions?: RuntimeHttpError["cursorExtensions"] }
+  | {
+      error?: string;
+      code?: string;
+      hint?: string;
+      context?: Record<string, string>;
+      extensions?: RuntimeHttpError["cursorExtensions"];
+    }
   | undefined
 > {
   const contentType = response.headers.get("content-type") ?? "";
@@ -3284,6 +3298,15 @@ async function readErrorEnvelope(
     return {
       error: stringValue(record.error),
       code: stringValue(record.code),
+      hint: stringValue(record.hint),
+      context:
+        typeof record.context === "object" && record.context !== null
+          ? Object.fromEntries(
+              Object.entries(record.context).flatMap(([key, value]) =>
+                typeof value === "string" ? [[key, value]] : [],
+              ),
+            )
+          : undefined,
       extensions: hasExtensions ? extensions : undefined,
     };
   } catch {

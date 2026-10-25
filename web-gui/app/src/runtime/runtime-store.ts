@@ -2388,9 +2388,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       return true;
     } catch (error) {
       if (!isCurrentClientRequest(request)) return false;
-      const message = error instanceof Error ? error.message : String(error);
-      set({ templateCatalogError: message });
-      return false;
+      throw error;
     }
   },
 

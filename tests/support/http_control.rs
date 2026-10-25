@@ -823,6 +823,84 @@ pub async fn control_agent_create_returns_deletion_incomplete_until_job_complete
     Ok(())
 }
 
+pub async fn control_agent_create_admits_cleanup_repair_when_proof_is_missing() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("repair-reborn-http", None).await?;
+    host.get_or_create_agent("repair-reborn-http").await?;
+    host.spawn_daemon_deletion_coordinator();
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = Client::new();
+
+    client
+        .delete(format!("{base}/api/control/agents/repair-reborn-http"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/repair-reborn-http/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("completed"))
+        }
+    })
+    .await?;
+
+    // Simulate a legacy completed job whose proof was lost after the job
+    // completed. Recreate must admit a cleanup repair instead of attempting
+    // reincarnation against an unproven tombstone.
+    host.runtime_db().transaction(|tx| {
+        tx.execute(
+            "DELETE FROM runtime_metadata WHERE key = ?1",
+            ["agent_deletion_cleanup:repair-reborn-http"],
+        )?;
+        Ok(())
+    })?;
+
+    let response = client
+        .post(format!(
+            "{base}/api/control/agents/repair-reborn-http/create"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["code"], "deletion_cleanup_repair_started");
+    assert_eq!(body["context"]["agent_id"], "repair-reborn-http");
+    assert_eq!(body["context"]["repair_admitted"], "true");
+    assert!(body["hint"]
+        .as_str()
+        .is_some_and(|hint| hint.contains("retry creating the agent")));
+
+    wait_until_async_for(Duration::from_secs(15), || {
+        let client = client.clone();
+        let url = format!("{base}/api/control/agents/repair-reborn-http/delete-status");
+        async move {
+            let status: serde_json::Value = client.get(url).send().await?.json().await?;
+            Ok(status["job"]["status"] == serde_json::json!("completed"))
+        }
+    })
+    .await?;
+
+    let recreated: serde_json::Value = client
+        .post(format!(
+            "{base}/api/control/agents/repair-reborn-http/create"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(recreated["identity"]["status"], "active");
+    assert_eq!(recreated["identity"]["incarnation"], 2);
+
+    host.shutdown_daemon_deletion_coordinator().await;
+    server.abort();
+    Ok(())
+}
+
 #[cfg(unix)]
 pub async fn control_agent_delete_fails_closed_when_home_is_symlink() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
