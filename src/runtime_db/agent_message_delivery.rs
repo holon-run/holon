@@ -25,6 +25,12 @@ use crate::{
 
 const DELIVERY_DIAGNOSTIC_LIMIT: usize = 512;
 
+mod replies;
+pub(crate) use replies::{
+    commit_final_brief_reply_tx, prepare_final_brief_reply_tx, validate_message_wait_terminal_tx,
+    MessageWaitOutcome, MessageWaitReply,
+};
+
 pub(crate) struct ResolvedAgentMessageReplyContext {
     pub activation_id: String,
     pub turn_id: String,
@@ -123,6 +129,23 @@ fn load_reply_routes_tx(
     agent_id: &str,
     expected_turn_id: Option<&str>,
 ) -> Result<Option<ReplyRouteRegistry>> {
+    load_reply_routes_internal_tx(tx, agent_id, expected_turn_id, None)
+}
+
+fn load_reply_routes_for_settlement_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    turn: &TurnRecord,
+) -> Result<Option<ReplyRouteRegistry>> {
+    load_reply_routes_internal_tx(tx, agent_id, Some(&turn.turn_id), Some(turn))
+}
+
+fn load_reply_routes_internal_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    expected_turn_id: Option<&str>,
+    terminal_turn: Option<&TurnRecord>,
+) -> Result<Option<ReplyRouteRegistry>> {
     let payload = tx
         .query_row(
             "SELECT payload_json FROM execution_protocol_attempts
@@ -200,7 +223,7 @@ fn load_reply_routes_tx(
     };
     if turn.agent_id != agent_id
         || turn.turn_id != turn_id
-        || turn.terminal.is_some()
+        || (turn.terminal.is_some() && terminal_turn != Some(&turn))
         || !owner_matches
         || !turn.input_message_ids.contains(&binding.source_message_id)
         || binding
@@ -3151,6 +3174,8 @@ mod tests {
                 authority_class: AuthorityClass::RuntimeInstruction,
                 delivery_id: None,
                 after_delivery_rowid: None,
+                reply_deadline_at: None,
+                requester_incarnation: None,
             }),
         };
         db.tasks().upsert(&task)?;

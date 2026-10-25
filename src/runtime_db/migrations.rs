@@ -4131,6 +4131,19 @@ CREATE INDEX idx_provider_queue_parking_recheck
   ON provider_queue_parking(agent_id, not_before);
 "#,
     },
+    Migration {
+        version: 87,
+        name: "agent_message_wait_reply_outcomes",
+        sql: r#"
+CREATE TABLE agent_message_wait_outcomes (
+  task_id TEXT PRIMARY KEY,
+  owner_agent_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_agent_message_wait_outcomes_owner
+  ON agent_message_wait_outcomes(owner_agent_id);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

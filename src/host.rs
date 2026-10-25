@@ -714,6 +714,73 @@ pub(crate) struct ChildTaskTerminalResult {
     pub task_detail: Option<Value>,
 }
 
+impl crate::runtime_db::agent_message_delivery::MessageWaitOutcome {
+    pub(crate) fn terminal_result(
+        &self,
+        storage: &AppStorage,
+        boundary: i64,
+    ) -> Result<ChildTaskTerminalResult> {
+        use crate::runtime_db::agent_message_delivery::MessageWaitReply;
+        let mut detail = json!({
+            "sender_agent_id": self.target_agent_id,
+            "recipient_agent_id": self.owner_agent_id,
+            "message_wait_after_delivery_rowid": boundary,
+            "business_completion": false,
+        });
+        let text = match &self.reply {
+            MessageWaitReply::Explicit {
+                delivery_id,
+                message_id,
+            } => {
+                detail["message_wait_satisfied"] = json!(true);
+                detail["message_id"] = json!(message_id);
+                detail["response_delivery_id"] = json!(delivery_id);
+                detail["reply_content_source"] = json!("original_message");
+                format!("Agent reply received; see message {message_id} / delivery {delivery_id}.")
+            }
+            MessageWaitReply::FinalBrief {
+                message_id,
+                activation_id,
+                turn_id,
+                brief_id,
+            } => {
+                let message = storage
+                    .read_message_by_id(message_id)?
+                    .ok_or_else(|| anyhow!("final-brief reply outbox content is missing"))?;
+                let MessageBody::Text { text } = message.body else {
+                    return Err(anyhow!("final-brief reply outbox content is invalid"));
+                };
+                anyhow::ensure!(!text.trim().is_empty(), "final-brief reply outbox is empty");
+                detail["message_wait_satisfied"] = json!(true);
+                detail["message_id"] = json!(message_id);
+                detail["reply_content_source"] = json!("runtime_derived_final_brief");
+                detail["reply_source"] = json!({
+                    "request_delivery_id": self.request_delivery_id,
+                    "activation_id": activation_id, "turn_id": turn_id, "brief_id": brief_id,
+                    "outbox_committed_at": self.committed_at,
+                });
+                text
+            }
+            MessageWaitReply::ReplyTimeout { deadline_at } => {
+                detail["failure_reason"] = json!("reply_timeout");
+                detail["reply_timeout"] = json!({
+                    "deadline_at": deadline_at, "request_delivery_id": self.request_delivery_id,
+                });
+                return Ok(ChildTaskTerminalResult {
+                    status: TaskStatus::Failed,
+                    text: "Agent reply wait expired (reply_timeout); the target is not stopped and the request is not resent.".into(),
+                    task_detail: Some(detail),
+                });
+            }
+        };
+        Ok(ChildTaskTerminalResult {
+            status: TaskStatus::Completed,
+            text,
+            task_detail: Some(detail),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InvocationTerminalEvidence {
     status: TaskStatus,
@@ -7268,6 +7335,7 @@ impl RuntimeHost {
         sender_agent_id: &str,
         after_delivery_rowid: i64,
         expected_incarnation: Option<u64>,
+        waiting_task_id: Option<&str>,
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(recipient_agent_id)?;
         loop {
@@ -7291,6 +7359,7 @@ impl RuntimeHost {
             let read_storage = storage.clone();
             let recipient = recipient_agent_id.to_string();
             let sender = sender_agent_id.to_string();
+            let waiting_task_id = waiting_task_id.map(str::to_owned);
             let reply = spawn_blocking(move || -> Result<_> {
                 if let Some(identity) = db.agent_identities().latest(&sender)? {
                     anyhow::ensure!(
@@ -7298,6 +7367,15 @@ impl RuntimeHost {
                             == identity.incarnation),
                         ChildInvocationReason::IdentityMismatch
                     );
+                }
+                if let Some(task_id) = waiting_task_id {
+                    return db.agent_message_deliveries().resolve_message_wait(&task_id)?
+                        .map(|outcome| {
+                            anyhow::ensure!(outcome.owner_agent_id == recipient
+                                && outcome.target_agent_id == sender,
+                                "message wait outcome belongs to another route");
+                            outcome.terminal_result(&read_storage, after_delivery_rowid)
+                        }).transpose();
                 }
                 let Some(delivery) = db
                     .agent_message_deliveries()
@@ -7320,29 +7398,21 @@ impl RuntimeHost {
                             message_id
                         )
                     })?;
-                Ok(Some((delivery, message, message_id)))
+                Ok(Some(ChildTaskTerminalResult {
+                    status: TaskStatus::Completed,
+                    text: format!("Agent reply received; see message {} / delivery {}.",
+                        message.id, delivery.delivery_id),
+                    task_detail: Some(json!({
+                        "message_wait_satisfied": true, "sender_agent_id": sender,
+                        "recipient_agent_id": recipient, "response_delivery_id": delivery.delivery_id,
+                        "message_id": message_id, "message_wait_after_delivery_rowid": after_delivery_rowid,
+                        "business_completion": false,
+                    })),
+                }))
             })
             .await?;
             match reply {
-                Ok(Some((delivery, message, message_id))) => {
-                    let text = format!(
-                        "Agent reply received; see message {} / delivery {}.",
-                        message.id, delivery.delivery_id
-                    );
-                    return Ok(ChildTaskTerminalResult {
-                        status: TaskStatus::Completed,
-                        text,
-                        task_detail: Some(json!({
-                            "message_wait_satisfied": true,
-                            "sender_agent_id": sender_agent_id,
-                            "recipient_agent_id": recipient_agent_id,
-                            "response_delivery_id": delivery.delivery_id,
-                            "message_id": message_id,
-                            "message_wait_after_delivery_rowid": after_delivery_rowid,
-                            "business_completion": false,
-                        })),
-                    });
-                }
+                Ok(Some(result)) => return Ok(result),
                 Ok(None) => {}
                 Err(error)
                     if error
@@ -8863,6 +8933,7 @@ impl RuntimeHostBridge {
         sender_agent_id: &str,
         after_delivery_rowid: i64,
         expected_incarnation: Option<u64>,
+        waiting_task_id: Option<&str>,
     ) -> Result<ChildTaskTerminalResult> {
         self.host()?
             .await_agent_message(
@@ -8870,6 +8941,7 @@ impl RuntimeHostBridge {
                 sender_agent_id,
                 after_delivery_rowid,
                 expected_incarnation,
+                waiting_task_id,
             )
             .await
     }
@@ -11494,6 +11566,7 @@ mod tests {
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
                 target: InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
                     agent_id: "canonical-existing".into(),
                 },
                 message: "continue existing work".into(),
@@ -11602,6 +11675,7 @@ mod tests {
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
                 target: InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
                     agent_id: created.agent_id.clone(),
                 },
                 message: "second invocation".into(),
@@ -12577,6 +12651,7 @@ mod tests {
                 .agent_invocation_service()
                 .invoke(InvokeAgentRequest {
                     target: InvokeAgentTarget::ExistingAgent {
+                        reply_timeout_ms: None,
                         agent_id: created.agent_id,
                     },
                     message: "check and reply".into(),
@@ -12873,6 +12948,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_message_wait_returns_request_bound_final_without_explicit_reply() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        parent
+            .agent_creation_service()
+            .create(CreateAgentRequest {
+                agent_id: "brief-reply-peer".into(),
+                name: None,
+                template: None,
+                initial_message: None,
+                authority_class: AuthorityClass::OperatorInstruction,
+                model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
+                lineage_parent_agent_id: None,
+                inherit_parent_runtime: true,
+            })
+            .await
+            .unwrap();
+        let receipt = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
+                    agent_id: "brief-reply-peer".into(),
+                },
+                message: "answer this request without SendAgentMessage".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let peer = host.get_public_agent("brief-reply-peer").await.unwrap();
+        wait_for_agent_inputs_settled(&peer).await;
+        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        assert_eq!(terminal.status, TaskStatus::Completed);
+        assert_eq!(
+            terminal.detail.as_ref().unwrap()["reply_content_source"],
+            "runtime_derived_final_brief"
+        );
+        let message_id = terminal.detail.as_ref().unwrap()["message_id"]
+            .as_str()
+            .unwrap();
+        let reply = parent
+            .storage()
+            .read_message_by_id(message_id)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(reply.origin, MessageOrigin::System { .. }));
+        assert_eq!(
+            reply.body,
+            MessageBody::Text {
+                text: "done".into()
+            }
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    include!("host/agent_message_reply_tests.rs");
+
+    #[tokio::test]
     async fn agent_message_wait_for_existing_agent_captures_reply_before_invoke_returns() {
         let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;
 
@@ -12914,6 +13047,7 @@ mod tests {
                 .agent_invocation_service()
                 .invoke(InvokeAgentRequest {
                     target: InvokeAgentTarget::ExistingAgent {
+                        reply_timeout_ms: None,
                         agent_id: child_agent_id,
                     },
                     message: "second invocation".into(),
@@ -13034,6 +13168,7 @@ mod tests {
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
                 target: InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
                     agent_id: "message-wait-recovery".into(),
                 },
                 message: "persist this request once".into(),
@@ -13083,7 +13218,11 @@ mod tests {
         let detail = terminal.detail.unwrap();
         assert_eq!(detail["request_delivery_id"], request_delivery_id);
         assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
-        assert_eq!(detail["response_delivery_id"], response.delivery_id);
+        if detail["reply_content_source"] == "runtime_derived_final_brief" {
+            assert!(detail["reply_source"]["brief_id"].is_string());
+        } else {
+            assert_eq!(detail["response_delivery_id"], response.delivery_id);
+        }
     }
 
     #[tokio::test]
@@ -13099,6 +13238,7 @@ mod tests {
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
                 target: InvokeAgentTarget::ExistingAgent {
+                    reply_timeout_ms: None,
                     agent_id: "message-wait-cancel".into(),
                 },
                 message: "wait until cancelled".into(),
@@ -13180,6 +13320,7 @@ mod tests {
         let second_service = parent.agent_invocation_service();
         let first = first_service.invoke(InvokeAgentRequest {
             target: InvokeAgentTarget::ExistingAgent {
+                reply_timeout_ms: None,
                 agent_id: created.agent_id.clone(),
             },
             message: "first concurrent invocation".into(),
@@ -13187,6 +13328,7 @@ mod tests {
         });
         let second = second_service.invoke(InvokeAgentRequest {
             target: InvokeAgentTarget::ExistingAgent {
+                reply_timeout_ms: None,
                 agent_id: created.agent_id.clone(),
             },
             message: "second concurrent invocation".into(),
@@ -13240,6 +13382,7 @@ mod tests {
                     .agent_invocation_service()
                     .invoke(InvokeAgentRequest {
                         target: InvokeAgentTarget::ExistingAgent {
+                            reply_timeout_ms: None,
                             agent_id: "shared-reply-target".into(),
                         },
                         message: format!("request {index}"),
@@ -15871,7 +16014,7 @@ mod tests {
         let parent = host.config().default_agent_id.clone();
         let message = tokio::spawn(async move {
             read_host
-                .await_agent_message(&parent, "unrelated-sender", 0, None)
+                .await_agent_message(&parent, "unrelated-sender", 0, None, None)
                 .await
         });
         tokio::time::sleep(Duration::from_millis(600)).await;

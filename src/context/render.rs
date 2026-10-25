@@ -225,7 +225,7 @@ pub(crate) fn message_reply_expectation_context(message: &MessageEnvelope) -> Op
     let waiting_task_id = header_label_value(waiting_task_id);
     let request_delivery_id = header_label_value(request_delivery_id);
     Some(format!(
-        "Runtime message contract:\n- This is an agent request; the sender is waiting for a reply.\n- Reply expected from this agent: yes. Use SendAgentMessage to reply to {sender_agent_id} when you have a response.\n- Waiting task: {waiting_task_id}\n- Request delivery: {request_delivery_id}\n- The current compatibility completion policy accepts the first later durable message from the target agent."
+        "Runtime message contract:\n- This is an agent request; the sender is waiting for a reply.\n- Reply expected from this agent: yes. Prefer SendAgentMessage to reply to {sender_agent_id} when you have a response.\n- Waiting task: {waiting_task_id}\n- Request delivery: {request_delivery_id}\n- The compatibility policy accepts the first later durable message from the target agent. Runtime can also return a final brief strictly attributed to this single request at normal execution settlement; waiting, failure, empty output or ambiguous inputs do not qualify. No extra reply-reminder round is scheduled."
     ))
 }
 

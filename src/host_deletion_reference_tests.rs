@@ -599,6 +599,8 @@ mod deletion_reference_tests {
                     authority_class: AuthorityClass::OperatorInstruction,
                     delivery_id: bound_delivery.then(|| receipt.delivery_id.clone()),
                     after_delivery_rowid: bound_delivery.then_some(cursor),
+                    reply_deadline_at: None,
+                    requester_incarnation: None,
                 });
                 parent.storage().append_task(&task).unwrap();
                 let job = fence_target(&host, target_id);
@@ -647,7 +649,7 @@ mod deletion_reference_tests {
                     );
                     let cancelled = tokio::time::timeout(
                         Duration::from_secs(5),
-                        host.await_agent_message(&task.agent_id, target_id, cursor, Some(1)),
+                        host.await_agent_message(&task.agent_id, target_id, cursor, Some(1), Some(&task.id)),
                     )
                     .await
                     .expect("old generation cannot consume a replacement reply")

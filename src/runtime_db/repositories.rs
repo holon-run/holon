@@ -6207,6 +6207,37 @@ pub(crate) fn task_transition(
     if existing == incoming {
         return Ok(StateTransitionOutcome::Idempotent);
     }
+    if let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+        message,
+        target_agent_id,
+        authority_class,
+        delivery_id,
+        after_delivery_rowid,
+        reply_deadline_at,
+        requester_incarnation,
+        ..
+    }) = existing.recovery.as_ref()
+    {
+        anyhow::ensure!(
+            matches!(incoming.recovery.as_ref(),
+                Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+                    message: incoming_message,
+                    target_agent_id: incoming_target,
+                    authority_class: incoming_authority,
+                    delivery_id: incoming_delivery,
+                    after_delivery_rowid: incoming_boundary,
+                    reply_deadline_at: incoming_deadline,
+                    requester_incarnation: incoming_incarnation, ..
+                }) if incoming_message == message
+                    && incoming_target == target_agent_id
+                    && incoming_authority == authority_class
+                    && delivery_id.as_ref().is_none_or(|id| incoming_delivery.as_ref() == Some(id))
+                    && after_delivery_rowid.is_none_or(|boundary| *incoming_boundary == Some(boundary))
+                    && incoming_deadline == reply_deadline_at
+                    && incoming_incarnation == requester_incarnation),
+            "message_wait_binding_conflict: immutable request, receipt, deadline or requester incarnation"
+        );
+    }
     if existing
         .target()
         .is_some_and(|target| target.kind == crate::types::TaskTargetKind::ChildAgent)

@@ -407,7 +407,7 @@ mod tests {
         let preview = project_item(&message, usize::MAX, byte_limit)?.unwrap();
         assert!(preview.rendered.contains("bounded_preview"));
         assert!(preview.rendered.contains(&contract));
-        assert!(preview.rendered.contains("Use SendAgentMessage"));
+        assert!(preview.rendered.contains("Prefer SendAgentMessage"));
         assert!(preview.rendered.len() <= byte_limit);
         assert!(project_item(&message, usize::MAX, minimum.rendered.len() - 1)?.is_none());
         let token_limit = estimate_text_tokens(&minimum.rendered) - 1;
@@ -432,7 +432,7 @@ mod tests {
         for message in [untrusted, mismatched, wrong_delivery] {
             let projection = project_item(&message, usize::MAX, usize::MAX)?.unwrap();
             assert!(!projection.rendered.contains("Runtime message contract:"));
-            assert!(!projection.rendered.contains("Use SendAgentMessage"));
+            assert!(!projection.rendered.contains("Prefer SendAgentMessage"));
         }
         Ok(())
     }
