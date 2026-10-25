@@ -197,6 +197,7 @@ pub enum ProviderRecoveryRequestOutcome<'a> {
     AvailableResponse,
     NonRecoveryResponse,
     NetworkFailure(&'a ProviderAdmissionScope),
+    RateLimited(&'a ProviderAdmissionScope),
     OtherFailure,
 }
 
@@ -512,7 +513,11 @@ fn attempted_scopes(
         let (scopes, failed_scope) = row?;
         if episode.kind == ProviderRecoveryBudgetKind::Operator {
             for recorded in serde_json::from_str::<Vec<RecordedScope>>(&scopes)? {
-                if recorded.scope.kind == ScopeKind::Quota || recorded.was_probe {
+                if matches!(
+                    recorded.scope.kind,
+                    ScopeKind::Quota | ScopeKind::RouteThrottle
+                ) || recorded.was_probe
+                {
                     attempted.insert(recorded.scope);
                 }
             }
@@ -802,7 +807,7 @@ impl RuntimeDb {
                     let has_failure = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM provider_recovery_requests
                          WHERE episode_key = ?1 AND epoch = ?2
-                           AND (outcome IN ('network_failure', 'other_failure')
+                           AND (outcome IN ('network_failure', 'rate_limited', 'other_failure')
                              OR (settled_at IS NULL AND request_id != ?3)))",
                         params![episode.key, episode.epoch, dispatch.request_id],
                         |row| row.get::<_, bool>(0),
@@ -810,10 +815,10 @@ impl RuntimeDb {
                     ("non_recovery_response", None, !has_failure)
                 }
                 ProviderRecoveryRequestOutcome::OtherFailure => {
-                    let has_network_failure = tx.query_row(
+                    let has_recovery_failure = tx.query_row(
                         "SELECT EXISTS(SELECT 1 FROM provider_recovery_requests
                          WHERE episode_key = ?1 AND epoch = ?2
-                           AND (outcome = 'network_failure'
+                           AND (outcome IN ('network_failure', 'rate_limited')
                              OR (settled_at IS NULL AND request_id != ?3)))",
                         params![episode.key, episode.epoch, dispatch.request_id],
                         |row| row.get::<_, bool>(0),
@@ -821,7 +826,8 @@ impl RuntimeDb {
                     (
                         "other_failure",
                         None,
-                        episode.kind == ProviderRecoveryBudgetKind::Network && !has_network_failure,
+                        episode.kind == ProviderRecoveryBudgetKind::Network
+                            && !has_recovery_failure,
                     )
                 }
                 ProviderRecoveryRequestOutcome::NetworkFailure(scope) => {
@@ -837,6 +843,16 @@ impl RuntimeDb {
                         Some(serde_json::to_string(scope)?),
                         false,
                     )
+                }
+                ProviderRecoveryRequestOutcome::RateLimited(scope) => {
+                    ensure!(
+                        matches!(scope.kind, ScopeKind::Quota | ScopeKind::RouteThrottle)
+                            && serde_json::from_str::<Vec<RecordedScope>>(&scopes)?
+                                .iter()
+                                .any(|recorded| recorded.scope == *scope),
+                        "rate limit scope was not admitted"
+                    );
+                    ("rate_limited", Some(serde_json::to_string(scope)?), false)
                 }
             };
             tx.execute(

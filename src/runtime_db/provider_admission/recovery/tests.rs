@@ -1013,6 +1013,136 @@ fn actual_failed_scope_not_all_applicable_scopes_controls_network_deduplication(
 }
 
 #[test]
+fn rate_limited_never_refills_budget_and_deduplicates_only_its_scope() -> Result<()> {
+    for kind in [
+        ProviderRecoveryBudgetKind::Network,
+        ProviderRecoveryBudgetKind::Operator,
+    ] {
+        for route_scope in [false, true] {
+            for protocol_response in [false, true] {
+                let (dir, db) = database()?;
+                let mut current = episode(&db, kind)?;
+                let common = transport("healthy-connection");
+                let limited = if route_scope {
+                    ProviderAdmissionScope::route_throttle("provider/endpoint/model-a")?
+                } else {
+                    quota("account-a")
+                };
+                let first = lease(&db, &[common.clone(), limited.clone()])?;
+                let dispatch = charge(&db, &current, &first, "limited", 1)?;
+                assert!(db.record_provider_recovery_request_outcome(
+                    &dispatch,
+                    ProviderRecoveryRequestOutcome::RateLimited(&limited),
+                    false,
+                    now(),
+                )?);
+                current = refresh(&db, &current)?;
+                assert_eq!(current.state, ProviderRecoveryBudgetState::Ready);
+                assert!(db.provider_recovery_candidate_attempted(
+                    &current,
+                    std::slice::from_ref(&limited)
+                )?);
+                assert!(!db.provider_recovery_candidate_attempted(
+                    &current,
+                    std::slice::from_ref(&common)
+                )?);
+                assert_denied(
+                    db.charge_provider_recovery_dispatch(&current, &first, "repeat", 2, now())?,
+                    ProviderRecoveryDispatchDenial::ScopeAlreadyAttempted,
+                );
+                for index in 1..3 {
+                    let next = if route_scope {
+                        ProviderAdmissionScope::route_throttle(&format!(
+                            "provider/endpoint/model-{index}"
+                        ))?
+                    } else {
+                        quota(&format!("account-{index}"))
+                    };
+                    let reservation = lease(&db, &[common.clone(), next])?;
+                    let dispatch = charge(
+                        &db,
+                        &current,
+                        &reservation,
+                        &format!("next-{index}"),
+                        index + 1,
+                    )?;
+                    assert!(db.record_provider_recovery_request_outcome(
+                        &dispatch,
+                        if protocol_response {
+                            ProviderRecoveryRequestOutcome::NonRecoveryResponse
+                        } else {
+                            ProviderRecoveryRequestOutcome::OtherFailure
+                        },
+                        false,
+                        now(),
+                    )?);
+                    current = refresh(&db, &current)?;
+                    assert_ne!(current.state, ProviderRecoveryBudgetState::Resolved);
+                }
+                assert_eq!(current.state, ProviderRecoveryBudgetState::BudgetExhausted);
+                let (revision, floor) = (current.revision, current.not_before);
+                drop(db);
+                let db = reopen(&dir)?;
+                let current = episode(&db, kind)?;
+                assert_eq!(
+                    (
+                        current.request_count,
+                        current.total_requests,
+                        current.epoch,
+                        current.candidate_cursor
+                    ),
+                    (3, 3, 1, 3)
+                );
+                assert_eq!((current.revision, current.not_before), (revision, floor));
+                assert!(db.provider_recovery_candidate_attempted(&current, &[limited])?);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rate_limited_outcome_rejects_transport_and_unadmitted_scopes() -> Result<()> {
+    let (_dir, db) = database()?;
+    let current = episode(&db, ProviderRecoveryBudgetKind::Network)?;
+    let path = transport("healthy-path");
+    let limited = ProviderAdmissionScope::route_throttle("route-a")?;
+    let reservation = lease(&db, &[path.clone(), limited.clone()])?;
+    let dispatch = charge(&db, &current, &reservation, "a", 1)?;
+    for invalid in [
+        path,
+        ProviderAdmissionScope::route_throttle("foreign")?,
+        quota("foreign"),
+    ] {
+        assert!(db
+            .record_provider_recovery_request_outcome(
+                &dispatch,
+                ProviderRecoveryRequestOutcome::RateLimited(&invalid),
+                false,
+                now(),
+            )
+            .is_err());
+    }
+    assert!(db.record_provider_recovery_request_outcome(
+        &dispatch,
+        ProviderRecoveryRequestOutcome::RateLimited(&limited),
+        false,
+        now(),
+    )?);
+    assert!(!db.record_provider_recovery_request_outcome(
+        &dispatch,
+        ProviderRecoveryRequestOutcome::AvailableResponse,
+        false,
+        now(),
+    )?);
+    assert_eq!(
+        refresh(&db, &current)?.state,
+        ProviderRecoveryBudgetState::Ready
+    );
+    Ok(())
+}
+
+#[test]
 fn operator_budget_deduplicates_quota_not_healthy_shared_transport() -> Result<()> {
     let (_dir, db) = database()?;
     let current = episode(&db, ProviderRecoveryBudgetKind::Operator)?;

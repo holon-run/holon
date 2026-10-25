@@ -166,6 +166,84 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_migration_preserves_legacy_recovery_history() -> Result<()> {
+        fn rows(
+            connection: &rusqlite::Connection,
+            table: &str,
+        ) -> Result<Vec<Vec<rusqlite::types::Value>>> {
+            let mut statement =
+                connection.prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))?;
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        migrate_through(&mut connection, 87)?;
+        connection.execute_batch(
+            "INSERT INTO provider_recovery_episodes VALUES (
+                'legacy', '{\"chain_fingerprint\":\"old-chain\",\"root\":\"old-root\"}',
+                'operator', 8, 2, 'budget_exhausted', 3, 5, 4, 2,
+                '2026-10-25T14:00:00Z', 1, 'opened', 'updated');
+             INSERT INTO provider_queue_parking VALUES (
+                'agent', 'source', 'old-chain', 'legacy', '2026-10-25T14:00:00Z',
+                'recovery_budget_exhausted');",
+        )?;
+        for (index, outcome) in [
+            Some("available_response"),
+            Some("non_recovery_response"),
+            Some("network_failure"),
+            Some("other_failure"),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            connection.execute(
+                "INSERT INTO provider_recovery_requests VALUES (
+                    ?1, 'legacy', ?2, ?3, ?4, ?5, ?6, 'dispatched', ?7)",
+                rusqlite::params![
+                    format!("request-{index}"), if index < 2 { 1 } else { 2 },
+                    index + 1, "[{\"scope\":{\"kind\":\"transport\",\"key\":\"old-scope\"},\"was_probe\":true}]",
+                    outcome, if index == 2 { Some("{\"kind\":\"transport\",\"key\":\"old-scope\"}") } else { None },
+                    outcome.map(|_| "settled")
+                ],
+            )?;
+        }
+        let tables = [
+            "provider_recovery_episodes",
+            "provider_recovery_requests",
+            "provider_queue_parking",
+        ];
+        let before: Vec<_> = tables
+            .iter()
+            .map(|table| rows(&connection, table))
+            .collect::<Result<_>>()?;
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 88)
+            .expect("route throttling requires an explicit upgrade migration");
+        apply_migration(&mut connection, migration)?;
+        for (table, expected) in tables.iter().zip(before) {
+            assert_eq!(rows(&connection, table)?, expected, "{table}");
+        }
+        connection.execute(
+            "UPDATE provider_recovery_requests SET outcome = 'rate_limited',
+             failed_scope_json = '{\"kind\":\"route_throttle\",\"key\":\"route\"}',
+             settled_at = 'settled' WHERE request_id = 'request-4'",
+            [],
+        )?;
+        assert!(!connection.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        assert!(table_exists(
+            &connection,
+            "provider_route_throttle_incidents"
+        )?);
+        Ok(())
+    }
+
+    #[test]
     fn reply_settlement_disposition_migration_preserves_existing_obligations() -> Result<()> {
         let mut connection = rusqlite::Connection::open_in_memory()?;
         migrate_through(&mut connection, 78)?;
@@ -881,6 +959,7 @@ mod tests {
              DROP TABLE provider_recovery_episodes;
              DROP TABLE provider_transport_incidents;
              DROP TABLE provider_quota_incidents;
+             DROP TABLE provider_route_throttle_incidents;
              DROP TABLE task_result_recovery_admissions;
              DROP TABLE task_result_settlements;
              DROP INDEX idx_agent_deletion_jobs_status_retry_created;

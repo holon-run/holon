@@ -1,4 +1,5 @@
 mod local_dispatch;
+mod rate_limited;
 
 use super::*;
 use crate::{
@@ -1798,6 +1799,13 @@ impl Drop for OutageServer {
 
 impl OutageServer {
     async fn start(server_deadline: bool) -> Self {
+        Self::start_with_status(server_deadline, axum::http::StatusCode::SERVICE_UNAVAILABLE).await
+    }
+
+    async fn start_with_status(
+        server_deadline: bool,
+        failure_status: axum::http::StatusCode,
+    ) -> Self {
         use axum::{
             http::{StatusCode, Uri},
             routing::post,
@@ -1833,7 +1841,7 @@ impl OutageServer {
                     return (StatusCode::OK, [("retry-after", "0")], Json(body));
                 }
                 (
-                    StatusCode::SERVICE_UNAVAILABLE,
+                    failure_status,
                     [("retry-after", if server_deadline { "3600" } else { "0" })],
                     Json(serde_json::json!({
                         "error": { "message": "planned local outage" }
