@@ -120,6 +120,7 @@ fn persist_open_work_execution(
     execution.attempts.insert(
         attempt_id.into(),
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.into(),
             agent_id: "default".into(),
             source_message_id: Some(format!("message:{attempt_id}")),

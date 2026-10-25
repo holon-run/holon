@@ -249,6 +249,9 @@ pub struct ExecutionAttempt {
     pub agent_id: String,
     #[serde(default)]
     pub source_message_id: Option<String>,
+    /// Selected before claiming the source; absent on legacy admissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_projection: Option<crate::types::IdleInputBatchItem>,
     pub source: ExecutionSource,
     pub binding: ExecutionBinding,
     pub provenance: ExecutionProvenance,
@@ -1054,6 +1057,11 @@ pub fn admit_execution(
     let attempt = &command.attempt;
     validate_source_binding(&attempt.source, &attempt.binding, &attempt.admitted_fences)?;
     validate_provenance(attempt)?;
+    if attempt.input_projection.as_ref().is_some_and(|projection| {
+        attempt.source_message_id.as_deref() != Some(projection.message_id.as_str())
+    }) {
+        return Err("input projection must belong to the admitted source message".into());
+    }
 
     if attempt.agent_id != state.agent_id {
         return Err("attempt agent does not match execution partition".into());
@@ -1646,6 +1654,7 @@ mod tests {
 
     fn attempt(id: &str, recovery_of: Option<&str>) -> ExecutionAttempt {
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: id.into(),
             agent_id: "agent-a".into(),
             source_message_id: Some(format!("message:{id}")),
@@ -2415,6 +2424,7 @@ mod tests {
     fn runtime_recovery_command_settles_without_workitem() {
         let state = ExecutionProtocolState::empty("agent-a");
         let recovery_attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: "recovery-1".into(),
             agent_id: "agent-a".into(),
             source_message_id: None,
@@ -2481,6 +2491,7 @@ mod tests {
     fn command_binding_settles_with_unsupported_and_quarantined() {
         fn make_command_attempt(id: &str) -> ExecutionAttempt {
             ExecutionAttempt {
+                input_projection: None,
                 attempt_id: id.into(),
                 agent_id: "agent-a".into(),
                 source_message_id: None,

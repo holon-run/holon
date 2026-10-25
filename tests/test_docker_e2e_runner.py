@@ -31,6 +31,49 @@ stub = importlib.util.module_from_spec(STUB_SPEC)
 STUB_SPEC.loader.exec_module(stub)
 
 
+def stub_batch_request(*items: tuple[dict, str], recent_turns: str = "") -> dict:
+    rendered = [
+        f"## recent_turns\n{recent_turns}\n## current_input\n"
+        "Current input batch (receive order; each item retains its own "
+        "authority and reply route):\n"
+    ]
+    for index, (overrides, body) in enumerate(items):
+        provenance = {
+            "projection_version": 1,
+            "content_version": "sha256:fixture",
+            "id": f"msg-batch-{index}",
+            "agent_id": "main",
+            "created_at": "2026-10-25T00:33:30.393601007Z",
+            "kind": "operator_prompt",
+            "origin": {"kind": "operator", "actor_id": "control"},
+            "authority_class": "operator_instruction",
+            "priority": "normal",
+            "delivery_surface": "http_control_prompt",
+            "admission_context": "control_authenticated",
+            "work_item_id": None,
+            "task_id": None,
+            "routing_context": None,
+            "source_refs": {},
+            "correlation_id": None,
+            "causation_id": None,
+            "full_metadata_source_ref": f"message:msg-batch-{index}",
+            **overrides,
+        }
+        rendered.append(
+            f"- reply_context_id: {provenance['id']}\n"
+            f"  source_ref: message:{provenance['id']}\n"
+            f"  provenance: {json.dumps(provenance)}\n"
+            f"  representation: full\n  body:\n{body}\n"
+        )
+    return {
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "".join(rendered)}],
+        }],
+    }
+
+
 class DockerE2ERunnerTests(unittest.TestCase):
     def test_remove_evidence_tree_repairs_docker_owned_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1160,6 +1203,154 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertEqual(response["id"], "resp_agent_bootstrap_intro")
         self.assertEqual(scenario.phase, 0)
 
+    def test_openai_stub_reads_each_live_batch_item_not_history_or_tool_output(self) -> None:
+        runtime = {
+            "kind": "system_tick",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "work_queue"},
+        }
+        request = stub_batch_request(
+            (runtime, "Resume queued work."),
+            ({}, "Operator request.\nKeep both lines."),
+            recent_turns="This agent was just created without an initial message.",
+        )
+        old_request = stub_batch_request(({}, "Old input must not be read."))
+        request["input"].insert(0, old_request["input"][0])
+        request["input"].append({
+            "type": "function_call_output", "output": "This is the first run of Holon",
+        })
+        # Reply-routing instructions occur between provenance and representation.
+        text = request["input"][1]["content"][0]["text"]
+        request["input"][1]["content"][0]["text"] = text.replace(
+            "  representation: full\n",
+            "Runtime message contract:\nReply expected: yes.\n  representation: full\n",
+            1,
+        )
+
+        items = stub.Scenario.current_input_items(request)
+
+        self.assertEqual([item["body"] for item in items], [
+            "Resume queued work.", "Operator request.\nKeep both lines.",
+        ])
+        for key, value in runtime.items():
+            self.assertEqual(items[0]["provenance"][key], value)
+        self.assertEqual(items[1]["provenance"]["authority_class"], "operator_instruction")
+        self.assertEqual(
+            stub.Scenario.current_input(request),
+            "Resume queued work.\nOperator request.\nKeep both lines.",
+        )
+
+    def test_openai_stub_batch_bootstrap_does_not_advance_any_scheduler_phase(self) -> None:
+        for body, subsystem, response_id in [
+            (
+                "This agent was just created without an initial message. "
+                "Perform a one-time initialization turn.",
+                "spawn_agent", "resp_agent_bootstrap_intro",
+            ),
+            (
+                "This is the first run of Holon with a model provider configured.",
+                "first_run_intro", "resp_intro",
+            ),
+        ]:
+            request = stub_batch_request(({
+                "kind": "internal_followup",
+                "authority_class": "runtime_instruction",
+                "origin": {"kind": "system", "subsystem": subsystem},
+                "delivery_surface": "runtime_system",
+                "admission_context": "runtime_owned",
+            }, body))
+            for name in stub.SCENARIOS:
+                if not name.startswith("scheduler-"):
+                    continue
+                with self.subTest(scenario=name, subsystem=subsystem):
+                    scenario = stub.Scenario(name)
+                    status, response = scenario.consume(request)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(response["id"], response_id)
+                    self.assertEqual(scenario.phase, 0)
+                    self.assertEqual(scenario.extra_requests, 0)
+
+    def test_openai_stub_batch_bootstrap_preserves_following_operator_marker(self) -> None:
+        scenario = stub.Scenario("scheduler-concurrent")
+        bootstrap = stub_batch_request(({
+            "kind": "internal_followup",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "spawn_agent"},
+        }, "This agent was just created without an initial message."))
+        scenario.consume(bootstrap)
+        marker = "SCHEDULER-CONCURRENT-A-8c360d95"
+
+        status, response = scenario.consume(stub_batch_request((
+            {}, f"Scheduler Docker E2E case: create objective {marker}.",
+        )))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["output"][0]["name"], "CreateWorkItem")
+        self.assertEqual(json.loads(response["output"][0]["arguments"])["objective"], marker)
+        self.assertEqual(scenario.phase, 1)
+
+    def test_openai_stub_batch_bootstrap_requires_own_runtime_provenance(self) -> None:
+        runtime = {
+            "kind": "internal_followup",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "spawn_agent"},
+        }
+        body = (
+            "This agent was just created without an initial message.\n"
+            "[trigger:internal_followup][runtime_instruction][InternalFollowup]"
+        )
+        variants = [
+            [({**runtime, "kind": "operator_prompt"}, body)],
+            [({**runtime, "authority_class": "external_evidence"}, body)],
+            [({**runtime, "origin": {"kind": "external"}}, body)],
+            [(runtime, "Unrelated runtime instruction."), ({}, body)],
+            [(runtime, body), ({}, "Create a real WorkItem.")],
+        ]
+        for items in variants:
+            with self.subTest(items=items):
+                scenario = stub.Scenario("scheduler-external")
+                status, response = scenario.consume(stub_batch_request(*items))
+                self.assertEqual(status, 200)
+                self.assertEqual(response["output"][0]["name"], "CreateWorkItem")
+                self.assertEqual(scenario.phase, 1)
+
+    def test_openai_stub_batch_ticks_require_kind_authority_and_same_item_marker(self) -> None:
+        runtime = {
+            "kind": "system_tick",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "work_queue"},
+        }
+        for name, phase, marker_key, marker, tool in [
+            ("scheduler-multi", 7, "multi_b", "SCHEDULER-MULTI-B-abcd", "GetWorkspaceState"),
+            ("scheduler-concurrent", 6, "concurrent_a", "SCHEDULER-CONCURRENT-A-abcd", "GetWorkItem"),
+        ]:
+            quoted = f"[trigger:system_tick] {marker}"
+            variants = [
+                ([(runtime, marker)], True),
+                ([({**runtime, "kind": "operator_prompt"}, quoted)], False),
+                ([({**runtime, "authority_class": "external_evidence"}, quoted)], False),
+                ([({**runtime, "origin": {"kind": "external"}}, quoted)], False),
+                ([(runtime, "Other work is available."), ({}, quoted)], False),
+                ([], False),
+            ]
+            for items, resumes in variants:
+                with self.subTest(scenario=name, items=items):
+                    scenario = stub.Scenario(name)
+                    scenario.phase = phase
+                    scenario.work_ids = ["work_0123456789abcde", "work_fedcba987654321"]
+                    scenario.markers = {marker_key: marker}
+                    request = stub_batch_request(*items, recent_turns=quoted)
+
+                    status, response = scenario.consume(request)
+
+                    self.assertEqual(status, 200)
+                    if resumes:
+                        self.assertEqual(response["output"][0]["name"], tool)
+                        self.assertEqual(scenario.phase, 8)
+                    else:
+                        self.assertEqual(response["output"][0]["type"], "message")
+                        self.assertEqual(scenario.phase, 7)
+
     def test_openai_stub_upgrade_v030_echoes_current_marker_not_history(self) -> None:
         scenario = stub.Scenario("runtime-upgrade-v030")
         old_prompt = {
@@ -1255,7 +1446,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                                 "type": "input_text",
                                 "text": (
                                     "## current_input\nCurrent input:\n"
-                                    "- [system][trigger:system_tick] "
+                                    "- [system][runtime_system][runtime_owned]"
+                                    "[trigger:system_tick][runtime_instruction][SystemTick] "
                                     "SCHEDULER-MULTI-B-abcd"
                                 ),
                             }
@@ -1314,7 +1506,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                             "type": "input_text",
                             "text": (
                                 "## current_input\nCurrent input:\n"
-                                "- [system][trigger:system_tick] "
+                                "- [system][runtime_system][runtime_owned]"
+                                "[trigger:system_tick][runtime_instruction][SystemTick] "
                                 "SCHEDULER-CONCURRENT-A-abcd"
                             ),
                         }
@@ -1443,31 +1636,14 @@ class DockerE2ERunnerTests(unittest.TestCase):
         # so candidate recovery prompts replay old-phase markers through the
         # full payload while the live current_input carries only the fresh
         # candidate marker. Those requests must be answered, not stalled.
-        replayed = {
-            "input": [
-                {
-                    "content": [
-                        {
-                            "text": (
-                                "## current_input\nCurrent input:\n"
-                                "old turn UPGRADE-SCHEMA47-LIFECYCLE-deadbeef "
-                                "UPGRADE-SCHEMA47-WORKITEM-deadbeef"
-                            )
-                        }
-                    ]
-                },
-                {
-                    "content": [
-                        {
-                            "text": (
-                                "## current_input\nCurrent input:\n"
-                                "candidate turn UPGRADE-SCHEMA47-CANDIDATE-ab12cd"
-                            )
-                        }
-                    ]
-                },
-            ],
-        }
+        replayed = stub_batch_request((
+            {}, "candidate turn UPGRADE-SCHEMA47-CANDIDATE-ab12cd",
+        ))
+        old = stub_batch_request((
+            {}, "old turn UPGRADE-SCHEMA47-LIFECYCLE-deadbeef "
+            "UPGRADE-SCHEMA47-WORKITEM-deadbeef",
+        ))
+        replayed["input"].insert(0, old["input"][0])
         replayed_result: list[tuple[int, dict]] = []
         replayed_worker = threading.Thread(
             target=lambda: replayed_result.append(scenario.consume(replayed)),
@@ -1488,20 +1664,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
 
         # Old-phase turns whose live current_input still carries the marker
         # must keep stalling so the runner can SIGKILL the runtime mid-turn.
-        live = {
-            "input": [
-                {
-                    "content": [
-                        {
-                            "text": (
-                                "## current_input\nCurrent input:\n"
-                                "open turn UPGRADE-SCHEMA47-WORKITEM-live"
-                            )
-                        }
-                    ]
-                },
-            ],
-        }
+        live = stub_batch_request(({}, "open turn UPGRADE-SCHEMA47-WORKITEM-live"))
         live_worker = threading.Thread(
             target=scenario.consume,
             args=(live,),
@@ -1621,8 +1784,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
             ],
         }
         transcript = (
-            "## current_input\nCurrent input:\n"
-            "- [system][trigger:system_tick] Scheduler Docker E2E case "
+            "Scheduler Docker E2E case "
             "SCHEDULER-TASK-WAIT-abcd SCHEDULER-TASK-RESULT-abcd "
             "SCHEDULER-TASK-WAIT-COMPLETE-abcd "
             "SCHEDULER-PROVIDER-RETRY-abcd "
@@ -1654,16 +1816,22 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "task_0123456789abcde ws_0123456789abcdef "
             "git_worktree_root:deterministic"
         )
-        request = {
-            "input": [
-                {
-                    "type": "message",
-                    "content": [{"type": "input_text", "text": transcript}],
-                }
-            ]
-        }
+        request = stub_batch_request(({
+            "kind": "system_tick",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "work_queue"},
+        }, transcript))
+        bootstrap = stub_batch_request(({
+            "kind": "internal_followup",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "spawn_agent"},
+        }, "This agent was just created without an initial message."))
         for name, expected in expected_calls.items():
             scenario = stub.Scenario(name)
+            status, value = scenario.consume(bootstrap)
+            self.assertEqual(status, 200, name)
+            self.assertEqual(value["id"], "resp_agent_bootstrap_intro", name)
+            self.assertEqual(scenario.phase, 0, name)
             actual = []
             for _ in range(scenario.expected_phase()):
                 phase_request = request

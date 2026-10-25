@@ -184,7 +184,7 @@ pub(super) fn message_header(message: &MessageEnvelope) -> String {
 }
 
 /// Render runtime-owned reply expectations without changing the message body.
-pub(super) fn message_reply_expectation_context(message: &MessageEnvelope) -> Option<String> {
+pub(crate) fn message_reply_expectation_context(message: &MessageEnvelope) -> Option<String> {
     if message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
         || message.admission_context != Some(AdmissionContext::RuntimeOwned)
     {

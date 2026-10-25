@@ -3,11 +3,13 @@ mod budget;
 mod planner;
 mod render;
 mod replay_reference;
+pub(crate) use budget::{estimate_section_tokens, estimate_text_tokens};
 pub(crate) use planner::ContextPlanEvidence;
 pub(crate) use planner::ContextPlanningError;
 pub(crate) use planner::{ContextPlanDecision, ContextPlanOutcome, ContextPlanReason};
+pub(crate) use render::message_reply_expectation_context as render_message_reply_expectation_context;
 // Re-import budget helpers for use within this module.
-use budget::{estimate_text_tokens, truncate_section_content};
+use budget::truncate_section_content;
 use planner::{
     plan_context, ContextCandidate, ContextCandidatePolicy, DropTier, RetentionPriority,
 };
@@ -333,6 +335,60 @@ pub fn build_context_with_default_external_ingress(
     agent_home: &Path,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<BuiltContext> {
+    Ok(build_context_inner(
+        storage,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        agent_home,
+        default_external_ingress_override,
+        false,
+    )?
+    .0)
+}
+
+/// Reserve existing pinned truth before selecting a new source representation.
+pub(crate) fn input_admission_tokens(
+    storage: &AppStorage,
+    agent: &AgentState,
+    execution: &ExecutionSnapshot,
+    skills: &SkillsRuntimeView,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    config: &ContextConfig,
+    agent_home: &Path,
+    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+) -> Result<usize> {
+    Ok(build_context_inner(
+        storage,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        agent_home,
+        default_external_ingress_override,
+        true,
+    )?
+    .1)
+}
+
+fn build_context_inner(
+    storage: &AppStorage,
+    agent: &AgentState,
+    execution: &ExecutionSnapshot,
+    skills: &SkillsRuntimeView,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    config: &ContextConfig,
+    agent_home: &Path,
+    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+    input_admission: bool,
+) -> Result<(BuiltContext, usize)> {
     let mut messages = Vec::new();
     let recovery_source =
         crate::runtime::provider_recovery::resolve_for_context(storage, current_message)?;
@@ -649,13 +705,34 @@ pub fn build_context_with_default_external_ingress(
 
     if let Some(source) = recovery_source.as_ref() {
         let root = &source.root_message;
+        let root_projection = source
+            .predecessors
+            .iter()
+            .filter(|attempt| attempt.source_message_id.as_deref() == Some(root.id.as_str()))
+            .find_map(|attempt| attempt.input_projection.as_ref())
+            .or_else(|| {
+                source
+                    .source_turns
+                    .iter()
+                    .filter_map(|turn| turn.idle_input_batch.as_ref())
+                    .flat_map(|batch| &batch.items)
+                    .find(|item| item.message_id == root.id)
+            });
+        let root_content = root_projection
+            .map(|item| item.rendered.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}\n{}",
+                    message_header(root),
+                    render_message_body_for_anchor(&root.body),
+                )
+            });
         let anchor = format!(
-            "Provider recovery: continue the task of source turn {}, predecessor attempt {}. The current focus is not the recovery authority.\nRoot task input {} (original provenance):\n{}\n{}",
+            "Provider recovery: continue the task of source turn {}, predecessor attempt {}. The current focus is not the recovery authority.\nRoot task input {} (original provenance):\n{}",
             source.source_turn().turn_id,
             source.predecessor.attempt_id,
             root.id,
-            message_header(root),
-            render_message_body_for_anchor(&root.body),
+            root_content,
         );
         candidates.push(context_candidate(
             turn_section("continuation_anchor", anchor.clone()),
@@ -787,6 +864,21 @@ pub fn build_context_with_default_external_ingress(
         );
         // Already admitted evidence cannot be dropped to make room for new input.
         (section.clone(), section)
+    } else if let Some(item) = crate::runtime::input_consumption::projection::admitted_item(
+        storage,
+        &agent.id,
+        &current_message.id,
+    )? {
+        seen_messages.insert(current_message.id.clone());
+        let section = turn_section(
+            "current_input",
+            format!(
+                "{}{}",
+                crate::runtime::input_consumption::BATCH_HEADER,
+                item.rendered
+            ),
+        );
+        (section.clone(), section)
     } else {
         seen_messages.insert(current_message.id.clone());
         (
@@ -798,11 +890,13 @@ pub fn build_context_with_default_external_ingress(
             render_current_input_section(current_message, 48, wake_hint_fallback.as_deref()),
         )
     };
-    candidates.push(context_candidate(
-        current_input_full,
-        Some(current_input_compact),
-        true,
-    ));
+    if !input_admission {
+        candidates.push(context_candidate(
+            current_input_full,
+            Some(current_input_compact),
+            true,
+        ));
+    }
     if let Some(source) = recovery_source.as_ref() {
         let mut parts = Vec::new();
         for turn in &source.source_turns {
@@ -833,6 +927,16 @@ pub fn build_context_with_default_external_ingress(
         }
     }
 
+    let pinned_tokens = candidates
+        .iter()
+        .filter(|candidate| candidate.policy.pinned)
+        .map(|candidate| {
+            estimate_section_tokens(candidate.compact.as_ref().unwrap_or(&candidate.full))
+        })
+        .sum::<usize>();
+    let admission_tokens = config
+        .prompt_budget_estimated_tokens
+        .saturating_sub(pinned_tokens);
     let plan = plan_context(candidates, config.prompt_budget_estimated_tokens)?;
     let drop_recent_turns_reprojection =
         if let Some(reprojection) = recent_turns_reprojection.as_mut() {
@@ -860,20 +964,23 @@ pub fn build_context_with_default_external_ingress(
         recent_turns_reprojection = None;
     }
 
-    Ok(BuiltContext {
-        sections: plan.sections,
-        plan_evidence: plan.evidence,
-        projection_evidence: build_projection_evidence(
-            agent,
-            current_message,
-            current_work_item,
-            &turn_records,
-            &messages,
-            &briefs,
-            &tools,
-        ),
-        recent_turns_reprojection,
-    })
+    Ok((
+        BuiltContext {
+            sections: plan.sections,
+            plan_evidence: plan.evidence,
+            projection_evidence: build_projection_evidence(
+                agent,
+                current_message,
+                current_work_item,
+                &turn_records,
+                &messages,
+                &briefs,
+                &tools,
+            ),
+            recent_turns_reprojection,
+        },
+        admission_tokens,
+    ))
 }
 
 fn build_projection_evidence(
@@ -1453,6 +1560,22 @@ fn render_pending_task_result_records_excluding(
                 .map(|work_item_id| format!("work_item:{work_item_id}"))
                 .unwrap_or_else(|| "agent_lifecycle".to_string())
         ));
+        if let Some(projection) = record.source_projection.as_ref() {
+            lines.push(format!(
+                "  parent_turn_id: {}",
+                sanitize_inline(&record.parent_turn_id)
+            ));
+            lines.push(format!("  rejoin_generation: {}", record.rejoin_generation));
+            if seen_messages.insert(projection.message_id.clone()) {
+                lines.push(projection.rendered.clone());
+            }
+            if let Some(reply) = record.reply_projection.as_ref() {
+                if seen_messages.insert(reply.message_id.clone()) {
+                    lines.push(reply.rendered.clone());
+                }
+            }
+            continue;
+        }
         if let Some(message) = message {
             if let Some(reply_id) = crate::wake_contract::agent_message_reply_reference(message) {
                 lines.push(format!(

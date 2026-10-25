@@ -1,5 +1,5 @@
 use super::super::agent_message_delivery::PreparedAgentMessageDelivery;
-use super::super::operator_dispatch::idle_input_available_bytes;
+use super::super::operator_dispatch::idle_input_budget;
 use super::super::*;
 use super::support::*;
 use crate::types::{AgentMessageCallerContext, AgentMessagePrincipalKind, AgentMessageSendRequest};
@@ -110,156 +110,447 @@ async fn build(
     .unwrap()
 }
 
-async fn build_with_input_capacity(
-    runtime: &RuntimeHandle,
-    anchor: &MessageEnvelope,
-    wanted: usize,
-) -> (ContextConfig, EffectivePrompt) {
-    let mut config = context_config();
-    // Calibrate against the real planner, rather than a synthetic section cost.
-    for _ in 0..12 {
-        let built = build(runtime, anchor, &config).await;
-        let available = idle_input_available_bytes(&built);
-        if available >= wanted && available - wanted < 4 {
-            return (config, built);
-        }
-        if available > wanted {
-            config.prompt_budget_estimated_tokens -= (available - wanted).div_ceil(4);
-        } else {
-            config.prompt_budget_estimated_tokens += (wanted - available).div_ceil(4);
-        }
-        config.turn_projection_min_budget = config.prompt_budget_estimated_tokens;
-    }
-    panic!("context planner did not converge on the input capacity");
+#[tokio::test]
+async fn context_admission_rejects_oversized_instructions_before_claim() {
+    let (_home, _workspace, runtime) = runtime_fixture();
+    let prepared = prepared_input("oversized", "instruction".repeat(6000));
+    let message = runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap();
+    let outcome = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(message.message_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+    assert!(runtime.storage().read_recent_turns(1).unwrap().is_empty());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("budget-target")
+        .unwrap()
+        .is_none_or(|state| state.open_attempt().is_none()));
 }
 
 #[tokio::test]
-async fn p1_context_budget_bounds_admitted_anchor_after_runtime_time_reserve() {
+async fn context_admission_exact_minimum_keeps_claimed_representation_and_defers_follower() {
     let (_home, _workspace, runtime) = runtime_fixture();
-    let prepared = prepared_input(
-        "anchor",
-        "a".repeat(input_consumption::INPUT_BATCH_BYTES * 2),
+    let prepared = [
+        prepared_input("anchor", "authoritative instruction".repeat(40)),
+        prepared_input("follower", "follower instruction".repeat(40)),
+    ];
+    for input in &prepared {
+        runtime
+            .agent_message_delivery_service()
+            .deliver(input)
+            .await
+            .unwrap();
+    }
+    let anchor = start(&runtime).await;
+    let item = input_consumption::projection::admitted_item(
+        runtime.storage(),
+        "budget-target",
+        &anchor.id,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(item.rendered.contains("representation: full"));
+    let current = format!("{}{}", input_consumption::BATCH_HEADER, item.rendered);
+    let tokens = crate::context::estimate_text_tokens(&format!("[current_input]\n{current}"));
+    let budget = input_consumption::projection::InputBudget {
+        tokens,
+        bytes: input_consumption::INPUT_BATCH_BYTES,
+    };
+    assert!(runtime
+        .attach_idle_sender_inputs(&anchor, budget)
+        .await
+        .unwrap());
+    let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    let batch = turn.idle_input_batch.unwrap();
+    assert_eq!(batch.items, vec![item.clone()]);
+    assert!(budget.fits("current_input", &input_consumption::render_batch(&batch)));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&prepared[1].message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
     );
+    assert_eq!(
+        input_consumption::projection::admitted_item(
+            runtime.storage(),
+            "budget-target",
+            &anchor.id
+        )
+        .unwrap(),
+        Some(item)
+    );
+    let built = build(&runtime, &anchor, &context_config()).await;
+    let available = idle_input_budget(&built);
+    assert!(available.tokens > 0);
+    assert!(
+        built.context_plan_evidence.allocated_estimated_tokens
+            <= built.context_plan_evidence.total_budget_estimated_tokens
+    );
+}
+
+#[tokio::test]
+async fn context_admission_does_not_reselect_claimed_input_below_exact_minimum() {
+    let (_home, _workspace, runtime) = runtime_fixture();
+    let prepared = prepared_input("anchor", "authoritative instruction".repeat(80));
     runtime
         .agent_message_delivery_service()
         .deliver(&prepared)
         .await
         .unwrap();
     let anchor = start(&runtime).await;
-    let (config, built) = build_with_input_capacity(&runtime, &anchor, 3072).await;
-    let available = idle_input_available_bytes(&built);
-    assert_eq!(
-        built.context_plan_evidence.total_budget_estimated_tokens
-            + crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS,
-        config.prompt_budget_estimated_tokens
-    );
-    assert!(runtime
-        .attach_idle_sender_inputs(&anchor, available)
+    let item = input_consumption::projection::admitted_item(
+        runtime.storage(),
+        "budget-target",
+        &anchor.id,
+    )
+    .unwrap()
+    .unwrap();
+    let tokens = crate::context::estimate_text_tokens(&format!(
+        "[current_input]\n{}{}",
+        input_consumption::BATCH_HEADER,
+        item.rendered
+    ));
+    assert!(!runtime
+        .attach_idle_sender_inputs(
+            &anchor,
+            input_consumption::projection::InputBudget {
+                tokens: tokens - 1,
+                bytes: input_consumption::INPUT_BATCH_BYTES,
+            }
+        )
         .await
         .unwrap());
-    let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
-    let batch = turn.idle_input_batch.unwrap();
-    assert_eq!(batch.max_bytes, available);
-    assert_eq!(batch.rendered_bytes, available);
-    assert_eq!(batch.items.len(), 1);
-    assert!(batch.items[0].rendered.contains("[bounded preview;"));
-    let rebuilt = build(&runtime, &anchor, &config).await;
-    assert!(
-        rebuilt.context_plan_evidence.allocated_estimated_tokens
-            <= rebuilt.context_plan_evidence.total_budget_estimated_tokens
+    assert_eq!(
+        input_consumption::projection::admitted_item(
+            runtime.storage(),
+            "budget-target",
+            &anchor.id
+        )
+        .unwrap(),
+        Some(item)
     );
-    assert!(rebuilt
-        .context_sections
-        .iter()
-        .find(|section| section.name == "current_input")
-        .unwrap()
-        .content
-        .contains(&input_consumption::render_batch(&batch)));
+    assert!(runtime.storage().read_recent_turns(1).unwrap()[0]
+        .idle_input_batch
+        .is_none());
 }
 
 #[tokio::test]
-async fn p1_context_budget_defers_whole_follower_inside_runtime_time_reserve() {
-    let prepared = [
-        prepared_input(
-            "anchor",
-            "a".repeat(input_consumption::INPUT_BATCH_BYTES * 2),
-        ),
-        prepared_input("follower", "normal-follower:".repeat(80)),
-    ];
-    // Measure full evidence through admission, using the identical envelopes.
-    let (_probe_home, _probe_workspace, probe) = runtime_fixture();
-    for input in &prepared {
-        probe
-            .agent_message_delivery_service()
-            .deliver(input)
-            .await
-            .unwrap();
-    }
-    let probe_anchor = start(&probe).await;
-    assert!(probe
-        .attach_idle_sender_inputs(&probe_anchor, input_consumption::INPUT_BATCH_BYTES)
-        .await
-        .unwrap());
-    let probe_turn = probe.storage().read_recent_turns(1).unwrap().remove(0);
-    let full_batch = probe_turn.idle_input_batch.unwrap();
-    assert_eq!(full_batch.items.len(), 2);
-    assert!(!full_batch.items[1].rendered.contains("[bounded preview;"));
-
+async fn context_admission_uses_claim_owner_minimum_instead_of_current_focus() {
     let (_home, _workspace, runtime) = runtime_fixture();
-    for input in &prepared {
-        runtime
-            .agent_message_delivery_service()
-            .deliver(input)
-            .await
-            .unwrap();
-    }
-    let anchor = start(&runtime).await;
-    let wanted = full_batch.rendered_bytes - 256;
-    let (config, built) = build_with_input_capacity(&runtime, &anchor, wanted).await;
-    let available = idle_input_available_bytes(&built);
-    assert!(full_batch.rendered_bytes > available);
-    assert!(
-        full_batch.rendered_bytes
-            <= available + crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS * 4
-    );
-    assert!(
-        full_batch.items[1].rendered.len() <= available - input_consumption::BATCH_HEADER.len()
-    );
-    assert!(runtime
-        .attach_idle_sender_inputs(&anchor, available)
+    let focus = runtime
+        .create_work_item(
+            "A".into(),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
         .await
-        .unwrap());
-    let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
-    assert_eq!(turn.input_message_ids, [anchor.id.clone()]);
-    let batch = turn.idle_input_batch.unwrap();
-    assert_eq!(batch.items, full_batch.items[..1]);
-    assert!(batch.rendered_bytes <= available);
-    let follower_id = &prepared[1].message.id;
-    assert_eq!(
-        runtime.inner.agent.lock().await.queue.peek().unwrap().id,
-        *follower_id
-    );
+        .unwrap();
+    let owner = runtime
+        .create_work_item(
+            "B".repeat(96),
+            Some(crate::types::WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(focus.id.clone()).await.unwrap();
+    let mut prepared = prepared_input("different-owner", "complete instruction".into());
+    prepared.message.work_item_id = Some(owner.id.clone());
+    prepared.message.priority = Priority::Next;
+    runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap();
+    let message = &prepared.message;
+    let mut state = runtime.agent_state().await.unwrap();
+    state.current_turn_id = None;
+    state.current_execution_binding = None;
+    let identity = runtime.agent_identity_view().await.unwrap();
+    let skills = runtime
+        .skills_runtime_view_for_state(&state, &identity)
+        .await
+        .unwrap();
+    let execution = runtime.execution_snapshot().await.unwrap();
+    let mut config = runtime.current_context_config().await;
+    config.prompt_budget_estimated_tokens -= crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS;
+    let available = |state: &AgentState| {
+        crate::context::input_admission_tokens(
+            runtime.storage(),
+            state,
+            &execution,
+            &skills,
+            message,
+            None,
+            &config,
+            runtime.agent_home().as_path(),
+            None,
+        )
+        .unwrap()
+    };
+    let focused_available = available(&state);
+    let mut owner_state = state.clone();
+    owner_state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+        activation_id: None,
+        admission_provenance: None,
+        source_message_id: message.id.clone(),
+        turn_id: String::new(),
+        owner: Some(crate::types::TurnOwner::WorkItem {
+            work_item_id: owner.id.clone(),
+        }),
+        work_item_id: Some(owner.id.clone()),
+        claimed_work_revision: None,
+    });
+    assert!(available(&owner_state) < focused_available);
+    let full = input_consumption::projection::persisted_item(
+        runtime.storage(),
+        message,
+        usize::MAX,
+        usize::MAX,
+    )
+    .unwrap()
+    .unwrap();
+    let input_cost = crate::context::estimate_text_tokens(&format!(
+        "[current_input]\n{}{}",
+        input_consumption::BATCH_HEADER,
+        full.rendered
+    ));
+    runtime
+        .inner
+        .context_config
+        .write()
+        .await
+        .prompt_budget_estimated_tokens = config.prompt_budget_estimated_tokens - focused_available
+        + input_cost
+        + crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS;
+    assert!(runtime
+        .prepare_input_projection(message, &state, None)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(runtime
+        .prepare_input_projection(message, &owner_state, None)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
+    ));
     assert_eq!(
         runtime
             .inner
             .runtime_db
             .queue_entries()
-            .latest(follower_id)
+            .latest(&message.id)
             .unwrap()
             .unwrap()
             .status,
         QueueEntryStatus::Queued
     );
-    let rebuilt = build(&runtime, &anchor, &config).await;
-    assert!(
-        rebuilt.context_plan_evidence.allocated_estimated_tokens
-            <= rebuilt.context_plan_evidence.total_budget_estimated_tokens
-    );
-    assert!(!rebuilt
-        .context_sections
-        .iter()
-        .find(|section| section.name == "current_input")
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("budget-target")
         .unwrap()
-        .content
-        .contains("normal-follower:"));
+        .is_none_or(|state| state.open_attempt().is_none()));
+    assert_eq!(
+        runtime.agent_state().await.unwrap().current_work_item_id,
+        Some(focus.id)
+    );
+}
+
+#[derive(Clone)]
+struct InputProjectionProvider {
+    requests: Arc<Mutex<Vec<ProviderTurnRequest>>>,
+}
+
+#[async_trait]
+impl AgentProvider for InputProjectionProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.requests.lock().await.push(request);
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "Evidence received.".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+
+    fn select_model_lineage(
+        &self,
+        _: &crate::config::ModelRouteRef,
+    ) -> Option<Arc<dyn AgentProvider>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn prompt_capabilities(&self) -> Vec<crate::provider::ProviderPromptCapability> {
+        vec![crate::provider::ProviderPromptCapability::FullRequestOnly]
+    }
+}
+
+#[tokio::test]
+async fn context_admission_compact_survives_restart_and_reaches_provider_with_original_ref() {
+    let (home, workspace, runtime) = runtime_fixture();
+    let body = format!(
+        "EVIDENCE_HEAD:{}:ORIGINAL_UNREAD_TAIL",
+        "证据🙂".repeat(30000)
+    );
+    let source = MessageEnvelope::new(
+        "budget-target",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "compact-restart-fixture".into(),
+            event_type: Some("evidence".into()),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text { text: body.clone() },
+    );
+    let source = runtime.enqueue(source).await.unwrap();
+    let anchor = start(&runtime).await;
+    assert_eq!(anchor.id, source.id);
+    let before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("budget-target")
+        .unwrap()
+        .unwrap();
+    let prior = before.open_attempt().unwrap();
+    let projection = prior.input_projection.clone().unwrap();
+    assert!(projection
+        .rendered
+        .contains("representation: bounded_preview"));
+    assert!(!projection.rendered.contains("ORIGINAL_UNREAD_TAIL"));
+    assert!(projection.rendered.contains("external_evidence"));
+    assert!(projection.rendered.contains("compact-restart-fixture"));
+    let original =
+        crate::memory::get_memory_snapshot(runtime.storage(), &projection.source_ref, None)
+            .unwrap()
+            .expect("the selected reference must resolve through authorized memory retrieval");
+    assert!(original.content.contains(&body));
+    finish_claimed_test_run(&runtime).await;
+    let report = runtime
+        .inner
+        .runtime_db
+        .recover_interrupted_runtime_state_at_startup()
+        .unwrap();
+    assert_eq!(report.interrupted_execution_attempts, 1);
+    assert_eq!(report.interrupted_turns, 1);
+    drop(runtime);
+
+    let provider = InputProjectionProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let runtime = RuntimeHandle::new(
+        "budget-target",
+        home.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(provider.clone()),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.recover_scheduler_bootstrap_claims().await.unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("interrupted evidence must retain its canonical admission");
+    };
+    assert_eq!(scheduled.message.id, source.id);
+    let recovered = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("budget-target")
+        .unwrap()
+        .unwrap();
+    let recovered = recovered.open_attempt().unwrap();
+    assert_eq!(
+        recovered.recovery_of_attempt_id.as_deref(),
+        Some(prior.attempt_id.as_str())
+    );
+    assert_eq!(recovered.input_projection.as_ref(), Some(&projection));
+    assert_eq!(recovered.source, prior.source);
+    assert_eq!(recovered.binding, prior.binding);
+    runtime
+        .process_interactive_message_deferred_with_cleanup(
+            &scheduled.message,
+            scheduled.dispatch_plan.continuation_resolution.as_ref(),
+            scheduled.dispatch_plan.execution_admission_provenance,
+            turn::LoopControlOptions {
+                max_tool_rounds: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "the compact must pass the real request gate"
+    );
+    let request = &requests[0];
+    let current = request
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .find(|block| block.text.starts_with("## current_input\n"))
+        .expect("provider request must contain the admitted input");
+    assert!(current.text.contains(&projection.rendered));
+    assert!(current.text.contains(&projection.source_ref));
+    assert!(!format!("{request:?}").contains("ORIGINAL_UNREAD_TAIL"));
+    assert_eq!(
+        runtime
+            .storage()
+            .read_message_by_id(&source.id)
+            .unwrap()
+            .unwrap()
+            .body,
+        source.body
+    );
 }

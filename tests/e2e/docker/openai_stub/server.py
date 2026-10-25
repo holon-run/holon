@@ -71,7 +71,7 @@ class Scenario:
         self.workspace_ids: list[str] = []
         self.execution_root_ids: list[str] = []
         self.first_turn_closed = False
-        self.current_input_text = ""
+        self.current_inputs: list[dict[str, Any]] = []
         self.extra_requests = 0
         self.lock = threading.Lock()
         self.interrupted_schema47_seen = False
@@ -133,7 +133,7 @@ class Scenario:
         return raw
 
     @staticmethod
-    def current_input(request: dict[str, Any]) -> str:
+    def current_input_items(request: dict[str, Any]) -> list[dict[str, Any]]:
         texts = [
             content["text"]
             for item in request.get("input", [])
@@ -142,10 +142,80 @@ class Scenario:
             if isinstance(content, dict) and isinstance(content.get("text"), str)
         ]
         for text in reversed(texts):
-            marker = "## current_input\nCurrent input:\n"
-            if marker in text:
-                return text.rsplit(marker, 1)[1]
-        return ""
+            section = re.search(r"(?m)^## current_input\n", text)
+            if section is None:
+                continue
+            current = text[section.end():]
+            if current.startswith(
+                "Current input batch (receive order; each item retains its own "
+                "authority and reply route):\n"
+            ):
+                headers = list(re.finditer(
+                    r"(?m)^- reply_context_id: [^\n]+\n"
+                    r"  source_ref: [^\n]+\n  provenance: ([^\n]+)\n",
+                    current,
+                ))
+                items = []
+                for index, header in enumerate(headers):
+                    end = headers[index + 1].start() if index + 1 < len(headers) else len(current)
+                    rendered = current[header.end():end]
+                    body = re.search(
+                        r"(?m)^  representation: (?:full|bounded_preview)\n"
+                        r"  body(?: preview)?:\n",
+                        rendered,
+                    )
+                    provenance = json.loads(header[1])
+                    if body is None or not isinstance(provenance, dict):
+                        raise ValueError("Invalid current input batch item")
+                    items.append({
+                        "provenance": provenance,
+                        "body": rendered[body.end():].strip(),
+                    })
+                return items
+            if current.startswith("Current input:\n"):
+                # Retained upgrade fixtures still use the pre-batch projection.
+                headers = list(re.finditer(
+                    r"(?m)^- ((?:\[[^\]\n]+\])+)[ \t]*", current,
+                ))
+                items = []
+                for index, header in enumerate(headers):
+                    tags = re.findall(r"\[([^\]]+)\]", header[1])
+                    end = headers[index + 1].start() if index + 1 < len(headers) else len(current)
+                    items.append({
+                        "provenance": {
+                            "kind": next(
+                                (tag.removeprefix("trigger:") for tag in tags
+                                 if tag.startswith("trigger:")),
+                                None,
+                            ),
+                            "authority_class": (
+                                "runtime_instruction" if "runtime_instruction" in tags else None
+                            ),
+                            "origin": {"kind": tags[0]},
+                        },
+                        "body": current[header.end():end].strip(),
+                    })
+                return items
+        return []
+
+    @staticmethod
+    def current_input(request: dict[str, Any]) -> str:
+        return "\n".join(item["body"] for item in Scenario.current_input_items(request))
+
+    @staticmethod
+    def is_runtime_input(item: dict[str, Any], kind: str) -> bool:
+        provenance = item["provenance"]
+        return (
+            provenance.get("kind") == kind
+            and provenance.get("authority_class") == "runtime_instruction"
+            and provenance.get("origin", {}).get("kind") == "system"
+        )
+
+    def has_runtime_input(self, kind: str, marker: str) -> bool:
+        return any(
+            self.is_runtime_input(item, kind) and marker in item["body"]
+            for item in self.current_inputs
+        )
 
     def call(
         self, name: str, args: dict[str, Any], text: str | None = None
@@ -186,8 +256,8 @@ class Scenario:
             raw = self.observe(request)
             if request.get("instructions") == "Reply with exactly OK.":
                 return 200, response([text_item("OK")], "resp_doctor")
-            current_input = self.current_input(request)
-            self.current_input_text = current_input
+            self.current_inputs = self.current_input_items(request)
+            current_input = "\n".join(item["body"] for item in self.current_inputs)
             if (
                 self.name == "scheduler-spawn"
                 and "SCHEDULER-SPAWN-CHILD-" in current_input
@@ -200,19 +270,20 @@ class Scenario:
                     [text_item(f"Child completed {marker}.")],
                     "resp_scheduler_spawn_child",
                 )
-            if (
-                "[trigger:internal_followup][runtime_instruction][InternalFollowup]"
-                in current_input
-                and "This is the first run of Holon" in current_input
+            if self.current_inputs and all(
+                self.is_runtime_input(item, "internal_followup")
+                and item["body"].startswith("This is the first run of Holon")
+                for item in self.current_inputs
             ):
                 return 200, response(
                     [text_item("Deterministic Holon test runtime ready.")], "resp_intro"
                 )
-            if (
-                "[trigger:internal_followup][runtime_instruction][InternalFollowup]"
-                in current_input
-                and "This agent was just created without an initial message"
-                in current_input
+            if self.current_inputs and all(
+                self.is_runtime_input(item, "internal_followup")
+                and item["body"].startswith(
+                    "This agent was just created without an initial message"
+                )
+                for item in self.current_inputs
             ):
                 # #2795: agents created without an explicit initial_message run
                 # one runtime-owned bootstrap initialization turn. Answer it
@@ -310,9 +381,8 @@ class Scenario:
                 "error": {"type": "missing_work_item_id", "message": str(self.phase)}
             }
         wid = self.work_ids[index]
-        if self.phase == 7 and (
-            "[trigger:system_tick]" not in self.current_input_text
-            or self.markers["multi_b"] not in self.current_input_text
+        if self.phase == 7 and not self.has_runtime_input(
+            "system_tick", self.markers["multi_b"]
         ):
             if self.first_turn_closed:
                 return 409, {
@@ -598,10 +668,7 @@ class Scenario:
             )
         if self.phase == 6:
             marker = self.markers.get("concurrent_a", "SCHEDULER-CONCURRENT-A")
-            if (
-                "[trigger:" not in self.current_input_text
-                or marker not in self.current_input_text
-            ):
+            if not self.has_runtime_input("system_tick", marker):
                 self.phase += 1
                 return 200, response(
                     [text_item("Completed deterministic concurrent WorkItem B.")],

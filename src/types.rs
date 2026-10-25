@@ -2555,7 +2555,7 @@ pub struct IdleInputBatchRecord {
     pub items: Vec<IdleInputBatchItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct IdleInputBatchItem {
     pub message_id: String,
     pub source_ref: String,

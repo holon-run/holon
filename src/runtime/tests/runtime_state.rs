@@ -1796,8 +1796,42 @@ async fn provider_recovery_pinned_root_minimum_fails_closed_before_provider_requ
     assert_eq!(requests.lock().await.len(), 1);
 }
 
+async fn execute_admitted_context_budget_failure(runtime: &RuntimeHandle) {
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("the source must be admitted before exhausting its budget");
+    };
+    // Exercise the post-claim guard without bypassing pre-claim admission.
+    runtime
+        .inner
+        .context_config
+        .write()
+        .await
+        .prompt_budget_estimated_tokens = crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS;
+    let started = std::time::Instant::now();
+    let result = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message.clone(),
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await;
+    assert!(result
+        .as_ref()
+        .unwrap_err()
+        .is::<crate::context::ContextPlanningError>());
+    runtime
+        .settle_processed_message(scheduled.message, result, started)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
-async fn context_budget_failure_settles_without_dispatch_or_provider_recovery() {
+async fn context_admission_zero_budget_keeps_source_unclaimed_without_provider_recovery() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1818,23 +1852,77 @@ async fn context_budget_failure_settles_without_dispatch_or_provider_recovery() 
     .unwrap();
     let message = trusted_operator_prompt(None, "CONTEXT_BUDGET_INPUT_SECRET");
     runtime.enqueue(message.clone()).await.unwrap();
-    let runner = tokio::spawn(runtime.clone().run());
-    wait_for_audit_events(
-        &runtime,
-        64,
-        |events| {
-            events.iter().any(|event| {
-                event.kind == "runtime_error" && event.data["message_id"] == message.id
-            })
-        },
-        "typed context failure settlement",
+    for _ in 0..2 {
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::AuthorityBlocked
+        ));
+    }
+    let entries = runtime.storage().latest_queue_entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, QueueEntryStatus::Queued);
+    assert!(runtime.storage().read_recent_turns(1).unwrap().is_empty());
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .is_none_or(|state| state.attempts.is_empty()));
+    assert!(requests.lock().await.is_empty());
+    let events = runtime.storage().read_recent_events(128).unwrap();
+    let rejections = events
+        .iter()
+        .filter(|event| event.kind == "input_context_admission_rejected")
+        .collect::<Vec<_>>();
+    assert_eq!(rejections.len(), 2);
+    assert!(rejections.iter().all(|event| {
+        event.data["message_id"] == message.id
+            && !event
+                .data
+                .to_string()
+                .contains("CONTEXT_BUDGET_INPUT_SECRET")
+    }));
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event.kind.as_str(),
+            "runtime_error" | "provider_attempt_failed" | "provider_recovery_enqueued"
+        )
+    }));
+    *runtime.inner.context_config.write().await = context_config();
+    let delivered = execute_source_bound_round(&runtime, false).await;
+    assert_eq!(delivered.id, message.id);
+    assert_eq!(requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn context_budget_failure_settles_without_dispatch_or_provider_recovery() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(SourceBoundRecoveryProvider {
+            requests: requests.clone(),
+            failures: 0,
+        }),
+        "default".into(),
+        context_config(),
     )
-    .await;
+    .unwrap();
+    let message = trusted_operator_prompt(None, "CONTEXT_BUDGET_INPUT_SECRET");
+    runtime.enqueue(message.clone()).await.unwrap();
+    execute_admitted_context_budget_failure(&runtime).await;
     runtime
         .control(crate::types::ControlAction::Stop)
         .await
         .unwrap();
-    runner.await.unwrap().unwrap();
     assert!(requests.lock().await.is_empty());
     let entries = runtime.storage().latest_queue_entries().unwrap();
     assert_eq!(entries.len(), 1);
@@ -1900,7 +1988,7 @@ async fn context_budget_stop_survives_ticks_restart_and_rechecks_only_after_budg
         "http://127.0.0.1:7878".into(),
         provider.clone(),
         "default".into(),
-        config.clone(),
+        context_config(),
         clock.clone(),
     )
     .unwrap();
@@ -1930,23 +2018,11 @@ async fn context_budget_stop_survives_ticks_restart_and_rechecks_only_after_budg
     );
     bind_autonomous_work_queue_tick(&mut tick, &work, "queued_available");
     runtime.enqueue(tick.clone()).await.unwrap();
-    let runner = tokio::spawn(runtime.clone().run());
-    wait_for_audit_events(
-        &runtime,
-        128,
-        |events| {
-            events
-                .iter()
-                .any(|event| event.kind == "runtime_error" && event.data["message_id"] == tick.id)
-        },
-        "context stop for canonical owner",
-    )
-    .await;
+    execute_admitted_context_budget_failure(&runtime).await;
     runtime
         .control(crate::types::ControlAction::Stop)
         .await
         .unwrap();
-    runner.await.unwrap().unwrap();
     let protocol = runtime
         .inner
         .runtime_db
@@ -2388,6 +2464,7 @@ fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) -> Mes
         &state,
         &AdmitExecution {
             attempt: ExecutionAttempt {
+                input_projection: None,
                 attempt_id: source_attempt_id.clone(),
                 agent_id: "default".into(),
                 source_message_id: Some(source.id.clone()),
@@ -2580,6 +2657,7 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
         &state,
         &crate::domain::execution_protocol::AdmitExecution {
             attempt: crate::domain::execution_protocol::ExecutionAttempt {
+                input_projection: None,
                 attempt_id: activation_id.clone(),
                 agent_id: "default".into(),
                 source_message_id: Some(message.id.clone()),
@@ -4627,6 +4705,7 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
     stale.attempts.insert(
         attempt_id.clone(),
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: "default".into(),
             source_message_id: Some(result.id.clone()),
@@ -4962,6 +5041,7 @@ async fn task_result_claim_fixture(
     stale.attempts.insert(
         attempt_id.clone(),
         ExecutionAttempt {
+            input_projection: None,
             attempt_id: attempt_id.clone(),
             agent_id: "default".into(),
             source_message_id: Some(result.id.clone()),
@@ -18756,6 +18836,30 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     let mut interjection = trusted_operator_prompt(None, "use the smaller lifecycle fix");
     interjection.priority = Priority::Interject;
     let interjection = runtime.enqueue(interjection).await.unwrap();
+    assert!(runtime
+        .drain_operator_interjections_with_budget(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+            super::super::input_consumption::projection::InputBudget {
+                tokens: 1,
+                bytes: usize::MAX,
+            },
+        )
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&interjection.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
     // A failed admission must leave both queue visibility and turn membership unchanged.
     runtime.inject_next_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,

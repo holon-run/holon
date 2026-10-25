@@ -149,6 +149,48 @@ stabilize the draft JSON debug envelope.
 
 ## 8. Over-Budget Failure
 
+### New input admission
+
+New sources must fit the same pinned-minimum contract before their existing
+source claim/admission transaction commits. Admission reserves runtime time,
+section headers and the other pinned truth first. Batch item/byte ceilings
+remain independent limits, not substitutes for the context token budget.
+The aggregate uses the planner's Unicode-character estimator and section
+rounding, including at the exact minimum. Pinned owner state comes from the
+planned canonical execution binding, not the independently focused WorkItem.
+The source representation preserves immutable ingress provenance; legacy
+cross-agent caller bindings remain isolated from dispatch and execution ownership.
+
+Admitted `current_input` uses `Current input batch` with per-item JSON provenance.
+Message creation time remains in that provenance's `created_at` field, distinct
+from the runtime execution-time sample; the legacy `message_created_at=` text
+annotation is not part of the admitted representation's contract.
+
+For evidence that permits a bounded preview, admission may select a compact
+representation before claiming it. The representation retains the source id,
+origin and authority, owner, complete reply route/selector, content version,
+projection version and an authorized `message:` reference to the persisted
+original. A preview is explicitly marked; it is not an instruction summary or
+a claim that the original was read. Missing originals and metadata that cannot
+fit fail closed. References do not grant additional retrieval authority.
+Operator instructions and necessary runtime instructions are not shortened to
+force admission: leave them unclaimed and require splitting or an explicit
+budget change when their full representation cannot fit. Validated runtime
+reply obligations are part of this non-reducible, budgeted representation.
+
+The selected representation is part of the existing durable input snapshot.
+Initial, live, terminal-result and recovery admission must check the complete
+proposed snapshot, including already admitted evidence, before their own
+existing transaction boundary. Recovery validates and charges the entire frozen
+idle batch, including ordinary followers, before rebinding companion results.
+Selection does not merge these transactions or
+grant an owner/source bypass. Once admitted, an item's representation is not
+reselected or truncated during context assembly. Old snapshots remain byte for
+byte unchanged and retain the actionable over-budget failure below. Provider
+payload preflight still checks the complete system/tools/context/image/wire
+request; context admission does not override the model window or request a
+paid summarization.
+
 If the sum of pinned compact representations exceeds the total context budget,
 planning fails closed with `pinned_minimum_over_budget`.
 

@@ -5020,6 +5020,7 @@ mod tests {
             bootstrap: Some(bootstrap),
             commands: vec![ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
                 attempt: ExecutionAttempt {
+                    input_projection: None,
                     attempt_id: attempt_id.into(),
                     agent_id: "agent-a".into(),
                     source_message_id: Some(message_id.into()),
@@ -6652,6 +6653,8 @@ mod tests {
 
     fn insert_admitted_replay_settlement(db: &RuntimeDb, now: chrono::DateTime<Utc>) -> Result<()> {
         let record = crate::runtime_db::task_result_settlement::TaskResultSettlementRecord {
+            source_projection: None,
+            reply_projection: None,
             result_identity: "result:task-execution:1".into(),
             agent_id: "agent-a".into(),
             task_id: "task-execution".into(),

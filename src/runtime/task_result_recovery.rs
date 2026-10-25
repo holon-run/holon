@@ -608,6 +608,8 @@ mod tests {
     #[test]
     fn recovery_owner_key_ignores_result_fence_fields() {
         let mut record = crate::runtime_db::TaskResultSettlementRecord {
+            source_projection: None,
+            reply_projection: None,
             result_identity: "result-1".into(),
             agent_id: "agent-a".into(),
             task_id: "task-1".into(),

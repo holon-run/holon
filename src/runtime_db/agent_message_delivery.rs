@@ -1547,6 +1547,7 @@ mod tests {
         let source = &inputs[0];
         let revision = source.message_seq.unwrap();
         let attempt = ExecutionAttempt {
+            input_projection: None,
             attempt_id: "routing-activation".into(),
             agent_id: "caller-agent".into(),
             source_message_id: Some(source.id.clone()),

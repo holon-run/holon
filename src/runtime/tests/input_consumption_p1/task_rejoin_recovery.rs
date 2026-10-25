@@ -183,6 +183,249 @@ async fn interrupted_result(
 }
 
 #[tokio::test(start_paused = true)]
+async fn context_admission_recovery_charges_frozen_companion_before_rebinding() {
+    check_frozen_companion_recovery(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn context_admission_recovery_charges_frozen_ordinary_batch_before_rebinding() {
+    check_frozen_companion_recovery(true).await;
+}
+
+async fn check_frozen_companion_recovery(with_follower: bool) {
+    let provider = Arc::new(BatchProvider::default());
+    let mut harness = LifecycleHarness::with_provider(provider.clone());
+    let runtime = harness.runtime();
+    let owner = runtime
+        .create_work_item(
+            "preserve the admitted result representation".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(owner.id.clone()).await.unwrap();
+    let mut prepared = AgentMessageDeliveryService::prepare(
+        AgentMessageSendRequest {
+            target_agent_id: "default".into(),
+            content: MessageBody::Text {
+                text: "small anchor".into(),
+            },
+            client_idempotency_key: "frozen-small-anchor".into(),
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: Some(Priority::Next),
+            forward: false,
+            reply_context_id: None,
+        },
+        AgentMessageCallerContext {
+            caller_principal: "agent:peer".into(),
+            caller_agent_id: Some("peer".into()),
+            principal_kind: AgentMessagePrincipalKind::PeerAgent,
+            route: "agent_message".into(),
+            origin: MessageOrigin::System {
+                subsystem: "agent_message".into(),
+            },
+            authority_class: AuthorityClass::RuntimeInstruction,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+            inherited_routing_context: None,
+            routing_activation_id: None,
+        },
+    )
+    .unwrap();
+    prepared.message.work_item_id = Some(owner.id.clone());
+    runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap();
+    let follower_id = if with_follower {
+        let mut follower = AgentMessageDeliveryService::prepare(
+            AgentMessageSendRequest {
+                target_agent_id: "default".into(),
+                content: MessageBody::Text {
+                    text: "frozen ordinary follower 汉字 ".repeat(100),
+                },
+                client_idempotency_key: "frozen-ordinary-follower".into(),
+                correlation_id: None,
+                causation_id: None,
+                requested_priority: Some(Priority::Next),
+                forward: false,
+                reply_context_id: None,
+            },
+            prepared.record.caller.clone(),
+        )
+        .unwrap();
+        follower.message.work_item_id = Some(owner.id.clone());
+        runtime
+            .agent_message_delivery_service()
+            .deliver(&follower)
+            .await
+            .unwrap();
+        Some(follower.message.id)
+    } else {
+        None
+    };
+    let companion_id = publish_owner_result_with_priority(
+        runtime,
+        &owner.id,
+        "frozen-large-companion".into(),
+        &"frozen evidence ".repeat(450),
+        Priority::Next,
+    )
+    .await;
+    let anchor = start_without_provider(runtime).await;
+    assert_eq!(anchor.id, prepared.message.id);
+    let predecessor = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .unwrap()
+        .activation_id
+        .unwrap();
+    let repository = runtime.runtime_db().task_result_settlements();
+    assert!(runtime
+        .admit_idle_task_results(&anchor, 24 * 1024)
+        .await
+        .unwrap());
+    runtime
+        .attach_idle_sender_inputs(&anchor, 24 * 1024)
+        .await
+        .unwrap();
+    let before = repository
+        .latest_for_message(&companion_id)
+        .unwrap()
+        .unwrap();
+    assert!(before
+        .source_projection
+        .as_ref()
+        .unwrap()
+        .rendered
+        .contains("representation: full"));
+    let records = repository
+        .admitted_for_activation("default", &predecessor)
+        .unwrap();
+    let pending =
+        crate::context::render_pending_task_result_records(runtime.storage(), &anchor, &records)
+            .unwrap()
+            .unwrap();
+    let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    let frozen_batch = turn.idle_input_batch.as_ref().unwrap();
+    assert_eq!(frozen_batch.items.len(), 1 + usize::from(with_follower));
+    if let Some(id) = &follower_id {
+        assert_eq!(&frozen_batch.items[1].message_id, id);
+    }
+    let current = input_consumption::render_batch(frozen_batch);
+    let low_bytes = current.len() + pending.len() - 1;
+    let low_tokens = crate::context::estimate_text_tokens(&format!("[current_input]\n{current}"))
+        + crate::context::estimate_text_tokens(&format!("[pending_task_results]\n{pending}"))
+        - 1;
+    assert!(low_bytes < input_consumption::INPUT_BATCH_BYTES);
+    if with_follower {
+        let anchor_only = format!(
+            "{}{}",
+            input_consumption::BATCH_HEADER,
+            frozen_batch.items[0].rendered
+        );
+        assert!(anchor_only.len() + pending.len() <= low_bytes);
+        assert!(input_consumption::projection::InputBudget {
+            tokens: low_tokens,
+            bytes: 24 * 1024,
+        }
+        .fits_idle(&anchor_only, Some(&pending)));
+    }
+    // Seed the crash window after the notification was drained but before
+    // its separately admitted source was delivered to the model.
+    let mut notification = runtime
+        .runtime_db()
+        .queue_entries()
+        .latest(&companion_id)
+        .unwrap()
+        .unwrap();
+    notification.status = QueueEntryStatus::Processed;
+    runtime.storage().append_queue_entry(&notification).unwrap();
+    let startup = runtime
+        .runtime_db()
+        .recover_interrupted_runtime_state_at_startup()
+        .unwrap();
+    assert_eq!(startup.interrupted_execution_attempts, 1);
+    assert_eq!(startup.interrupted_turns, 1);
+    harness.advance(std::time::Duration::from_secs(60)).await;
+    harness.restart();
+    let runtime = harness.runtime();
+    runtime.recover_scheduler_bootstrap_claims().await.unwrap();
+    let recovered = start_without_provider(runtime).await;
+    assert_eq!(recovered.id, anchor.id);
+    assert_eq!(recovered.work_item_id.as_deref(), Some(owner.id.as_str()));
+    let successor = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .unwrap()
+        .activation_id
+        .unwrap();
+    assert_ne!(successor, predecessor);
+    // The small anchor may rebind, but its larger companion must not be
+    // reselected as a preview just to pass this reduced admission budget.
+    let repository = runtime.runtime_db().task_result_settlements();
+    for budget in [
+        input_consumption::projection::InputBudget {
+            tokens: usize::MAX,
+            bytes: low_bytes,
+        },
+        input_consumption::projection::InputBudget {
+            tokens: low_tokens,
+            bytes: 24 * 1024,
+        },
+    ] {
+        runtime
+            .admit_idle_task_results(&recovered, budget)
+            .await
+            .unwrap();
+        let retained = repository
+            .latest_for_message(&companion_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.activation_id, before.activation_id);
+        assert_eq!(retained.admitted_at, before.admitted_at);
+        assert_eq!(retained.source_projection, before.source_projection);
+        assert!(repository
+            .admitted_for_activation("default", &successor)
+            .unwrap()
+            .iter()
+            .all(|record| record.result_identity != before.result_identity));
+    }
+    runtime
+        .admit_idle_task_results(&recovered, 24 * 1024)
+        .await
+        .unwrap();
+    let rebound = repository
+        .latest_for_message(&companion_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rebound.activation_id.as_deref(), Some(successor.as_str()));
+    assert_eq!(rebound.admitted_at, before.admitted_at);
+    assert_eq!(rebound.source_projection, before.source_projection);
+    runtime
+        .attach_idle_sender_inputs(&recovered, 24 * 1024)
+        .await
+        .unwrap();
+    let restored = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    let restored_batch = restored.idle_input_batch.unwrap();
+    assert_eq!(restored_batch.items, frozen_batch.items);
+    assert_eq!(input_consumption::render_batch(&restored_batch), current);
+    assert!(current.len() + pending.len() <= 24 * 1024);
+    assert!(provider.requests.lock().await.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn p1_issue_3669_real_task_rejoin_restart_keeps_source_and_delivers_once() {
     for kind in [TaskKind::CommandTask, TaskKind::ChildAgentTask] {
         let (harness, provider, message_id, source) =

@@ -3,12 +3,12 @@
 use crate::prompt::PromptSection;
 
 /// Estimate token count for a prompt section (section header + content).
-pub(super) fn estimate_section_tokens(section: &PromptSection) -> usize {
+pub(crate) fn estimate_section_tokens(section: &PromptSection) -> usize {
     estimate_text_tokens(&format!("[{}]\n{}", section.name, section.content))
 }
 
 /// Estimate token count for a text string using a 4-chars-per-token heuristic.
-pub(super) fn estimate_text_tokens(text: &str) -> usize {
+pub(crate) fn estimate_text_tokens(text: &str) -> usize {
     let chars = text.chars().count();
     chars.div_ceil(4).max(1)
 }
