@@ -3875,9 +3875,9 @@ mod tests {
             .unwrap();
         assert!(dated.capabilities.supports_reasoning);
         assert!(dated.capabilities.image_input);
-        assert_eq!(dated.context_window_tokens, None);
+        assert_eq!(dated.context_window_tokens, Some(1_000_000));
         assert_eq!(dated.default_max_output_tokens, None);
-        assert_eq!(dated.max_output_tokens_upper_limit, None);
+        assert_eq!(dated.max_output_tokens_upper_limit, Some(384_000));
         assert!(dated.reasoning_effort_options.is_empty());
     }
 
@@ -4519,11 +4519,7 @@ mod tests {
                     .get(&ModelRef::parse(&format!("dashscope/{id}")).unwrap())
                     .unwrap();
                 let has_model_card = id.starts_with("qwen3.8-");
-                assert_eq!(
-                    model.context_window_tokens,
-                    has_model_card.then_some(1_000_000),
-                    "{id}"
-                );
+                assert_eq!(model.context_window_tokens, Some(1_000_000), "{id}");
                 assert_eq!(
                     model.default_max_output_tokens,
                     has_model_card.then_some(131_072),
@@ -4531,7 +4527,15 @@ mod tests {
                 );
                 assert_eq!(
                     model.max_output_tokens_upper_limit,
-                    has_model_card.then_some(131_072),
+                    Some(match id {
+                        "qwen-plus-latest" | "qwen-flash-2025-07-28" => 32_768,
+                        "qwen3.5-flash-2026-02-23"
+                        | "qwen3.5-plus-2026-02-15"
+                        | "qwen3.5-plus-2026-04-20"
+                        | "qwen3.6-flash-2026-04-16"
+                        | "qwen3.6-plus-2026-04-02" => 65_536,
+                        _ => 131_072,
+                    }),
                     "{id}"
                 );
                 assert_eq!(

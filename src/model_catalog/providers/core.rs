@@ -267,7 +267,7 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
             effective_context_window_percent: 95,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
-            max_output_tokens_upper_limit: None,
+            max_output_tokens_upper_limit: Some(128_000),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
@@ -307,7 +307,7 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
             effective_context_window_percent: 95,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
-            max_output_tokens_upper_limit: None,
+            max_output_tokens_upper_limit: Some(128_000),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {

@@ -474,12 +474,14 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
         BuiltInModelMetadata {
             model_ref: ModelRef::new(provider_id("deepseek"), "deepseek-flash"),
             display_name: "DeepSeek Flash".into(),
-            description: "DeepSeek Flash with image input through the Responses API.".into(),
-            context_window_tokens: None,
+            description: "DeepSeek Flash with image input through the Responses API; \
+                conservative reviewed ceilings, not the native API's full binary-unit limits."
+                .into(),
+            context_window_tokens: Some(1_000_000),
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
-            max_output_tokens_upper_limit: None,
+            max_output_tokens_upper_limit: Some(384_000),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: None,
             capabilities: ModelCapabilityFlags {
