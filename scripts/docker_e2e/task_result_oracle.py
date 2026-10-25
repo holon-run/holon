@@ -340,15 +340,17 @@ def require_task_reentry(
         if stored_turn.get("idle_input_batch"):
             inputs.append(stored_turn["idle_input_batch"])
         batches.extend((activation_id, batch) for batch in inputs)
-    task_in_model_input = any(
+    # The scanner wake is the model input for this path. The raw task result
+    # stays a promise source and is never admitted as model input, so the
+    # durable join is the wake message that references it.
+    scanner_wake_in_model_input = any(
         batch.get("activation_id") == activation_id
-        and (record["message_id"] in {item["message_id"] for item in batch["items"]}
-             or record["result_identity"] in batch.get("result_identities", []))
+        and causal_message_id in {item.get("message_id") for item in batch["items"]}
         for activation_id, batch in batches
-    )
+    ) if len(recovery) == 1 else False
     scanner = (
         source.get("kind") in {"internal_followup", "triggered_wait"}
-        and len(recovery) == 1 and task_in_model_input
+        and len(recovery) == 1 and scanner_wake_in_model_input
         and recovery[0].get("kind") == "internal_followup"
         and recovery[0].get("authority_class") == "runtime_instruction"
         and recovery[0].get("origin")
@@ -360,6 +362,14 @@ def require_task_reentry(
         and refs.get("task_result_rejoin_generation") == str(record["rejoin_generation"])
     )
     require(direct or exact or scanner, f"activation lost task-result source causality: {attempt}")
+    # A scanner wake is the only model-delivered carrier of this promise, so a
+    # completed turn that consumed the wake consumed the same task result.
+    carriers = {
+        row["message_id"] for row in snapshot["messages"]
+        if payload(row).get("source_refs", {}).get("task_result_identity")
+        == record["result_identity"]
+    }
+    carriers.add(record["message_id"])
     successful = []
     for row in snapshot["turn_records"]:
         if row["agent_id"] != agent_id or row["terminal_kind"] != "completed":
@@ -375,8 +385,8 @@ def require_task_reentry(
             for batch in stored.get("live_input_batches", []) for item in batch["items"]
         ]
         if (row["turn_id"] == turn["turn_id"]
-                or row["trigger_message_id"] == record["message_id"]
-                or record["message_id"] in inputs):
+                or row["trigger_message_id"] in carriers
+                or carriers & set(inputs)):
             successful.append(row)
     require(
         len(successful) == 1,

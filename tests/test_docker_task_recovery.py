@@ -305,7 +305,7 @@ class RecoveryOracleTests(unittest.TestCase):
         turn = snapshot["turn_records"][0]
         turn["trigger_message_id"] = "scanner-wake"
         turn["payload_json"] = json.dumps({"idle_input_batch": {
-            "activation_id": "attempt-1", "items": [{"message_id": "result-1"}],
+            "activation_id": "attempt-1", "items": [{"message_id": "scanner-wake"}],
         }})
         row = snapshot["execution_protocol_attempts"][0]
         attempt = oracle.payload(row)
@@ -322,7 +322,8 @@ class RecoveryOracleTests(unittest.TestCase):
         oracle.require_task_reentry(
             snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
         )
-        for mutation in ("no-model-input", "foreign-activation", "untrusted"):
+        for mutation in ("no-model-input", "unrelated-model-input",
+                         "foreign-activation", "untrusted"):
             with self.subTest(mutation=mutation):
                 broken = copy.deepcopy(snapshot)
                 if mutation == "untrusted":
@@ -333,6 +334,10 @@ class RecoveryOracleTests(unittest.TestCase):
                     batch = json.loads(broken["turn_records"][0]["payload_json"])
                     if mutation == "no-model-input":
                         batch["idle_input_batch"]["items"] = []
+                    elif mutation == "unrelated-model-input":
+                        batch["idle_input_batch"]["items"] = [
+                            {"message_id": "result-1"},
+                        ]
                     else:
                         batch["idle_input_batch"]["activation_id"] = "foreign"
                     broken["turn_records"][0]["payload_json"] = json.dumps(batch)
@@ -375,7 +380,7 @@ def scanner_lineage():
         "trigger_message_id": "scanner-wake",
         "payload_json": json.dumps({"idle_input_batch": {
             "activation_id": "scanner-attempt",
-            "items": [{"message_id": "scanner-wake"}, {"message_id": "result-1"}],
+            "items": [{"message_id": "scanner-wake"}],
         }}),
     })
     row["payload_json"] = json.dumps({
@@ -416,18 +421,18 @@ class ModelLineageTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "duplicate"):
             self.check(snapshot)
 
-    def test_scanner_only_and_unrelated_model_input_remain_red(self):
+    def test_scanner_wake_must_be_the_activation_model_input(self):
         snapshot = scanner_lineage()
         source_turn = snapshot["turn_records"][-1]
         batch = oracle.payload(source_turn)
-        batch["idle_input_batch"]["items"] = [{"message_id": "scanner-wake"}]
+        batch["idle_input_batch"]["items"] = [{"message_id": "result-1"}]
         source_turn["payload_json"] = json.dumps(batch)
         with self.assertRaisesRegex(AssertionError, "source causality"):
             self.check(snapshot)
         unrelated = copy.deepcopy(source_turn)
         unrelated.update(turn_id="unrelated-turn", trigger_message_id="unrelated")
         unrelated["payload_json"] = json.dumps({"idle_input_batch": {
-            "activation_id": "unrelated-attempt", "items": [{"message_id": "result-1"}],
+            "activation_id": "unrelated-attempt", "items": [{"message_id": "scanner-wake"}],
         }})
         snapshot["turn_records"].append(unrelated)
         with self.assertRaisesRegex(AssertionError, "source causality"):

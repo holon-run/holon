@@ -93,6 +93,11 @@ snapshots, provider request-to-activation/root joins, policy, restart before/aft
 snapshots and mounted-volume identity, pinned build/isolation evidence, logs,
 and cleanup status. Final evaluation uses the frozen database collected after
 dispatch stops. Truncated/missing tables and cleanup errors cannot pass.
+When a case is delivered through a scanner wake, the oracle requires that wake
+message to be the activation's model input and joins it to the frozen task
+result through its typed source refs; the raw task result stays a promise
+source and is never expected in model input. A different or missing wake input,
+a foreign result identity, and a second completed consuming turn all fail.
 Exit 0 requires every selected case's frozen oracle to pass; interruption exits
 130 after cleanup. A killed controller process cannot guarantee cleanup.
 
@@ -116,6 +121,17 @@ registration orders converge on one canonical admission, an explicit sixth
 source fails closed with no charge and no provider call, and an exhausted
 obligation does not starve a coexisting fresh result. In-process coverage is not
 a daemon-side proof, so the manifest entries stay pending.
+
+Scanner-first exact promises also survive provider failure and interrupted
+claim replay. The startup regression runs the actual daemon startup transaction
+before reconstructing the runtime, in both registration orders; invalid result
+identity, conflicting wait ref and ordinary-followup origin remain quarantined.
+These are real-command in-process tests, not Docker race-order evidence.
+The same first-admission, provider-failure successor, bootstrap and daemon-startup
+tests also run without a WorkItem, with lifecycle replacement, stop, cancellation,
+expiry and forged-source fences. Replay asserts the persisted interrupted
+predecessor, unchanged source identity/generation and binding, not an optional
+turn-attachment marker.
 
 `alive-owner` holds an actual provider request across the stored 30-second
 recheck deadline, captures its open attempt and nonterminal owner turn before

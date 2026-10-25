@@ -1913,6 +1913,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 scenario,
                 existing_execution,
                 scenario_class,
+                interrupted_exact_wait.map(|(_, attempt)| attempt),
             );
         }
         if let scheduler::CanonicalActivationScenario::ExactTaskRejoin {
@@ -2333,9 +2334,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let Some(execution) = execution else {
             return Ok(None);
         };
-        let Some(work_item_id) = message.work_item_id.as_ref() else {
-            return Ok(None);
-        };
         if !self
             .runtime
             .inner
@@ -2351,25 +2349,32 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .inner
             .runtime_db
             .task_result_settlements()
-            .exact_waiter_recovery_replay_wait(message)?
+            .exact_waiter_recovery_replay_wait(message, self.runtime.now())?
         else {
             return Ok(None);
         };
-        if !execution.work_items.get(work_item_id).is_some_and(|work| {
-            matches!(
-                &work.state,
-                WorkItemExecutionState::Runnable {
-                    recovery_ref: Some(recovery_ref),
-                    ..
-                } if recovery_ref == "interrupted"
-            )
-        }) {
-            return Ok(None);
-        }
-        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
-            owner: crate::domain::scheduler::SchedulerOwner::WorkItem {
+        let owner = if let Some(work_item_id) = &message.work_item_id {
+            if !execution.work_items.get(work_item_id).is_some_and(|work| {
+                matches!(
+                    &work.state,
+                    WorkItemExecutionState::Runnable {
+                        recovery_ref: Some(recovery_ref),
+                        ..
+                    } if recovery_ref == "interrupted"
+                )
+            }) {
+                return Ok(None);
+            }
+            crate::domain::scheduler::SchedulerOwner::WorkItem {
                 work_item_id: work_item_id.clone(),
-            },
+            }
+        } else {
+            crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
+                agent_id: message.agent_id.clone(),
+            }
+        };
+        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner,
             wait_id: wait.id.clone(),
         };
         let expected_source = ExecutionSourceIdentity::TriggeredWait {
@@ -2411,17 +2416,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         scenario: scheduler::CanonicalActivationScenario,
         existing_execution: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
+        interrupted_exact_attempt: Option<crate::domain::execution_protocol::ExecutionAttempt>,
     ) -> Result<CanonicalClaimOutcome> {
         let repaired_wait = matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
-        ) && self
-            .runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .exact_waiter_recovery_source(message)?
-            .is_some();
+        )
+        .then(|| {
+            self.runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .exact_waiter_recovery_wait(message)
+        })
+        .transpose()?
+        .flatten();
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactWaitResume { owner, wait_id }
                 if owner
@@ -2445,8 +2454,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             )
                             && condition.trigger_message_id() == Some(message.id.as_str())
                             && (scheduler::message_matches_wait_condition(message, condition)
-                                || (repaired_wait
-                                    && message.source_refs.get("wait_id") == Some(wait_id)))
+                                || repaired_wait
+                                    .as_ref()
+                                    .is_some_and(|wait| wait.id == condition.id))
                     });
                 if matching.is_none() {
                     return Ok(CanonicalClaimOutcome::RejectQueued {
@@ -2523,6 +2533,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             };
             Some(predecessor)
+        } else if let Some(attempt) = interrupted_exact_attempt {
+            Some(attempt.attempt_id)
         } else {
             match self.canonical_lifecycle_recovery(
                 message,

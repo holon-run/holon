@@ -22,7 +22,8 @@ pub(crate) use local_dispatch::pause_local_dispatch_rejected_tx;
 pub(crate) mod live_turn;
 mod obligation;
 pub(crate) use obligation::{
-    classify_obligation_tx, settled_recovery_source_tx, TaskResultObligation,
+    classify_obligation_tx, exact_waiter_recovery_wait_tx, settled_recovery_source_tx,
+    TaskResultObligation,
 };
 mod provider_handoff;
 pub(crate) use provider_handoff::transfer_provider_admitted_tx;

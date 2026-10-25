@@ -408,6 +408,23 @@ durable resolved wait, trigger, predecessor lineage and generation. An independe
 business blocker remains intact; it cannot consume the failed continuation or
 authorize ordinary blocked, paused or repair-needed work.
 
+A scanner-queued recovery message is immutable and may predate the exact wait's
+registration. Its durable join is the same-agent, same-owner task wait naming
+that message as its trigger, whether the wait is `Triggered` or `Resolved`.
+An explicit `wait_id` must agree; a conflicting ref cannot use the trigger join
+as a fallback. Initial admission, failed-continuation recovery, daemon startup
+classification and interrupted claim replay use this same identity. Startup
+validates against its own canonical claim in the same transaction; another
+activation's live claim remains in flight. Replay must still reject cancelled,
+expired or superseded waits, stopped agents, closed owners and stale or consumed
+results; resolving a wait does not remove its expiry fence.
+The same join and replay lineage apply to an agent-lifecycle exact wait without
+a WorkItem; absence of a WorkItem does not revoke the explicit promise or give
+an ordinary unbound followup re-entry authority.
+Repeated daemon startup validates these runtime-owned successors through the
+exact source-to-wait join and canonical lineage, not an agent-message delivery
+that their source never created. Ordinary lifecycle delivery fences still apply.
+
 For repeated fallback, follow validated predecessor links to the original task
 input with a bounded, cycle-checked traversal. Intermediate recovery messages
 and unrelated later operator messages cannot replace that input. Preserve its

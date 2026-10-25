@@ -65,7 +65,7 @@ impl TaskResultSettlementRepository<'_> {
         source: &MessageEnvelope,
     ) -> Result<Option<TaskResultSettlementRecord>> {
         self.db
-            .transaction(|tx| exact_waiter_recovery_source_tx(tx, source))
+            .transaction(|tx| exact_waiter_recovery_source_tx(tx, source, None))
     }
 
     /// The exact wait that owns this validated recovery source. Scanner-queued
@@ -75,45 +75,32 @@ impl TaskResultSettlementRepository<'_> {
         &self,
         source: &MessageEnvelope,
     ) -> Result<Option<WaitConditionRecord>> {
-        self.db.transaction(|tx| {
-            if exact_waiter_recovery_source_tx(tx, source)?.is_none() {
-                return Ok(None);
-            }
-            super::exact_waiter::resolved_exact_wait_tx(tx, source, None)
-        })
+        self.db
+            .transaction(|tx| exact_waiter_recovery_wait_tx(tx, source, None))
     }
 
     pub(crate) fn exact_waiter_recovery_replay_wait(
         &self,
         source: &MessageEnvelope,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<WaitConditionRecord>> {
         self.db.transaction(|tx| {
-            if exact_waiter_recovery_source_tx(tx, source)?.is_none() {
+            if exact_waiter_recovery_source_tx(tx, source, None)?.is_none() {
                 return Ok(None);
             }
-            let Some(wait_id) = source.source_refs.get("wait_id") else {
+            let Some(wait) = super::exact_waiter::exact_wait_for_source_tx(tx, source, None)?
+            else {
                 return Ok(None);
             };
-            let payload: Option<String> = tx
-                .query_row(
-                    "SELECT payload_json FROM wait_conditions
-                     WHERE wait_condition_id = ?1 AND agent_id = ?2",
-                    params![wait_id, source.agent_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(payload) = payload else {
-                return Ok(None);
-            };
-            let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
             if wait.status != WaitConditionStatus::Resolved
                 || wait.cancelled_at.is_some()
+                || wait.expires_at.is_some_and(|expires| expires <= now)
                 || tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM wait_conditions newer
                      WHERE newer.agent_id = ?1 AND newer.work_item_id IS ?2
                        AND newer.rowid > (SELECT rowid FROM wait_conditions
                                           WHERE wait_condition_id = ?3))",
-                    params![source.agent_id, source.work_item_id, wait_id],
+                    params![source.agent_id, source.work_item_id, wait.id],
                     |row| row.get::<_, bool>(0),
                 )?
                 || !tx.query_row(
@@ -230,9 +217,21 @@ pub(crate) fn settled_recovery_source_tx(
     Ok(true)
 }
 
+pub(crate) fn exact_waiter_recovery_wait_tx(
+    tx: &Transaction<'_>,
+    source: &MessageEnvelope,
+    current_activation_id: Option<&str>,
+) -> Result<Option<WaitConditionRecord>> {
+    if exact_waiter_recovery_source_tx(tx, source, current_activation_id)?.is_none() {
+        return Ok(None);
+    }
+    super::exact_waiter::exact_wait_for_source_tx(tx, source, None)
+}
+
 fn exact_waiter_recovery_source_tx(
     tx: &Transaction<'_>,
     source: &MessageEnvelope,
+    current_activation_id: Option<&str>,
 ) -> Result<Option<TaskResultSettlementRecord>> {
     let payload: Option<String> = tx
         .query_row(
@@ -269,7 +268,7 @@ fn exact_waiter_recovery_source_tx(
         tx,
         &source.id,
         source.work_item_id.as_deref(),
-        None,
+        current_activation_id,
         None,
     )
 }
