@@ -7279,6 +7279,73 @@ code {
 .agent-identity-card { position: relative; }
 .agent-identity-card .agent-overview-title { position: absolute; top: 10px; right: 48px; }
 .agent-overview-stack .collapsible-inspector-summary .eyebrow { text-transform: none; font-size: 13px; color: var(--text); }
+.agent-timer-list { display: grid; gap: 8px; }
+.agent-timer-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.agent-timer-row.is-history { background: var(--surface-soft); }
+.agent-timer-summary,
+.agent-timer-heading,
+.agent-timer-schedule,
+.agent-timer-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.agent-timer-summary { justify-content: space-between; gap: 8px; }
+.agent-timer-heading { gap: 7px; overflow: hidden; }
+.agent-timer-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-timer-type {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.agent-timer-schedule { gap: 7px; color: var(--muted); font-size: 12px; }
+.agent-timer-schedule code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-timer-schedule span { flex: none; color: var(--faint); }
+.agent-timer-meta {
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.agent-timer-meta div { display: grid; gap: 2px; }
+.agent-timer-meta dt { color: var(--faint); }
+.agent-timer-meta dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.agent-timer-row > .secondary-button { justify-self: start; padding: 5px 9px; font-size: 11px; }
+.agent-timer-history {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.agent-timer-history summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 0 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  list-style: none;
+}
+.agent-timer-history summary::-webkit-details-marker { display: none; }
+.agent-timer-history summary::before { content: "›"; color: var(--faint); transition: transform 120ms ease; }
+.agent-timer-history[open] summary::before { transform: rotate(90deg); }
+.agent-timer-history summary span:first-of-type { flex: 1; }
 .file-browser-markdown th, .file-browser-markdown td { min-width: 120px; }
 .sidebar-brand { gap: 8px; }
 .panel-actions button, .file-browser-toolbar > button { border: 0; background: transparent; border-radius: 5px; padding: 5px; color: var(--muted); cursor: pointer; }

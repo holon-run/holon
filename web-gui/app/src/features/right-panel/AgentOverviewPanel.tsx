@@ -95,6 +95,105 @@ function ManageAgentSkillItem({
   );
 }
 
+type TimerRecord = components["schemas"]["TimerRecord"];
+
+function formatTimerDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${milliseconds} ms`;
+  if (milliseconds % 86_400_000 === 0) return `${milliseconds / 86_400_000} d`;
+  if (milliseconds % 3_600_000 === 0) return `${milliseconds / 3_600_000} h`;
+  if (milliseconds % 60_000 === 0) return `${milliseconds / 60_000} min`;
+  if (milliseconds % 1_000 === 0) return `${milliseconds / 1_000} s`;
+  return `${milliseconds} ms`;
+}
+
+function formatTimerDate(value: string | null, timezone?: string): string | null {
+  if (!value) return null;
+  try {
+    return new Date(value).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      ...(timezone ? { timeZone: timezone } : {}),
+    });
+  } catch {
+    return new Date(value).toLocaleString();
+  }
+}
+
+function TimerRow({
+  timer,
+  cancelling = false,
+  onCancel,
+}: {
+  timer: TimerRecord;
+  cancelling?: boolean;
+  onCancel?: () => void;
+}) {
+  const { t } = useTranslation();
+  const calendar = timer.calendar;
+  const timerType = calendar
+    ? t("rightPanel.timerTypeCron")
+    : timer.interval_ms
+      ? t("rightPanel.timerTypeInterval")
+      : t("rightPanel.timerTypeOneTime");
+  const schedule = calendar
+    ? calendar.expression
+    : timer.interval_ms
+      ? t("rightPanel.timerInterval", { value: formatTimerDuration(timer.interval_ms) })
+      : t("rightPanel.timerRelative", { value: formatTimerDuration(timer.duration_ms) });
+  const nextFire = formatTimerDate(timer.next_fire_at, calendar?.timezone);
+  const lastFired = formatTimerDate(timer.last_fired_at, calendar?.timezone);
+
+  return (
+    <article className={`agent-timer-row${timer.status !== "active" ? " is-history" : ""}`}>
+      <div className="agent-timer-summary">
+        <div className="agent-timer-heading">
+          <strong title={timer.summary || timer.id}>{timer.summary || timer.id}</strong>
+          <span className="agent-timer-type">{timerType}</span>
+        </div>
+        <StatusBadge className="state-chip" kind="task" value={timer.status} showLabel />
+      </div>
+      <div className="agent-timer-schedule">
+        <code>{schedule}</code>
+        {calendar ? <span>{calendar.timezone}</span> : null}
+      </div>
+      <dl className="agent-timer-meta">
+        {nextFire ? (
+          <div>
+            <dt>{t("rightPanel.timerNextRun")}</dt>
+            <dd><time dateTime={timer.next_fire_at ?? undefined}>{nextFire}</time></dd>
+          </div>
+        ) : null}
+        {lastFired ? (
+          <div>
+            <dt>{t("rightPanel.timerLastRun")}</dt>
+            <dd><time dateTime={timer.last_fired_at ?? undefined}>{lastFired}</time></dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>{t("rightPanel.timerRuns")}</dt>
+          <dd>{timer.fire_count}</dd>
+        </div>
+        {timer.repeat ? (
+          <div>
+            <dt>{t("rightPanel.timerRepeating")}</dt>
+            <dd>{t("inspector.yes")}</dd>
+          </div>
+        ) : null}
+      </dl>
+      {onCancel ? (
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={cancelling}
+          onClick={onCancel}
+        >
+          {cancelling ? t("rightPanel.cancellingTimer") : t("common.cancel")}
+        </button>
+      ) : null}
+    </article>
+  );
+}
+
 export function AgentOverviewPanel({
   agent,
   deletionStatus,
@@ -134,6 +233,8 @@ export function AgentOverviewPanel({
   const [cancellingTimerId, setCancellingTimerId] = useState<string | undefined>();
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
+  const activeTimers = useMemo(() => timers.filter((timer) => timer.status === "active"), [timers]);
+  const timerHistory = useMemo(() => timers.filter((timer) => timer.status !== "active"), [timers]);
   useEffect(() => {
     let cancelled = false;
     setTimersLoading(true);
@@ -547,46 +648,37 @@ export function AgentOverviewPanel({
       })()}
 
       <CollapsibleInspectorCard
-        title={t("rightPanel.timers")}
+        title={activeTimers.length ? t("rightPanel.timersWithActiveCount", { count: activeTimers.length }) : t("rightPanel.timers")}
         className="agent-timers-card"
         badge={timers.length ? <span className="inspector-card-count">{timers.length}</span> : undefined}
       >
         {timersLoading ? <p className="muted">{t("rightPanel.loadingTimers")}</p> : null}
         {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
         {!timersLoading && !timers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
-        {timers.length ? (
+        {activeTimers.length ? (
           <div className="agent-timer-list">
-            {timers.map((timer) => {
-              const calendar = timer.calendar;
-              const canCancel = timer.status === "active";
-              return (
-                <article key={timer.id} className="agent-timer-row">
-                  <div className="agent-timer-summary">
-                    <strong>{timer.summary || timer.id}</strong>
-                    <StatusBadge className="state-chip" kind="task" value={timer.status} />
-                  </div>
-                  <div className="agent-timer-details">
-                    {calendar ? (
-                      <span>{calendar.expression} · {calendar.timezone}</span>
-                    ) : (
-                      <span>{timer.interval_ms ? t("rightPanel.timerInterval", { value: timer.interval_ms }) : t("rightPanel.timerRelative", { value: timer.duration_ms })}</span>
-                    )}
-                    {timer.next_fire_at ? <time dateTime={timer.next_fire_at}>{new Date(timer.next_fire_at).toLocaleString()}</time> : null}
-                  </div>
-                  {canCancel ? (
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={cancellingTimerId === timer.id}
-                      onClick={() => void handleCancelTimer(timer.id)}
-                    >
-                      {cancellingTimerId === timer.id ? t("rightPanel.cancellingTimer") : t("common.cancel")}
-                    </button>
-                  ) : null}
-                </article>
-              );
-            })}
+            {activeTimers.map((timer) => (
+              <TimerRow
+                key={timer.id}
+                timer={timer}
+                cancelling={cancellingTimerId === timer.id}
+                onCancel={() => void handleCancelTimer(timer.id)}
+              />
+            ))}
           </div>
+        ) : null}
+        {timerHistory.length ? (
+          <details className="agent-timer-history">
+            <summary>
+              <span>{t("rightPanel.timerHistory")}</span>
+              <span className="inspector-card-count">{timerHistory.length}</span>
+            </summary>
+            <div className="agent-timer-list">
+              {timerHistory.map((timer) => (
+                <TimerRow key={timer.id} timer={timer} />
+              ))}
+            </div>
+          </details>
         ) : null}
       </CollapsibleInspectorCard>
 
