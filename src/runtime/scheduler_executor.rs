@@ -778,6 +778,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .storage
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
+        #[cfg(feature = "recovery-acceptance")]
+        if super::recovery_acceptance::hold_task_result(self.runtime, &original_message)? {
+            // Park only this original source before planning/claiming. The
+            // scanner and all unrelated queue sources remain schedulable.
+            return Ok(PrepareMessageOutcome::ProviderParked);
+        }
         let mut persisted_message = original_message.clone();
         let isolated_legacy_execution_bindings = if queue_entry
             .as_ref()
@@ -1664,11 +1670,33 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         record: &crate::runtime_db::TaskResultSettlementRecord,
         source_message_id: Option<&str>,
     ) -> Result<bool> {
-        // An exhausted recovery budget waits for operator action. Waking the
-        // model for it would spend a provider call without any admission fence
-        // able to charge it, so fail closed instead.
+        // Exhaustion rejects new roots, not the interrupted snapshot of an
+        // already charged root. Canonical claim still checks its replay fences.
         if record.recovery_paused_at.is_some() {
-            return Ok(false);
+            let settlements = self.runtime.inner.runtime_db.task_result_settlements();
+            let charged_replay = if let Some(source_message_id) = source_message_id {
+                settlements
+                    .recovery_root_is_charged(record, &canonical_activation_id(source_message_id))?
+                    && settlements
+                        .interrupted_admitted_result_anchor(
+                            agent_id,
+                            &record.message_id,
+                            self.runtime.now(),
+                        )?
+                        .as_deref()
+                        == Some(source_message_id)
+            } else {
+                false
+            };
+            if !charged_replay {
+                #[cfg(feature = "recovery-acceptance")]
+                super::recovery_acceptance::budget_rejected(
+                    self.runtime,
+                    record,
+                    source_message_id,
+                )?;
+                return Ok(false);
+            }
         }
         if self
             .runtime

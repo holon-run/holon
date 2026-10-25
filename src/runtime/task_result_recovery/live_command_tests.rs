@@ -7,6 +7,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::sync::Notify;
 
+#[cfg(feature = "recovery-acceptance")]
+#[path = "acceptance_control_tests.rs"]
+mod acceptance_control_tests;
+
 async fn ready_owner(runtime: &RuntimeHandle) -> WorkItemRecord {
     runtime
         .create_work_item(
@@ -51,6 +55,15 @@ async fn completed_command_for_owner(
     runtime: &RuntimeHandle,
     owner: Option<&WorkItemRecord>,
     evidence: &str,
+) -> (TaskRecord, MessageEnvelope) {
+    completed_command_with_delivery(runtime, owner, evidence, false).await
+}
+
+async fn completed_command_with_delivery(
+    runtime: &RuntimeHandle,
+    owner: Option<&WorkItemRecord>,
+    evidence: &str,
+    keep_original_delivery: bool,
 ) -> (TaskRecord, MessageEnvelope) {
     if let Some(owner) = owner {
         runtime.pick_work_item(owner.id.clone()).await.unwrap();
@@ -103,8 +116,10 @@ async fn completed_command_for_owner(
         task.rejoin_fence().unwrap().parent_turn_id
     );
     assert_eq!(record.task_id, created.id);
-    // Lose only the original queue delivery. No turn has admitted its content.
-    remove_source(runtime, &result, QueueEntryStatus::Processed).await;
+    if !keep_original_delivery {
+        // Lose only the original queue delivery. No turn has admitted its content.
+        remove_source(runtime, &result, QueueEntryStatus::Processed).await;
+    }
     (task, result)
 }
 
@@ -700,6 +715,169 @@ impl AgentProvider for GatedProvider {
             .complete_turn(request)
             .await
     }
+}
+
+#[derive(Default)]
+struct FifthRootBarrierProvider {
+    failure: FailureProvider,
+    entered: Notify,
+    requests: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl AgentProvider for FifthRootBarrierProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        if self.requests.fetch_add(1, Ordering::SeqCst) == 4 {
+            self.entered.notify_one();
+            return std::future::pending().await;
+        }
+        self.failure.complete_turn(request).await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn real_command_fifth_charged_root_survives_daemon_startup_without_new_budget() {
+    let provider = Arc::new(FifthRootBarrierProvider::default());
+    provider.failure.failures.store(4, Ordering::SeqCst);
+    let mut harness = LifecycleHarness::with_provider(provider.clone());
+    // Initial snapshots use wall time, while startup replay uses the test clock.
+    // Start just before wall time; the five retries advance beyond it for replay.
+    let offset = Utc::now()
+        .signed_duration_since(harness.now())
+        .to_std()
+        .unwrap_or_default();
+    harness
+        .advance(offset.saturating_sub(Duration::from_secs(60)))
+        .await;
+    let runtime = harness.runtime();
+    let owner = ready_owner(runtime).await;
+    let (_, result) = completed_command(runtime, &owner, "fifth-root-startup").await;
+    let mut roots = BTreeSet::new();
+    for attempt in 1..=4 {
+        harness
+            .advance(Duration::from_secs(if attempt == 1 { 30 } else { 600 }))
+            .await;
+        assert!(runtime.emit_due_task_result_recovery().await.unwrap());
+        let scheduled = Box::pin(claim_model(runtime)).await;
+        process(runtime, scheduled).await;
+        let record = latest(runtime, &result.id);
+        assert_recovery_snapshot(runtime, &record);
+        assert_eq!(record.recovery_attempts, attempt);
+        assert!(roots.insert(record.last_recovery_root_attempt_id.unwrap()));
+        discard_provider_handoffs(runtime).await;
+    }
+    harness.advance(Duration::from_secs(600)).await;
+    assert!(runtime.emit_due_task_result_recovery().await.unwrap());
+    let scheduled = Box::pin(claim_model(runtime)).await;
+    let source = scheduled.message.clone();
+    assert!(source.source_refs.contains_key("task_result_owner_key"));
+    assert!(!source.source_refs.contains_key("wait_id"));
+    let mut processing = process(runtime, scheduled);
+    tokio::select! {
+        _ = &mut processing => panic!("fifth root must reach the provider barrier"),
+        _ = provider.entered.notified() => {}
+    }
+    let before = latest(runtime, &result.id);
+    assert_recovery_snapshot(runtime, &before);
+    assert_eq!(before.recovery_attempts, 5);
+    assert!(before.recovery_paused_at.is_some());
+    assert!(before.next_recheck_at.is_none());
+    assert!(roots.insert(before.last_recovery_root_attempt_id.clone().unwrap()));
+    assert_eq!(roots.len(), 5);
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 5);
+    // Dropping the in-flight provider future simulates the process ending at
+    // this exact durable boundary, then runs the real daemon startup repair.
+    drop(processing);
+    let report = runtime
+        .runtime_db()
+        .recover_interrupted_runtime_state_at_startup()
+        .unwrap();
+    assert_eq!(report.interrupted_execution_attempts, 1);
+    harness.restart();
+    let runtime = harness.runtime();
+    Box::pin(runtime.recover_scheduler_bootstrap_claims())
+        .await
+        .unwrap();
+    let interrupted = latest(runtime, &result.id);
+    assert_eq!(interrupted.state, TaskResultSettlementState::CallerAdmitted);
+    let interrupted_execution = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let interrupted_attempt =
+        &interrupted_execution.attempts[before.activation_id.as_deref().unwrap()];
+    assert_eq!(
+        interrupted_attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    let interrupted_turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&source.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interrupted,
+        "{interrupted_attempt:?}\n{interrupted_turn:?}"
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .task_result_settlements()
+            .interrupted_admitted_result_anchor("default", &result.id, runtime.now())
+            .unwrap(),
+        Some(source.id.clone()),
+        "daemon startup must retain the interrupted canonical result snapshot: \
+         {interrupted:?}\n{interrupted_attempt:?}\n{interrupted_turn:?}"
+    );
+    assert!(runtime
+        .runtime_db()
+        .task_result_settlements()
+        .recovery_root_is_charged(
+            &latest(runtime, &result.id),
+            before.last_recovery_root_attempt_id.as_deref().unwrap(),
+        )
+        .unwrap());
+    let scheduled = Box::pin(claim_model(runtime)).await;
+    assert_eq!(scheduled.message.id, source.id);
+    assert_eq!(
+        runtime.storage().read_message_by_id(&source.id).unwrap(),
+        Some(source.clone())
+    );
+    let mut replay_refs = source.source_refs.clone();
+    replay_refs.insert("replay_source_turn_id".into(), interrupted_turn.turn_id);
+    replay_refs.insert(
+        "replay_reason".into(),
+        "interrupted_queue_claim_reentry".into(),
+    );
+    assert_eq!(scheduled.message.source_refs, replay_refs);
+    process(runtime, scheduled).await;
+    let delivered = latest(runtime, &result.id);
+    assert_recovery_snapshot(runtime, &delivered);
+    assert_eq!(delivered.state, TaskResultSettlementState::Settled);
+    assert_eq!(delivered.recovery_attempts, 5);
+    assert_eq!(delivered.recovery_epoch, before.recovery_epoch);
+    assert_eq!(
+        delivered.last_recovery_root_attempt_id,
+        before.last_recovery_root_attempt_id
+    );
+    assert_eq!(delivered.recovery_paused_at, before.recovery_paused_at);
+    assert_ne!(delivered.activation_id, before.activation_id);
+    let execution = runtime
+        .runtime_db()
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.attempts[delivered.activation_id.as_deref().unwrap()].recovery_of_attempt_id,
+        before.activation_id
+    );
+    assert_eq!(provider.requests.load(Ordering::SeqCst), 6);
 }
 
 #[tokio::test(start_paused = true)]

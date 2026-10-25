@@ -23,6 +23,8 @@ mod operator_dispatch;
 mod provider_admission;
 pub(crate) mod provider_recovery;
 mod provider_turn;
+#[cfg(feature = "recovery-acceptance")]
+mod recovery_acceptance;
 mod repair;
 mod scheduler;
 mod scheduler_acceptance;
@@ -6444,17 +6446,30 @@ impl RuntimeHandle {
                     if idle_transition.posture_changed {
                         self.append_state_changed_events(&idle_transition.state)?;
                     }
-                    if let Some(next_recheck_at) = next_recheck_at {
-                        if next_recheck_at > self.now() {
-                            tokio::select! {
-                                _ = &mut notified => {}
-                                _ = self.inner.clock.sleep_until(next_recheck_at) => {}
-                            }
+                    // Only the explicitly marked acceptance binary services private
+                    // controls while otherwise idle, without changing policy deadlines.
+                    #[cfg(feature = "recovery-acceptance")]
+                    {
+                        tokio::select! {
+                            _ = &mut notified => {}
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
                         }
-                    } else {
-                        notified.await;
+                        continue;
                     }
-                    continue;
+                    #[cfg(not(feature = "recovery-acceptance"))]
+                    {
+                        if let Some(next_recheck_at) = next_recheck_at {
+                            if next_recheck_at > self.now() {
+                                tokio::select! {
+                                    _ = &mut notified => {}
+                                    _ = self.inner.clock.sleep_until(next_recheck_at) => {}
+                                }
+                            }
+                        } else {
+                            notified.await;
+                        }
+                        continue;
+                    }
                 }
             };
 

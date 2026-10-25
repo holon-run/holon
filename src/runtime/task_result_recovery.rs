@@ -319,6 +319,8 @@ impl RuntimeHandle {
         if state.status == AgentStatus::Stopped {
             return Ok(false);
         }
+        #[cfg(feature = "recovery-acceptance")]
+        let (acceptance, acceptance_enqueued) = super::recovery_acceptance::service(self).await?;
         let now = self.now();
         self.publish_paused_task_result_diagnostics(&state.id)?;
         let records = self
@@ -327,6 +329,9 @@ impl RuntimeHandle {
             .task_result_settlements()
             .due_deferred(&state.id, now, RESULT_RECHECK_LIMIT)?;
         if records.is_empty() {
+            #[cfg(feature = "recovery-acceptance")]
+            return Ok(acceptance_enqueued);
+            #[cfg(not(feature = "recovery-acceptance"))]
             return Ok(false);
         }
         let execution = self
@@ -340,7 +345,15 @@ impl RuntimeHandle {
             .active_wait_conditions_for_agent(&state.id)?;
         let mut queued_owners = std::collections::BTreeSet::new();
         let mut enqueued = false;
+        #[cfg(feature = "recovery-acceptance")]
+        {
+            enqueued |= acceptance_enqueued;
+        }
         for record in records {
+            #[cfg(feature = "recovery-acceptance")]
+            if super::recovery_acceptance::hold_scanner(self, acceptance.as_ref(), &record)? {
+                continue;
+            }
             let exact_continuation = self
                 .inner
                 .runtime_db
@@ -563,6 +576,8 @@ impl RuntimeHandle {
             message
                 .source_refs
                 .insert("task_result_identity".into(), record.result_identity);
+            #[cfg(feature = "recovery-acceptance")]
+            let acceptance_message = message.clone();
             if let Some(predecessor) = exact_continuation {
                 enqueued |= self
                     .enqueue_exact_recovery_continuation(
@@ -576,6 +591,12 @@ impl RuntimeHandle {
                 self.enqueue(message).await?;
                 enqueued = true;
             }
+            #[cfg(feature = "recovery-acceptance")]
+            super::recovery_acceptance::scanner_enqueued(
+                self,
+                acceptance.as_ref(),
+                &acceptance_message,
+            )?;
         }
         Ok(enqueued)
     }

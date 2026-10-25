@@ -155,6 +155,29 @@ pub(crate) fn charge_recovery_admission_tx(
 }
 
 impl TaskResultSettlementRepository<'_> {
+    pub(crate) fn recovery_root_is_charged(
+        &self,
+        record: &TaskResultSettlementRecord,
+        root_attempt_id: &str,
+    ) -> Result<bool> {
+        self.db.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS (
+                       SELECT 1 FROM task_result_recovery_admissions
+                       WHERE result_identity = ?1 AND recovery_epoch = ?2 AND root_attempt_id = ?3
+                     )",
+                    params![
+                        record.result_identity,
+                        record.recovery_epoch,
+                        root_attempt_id
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+        })
+    }
+
     pub(crate) fn unreported_paused(
         &self,
         agent_id: &str,
