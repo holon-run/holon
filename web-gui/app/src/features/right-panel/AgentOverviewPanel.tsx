@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Inbox, Loader2, Pencil, Play, Square, Trash2, X } from "lucide-react";
+import {
+  CalendarClock,
+  Check,
+  Inbox,
+  Loader2,
+  Pencil,
+  Play,
+  Repeat2,
+  Square,
+  Timer,
+  Trash2,
+  X,
+} from "lucide-react";
 import type React from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
@@ -140,6 +152,7 @@ function TimerRow({
     : timer.interval_ms
       ? t("rightPanel.timerInterval", { value: formatTimerDuration(timer.interval_ms) })
       : t("rightPanel.timerRelative", { value: formatTimerDuration(timer.duration_ms) });
+  const ScheduleIcon = calendar ? CalendarClock : timer.interval_ms ? Repeat2 : Timer;
   const nextFire = formatTimerDate(timer.next_fire_at, calendar?.timezone);
   const lastFired = formatTimerDate(timer.last_fired_at, calendar?.timezone);
 
@@ -148,12 +161,16 @@ function TimerRow({
       <div className="agent-timer-summary">
         <div className="agent-timer-heading">
           <strong title={timer.summary || timer.id}>{timer.summary || timer.id}</strong>
-          <span className="agent-timer-type">{timerType}</span>
+          <span className="agent-timer-type" title={timerType} aria-label={timerType}>
+            {calendar ? <CalendarClock size={14} aria-hidden="true" /> : timer.interval_ms ? <Repeat2 size={14} aria-hidden="true" /> : <Timer size={14} aria-hidden="true" />}
+            <span className="sr-only">{timerType}</span>
+          </span>
         </div>
-        <StatusBadge className="state-chip" kind="task" value={timer.status} showLabel />
+        <StatusBadge className="state-chip" kind="task" value={timer.status} />
       </div>
       <div className="agent-timer-schedule">
-        <code>{schedule}</code>
+        <ScheduleIcon size={15} aria-hidden="true" />
+        <strong>{schedule}</strong>
         {calendar ? <span>{calendar.timezone}</span> : null}
       </div>
       <dl className="agent-timer-meta">
@@ -233,8 +250,10 @@ export function AgentOverviewPanel({
   const [cancellingTimerId, setCancellingTimerId] = useState<string | undefined>();
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
-  const activeTimers = useMemo(() => timers.filter((timer) => timer.status === "active"), [timers]);
-  const timerHistory = useMemo(() => timers.filter((timer) => timer.status !== "active"), [timers]);
+  const visibleTimers = useMemo(
+    () => timers.filter((timer) => timer.status !== "completed" && timer.status !== "cancelled"),
+    [timers],
+  );
   useEffect(() => {
     let cancelled = false;
     setTimersLoading(true);
@@ -648,16 +667,16 @@ export function AgentOverviewPanel({
       })()}
 
       <CollapsibleInspectorCard
-        title={activeTimers.length ? t("rightPanel.timersWithActiveCount", { count: activeTimers.length }) : t("rightPanel.timers")}
+        title={visibleTimers.length ? t("rightPanel.timersWithActiveCount", { count: visibleTimers.length }) : t("rightPanel.timers")}
         className="agent-timers-card"
-        badge={timers.length ? <span className="inspector-card-count">{timers.length}</span> : undefined}
+        badge={visibleTimers.length ? <span className="inspector-card-count">{visibleTimers.length}</span> : undefined}
       >
         {timersLoading ? <p className="muted">{t("rightPanel.loadingTimers")}</p> : null}
         {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
-        {!timersLoading && !timers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
-        {activeTimers.length ? (
+        {!timersLoading && !visibleTimers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
+        {visibleTimers.length ? (
           <div className="agent-timer-list">
-            {activeTimers.map((timer) => (
+            {visibleTimers.map((timer) => (
               <TimerRow
                 key={timer.id}
                 timer={timer}
@@ -666,19 +685,6 @@ export function AgentOverviewPanel({
               />
             ))}
           </div>
-        ) : null}
-        {timerHistory.length ? (
-          <details className="agent-timer-history">
-            <summary>
-              <span>{t("rightPanel.timerHistory")}</span>
-              <span className="inspector-card-count">{timerHistory.length}</span>
-            </summary>
-            <div className="agent-timer-list">
-              {timerHistory.map((timer) => (
-                <TimerRow key={timer.id} timer={timer} />
-              ))}
-            </div>
-          </details>
         ) : null}
       </CollapsibleInspectorCard>
 
