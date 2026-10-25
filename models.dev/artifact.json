@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462",
+  "revision": "models-dev-f72eac48dfa8e32794722e77de0c66f2cf6ae79ec2026436cd524394eb41b83a",
   "upstream": {
     "source": "models.dev",
-    "revision": "4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462",
-    "fetched_at": "2026-10-24T21:01:56.367515483+00:00",
-    "content_sha256": "4d78111a562730683698be7a3815b6741b29aa026b988335ceceb32840ac0462",
-    "adapter_version": "0.54.1 (bc1a3dbe-dirty)"
+    "revision": "f72eac48dfa8e32794722e77de0c66f2cf6ae79ec2026436cd524394eb41b83a",
+    "fetched_at": "2026-10-25T20:36:40.928568524+00:00",
+    "content_sha256": "f72eac48dfa8e32794722e77de0c66f2cf6ae79ec2026436cd524394eb41b83a",
+    "adapter_version": "0.54.1 (31e3ffcd)"
   },
   "models": [
     {
@@ -1222,6 +1222,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "chutes/Qwen/Qwen3.8-Max-0902",
+      "display_name": "Qwen3.8 Max 0902",
+      "description": "Flagship Qwen model for complex reasoning, coding, and agentic workflows",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "chutes/deepseek-ai/DeepSeek-V3.2-TEE",
       "display_name": "DeepSeek V3.2 TEE",
       "description": "DeepSeek chat model for instruction following, coding, and analysis",
@@ -1259,6 +1280,27 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "chutes/deepseek-ai/DeepSeek-V4-Pro-0813",
+      "display_name": "DeepSeek V4 Pro 0813",
+      "description": "Flagship DeepSeek model for coding, reasoning, and agentic work",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -13384,6 +13426,27 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/liquid/lfm-2.5-2.6b",
+      "display_name": "LFM2.5-2.6B",
+      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+      "context_window_tokens": 128000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 121600,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 8192,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/liquid/lfm-2.5-2.6b:free",
       "display_name": "LFM2.5-2.6B (free)",
       "description": "Free provider route for experiments, demos, and cost-sensitive chat workloads",
@@ -13537,8 +13600,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 72000,
-      "max_output_tokens_upper_limit": 72000,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17710,8 +17773,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {

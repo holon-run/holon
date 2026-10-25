@@ -2383,7 +2383,7 @@
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "max_output_tokens_upper_limit": 512000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4551,13 +4551,118 @@
       "source": "built_in_catalog"
     },
     {
-      "model_ref": "qianfan/ernie-5.0",
-      "display_name": "ERNIE 5.0",
-      "description": "Holon built-in runtime metadata for the qianfan/ernie-5.0 compatible provider model.",
-      "context_window_tokens": 248832,
+      "model_ref": "qianfan/deepseek-v4-flash-0731",
+      "display_name": "deepseek-v4-flash-0731",
+      "description": "Qianfan Chat deepseek-v4-flash-0731; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 393216,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4-pro",
+      "display_name": "deepseek-v4-pro",
+      "description": "Qianfan Chat deepseek-v4-pro; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 393216,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4-pro-0813",
+      "display_name": "deepseek-v4-pro-0813",
+      "description": "Qianfan Chat deepseek-v4-pro-0813; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 393216,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4.1-flash",
+      "display_name": "deepseek-v4.1-flash",
+      "description": "Qianfan Chat deepseek-v4.1-flash; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 393216,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4.1-flash-1017",
+      "display_name": "deepseek-v4.1-flash-1017",
+      "description": "Qianfan Chat deepseek-v4.1-flash-1017; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 393216,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/ernie-5.0",
+      "display_name": "ERNIE 5.0",
+      "description": "Qianfan Chat ERNIE 5.0; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
@@ -4566,19 +4671,61 @@
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/ernie-5.0-thinking-exp",
+      "display_name": "ernie-5.0-thinking-exp",
+      "description": "Qianfan Chat ernie-5.0-thinking-exp; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
         "supports_reasoning": false,
         "interactive_exec": false
       },
-      "source": "built_in_catalog"
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/ernie-5.0-thinking-latest",
+      "display_name": "ernie-5.0-thinking-latest",
+      "description": "Qianfan Chat ernie-5.0-thinking-latest; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
     },
     {
       "model_ref": "qianfan/ernie-5.0-thinking-preview",
       "display_name": "ERNIE 5.0 Thinking Preview",
-      "description": "Holon built-in runtime metadata for the qianfan/ernie-5.0-thinking-preview compatible provider model.",
-      "context_window_tokens": 248832,
+      "description": "Qianfan Chat ERNIE 5.0 Thinking Preview; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
+      "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
@@ -4590,16 +4737,16 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
-      "source": "built_in_catalog"
+      "source": "conservative_builtin"
     },
     {
       "model_ref": "qianfan/ernie-5.1",
       "display_name": "ERNIE 5.1",
-      "description": "Holon built-in runtime metadata for the qianfan/ernie-5.1 compatible provider model.",
-      "context_window_tokens": 248832,
+      "description": "Qianfan Chat ERNIE 5.1; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
+      "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
@@ -4611,16 +4758,16 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
-      "source": "built_in_catalog"
+      "source": "conservative_builtin"
     },
     {
       "model_ref": "qianfan/ernie-x1.1",
       "display_name": "ERNIE X1.1",
-      "description": "Holon built-in runtime metadata for the qianfan/ernie-x1.1 compatible provider model.",
-      "context_window_tokens": 121856,
+      "description": "Qianfan Chat ERNIE X1.1; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": 65536,
+      "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
@@ -4632,7 +4779,175 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
-      "source": "built_in_catalog"
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/glm-5.1",
+      "display_name": "glm-5.1",
+      "description": "Qianfan Chat glm-5.1; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/glm-5.2",
+      "display_name": "glm-5.2",
+      "description": "Qianfan Chat glm-5.2; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/glm-5.3",
+      "display_name": "glm-5.3",
+      "description": "Qianfan Chat glm-5.3; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/glm-5.3-flash",
+      "display_name": "glm-5.3-flash",
+      "description": "Qianfan Chat glm-5.3-flash; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-122b-a10b",
+      "display_name": "qwen3.5-122b-a10b",
+      "description": "Qianfan Chat qwen3.5-122b-a10b; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-27b",
+      "display_name": "qwen3.5-27b",
+      "description": "Qianfan Chat qwen3.5-27b; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-35b-a3b",
+      "display_name": "qwen3.5-35b-a3b",
+      "description": "Qianfan Chat qwen3.5-35b-a3b; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-397b-a17b",
+      "display_name": "qwen3.5-397b-a17b",
+      "description": "Qianfan Chat qwen3.5-397b-a17b; exact context and output default unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
     },
     {
       "model_ref": "stepfun/step-3.5-flash",
@@ -4994,7 +5309,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-flash-0731",
       "display_name": "deepseek-v4-flash-0731",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5007,7 +5322,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5015,7 +5330,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-flash-202605",
       "display_name": "deepseek-v4-flash-202605",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5028,7 +5343,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5057,7 +5372,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro-0813",
       "display_name": "deepseek-v4-pro-0813",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5070,7 +5385,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5078,7 +5393,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek-v4-pro-202606",
       "display_name": "deepseek-v4-pro-202606",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5091,7 +5406,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5099,7 +5414,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek-v4.1-flash",
       "display_name": "deepseek-v4.1-flash",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5120,7 +5435,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek-v4.1-flash-1017",
       "display_name": "deepseek-v4.1-flash-1017",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5141,7 +5456,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-flash",
       "display_name": "deepseek/deepseek-flash",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5154,7 +5469,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5162,7 +5477,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash",
       "display_name": "deepseek/deepseek-v4-flash",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5175,7 +5490,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5183,7 +5498,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-0731",
       "display_name": "deepseek/deepseek-v4-flash-0731",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5196,7 +5511,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5204,7 +5519,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-flash-vision-exp",
       "display_name": "deepseek/deepseek-v4-flash-vision-exp",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5217,7 +5532,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5225,7 +5540,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro",
       "display_name": "deepseek/deepseek-v4-pro",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5238,7 +5553,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5246,7 +5561,7 @@
     {
       "model_ref": "tencent-tokenhub/deepseek/deepseek-v4-pro-0813",
       "display_name": "deepseek/deepseek-v4-pro-0813",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5259,7 +5574,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5351,7 +5666,7 @@
     {
       "model_ref": "tencent-tokenhub/glm-5.3",
       "display_name": "glm-5.3",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5364,7 +5679,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5372,7 +5687,7 @@
     {
       "model_ref": "tencent-tokenhub/glm-5.3-flash",
       "display_name": "glm-5.3-flash",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5383,9 +5698,9 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5393,7 +5708,7 @@
     {
       "model_ref": "tencent-tokenhub/glm-5.3-flashx",
       "display_name": "glm-5.3-flashx",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5404,9 +5719,9 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5624,7 +5939,7 @@
     {
       "model_ref": "tencent-tokenhub/hy4-preview",
       "display_name": "hy4-preview",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5637,7 +5952,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5729,7 +6044,7 @@
     {
       "model_ref": "tencent-tokenhub/kimi-k2.8-preview",
       "display_name": "kimi-k2.8-preview",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5740,9 +6055,9 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5750,7 +6065,7 @@
     {
       "model_ref": "tencent-tokenhub/kimi-k3",
       "display_name": "kimi-k3",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5761,9 +6076,9 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5771,7 +6086,7 @@
     {
       "model_ref": "tencent-tokenhub/kimi-k3.1-pro",
       "display_name": "kimi-k3.1-pro",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5782,9 +6097,9 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5792,7 +6107,7 @@
     {
       "model_ref": "tencent-tokenhub/kimi-k3.1-pro-highspeed",
       "display_name": "kimi-k3.1-pro-highspeed",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5803,9 +6118,9 @@
       "capabilities": {
         "agent_turn": true,
         "parallel_tool_calls": false,
-        "image_input": false,
+        "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -5813,7 +6128,7 @@
     {
       "model_ref": "tencent-tokenhub/mimo-v2.5-pro",
       "display_name": "mimo-v2.5-pro",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5834,7 +6149,7 @@
     {
       "model_ref": "tencent-tokenhub/mimo-v2.6-flash",
       "display_name": "mimo-v2.6-flash",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5855,7 +6170,7 @@
     {
       "model_ref": "tencent-tokenhub/mimo-v2.6-pro",
       "display_name": "mimo-v2.6-pro",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -5939,7 +6254,7 @@
     {
       "model_ref": "tencent-tokenhub/minimax-m3.1-flash",
       "display_name": "minimax-m3.1-flash",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -6002,7 +6317,7 @@
     {
       "model_ref": "tencent-tokenhub/step-5-preview",
       "display_name": "step-5-preview",
-      "description": "Official TokenHub language-model ID with Chat and Messages support; exact endpoint limits and capabilities unconfirmed.",
+      "description": "Official TokenHub language-model ID with Chat and Messages support; only independently reviewed Chat fields are populated.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -6078,7 +6393,7 @@
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -10313,7 +10628,77 @@
       }
     },
     {
+      "route_ref": "qianfan@default/deepseek-v4-flash-0731",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/deepseek-v4-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/deepseek-v4-pro-0813",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/deepseek-v4.1-flash-1017",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "qianfan@default/ernie-5.0",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/ernie-5.0-thinking-exp",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/ernie-5.0-thinking-latest",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10344,6 +10729,86 @@
     },
     {
       "route_ref": "qianfan@default/ernie-x1.1",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/glm-5.1",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/glm-5.2",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/glm-5.3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/glm-5.3-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/qwen3.5-122b-a10b",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/qwen3.5-27b",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/qwen3.5-35b-a3b",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/qwen3.5-397b-a17b",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10549,7 +11014,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10579,7 +11048,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10719,7 +11192,15 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "minimal",
+          "none"
+        ]
       }
     },
     {
@@ -10729,7 +11210,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10739,7 +11224,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10749,7 +11238,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10839,7 +11332,11 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "none"
+        ]
       }
     },
     {
@@ -10859,7 +11356,10 @@
         "description": null,
         "effective_context_window_percent": null,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "high",
+          "none"
+        ]
       }
     },
     {
@@ -10888,6 +11388,7 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 32768,
         "capabilities": {},
         "reasoning_effort_options": null
       }
@@ -10898,6 +11399,7 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 32768,
         "capabilities": {},
         "reasoning_effort_options": null
       }
@@ -10908,8 +11410,13 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 32768,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10918,8 +11425,14 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10928,8 +11441,14 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -10938,8 +11457,14 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
+        "default_max_output_tokens": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "capabilities": {},
-        "reasoning_effort_options": null
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
       }
     },
     {
@@ -11078,7 +11603,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11088,7 +11615,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11108,7 +11637,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11118,7 +11649,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11148,7 +11681,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11158,7 +11693,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11168,7 +11705,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11178,7 +11717,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11188,7 +11729,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11198,7 +11741,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11248,7 +11793,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11258,7 +11805,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11268,7 +11818,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11348,7 +11901,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11398,7 +11953,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11408,7 +11966,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11418,7 +11979,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11428,7 +11992,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11558,7 +12125,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11568,7 +12137,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11588,7 +12159,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11598,7 +12171,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11628,7 +12203,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11638,7 +12215,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11648,7 +12227,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11658,7 +12239,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11668,7 +12251,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11678,7 +12263,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11698,7 +12285,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11708,7 +12297,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11718,7 +12310,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11738,7 +12333,9 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11758,7 +12355,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11768,7 +12368,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -11778,7 +12381,10 @@
         "display_name": null,
         "description": null,
         "effective_context_window_percent": null,
-        "capabilities": {},
+        "capabilities": {
+          "image_input": false,
+          "supports_reasoning": false
+        },
         "reasoning_effort_options": null
       }
     },
@@ -14830,8 +15436,36 @@
       "route_ref": "qianfan@default/deepseek-v3.2-think"
     },
     {
+      "model_ref": "qianfan/deepseek-v4-flash-0731",
+      "route_ref": "qianfan@default/deepseek-v4-flash-0731"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4-pro",
+      "route_ref": "qianfan@default/deepseek-v4-pro"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4-pro-0813",
+      "route_ref": "qianfan@default/deepseek-v4-pro-0813"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4.1-flash",
+      "route_ref": "qianfan@default/deepseek-v4.1-flash"
+    },
+    {
+      "model_ref": "qianfan/deepseek-v4.1-flash-1017",
+      "route_ref": "qianfan@default/deepseek-v4.1-flash-1017"
+    },
+    {
       "model_ref": "qianfan/ernie-5.0",
       "route_ref": "qianfan@default/ernie-5.0"
+    },
+    {
+      "model_ref": "qianfan/ernie-5.0-thinking-exp",
+      "route_ref": "qianfan@default/ernie-5.0-thinking-exp"
+    },
+    {
+      "model_ref": "qianfan/ernie-5.0-thinking-latest",
+      "route_ref": "qianfan@default/ernie-5.0-thinking-latest"
     },
     {
       "model_ref": "qianfan/ernie-5.0-thinking-preview",
@@ -14844,6 +15478,38 @@
     {
       "model_ref": "qianfan/ernie-x1.1",
       "route_ref": "qianfan@default/ernie-x1.1"
+    },
+    {
+      "model_ref": "qianfan/glm-5.1",
+      "route_ref": "qianfan@default/glm-5.1"
+    },
+    {
+      "model_ref": "qianfan/glm-5.2",
+      "route_ref": "qianfan@default/glm-5.2"
+    },
+    {
+      "model_ref": "qianfan/glm-5.3",
+      "route_ref": "qianfan@default/glm-5.3"
+    },
+    {
+      "model_ref": "qianfan/glm-5.3-flash",
+      "route_ref": "qianfan@default/glm-5.3-flash"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-122b-a10b",
+      "route_ref": "qianfan@default/qwen3.5-122b-a10b"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-27b",
+      "route_ref": "qianfan@default/qwen3.5-27b"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-35b-a3b",
+      "route_ref": "qianfan@default/qwen3.5-35b-a3b"
+    },
+    {
+      "model_ref": "qianfan/qwen3.5-397b-a17b",
+      "route_ref": "qianfan@default/qwen3.5-397b-a17b"
     },
     {
       "model_ref": "stepfun/step-3.5-flash",

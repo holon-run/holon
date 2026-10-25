@@ -75,13 +75,53 @@ cards support **128000** output tokens. Existing conservative context values
 **272000 / 128000**, default generation policy, and route eligibility remain
 unchanged; larger public context windows are not copied into local Codex policy.
 
+## Incremental review: 2026-10-26
+
+The [Fireworks MiniMax M3 card](https://fireworks.ai/models/fireworks/minimax-m3)
+states that generation can use the full context window, reducing `max_tokens`
+when the prompt would exceed it. The same serverless model in the
+[official model index](https://fireworks.ai/models) has
+`slug=fireworks/minimax-m3` and integer `contextLength="512000"`.
+Together these support a reviewed advisory output ceiling of **512000** for
+`fireworks@default/accounts/fireworks/models/minimax-m3`, not a universal
+deployment guarantee. Preserve the absent Holon default and runtime fallback
+**8192**; neither the capacity nor the FAQ's service default **2048** becomes
+the Holon generation budget.
+
+The [Tencent Kimi Chat comparison](https://cloud.tencent.com/document/product/1823/132232)
+independently publishes **131072** default / **1048576** maximum output for
+`kimi-k3`, `kimi-k3.1-pro`, and `kimi-k3.1-pro-highspeed`.
+It gives **32768** default output for `kimi-k2.8-preview` and the two
+`kimi-k2.7-code*` models; retain the latter's existing **262144** ceiling.
+These are exact Chat-route fields, not Messages/Responses capacities.
+No exact context integer or contradictory default effort is accepted.
+The three K3 Chat routes require `max_completion_tokens`, not `max_tokens`;
+the adapter selects this field by exact provider/endpoint/model identity for both
+request construction and effective-budget clipping. Other Chat routes retain
+`max_tokens`. Local wire tests cover default, explicit small and context-clipped
+budgets; no paid request or observed service-side alias rejection is claimed.
+Automatic preferred models/routes also honor endpoint capability narrowing;
+the TokenHub Responses default remains the previously reviewed `hy3`.
+
+The [Qianfan model table](https://cloud.baidu.com/doc/qianfan/s/rmh4stp0j)
+and [v2 Chat reference](https://cloud.baidu.com/doc/qianfan-api/s/3m7of64lb)
+support five additional exact DeepSeek IDs with output ceiling **393216**,
+two ERNIE thinking IDs and four Qwen 3.5 IDs with **65536**, and four GLM IDs
+with **131072**. Their default output and abbreviated context remain unknown.
+The table contradicts the old **248832** context for ERNIE 5.0/5.1/thinking
+preview and **121856** for X1.1: it reports **128k** and **64k**, respectively.
+Clear those unsupported integers instead of selecting a `k` conversion or
+substituting maximum-input lengths. Missing raw context uses the existing
+internal fallback; that fallback is not a newly verified vendor capacity.
+No Baidu subscription endpoint or historical model retirement is inferred.
+
 ## Remaining original builtin candidates
 
-The other 19 candidates have exact snapshot numbers but no completed
+The other 18 candidates have exact snapshot numbers but no completed
 same-endpoint output-capacity review in this batch:
 
 - Chutes: `unsloth/Mistral-Nemo-Instruct-2407-TEE`; verify the TEE deployment.
-- Fireworks: `accounts/fireworks/models/{gpt-oss-120b,minimax-m3,nemotron-3-ultra-nvfp4}`;
+- Fireworks: `accounts/fireworks/models/{gpt-oss-120b,nemotron-3-ultra-nvfp4}`;
   verify each hosted variant, not native weights or another MiniMax version.
 - Hugging Face: `openai/gpt-oss-120b`; an unspecified inference provider is not
   proof of a single deployment ceiling.

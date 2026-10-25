@@ -9,6 +9,160 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-26 incremental review
+
+This cycle starts from main `31e3ffcd`, including #3746's field-review gate
+and independent runtime-budget fallback. Preserve reviewed endpoint limits,
+cache defaults, and user overrides; an upstream candidate is not an accepted
+runtime field or subscription entitlement.
+
+- Refresh revision:
+  `f72eac48dfa8e32794722e77de0c66f2cf6ae79ec2026436cd524394eb41b83a`.
+  The artifact contains 1,084 records: three additions, no removals, and
+  two changed records. The new IDs are `chutes/Qwen/Qwen3.8-Max-0902`,
+  `chutes/deepseek-ai/DeepSeek-V4-Pro-0813`, and
+  `openrouter/liquid/lfm-2.5-2.6b`. Chutes capacities remain unknown;
+  these `remote_discovered` artifact entries are not newly accepted runtime
+  routes. All 54 supplement models and 16 explicit routes retain their
+  previous semantics.
+- Compared the three added/changed OpenRouter records with this cycle's
+  467-entry [public model list](https://openrouter.ai/api/v1/models).
+  LFM2.5-2.6B has context 128,000 and output 8,192;
+  `meta-llama/llama-3.2-3b-instruct` retains context 131,072 and changes
+  output 72,000 → 117,964; `qwen/qwen3.6-27b` retains context 262,144
+  and changes output 65,536 → 81,920. Each matches the public
+  `top_provider.max_completion_tokens`. This is a changed-record comparison,
+  not a full-catalog reconciliation or proof of subscription access.
+- Re-fetched [Codex model metadata](https://github.com/openai/codex/blob/main/codex-rs/models-manager/models.json):
+  SHA-256 remains
+  `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b`,
+  byte-identical to the previous cycle. The seven listed, non-retired models
+  remain covered. Keep the published 272,000 default context separate from
+  the optional/account-specific 872,000 maximum. The
+  [lifecycle page](https://learn.chatgpt.com/docs/models) still distinguishes
+  ChatGPT sign-in retirements from API access.
+- Rechecked DeepSeek [pricing](https://api-docs.deepseek.com/quick_start/pricing/)
+  and [Responses restrictions](https://api-docs.deepseek.com/guides/responses_api/).
+  The existing aliases, published capacities, Flash image support, and
+  Pro-only server-search boundary remain unchanged. Preserve #3746's
+  distinction between native exact integers and separately reviewed Responses
+  ceilings; do not derive endpoint-specific limits or cache policies from
+  native API metadata alone.
+- The refresh-only stage passed artifact/supplement validation and
+  `coverage --check`: all 585 runtime routes retained their protected facts
+  and inputs, so that stage did not rewrite `metadata-review.json`.
+  Its 148 unknown contexts and 205 unknown output ceilings were existing
+  review debt, not newly completed reviews. The subsequent official
+  endpoint review found the separate builtin repairs below; their changed
+  inputs require a new review and final verification.
+
+### Independently confirmed builtin repairs
+
+- Tencent's [Kimi Chat comparison](https://cloud.tencent.com/document/product/1823/132232)
+  gives K3/K3.1's exact output default **131072** and ceiling **1048576**,
+  and K2.8/K2.7's default **32768**. Preserve the K2.7 ceiling **262144**.
+  The [reasoning guide](https://cloud.tencent.com/document/product/1823/131208),
+  [GLM guide](https://cloud.tencent.com/document/product/1823/132061), and
+  [DeepSeek guide](https://cloud.tencent.com/document/product/1823/132248)
+  also establish exact Chat reasoning/vision flags and effort menus.
+  Keep Chat capacities, defaults, and menus off Messages/Responses.
+  Because route policies can only narrow intrinsic capabilities, newly
+  confirmed model flags require explicit narrowing on other protocols to
+  preserve their prior effective behavior. No protocol eligibility changes.
+  GLM-5.2 accepts aliases rather than seven distinct reasoning strengths;
+  HY3 maps low to high with tools. Contradictory K3/GLM default-effort
+  descriptions are not resolved by inventing a default.
+- Qianfan's [model table](https://cloud.baidu.com/doc/qianfan/s/rmh4stp0j)
+  and [v2 Chat schema](https://cloud.baidu.com/doc/qianfan-api/s/3m7of64lb)
+  establish 15 missing same-endpoint IDs: five DeepSeek, two ERNIE thinking,
+  four GLM, and four Qwen 3.5. These are confirmed coverage omissions, not
+  a claim that all were released today. Only exact published output ceilings
+  are accepted; abbreviated contexts and undocumented defaults stay unknown.
+  Four old ERNIE context integers contradict the current table and are
+  cleared rather than replaced with a guessed unit conversion; ERNIE 5.0
+  also gains its documented reasoning capability. Preserve X1.1 and V3.2
+  routes: an upcoming retirement or absence from a current table is not
+  an already-effective retirement.
+- The [Together M3 card](https://www.together.ai/models/minimax-m3)
+  confirms request-time thinking on exact serverless `MiniMaxAI/MiniMax-M3`.
+  Enable reasoning only; do not invent effort controls or new token limits.
+- The [Fireworks M3 card](https://fireworks.ai/models/fireworks/minimax-m3)
+  and [official index](https://fireworks.ai/models) jointly support the
+  **512000** advisory output ceiling. The absent local default, runtime
+  output **8192**, existing image flag, and other Fireworks models remain
+  unchanged. See [capacity evidence](metadata-evidence.md) for the distinction
+  between output capacity, a service default, and Holon's budget.
+
+### Registered endpoint rechecks and unresolved boundaries
+
+- Independently rechecked DashScope Beijing
+  [personal](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)
+  and [team](https://help.aliyun.com/zh/model-studio/token-plan-team-overview)
+  eligibility; current confirmed text IDs are covered. The
+  [team quickstart](https://help.aliyun.com/zh/model-studio/token-plan-team-quickstart)
+  now documents shared Beijing OpenAI/Anthropic hosts, so the older
+  console-only wording below must not be read as a current universal claim.
+  Actual subscriptions still follow their console/deployment; Singapore
+  remains separate and unregistered. The decision-model `systemone`
+  request schema is not a natural-language Messages route. Preserve exact
+  DeepSeek cache defaults, Qwen caching, and six historical unconfirmed routes.
+- Rechecked Volcengine Coding and Agent Plan separately; their already
+  accepted K3.1/other IDs remain covered. `doubao-seed-evolving`'s **1024k /
+  256k** and economy's **1049k** do not establish new exact integers.
+  Do not add Anthropic registrations from a documentation example.
+- Rechecked the Tencent [protocol matrix](https://cloud.tencent.com/document/product/1823/130079)
+  separately from its Chat field guides: no new eligible model ID.
+  Code Plan is not an extra registered TokenHub endpoint. Partial Messages
+  caching documentation does not guarantee complete explicit-cache semantics.
+- Xiaomi's Responses enum and Token Plan still distinguish the three
+  ordinary V2.6 IDs from the two subscription text IDs and region domains.
+  Existing effort mappings/retirement filters remain; **1M** is not a new
+  exact context certification. BigModel GLM FlashX Legal and the Z.AI
+  counterpart remain candidates without exact Messages/plan eligibility;
+  ordinary API and October 16 key categories are not interchangeable.
+- MiniMax international/China and their M Plans were independently
+  rechecked. Existing M3/M3.1 limits, effort and cache policies remain;
+  native retirements are not copied onto hosted or plan models.
+  Moonshot's six current IDs and prior retirement filters remain covered;
+  October 31 is a new-account restriction, not today's global retirement.
+- Rechecked OpenCode Go's independent Chat/Messages/Responses source table;
+  K3.1/Iceman remain Chat-only. Discovery now lists Iceman but does not prove
+  token capacity. Kilo's five public Auto limits still match. Zen, Kimi Code,
+  and MiniMax's unregistered OpenAI interface do not create runtime endpoints.
+- Together/Fireworks remaining hosted-capacity candidates stay unresolved;
+  authenticated metadata failures were not bypassed. Dedicated Together
+  M2.7 context and unusual Fireworks context integers are not substituted
+  into unrelated serverless policies.
+
+### Post-repair metadata review
+
+- Compared all changed raw model/route fields, effective facts, and evidence
+  against the previously reviewed baseline before updating it: 80 rows
+  changed, including 15 new Qianfan routes; 520 existing rows were preserved
+  without modification and no reviewed route was removed.
+- The changed rows comprise 59 TokenHub, 19 Qianfan, and the two exact hosted
+  routes above. Of these, 18 Messages and 17 Responses rows changed only
+  their raw narrowing policies and provenance; their effective facts stayed
+  identical. Chat defaults, effort, vision, and reasoning did not leak.
+- The independent review additionally caught an intrinsic-only automatic
+  preference check and the K3 output-field mismatch. Explicit-route default
+  candidates now honor endpoint context/capability narrowing, retaining
+  `tencent-tokenhub@responses/hy3`. Only the three exact Tencent K3 Chat
+  routes send `max_completion_tokens`, including budget estimation and
+  clipping; all other Chat routes retain `max_tokens`. Regressions cover
+  compiled-in/generated preferences and local wire budgets without paid probes.
+- Unknown capacities retain explicit owner/date/evidence/recheck records.
+  The baseline migration is not an upstream capacity certification; the
+  grouped semantic review above precedes the migration. Final verification
+  passed: catalog 181 passed / 1 ignored, models.dev 67 passed, route-cache
+  17 passed, OpenAI transport 52 passed, and Chat Completions 41 passed.
+  The 600-route raw/effective/evidence projection matches the reviewed baseline;
+  `coverage --check`, `cargo fmt --all -- --check`,
+  `RUSTFLAGS="-D warnings" cargo check --locked --all-targets`, and
+  `git diff --check` passed. Independent follow-up review confirmed both
+  final P2 findings closed with no new blockers. The 24-request local HTTP
+  mock regression is not a provider-hosted inference acceptance test.
+
 ## 2026-10-25 incremental review
 
 This cycle starts from main `bc1a3dbe`, including #3729's exact Token Plan
