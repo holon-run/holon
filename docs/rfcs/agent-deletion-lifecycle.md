@@ -289,6 +289,21 @@ content-free cleanup evidence. Database cleanup is transactional; filesystem
 cleanup remains a separate retryable job phase. A failed phase cannot mark the
 job complete or allow a replacement.
 
+### Task owner publication fence (2026-10-24)
+
+Task transitions carry the owner incarnation captured when their Runtime was
+loaded. The task/result transaction requires that exact owner incarnation to
+remain `Active` before any task upsert, result evidence, settlement obligation,
+wait, queue, audit or index write, including idempotent replay. Missing owners,
+deletion fences and replacement incarnations reject stale monitors without
+partial persistence. Target deletion remains a separate cancellation fact:
+an active same-incarnation owner can still publish the target's cancellation.
+Deletion's control-plane task cancellation does not require Runtime admission.
+
+Result-admission CAS retries may refresh their baseline only from a single
+identity/state read snapshot matching the Runtime's owner incarnation. This
+refresh guard is not a substitute for the transactional publication fence.
+
 ### Historical references and consumer cancellation (2026-10-24)
 
 An ID in another agent's tool, message, audit or task history does not retain

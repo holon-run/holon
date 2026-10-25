@@ -332,6 +332,33 @@ impl AgentStateRepository<'_> {
         })
     }
 
+    pub(crate) fn latest_for_incarnation(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<Option<AgentState>> {
+        self.db.with_read(|connection| {
+            let payloads = connection
+                .query_row(
+                    "SELECT s.payload_json, i.payload_json FROM agent_states s
+                     JOIN agent_identities i ON i.agent_id = s.agent_id
+                     WHERE s.agent_id = ?1",
+                    [agent_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((state, identity)) = payloads else {
+                return Ok(None);
+            };
+            let identity = decode_agent_identity_payload(&identity)?;
+            if identity.status != AgentRegistryStatus::Active || identity.incarnation != incarnation
+            {
+                return Ok(None);
+            }
+            decode_agent_state_payload(&state).map(Some)
+        })
+    }
+
     pub fn latest_all(&self) -> Result<Vec<AgentState>> {
         self.db.with_read(|connection| {
             let mut statement = connection.prepare("SELECT payload_json FROM agent_states")?;
