@@ -19,6 +19,11 @@ brief must be exactly `kind=result` with matching agent, owner, turn and related
 message; a completed WorkItem must point to that exact brief. A Failure brief
 containing the expected marker is not success.
 
+The live command drill's terminal tool evidence accepts only a successful canonical TaskStatus envelope
+for the exact terminal task, or a WaitFor `continue_turn` envelope bound to the
+exact result and its current activation/already-delivered settlement. Debug
+strings and arbitrary nested lookalikes are not tool evidence.
+
 Failed attempts and resolved successor waiters are permitted; duplicate
 successful consumption, stale identity, missing activation, or owner migration
 fail closed. Scanner messages are checked through their durable source refs,
@@ -99,6 +104,11 @@ The runnable cases do **not** complete the full #3749 acceptance matrix:
 - Observing five charges followed by persistent pause proves no sixth
   admission, not an explicitly attempted-and-rejected sixth root.
 - Coexisting-obligation fairness is not covered by these single-owner drills.
+- The provider barrier does not separately attest that an alive canonical owner
+  rejects a competing recovery admission. HTTP 400 is fail-fast for retries but
+  still eligible for immediate fallback; it must not stand in for owner exit.
+  These drills release failure on every resulting provider barrier and count
+  durable recovery roots, not HTTP failures.
 
 These gaps are also recorded in `tests/e2e/docker/task-result-recovery.json`.
 Passing this subset must not be reported as the full recovery matrix passing.

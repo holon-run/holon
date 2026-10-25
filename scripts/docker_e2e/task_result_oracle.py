@@ -21,6 +21,49 @@ def payload(row: dict[str, Any]) -> dict[str, Any]:
     return json.loads(row["payload_json"])
 
 
+def require_terminal_task_receipt(
+    detail: dict[str, Any], *, task_id: str, result_message_id: str,
+    activation_id: str,
+) -> dict[str, Any]:
+    """Accept only the canonical tool envelope, never text or recursive matches."""
+    output = detail.get("output")
+    require(isinstance(output, dict), "missing structured tool output")
+    envelope = output.get("envelope")
+    require(
+        isinstance(envelope, dict) and detail.get("status") == "success"
+        and envelope.get("status") == "success"
+        and envelope.get("tool_name") == detail.get("tool_name")
+        and not output.get("is_error") and not envelope.get("error"),
+        "terminal task receipt is not a successful canonical envelope",
+    )
+    result, args = envelope.get("result"), detail.get("input", {})
+    require(isinstance(result, dict), "missing structured tool result")
+    if detail["tool_name"] == "TaskStatus":
+        task = result.get("task")
+        require(
+            args.get("task_id") == task_id and isinstance(task, dict)
+            and task.get("task_id") == task_id
+            and task.get("status") in {"completed", "failed", "cancelled", "interrupted"},
+            "TaskStatus did not attest the exact terminal task",
+        )
+    else:
+        require(
+            detail["tool_name"] == "WaitFor"
+            and args.get("wake") == "task_result" and args.get("resource") == task_id
+            and result.get("continuation") == "continue_turn"
+            and result.get("task_id") == task_id
+            and result.get("result_message_id") == result_message_id
+            and (
+                result.get("disposition") == "task_result_settled"
+                and result.get("settlement_disposition") == "model_delivered"
+                or result.get("disposition") == "task_result_already_admitted"
+                and result.get("activation_id") == activation_id
+            ),
+            "WaitFor did not attest this activation's exact terminal task result",
+        )
+    return result
+
+
 def task_identity(
     snapshot: dict[str, Any], *, agent_id: str, task_id: str,
     parent_turn_id: str, captured: dict[str, Any] | None = None,
@@ -45,7 +88,9 @@ def task_identity(
     task = tasks[0]
     detail = task.get("detail", {})
     require(
-        task["id"] == task_id and detail.get("rejoin_obligation_id") == task_id
+        task["id"] == task_id
+        and task.get("status") in {"completed", "failed", "cancelled", "interrupted"}
+        and detail.get("rejoin_obligation_id") == task_id
         and detail.get("rejoin_generation") == record["rejoin_generation"]
         and detail.get("parent_turn_id") == parent_turn_id
         and task.get("work_item_id") == record["work_item_id"],

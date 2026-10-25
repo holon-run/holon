@@ -17,6 +17,7 @@
   "pending_coverage": [
     "controlled exact-first versus scanner-first admission requires a daemon-side test barrier",
     "an explicit sixth-root rejection, rather than only observing persistent pause",
-    "a coexisting valid obligation must not be starved by an exhausted obligation"
+    "a coexisting valid obligation must not be starved by an exhausted obligation",
+    "alive-owner exclusion is not proven by a provider HTTP 400, which may fallback"
   ]
 }

@@ -47,6 +47,74 @@ def snapshot_with_roots(count=5):
 
 
 class RecoveryOracleTests(unittest.TestCase):
+    def test_terminal_receipts_require_exact_structured_envelopes(self):
+        def check(detail):
+            return oracle.require_terminal_task_receipt(
+                detail, task_id="task-1", result_message_id="result-1",
+                activation_id="attempt-1",
+            )
+
+        task = {"task_id": "task-1", "status": "completed"}
+        good = {
+            "tool_name": "TaskStatus", "status": "success",
+            "input": {"task_id": "task-1"},
+            "output": {"envelope": {
+                "tool_name": "TaskStatus", "status": "success", "result": {"task": task},
+            }},
+        }
+        self.assertEqual(check(good)["task"], task)
+        bad_outputs = [
+            json.dumps(good["output"]), {"debug": good["output"]},
+            {"result": {"task": task}}, {"envelope": {"result": {"task": task}}},
+            {"envelope": {**good["output"]["envelope"], "status": "error"}},
+            {"envelope": {**good["output"]["envelope"], "tool_name": "ExecCommand"}},
+            {"envelope": {**good["output"]["envelope"],
+                          "result": {"debug": {"task": task}}}},
+            {"envelope": {**good["output"]["envelope"],
+                          "result": {"task": {**task, "status": "running"}}}},
+            {"envelope": {**good["output"]["envelope"],
+                          "result": {"task": {**task, "task_id": "foreign"}}}},
+        ]
+        for output in bad_outputs:
+            with self.subTest(output=output), self.assertRaises(AssertionError):
+                check({**good, "output": output})
+        wait = {
+            "tool_name": "WaitFor", "status": "success",
+            "input": {"wake": "task_result", "resource": "task-1", "delivery": "silent"},
+            "output": {"envelope": {
+                "tool_name": "WaitFor", "status": "success", "result": {
+                    "continuation": "continue_turn", "task_id": "task-1",
+                    "result_message_id": "result-1", "activation_id": "attempt-1",
+                    "disposition": "task_result_already_admitted",
+                },
+            }},
+        }
+        check(wait)
+        settled = copy.deepcopy(wait)
+        settled["output"]["envelope"]["result"].update(
+            disposition="task_result_settled", settlement_disposition="model_delivered",
+        )
+        check(settled)
+        for field, value in [
+            ("continuation", "yield_and_wait"), ("task_id", "foreign"),
+            ("result_message_id", "foreign"), ("activation_id", "foreign"),
+            ("disposition", "task_result_in_flight"),
+        ]:
+            broken = copy.deepcopy(wait)
+            broken["output"]["envelope"]["result"][field] = value
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                check(broken)
+
+    def test_running_task_with_nested_terminal_lookalike_is_not_terminal(self):
+        snapshot = runner_tests.LiveAcceptanceEvidenceTests().task_snapshot()
+        task = json.loads(snapshot["tasks"][0]["payload_json"])
+        task.update(status="running", debug={"status": "completed"})
+        snapshot["tasks"][0]["payload_json"] = json.dumps(task)
+        with self.assertRaises(AssertionError):
+            oracle.require_task_reentry(
+                snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
+            )
+
     def test_five_distinct_roots_obey_real_policy(self):
         snapshot, record = snapshot_with_roots()
         self.assertEqual(len(oracle.recovery_ledger(
@@ -332,6 +400,24 @@ class ProviderFixtureTests(unittest.TestCase):
         status, _ = scenario.consume_gated({}, "a", Mock(), timeout=0)
         self.assertEqual(status, 504)
         self.assertEqual(scenario.phase, 4)
+
+    def test_failure_gate_stays_armed_across_primary_and_backup_requests(self):
+        scenario = fixture.RecoveryScenario()
+        scenario.phase = 4
+        with tempfile.TemporaryDirectory() as directory:
+            control = Path(directory) / "control.json"
+
+            def record(**row):
+                if row["state"] == "waiting":
+                    control.write_text(json.dumps({
+                        "releases": {row["request_id"]: "fail"},
+                    }))
+
+            with patch.object(fixture, "CONTROL", control):
+                for side in ("a", "b"):
+                    status, _ = scenario.consume_gated({}, side, record)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(scenario.phase, 4)
 
 
 class RecoveryRunnerTests(unittest.TestCase):

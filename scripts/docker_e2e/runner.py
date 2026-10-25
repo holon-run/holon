@@ -6153,11 +6153,23 @@ def run_live_command_observation_case(
             if event["type"] == "tool_executed"
         ]
         require(
-            [detail["tool_name"] for detail in all_details] == [
+            [detail["tool_name"] for detail in all_details[:-1]] == [
                 "ExecCommand", "TaskStatus", "ExecCommand", "TaskStatus",
-                "WaitFor", "TaskStatus",
-            ]
-            and result_value(all_details[-1]).get("task") == terminal,
+                "WaitFor",
+            ],
+            "command observation did not preserve its exact pre-terminal tool sequence",
+        )
+        from .task_result_oracle import require_terminal_task_receipt
+
+        settlement = next(
+            row for row in after["task_result_settlements"] if row["task_id"] == task_id
+        )
+        receipt = require_terminal_task_receipt(
+            all_details[-1], task_id=task_id, result_message_id=settlement["message_id"],
+            activation_id=settlement["activation_id"],
+        )
+        require(
+            all_details[-1]["tool_name"] != "TaskStatus" or receipt["task"] == terminal,
             "model did not verify the same terminal task after genuine re-entry",
         )
     finally:
