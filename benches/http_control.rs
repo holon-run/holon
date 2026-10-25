@@ -24,6 +24,9 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+#[path = "support/child_state.rs"]
+mod child_state;
+
 const DEFAULT_SAMPLES: usize = 10;
 const WARMUP_SAMPLES: usize = 1;
 const EXTRA_AGENTS: usize = 100;
@@ -40,6 +43,8 @@ struct BenchmarkArtifact {
     environment: Environment,
     config: BenchmarkConfig,
     results: Vec<BenchmarkResult>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    child_state: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -113,17 +118,27 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .context("building HTTP benchmark runtime")?;
-    let fixture = runtime.block_on(build_fixture())?;
     let filter = benchmark_filter();
-    let results = run_benchmarks(&runtime, &fixture, samples, &filter)?;
+    let child_state = child_state::run(&runtime, samples, &filter)?;
+    let child_state_aborted = child_state
+        .iter()
+        .any(|result| result["load"]["aborted"] == true);
+    let results = if !child_state_aborted
+        && (filter.is_empty() || filter.iter().any(|id| !id.starts_with("http.child_state.")))
+    {
+        let fixture = runtime.block_on(build_fixture())?;
+        run_benchmarks(&runtime, &fixture, samples, &filter)?
+    } else {
+        Vec::new()
+    };
     anyhow::ensure!(
-        !results.is_empty(),
+        !results.is_empty() || !child_state.is_empty(),
         "HOLON_BENCH_FILTER selected no workloads"
     );
     let artifact = BenchmarkArtifact {
         schema_version: "holon.performance.v0",
         benchmark_suite: "http_control",
-        workload_version: "v1",
+        workload_version: "v2",
         started_at: Utc::now().to_rfc3339(),
         environment: environment(),
         config: BenchmarkConfig {
@@ -136,6 +151,7 @@ fn main() -> Result<()> {
             transport: "tower.oneshot.in_process",
         },
         results,
+        child_state,
     };
 
     println!("{}", serde_json::to_string_pretty(&artifact)?);

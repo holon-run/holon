@@ -105,6 +105,43 @@ The HTTP suite constructs 101 visible agents and 200 work items before timing,
 then covers the runtime performance snapshot, agent roster, and single or
 repeated large work-item responses through in-process `Router::oneshot`
 requests. It does not bind a socket or include network transfer time.
+
+The HTTP suite also has explicitly selected child-state workloads. They use a
+temporary SQLite database, `StubProvider`, and real uncached parent `/state`
+requests; fixture setup is outside the request timer:
+
+```bash
+HOLON_BENCH_FILTER=http.child_state.loaded.0,http.child_state.loaded.1,http.child_state.loaded.50 \
+HOLON_BENCH_SAMPLES=3 HOLON_BENCH_CHILD_REQUESTS=3 \
+cargo bench --bench http_control > child-state.json
+```
+
+Each child owns three active tasks (queued/running/cancelling). History defaults
+to zero; `HOLON_BENCH_CHILD_HISTORY=100000` explicitly adds unrelated terminal
+tasks. Requests are serial and bounded by `HOLON_BENCH_CHILD_BUDGET_MS` (default
+60000 per cell) and `HOLON_BENCH_CHILD_TIMEOUT_MS` (default 15000 per request).
+These are outer harness limits, not overrides of production projection gates.
+The harness stops at the first unsuccessful request and skips all subsequent
+workloads, including non-child workloads in a mixed filter; check `warmup`,
+`outcomes`, and `load.aborted`, not just the command exit status.
+Each fixture host is shut down before its temporary home is removed, including
+setup/measurement failures and early aborts. Shutdown is outside request timing;
+failure to finish within 15 seconds aborts the suite rather than starting
+another cell. Completed cells record this in `fixture_cleanup`.
+
+`child_state` results include HTTP/child-summary p50 and p95, CPU and peak RSS,
+inclusive attribution-stage deltas, and independent read-only SQL probes with
+query plans, fullscan/VM steps, and returned/decoded row counts. Nested stages
+overlap; SQL probes are not request timings. p99 stays null unless every one of
+at least three batches has 1000 successful requests.
+For comparisons, save old/new executables, run A-A then A-B-B-A with the same
+fixture/settings, and label each invocation with `HOLON_BENCH_COMPARISON=AA`
+or `ABBA` and `HOLON_BENCH_POSITION` (one-based). Labels do not switch code.
+Avoid concurrent benchmarks, preserve failures, and report missing concurrency
+or `/snapshot` coverage rather than inferring production capacity or 503 fixes.
+See the [stage 1 child-state results](child-state-stage1.md) for the bounded
+#3745 comparison, deadline-censored baseline, and unmeasured matrix.
+
 The memory suite isolates every sample in a child process, grows a session with
 1,000 events and 100 briefs, repeatedly reads bounded history windows, and
 records current/peak RSS plus SQLite directory growth before and after dropping

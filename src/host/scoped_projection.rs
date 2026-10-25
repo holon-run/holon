@@ -124,17 +124,24 @@ impl RuntimeHost {
     ) -> Result<Vec<ChildAgentSummary>> {
         db.check_read_scope()?;
         let mut children = Vec::new();
-        for identity in self.agent_identity_records()?.into_iter().filter(|record| {
+        let identities_timer = crate::diagnostics::attribution::CHILD_IDENTITIES.start();
+        let identities = self.agent_identity_records()?;
+        drop(identities_timer);
+        for identity in identities.into_iter().filter(|record| {
             record.status == AgentRegistryStatus::Active
                 && record.kind == AgentKind::Child
                 && record.parent_agent_id.as_deref() == Some(parent_agent_id)
         }) {
             db.check_read_cancellation()?;
+            let state_timer = crate::diagnostics::attribution::CHILD_STATE.start();
             let storage = self.agent_storage_read_only_scoped(&identity.agent_id, db)?;
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
+            drop(state_timer);
+            let count_timer = crate::diagnostics::attribution::CHILD_ACTIVE_COUNT.start();
             let active_task_count = storage.active_task_count_for_agent(&identity.agent_id)?;
+            drop(count_timer);
             let observability = match handle
                 .block_on(self.try_get_loaded_runtime_scoped(&identity.agent_id, db))?
             {
