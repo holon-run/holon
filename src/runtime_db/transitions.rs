@@ -395,6 +395,7 @@ pub(crate) struct ExecutionAuthorityFences {
 #[derive(Debug, Clone)]
 pub(crate) struct TaskTransitionCommand {
     pub agent_id: String,
+    pub expected_owner_incarnation: u64,
     pub task: TaskRecord,
     pub agent_deletion: Option<AgentDeletionRequest>,
     pub task_result_settlement:
@@ -2798,6 +2799,30 @@ impl RuntimeTransitionRepository<'_> {
         synchronize_execution_protocol: bool,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
+            anyhow::ensure!(
+                command.task.agent_id == command.agent_id,
+                "task owner does not match transition partition"
+            );
+            let owner = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    [&command.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| super::repositories::decode_agent_identity_payload(&payload))
+                .transpose()?;
+            // Runtime monitors can outlive unload and deletion. Fence every
+            // task write, including replay, before any result/queue side effect.
+            anyhow::ensure!(
+                owner.is_some_and(|owner| {
+                    owner.status == crate::types::AgentRegistryStatus::Active
+                        && owner.incarnation == command.expected_owner_incarnation
+                }),
+                "task owner incarnation fence rejected for agent {} (expected {})",
+                command.agent_id,
+                command.expected_owner_incarnation
+            );
             validate_task_tx(tx, &command.task)?;
             // Linearize success/failure publication with the target's deletion
             // fence. The caller recomputes cancellation if deletion won.
@@ -4467,9 +4492,11 @@ mod tests {
     fn task_transition_indexes_message_evidence_and_rolls_back_atomically() -> Result<()> {
         for fault in [Some(TransitionFaultPoint::AfterCanonicalWrites), None] {
             let (_dir, db) = runtime_db()?;
+            db.agent_identities().upsert(&active_agent("agent-a"))?;
             let message = message("message-index-task");
             let command = TaskTransitionCommand {
                 agent_id: "agent-a".into(),
+                expected_owner_incarnation: 1,
                 task: task("task-message-index", TaskStatus::Completed),
                 task_result_settlement: None,
                 agent_deletion: None,
@@ -4549,6 +4576,7 @@ mod tests {
 
         let command = |fault| TaskTransitionCommand {
             agent_id: "agent-a".into(),
+            expected_owner_incarnation: 1,
             task: terminal_task.clone(),
             agent_deletion: Some(AgentDeletionRequest {
                 agent_id: child.agent_id.clone(),
@@ -4673,6 +4701,7 @@ mod tests {
 
         let command = TaskTransitionCommand {
             agent_id: "agent-a".into(),
+            expected_owner_incarnation: 1,
             task: terminal_task.clone(),
             agent_deletion: Some(AgentDeletionRequest {
                 agent_id: child.agent_id.clone(),
@@ -7508,6 +7537,7 @@ mod tests {
     #[test]
     fn terminal_task_wait_release_is_atomic_and_idempotent() -> Result<()> {
         let (_dir, db) = runtime_db()?;
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
         let mut initial_work = work_item("work-task");
         initial_work.blocked_by = Some("waiting for task".into());
         db.work_items().insert_new(&initial_work)?;
@@ -7529,6 +7559,7 @@ mod tests {
         cleared.updated_at = terminal.updated_at;
         let command = TaskTransitionCommand {
             agent_id: "agent-a".into(),
+            expected_owner_incarnation: 1,
             task: terminal.clone(),
             task_result_settlement: None,
             agent_deletion: None,
@@ -7607,6 +7638,7 @@ mod tests {
             TransitionFaultPoint::BeforeCommit,
         ] {
             let (_dir, db) = runtime_db()?;
+            db.agent_identities().upsert(&active_agent("agent-a"))?;
             let mut initial_work = work_item("work-task");
             initial_work.blocked_by = Some("waiting for task".into());
             db.work_items().insert_new(&initial_work)?;
@@ -7643,6 +7675,7 @@ mod tests {
             cleared.updated_at = terminal.updated_at;
             let command = TaskTransitionCommand {
                 agent_id: "agent-a".into(),
+                expected_owner_incarnation: 1,
                 task: terminal,
                 task_result_settlement: None,
                 agent_deletion: None,

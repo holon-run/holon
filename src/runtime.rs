@@ -5054,11 +5054,16 @@ impl RuntimeHandle {
         agent_id: &str,
     ) -> Result<bool> {
         let mut guard = self.inner.agent.lock().await;
-        let Some(latest_persisted_state) = self.inner.runtime_db.agent_states().latest(agent_id)?
+        let Some(latest_persisted_state) = self
+            .inner
+            .runtime_db
+            .agent_states()
+            .latest_for_incarnation(agent_id, self.inner.identity_incarnation)?
         else {
             return Ok(false);
         };
         if latest_persisted_state.id != agent_id
+            || guard.state.id != agent_id
             || guard.state != guard.last_persisted_state
             || latest_persisted_state.pending != guard.queue.len()
         {

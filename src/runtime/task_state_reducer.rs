@@ -423,6 +423,7 @@ impl RuntimeHandle {
         let commit =
             self.commit_task_transition(&crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
+                expected_owner_incarnation: self.inner.identity_incarnation,
                 task: persisted_task,
                 agent_deletion: transition.agent_deletion.clone(),
                 task_result_settlement,
@@ -1867,6 +1868,209 @@ mod tests {
                 .map(|stored| stored.id),
             Some(message.id)
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_publication_is_fenced_by_owner_incarnation() {
+        use crate::runtime::tests::support::LifecycleHarness;
+        use crate::types::AgentRegistryStatus::{Active, Deleted, Deleting};
+
+        for replacement in [
+            None,
+            Some((Active, 2)),
+            Some((Deleting, 1)),
+            Some((Deleted, 1)),
+        ] {
+            let harness = LifecycleHarness::new();
+            let runtime = harness.runtime();
+            let work = runtime
+                .create_work_item("owner fence contract".into(), None, None, Vec::new())
+                .await
+                .unwrap();
+            let mut running = task("owner-fence", TaskStatus::Running, false);
+            running.work_item_id = Some(work.id.clone());
+            running.detail = Some(json!({
+                "parent_turn_id": "parent-turn",
+                "rejoin_obligation_id": running.id,
+                "rejoin_generation": 1,
+            }));
+            runtime
+                .persist_task_transition(&running, "task_created")
+                .await
+                .unwrap();
+            runtime
+                .register_wait_for(
+                    "default",
+                    Some(work.id),
+                    crate::runtime::WaitForWakeKind::TaskResult,
+                    Some(running.id.clone()),
+                    "owner fence result".into(),
+                    None,
+                )
+                .await
+                .unwrap();
+            let mut terminal = running.clone();
+            terminal.status = TaskStatus::Completed;
+            let mut message = task_result_message(&running.id);
+            message.work_item_id = running.work_item_id.clone();
+            terminal.parent_message_id = Some(message.id.clone());
+            let memory_before = runtime.agent_state().await.unwrap();
+
+            let (snapshots, mut observed) = tokio::sync::mpsc::unbounded_channel();
+            let (audit_events, _events) = tokio::sync::mpsc::unbounded_channel();
+            let (commits, _commits) = tokio::sync::mpsc::unbounded_channel();
+            *runtime.inner.task_transition_snapshot_pause.lock().unwrap() =
+                Some(Arc::new(TaskTransitionSnapshotPause {
+                    task_id: running.id.clone(),
+                    snapshots,
+                    audit_events,
+                    commits,
+                }));
+            let writer = {
+                let runtime = runtime.clone();
+                let message = message.clone();
+                tokio::spawn(async move {
+                    runtime
+                        .commit_terminal_task_result(&terminal, "task_completed", &message)
+                        .await
+                })
+            };
+            let (_, _, release) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), observed.recv())
+                    .await
+                    .expect("publisher must reach the prepared snapshot")
+                    .unwrap();
+            *runtime.inner.task_transition_snapshot_pause.lock().unwrap() = None;
+            let db = &runtime.inner.runtime_db;
+            let mut owner = db.agent_identities().latest("default").unwrap().unwrap();
+            // Fixture the deletion/replacement boundary after the publisher's
+            // snapshot. No timing sleeps or live lifecycle operations are needed.
+            db.transaction(|tx| {
+                tx.execute("DELETE FROM tasks WHERE task_id = ?1", [&running.id])?;
+                if replacement.is_none() {
+                    tx.execute(
+                        "DELETE FROM agent_identities WHERE agent_id = 'default'",
+                        [],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+            if let Some((status, incarnation)) = replacement {
+                owner.status = status;
+                owner.incarnation = incarnation;
+                owner.revision += 1;
+                owner.updated_at = Utc::now();
+                db.agent_identities().upsert(&owner).unwrap();
+            }
+            let before = harness.snapshot();
+            release.send(()).unwrap();
+            let error = tokio::time::timeout(std::time::Duration::from_secs(10), writer)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("task owner incarnation fence rejected"),
+                "{error:#}"
+            );
+            harness.assert_unchanged(&before);
+            assert_eq!(runtime.agent_state().await.unwrap(), memory_before);
+            assert!(db
+                .task_result_settlements()
+                .latest_for_message(&message.id)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_baseline_refresh_requires_current_owner_incarnation() {
+        use crate::types::AgentRegistryStatus::{Active, Deleted, Deleting};
+
+        for (status, incarnation, allowed) in [
+            (Active, 1, true),
+            (Active, 2, false),
+            (Deleting, 1, false),
+            (Deleted, 1, false),
+        ] {
+            let runtime = runtime();
+            let before = runtime.agent_state().await.unwrap();
+            let db = &runtime.inner.runtime_db;
+            let mut owner = db.agent_identities().latest("default").unwrap().unwrap();
+            owner.status = status;
+            owner.incarnation = incarnation;
+            owner.revision += 1;
+            owner.updated_at = Utc::now();
+            db.agent_identities().upsert(&owner).unwrap();
+            let mut updated = before.clone();
+            updated.pending_wake_hint = Some(crate::types::PendingWakeHint {
+                reason: "owner_fence_contract".into(),
+                description: None,
+                source: None,
+                scope: None,
+                external_trigger_id: None,
+                resource: None,
+                body: None,
+                content_type: None,
+                correlation_id: None,
+                causation_id: None,
+                created_at: Utc::now(),
+            });
+            db.agent_states().upsert(&updated).unwrap();
+            assert_eq!(
+                runtime
+                    .refresh_enqueue_agent_state_baseline("default")
+                    .await
+                    .unwrap(),
+                allowed
+            );
+            assert_eq!(
+                runtime.agent_state().await.unwrap(),
+                if allowed { updated } else { before }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn same_owner_terminal_publication_and_cancellation_remain_idempotent() {
+        for status in [TaskStatus::Completed, TaskStatus::Cancelled] {
+            let runtime = runtime();
+            let mut terminal = task("owner-fence-positive", status.clone(), false);
+            let message = task_result_message(&terminal.id);
+            terminal.parent_message_id = Some(message.id.clone());
+            runtime
+                .commit_terminal_task_result(&terminal, "task_completed", &message)
+                .await
+                .unwrap();
+            let event_count = runtime.recent_events(100).await.unwrap().len();
+            runtime
+                .commit_terminal_task_result(&terminal, "task_completed", &message)
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .task_record(&terminal.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                status
+            );
+            assert_eq!(runtime.recent_events(100).await.unwrap().len(), event_count);
+            assert_eq!(
+                runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest_all()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
     }
 
     #[tokio::test]
