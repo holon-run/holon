@@ -1931,7 +1931,15 @@ impl RuntimeHandle {
 
     pub(crate) async fn recover_active_timers(&self, timers: Vec<TimerRecord>) -> Result<()> {
         for timer in timers {
-            self.recover_timer(timer).await?;
+            if let Err(err) = self.recover_timer(timer.clone()).await {
+                let _ = self.inner.storage.append_event(&AuditEvent::legacy(
+                    "timer_recovery_failed",
+                    serde_json::json!({
+                        "timer_id": timer.id,
+                        "error": err.to_string(),
+                    }),
+                ));
+            }
         }
         Ok(())
     }

@@ -6231,6 +6231,12 @@ async fn handle_timer_command(config: &AppConfig, command: TimerCommands) -> Res
     let client = LocalClient::new(config.clone())?;
     match command {
         TimerCommands::Create { options } => {
+            if options.calendar_expression.is_some() && options.every_ms.is_some() {
+                anyhow::bail!(
+                    "--every-ms cannot be combined with --calendar-expression; \
+                     provide either a calendar or relative schedule"
+                );
+            }
             let agent = options
                 .agent
                 .unwrap_or_else(|| config.default_agent_id.clone());

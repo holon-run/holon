@@ -46,7 +46,7 @@ pub enum TimerCommands {
 #[command(group(
     ArgGroup::new("schedule")
         .required(true)
-        .args(["after_ms", "every_ms", "calendar_expression"])
+        .args(["after_ms", "calendar_expression"])
 ))]
 pub struct TimerCreateArgs {
     #[arg(long)]

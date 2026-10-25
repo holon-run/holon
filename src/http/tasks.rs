@@ -707,6 +707,18 @@ pub async fn create_timer(
     let boundary = current_boundary_metadata(&runtime)
         .await
         .map_err(error_response)?;
+    if request.calendar_expression.is_some()
+        && (request.duration_ms.is_some() || request.interval_ms.is_some())
+    {
+        return Err(error_response(
+            RuntimeError::validation(
+                "timer_schedule_conflict",
+                "calendar_expression cannot be combined with duration_ms or interval_ms",
+            )
+            .with_safe_context("fields", "calendar_expression,duration_ms,interval_ms")
+            .into(),
+        ));
+    }
     let timer = match (request.calendar_expression, request.timezone) {
         (Some(expression), Some(timezone)) => runtime
             .schedule_calendar_timer(expression, timezone, request.summary)

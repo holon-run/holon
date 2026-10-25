@@ -101,6 +101,17 @@ pub(crate) async fn create(
     if let Some(interval_ms) = args.interval_ms {
         validate_positive(CREATE_NAME, "interval_ms", interval_ms)?;
     }
+    if args.calendar_expression.is_some()
+        && (args.duration_ms.is_some() || args.interval_ms.is_some())
+    {
+        return Err(invalid_tool_input(
+            CREATE_NAME,
+            "calendar_expression cannot be combined with duration_ms or interval_ms",
+            json!({"fields": ["calendar_expression", "duration_ms", "interval_ms"]}),
+            "provide either a calendar schedule or a relative schedule",
+        )
+        .into());
+    }
     let timer = match (args.calendar_expression, args.timezone) {
         (Some(expression), Some(timezone)) => {
             runtime
