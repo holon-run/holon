@@ -1761,6 +1761,7 @@ impl RuntimeHandle {
             next_fire_at: Some(advance_time(created_at, duration_ms)?),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         };
         self.record_timer_projection(&timer).await?;
         self.inner
@@ -1768,6 +1769,40 @@ impl RuntimeHandle {
             .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
         self.spawn_timer_loop(timer.clone());
 
+        Ok(timer)
+    }
+
+    pub async fn schedule_calendar_timer(
+        &self,
+        expression: impl Into<String>,
+        timezone: impl Into<String>,
+        summary: Option<String>,
+    ) -> Result<TimerRecord> {
+        let _admission = self.execution_admission_lease()?;
+        let created_at = self.now();
+        let calendar = crate::calendar::CalendarSchedule::new(expression, timezone)?;
+        let next_fire_at = calendar.next_after(created_at)?.utc;
+        let duration_ms = u64::try_from((next_fire_at - created_at).num_milliseconds())
+            .context("calendar occurrence is outside supported timer range")?;
+        let timer = TimerRecord {
+            id: crate::ids::timer_id(),
+            agent_id: self.agent_id().await?,
+            created_at,
+            duration_ms,
+            interval_ms: None,
+            repeat: true,
+            status: TimerStatus::Active,
+            summary,
+            next_fire_at: Some(next_fire_at),
+            last_fired_at: None,
+            fire_count: 0,
+            calendar: Some(calendar),
+        };
+        self.record_timer_projection(&timer).await?;
+        self.inner
+            .storage
+            .append_event(&AuditEvent::legacy("timer_created", to_json_value(&timer)))?;
+        self.spawn_timer_loop(timer.clone());
         Ok(timer)
     }
 
@@ -1896,7 +1931,15 @@ impl RuntimeHandle {
 
     pub(crate) async fn recover_active_timers(&self, timers: Vec<TimerRecord>) -> Result<()> {
         for timer in timers {
-            self.recover_timer(timer).await?;
+            if let Err(err) = self.recover_timer(timer.clone()).await {
+                let _ = self.inner.storage.append_event(&AuditEvent::legacy(
+                    "timer_recovery_failed",
+                    serde_json::json!({
+                        "timer_id": timer.id,
+                        "error": err.to_string(),
+                    }),
+                ));
+            }
         }
         Ok(())
     }
@@ -1932,7 +1975,7 @@ impl RuntimeHandle {
 
     async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {
         let now = self.now();
-        let timer = normalize_recovered_timer(timer, now);
+        let timer = normalize_recovered_timer(timer, now)?;
         if timer
             .next_fire_at
             .is_some_and(|next_fire_at| next_fire_at <= now)
@@ -1966,7 +2009,10 @@ impl RuntimeHandle {
         let mut record = expected.clone();
         record.last_fired_at = Some(fired_at);
         record.fire_count += 1;
-        if let Some(interval_ms) = record.interval_ms {
+        if let Some(calendar) = record.calendar.as_ref() {
+            record.status = TimerStatus::Active;
+            record.next_fire_at = Some(calendar.next_after(fired_at)?.utc);
+        } else if let Some(interval_ms) = record.interval_ms {
             record.status = TimerStatus::Active;
             record.next_fire_at = Some(next_repeating_fire_at(
                 scheduled_fire_at.unwrap_or(fired_at),
@@ -2601,13 +2647,17 @@ fn next_repeating_fire_at(
     )
 }
 
-fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> TimerRecord {
+fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> Result<TimerRecord> {
     if timer.next_fire_at.is_some() {
-        return timer;
+        return Ok(timer);
     }
 
-    let anchor = timer.last_fired_at.unwrap_or(timer.created_at);
-    let fallback_ms = timer.interval_ms.unwrap_or(timer.duration_ms);
-    timer.next_fire_at = advance_time(anchor, fallback_ms).ok().or(Some(now));
-    timer
+    if let Some(calendar) = timer.calendar.as_ref() {
+        timer.next_fire_at = Some(calendar.next_after(now)?.utc);
+    } else {
+        let anchor = timer.last_fired_at.unwrap_or(timer.created_at);
+        let fallback_ms = timer.interval_ms.unwrap_or(timer.duration_ms);
+        timer.next_fire_at = advance_time(anchor, fallback_ms).ok().or(Some(now));
+    }
+    Ok(timer)
 }

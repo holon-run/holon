@@ -5896,6 +5896,7 @@ CREATE TABLE working_memory_deltas (
             next_fire_at,
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         }
     }
 

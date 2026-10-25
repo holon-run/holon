@@ -27,9 +27,11 @@ const MAX_LIMIT: usize = 100;
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateTimerArgs {
     #[schemars(range(min = 1))]
-    pub(crate) duration_ms: u64,
+    pub(crate) duration_ms: Option<u64>,
     #[schemars(range(min = 1))]
     pub(crate) interval_ms: Option<u64>,
+    pub(crate) calendar_expression: Option<String>,
+    pub(crate) timezone: Option<String>,
     pub(crate) summary: Option<String>,
 }
 
@@ -93,13 +95,55 @@ pub(crate) async fn create(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: CreateTimerArgs = parse_tool_args(CREATE_NAME, input)?;
-    validate_positive(CREATE_NAME, "duration_ms", args.duration_ms)?;
+    if let Some(duration_ms) = args.duration_ms {
+        validate_positive(CREATE_NAME, "duration_ms", duration_ms)?;
+    }
     if let Some(interval_ms) = args.interval_ms {
         validate_positive(CREATE_NAME, "interval_ms", interval_ms)?;
     }
-    let timer = runtime
-        .schedule_timer(args.duration_ms, args.interval_ms, args.summary)
-        .await?;
+    if args.calendar_expression.is_some()
+        && (args.duration_ms.is_some() || args.interval_ms.is_some())
+    {
+        return Err(invalid_tool_input(
+            CREATE_NAME,
+            "calendar_expression cannot be combined with duration_ms or interval_ms",
+            json!({"fields": ["calendar_expression", "duration_ms", "interval_ms"]}),
+            "provide either a calendar schedule or a relative schedule",
+        )
+        .into());
+    }
+    let timer = match (args.calendar_expression, args.timezone) {
+        (Some(expression), Some(timezone)) => {
+            runtime
+                .schedule_calendar_timer(expression, timezone, args.summary)
+                .await?
+        }
+        (None, None) => {
+            runtime
+                .schedule_timer(
+                    args.duration_ms.ok_or_else(|| {
+                        invalid_tool_input(
+                            CREATE_NAME,
+                            "duration_ms is required for relative timers",
+                            json!({"field": "duration_ms"}),
+                            "provide duration_ms or provide calendar_expression and timezone",
+                        )
+                    })?,
+                    args.interval_ms,
+                    args.summary,
+                )
+                .await?
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(invalid_tool_input(
+                CREATE_NAME,
+                "calendar_expression and timezone must be provided together",
+                json!({"fields": ["calendar_expression", "timezone"]}),
+                "provide both calendar_expression and timezone",
+            )
+            .into())
+        }
+    };
     serialize_success(CREATE_NAME, &timer)
 }
 

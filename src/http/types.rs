@@ -493,8 +493,12 @@ pub struct PickWorkItemResponse {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTimerRequest {
-    pub duration_ms: u64,
+    pub duration_ms: Option<u64>,
     pub interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_expression: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
     pub summary: Option<String>,
     pub authority_class: Option<AuthorityClass>,
 }

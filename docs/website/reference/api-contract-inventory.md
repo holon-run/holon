@@ -278,7 +278,7 @@ Breaking migration from the removed projection contract:
 | `PATCH` | `/api/control/agents/:agent_id/work-items/:work_item_id` | `UpdateWorkItemRequest` | `WorkItemRecord` | Experimental | Mutates objective, plan status, todo list, and legacy blocker/recheck fields. Empty mutations are rejected. |
 | `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/complete` | `{ report_text, authority_class? }` | `WorkItemRecord` | Experimental | Atomically completes an open WorkItem with `report_text` as its canonical result brief; also finalizes an existing legacy `completing` record. Cancel/delete remains out of scope. |
 | `GET` | `/api/agents/:agent_id/timers/:timer_id` | Path `agent_id`, `timer_id`. | `TimerRecord` | Candidate stable route; DTO schema still broad | Returns 404 when the timer id is not found for the target agent. |
-| `POST` | `/api/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, authority_class? }` | `TimerRecord` | Candidate stable | `duration_ms` is required; `interval_ms` makes a repeating timer. |
+| `POST` | `/api/control/agents/:agent_id/timers` | `{ duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?, authority_class? }` | `TimerRecord` | Candidate stable | Creates either a relative/fixed-interval timer or a five-field cron timer. Calendar expression and timezone are required together and are mutually exclusive with duration/interval fields. |
 | `POST` | `/api/control/agents/:agent_id/timers/:timer_id/cancel` | `{ authority_class? }` | `TimerRecord` | Candidate stable | Idempotent for already-cancelled timers. Missing timers return 404; completed timers return 400 because they already fired. |
 
 `CreateCommandTaskRequest` fields:

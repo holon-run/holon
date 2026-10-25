@@ -707,10 +707,41 @@ pub async fn create_timer(
     let boundary = current_boundary_metadata(&runtime)
         .await
         .map_err(error_response)?;
-    let timer = runtime
-        .schedule_timer(request.duration_ms, request.interval_ms, request.summary)
-        .await
-        .map_err(error_response)?;
+    if request.calendar_expression.is_some()
+        && (request.duration_ms.is_some() || request.interval_ms.is_some())
+    {
+        return Err(error_response(
+            RuntimeError::validation(
+                "timer_schedule_conflict",
+                "calendar_expression cannot be combined with duration_ms or interval_ms",
+            )
+            .with_safe_context("fields", "calendar_expression,duration_ms,interval_ms")
+            .into(),
+        ));
+    }
+    let timer = match (request.calendar_expression, request.timezone) {
+        (Some(expression), Some(timezone)) => runtime
+            .schedule_calendar_timer(expression, timezone, request.summary)
+            .await
+            .map_err(error_response)?,
+        (None, None) => runtime
+            .schedule_timer(
+                request.duration_ms.ok_or_else(|| {
+                    error_response(anyhow::anyhow!(
+                        "duration_ms is required when calendar_expression is absent"
+                    ))
+                })?,
+                request.interval_ms,
+                request.summary,
+            )
+            .await
+            .map_err(error_response)?,
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(error_response(anyhow::anyhow!(
+                "calendar_expression and timezone must be provided together"
+            )))
+        }
+    };
     runtime
         .append_audit_event(
             "timer_create_requested",

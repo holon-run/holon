@@ -55,7 +55,7 @@ when the agent is restarted.
 
 | Operation | Operator CLI | Agent tool |
 |---|---|---|
-| Create | `holon timer create --after-ms N [--every-ms N] [--summary TEXT] [--agent ID]` | `CreateTimer(duration_ms, interval_ms?, summary?)` |
+| Create | `holon timer create --after-ms N [--every-ms N] [--summary TEXT] [--agent ID]` or `holon timer create --calendar-expression "M H * * *" --timezone AREA/LOCATION` | `CreateTimer(duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?)` |
 | List | `holon timer list [--limit N] [--agent ID]` | `ListTimers(limit?)` |
 | Read | HTTP detail route below | `GetTimer(timer_id)` |
 | Cancel | `holon timer cancel TIMER_ID [--agent ID]` | `CancelTimer(timer_id)` |
@@ -66,9 +66,17 @@ Durations and intervals are positive milliseconds. Creating a timer does not
 pause the turn. Cancelling an already-cancelled timer is idempotent; a completed
 timer cannot be cancelled.
 
+Calendar timers accept exactly five standard cron fields (minute, hour, day of
+month, month, day of week) and an IANA timezone. The expression is evaluated in
+that timezone, while `next_fire_at` and persisted timestamps remain UTC. Calendar
+timers recalculate the next matching occurrence after each fire and after
+restart; they do not use a fixed UTC interval, so daylight-saving transitions
+follow the named timezone. `calendar_expression` and `timezone` must be supplied
+together and cannot be combined with `duration_ms` or `interval_ms`.
+
 | HTTP route | Contract |
 |---|---|
-| `POST /api/control/agents/:id/timers` | Create with `duration_ms`, optional `interval_ms`, `summary`, and control `authority_class` metadata |
+| `POST /api/control/agents/:id/timers` | Create with either `duration_ms`/`interval_ms` or `calendar_expression`/`timezone`, plus `summary` and control `authority_class` metadata |
 | `GET /api/agents/:id/timers` | List recent timer records |
 | `GET /api/agents/:id/timers/:timer_id` | Read an owned timer or return a not-found error |
 | `POST /api/control/agents/:id/timers/:timer_id/cancel` | Cancel the timer; optional control `authority_class` metadata |
@@ -88,6 +96,7 @@ Control metadata does not elevate a caller's authority. Use the
 | `status` | `active`, `completed`, or `cancelled`; legacy `scheduled` deserializes as `active` |
 | `summary` | Optional reminder description |
 | `next_fire_at`, `last_fired_at` | Next scheduled and most recent firing timestamps |
+| `calendar` | Optional normalized five-field expression and IANA timezone for calendar timers |
 | `fire_count` | Number of recorded firings |
 
 ## WaitFor contract

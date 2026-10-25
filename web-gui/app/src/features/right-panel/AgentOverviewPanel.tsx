@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Inbox, Loader2, Pencil, Play, Square, Trash2, X } from "lucide-react";
 import type React from "react";
 
@@ -11,6 +11,7 @@ import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
+import type { components } from "../../runtime/generated/openapi";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
@@ -116,6 +117,8 @@ export function AgentOverviewPanel({
 }: AgentOverviewPanelProps) {
   const { t } = useTranslation();
   const queryAgentRecentTasks = useRuntimeStore((state) => state.queryAgentRecentTasks);
+  const queryAgentTimers = useRuntimeStore((state) => state.queryAgentTimers);
+  const cancelAgentTimer = useRuntimeStore((state) => state.cancelAgentTimer);
   const workspace = agent.workspaceSummary;
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -125,8 +128,43 @@ export function AgentOverviewPanel({
   const [renameText, setRenameText] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>(undefined);
   const [renameSaving, setRenameSaving] = useState(false);
+  const [timers, setTimers] = useState<components["schemas"]["TimerRecord"][]>([]);
+  const [timersLoading, setTimersLoading] = useState(false);
+  const [timerError, setTimerError] = useState<string | undefined>();
+  const [cancellingTimerId, setCancellingTimerId] = useState<string | undefined>();
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
+  useEffect(() => {
+    let cancelled = false;
+    setTimersLoading(true);
+    setTimerError(undefined);
+    void queryAgentTimers(agent.id)
+      .then((nextTimers) => {
+        if (!cancelled) setTimers(nextTimers);
+      })
+      .catch((error) => {
+        if (!cancelled) setTimerError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setTimersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.id, queryAgentTimers]);
+
+  async function handleCancelTimer(timerId: string) {
+    setCancellingTimerId(timerId);
+    setTimerError(undefined);
+    try {
+      const updated = await cancelAgentTimer(agent.id, timerId);
+      setTimers((current) => current.map((timer) => timer.id === updated.id ? updated : timer));
+    } catch (error) {
+      setTimerError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCancellingTimerId(undefined);
+    }
+  }
   // Stop and Start are inverse lifecycle transitions: only show the one that
   // applies to the current state. Delete is always available.
   const normalizedLifecycle = (agent.lifecycle ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
@@ -507,6 +545,50 @@ export function AgentOverviewPanel({
           </CollapsibleInspectorCard>
         );
       })()}
+
+      <CollapsibleInspectorCard
+        title={t("rightPanel.timers")}
+        className="agent-timers-card"
+        badge={timers.length ? <span className="inspector-card-count">{timers.length}</span> : undefined}
+      >
+        {timersLoading ? <p className="muted">{t("rightPanel.loadingTimers")}</p> : null}
+        {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
+        {!timersLoading && !timers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
+        {timers.length ? (
+          <div className="agent-timer-list">
+            {timers.map((timer) => {
+              const calendar = timer.calendar;
+              const canCancel = timer.status === "active";
+              return (
+                <article key={timer.id} className="agent-timer-row">
+                  <div className="agent-timer-summary">
+                    <strong>{timer.summary || timer.id}</strong>
+                    <StatusBadge className="state-chip" kind="task" value={timer.status} />
+                  </div>
+                  <div className="agent-timer-details">
+                    {calendar ? (
+                      <span>{calendar.expression} · {calendar.timezone}</span>
+                    ) : (
+                      <span>{timer.interval_ms ? t("rightPanel.timerInterval", { value: timer.interval_ms }) : t("rightPanel.timerRelative", { value: timer.duration_ms })}</span>
+                    )}
+                    {timer.next_fire_at ? <time dateTime={timer.next_fire_at}>{new Date(timer.next_fire_at).toLocaleString()}</time> : null}
+                  </div>
+                  {canCancel ? (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={cancellingTimerId === timer.id}
+                      onClick={() => void handleCancelTimer(timer.id)}
+                    >
+                      {cancellingTimerId === timer.id ? t("rightPanel.cancellingTimer") : t("common.cancel")}
+                    </button>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
+      </CollapsibleInspectorCard>
 
       <CollapsibleInspectorCard
         title={t("rightPanel.skillsWithCount", { count: skillCatalog?.catalog.length ?? 0 })}

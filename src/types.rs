@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use unicode_casefold::UnicodeCaseFold;
 
+use crate::calendar::CalendarSchedule;
 use crate::config::ModelRouteRef;
 use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
 pub use crate::domain::{agent::*, agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
@@ -5054,6 +5055,8 @@ pub struct TimerRecord {
     pub last_fired_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub fire_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<CalendarSchedule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]

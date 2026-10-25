@@ -1928,6 +1928,7 @@ mod tests {
             next_fire_at: Some(now + chrono::Duration::seconds(1)),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         };
 
         storage.append_wait_condition(&wait_condition).unwrap();
@@ -2108,6 +2109,7 @@ mod tests {
             next_fire_at: Some(now + chrono::Duration::seconds(1)),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         };
         let trigger = ExternalTriggerRecord {
             external_trigger_id: "trigger-db-only".into(),
@@ -2324,6 +2326,7 @@ mod tests {
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         };
         let wait_for = |agent_id: &str, id: &str| WaitConditionRecord {
             id: id.into(),
@@ -4779,6 +4782,7 @@ mod tests {
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         };
         let mut updated = older.clone();
         updated.status = crate::types::TimerStatus::Completed;

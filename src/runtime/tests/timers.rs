@@ -970,6 +970,7 @@ async fn runtime_fires_overdue_timer_after_restart() {
             next_fire_at: Some(now - chrono::Duration::milliseconds(5)),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         })
         .unwrap();
 
@@ -1024,6 +1025,7 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
             next_fire_at: None,
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         })
         .unwrap();
 
@@ -1079,6 +1081,7 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
             next_fire_at: Some(scheduled_fire_at),
             last_fired_at: None,
             fire_count: 0,
+            calendar: None,
         })
         .unwrap();
 
@@ -1140,6 +1143,49 @@ async fn schedule_timer_rejects_unrepresentable_duration() {
 
     let result = runtime.schedule_timer(u64::MAX, None, None).await;
     assert!(result.is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn calendar_timer_persists_rule_and_next_occurrence() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("calendar timer")),
+        "default".into(),
+        context_config(),
+        clock,
+    )
+    .unwrap();
+
+    let timer = runtime
+        .schedule_calendar_timer("* * * * *", "UTC", Some("calendar reminder".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        timer.calendar.as_ref().map(|calendar| &calendar.expression),
+        Some(&"0 * * * * *".to_string())
+    );
+    assert_eq!(
+        timer
+            .calendar
+            .as_ref()
+            .map(|calendar| calendar.timezone.as_str()),
+        Some("UTC")
+    );
+    assert!(timer.repeat);
+    assert!(timer
+        .next_fire_at
+        .is_some_and(|next| next > timer.created_at));
+    assert_eq!(
+        runtime.storage().latest_timer_record(&timer.id).unwrap(),
+        Some(timer)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -1573,6 +1619,7 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
         next_fire_at: Some(now + chrono::Duration::seconds(10)),
         last_fired_at: Some(now),
         fire_count: 3,
+        calendar: None,
     };
     let cancelled_timer = TimerRecord {
         id: "legacy-cancelled-timer".into(),
@@ -1725,6 +1772,7 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         next_fire_at: Some(now + chrono::Duration::seconds(10)),
         last_fired_at: Some(now),
         fire_count: 1,
+        calendar: None,
     };
     storage.append_timer(&timer).unwrap();
     let message = MessageEnvelope {

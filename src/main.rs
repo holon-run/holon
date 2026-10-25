@@ -301,12 +301,10 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                 Some(command) => command,
                 None => TimerCommands::Create {
                     options: TimerCreateArgs {
-                        after_ms: legacy.after_ms.ok_or_else(|| {
-                            anyhow!(
-                                "`holon timer` requires `--after-ms <ms>` or a timer subcommand"
-                            )
-                        })?,
+                        after_ms: legacy.after_ms,
                         every_ms: legacy.every_ms,
+                        calendar_expression: legacy.calendar_expression,
+                        timezone: legacy.timezone,
                         summary: legacy.summary,
                         agent: legacy.agent,
                     },
@@ -2558,7 +2556,7 @@ mod tests {
         else {
             panic!("expected timer create command");
         };
-        assert_eq!(after_ms, 100);
+        assert_eq!(after_ms, Some(100));
         assert_eq!(agent.as_deref(), Some("runner"));
 
         let cli = Cli::parse_from(["holon", "timer", "list", "--limit", "10"]);
@@ -6242,12 +6240,25 @@ async fn handle_timer_command(config: &AppConfig, command: TimerCommands) -> Res
     let client = LocalClient::new(config.clone())?;
     match command {
         TimerCommands::Create { options } => {
+            if options.calendar_expression.is_some() && options.every_ms.is_some() {
+                anyhow::bail!(
+                    "--every-ms cannot be combined with --calendar-expression; \
+                     provide either a calendar or relative schedule"
+                );
+            }
             let agent = options
                 .agent
                 .unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(
                 client
-                    .create_timer(&agent, options.after_ms, options.every_ms, options.summary)
+                    .create_timer_schedule(
+                        &agent,
+                        options.after_ms,
+                        options.every_ms,
+                        options.calendar_expression,
+                        options.timezone,
+                        options.summary,
+                    )
                     .await?,
             )?)
         }
