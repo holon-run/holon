@@ -11,7 +11,8 @@ mod tests;
 
 use crate::{
     domain::execution_protocol::{
-        ConversationOutcome, ExecutionOutcome, ExecutionOutcomeRecord, WorkItemOutcome,
+        ConversationOutcome, ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolState,
+        ExecutionSourceIdentity, WorkItemOutcome,
     },
     runtime_db::{evidence::append_message_tx, RuntimeIndexChange},
     types::{
@@ -204,6 +205,177 @@ pub(crate) struct PreparedFinalBriefReply {
     turn_id: String,
     brief: BriefRecord,
     request_message_id: String,
+    source_message_id: String,
+    consumed_activation_id: String,
+    consumed_turn_id: String,
+}
+
+/// Recovery envelopes are infrastructure inputs, not additional business
+/// requests. Only the canonical provider resolver may connect them to a request.
+fn provider_reply_source_tx(
+    tx: &Transaction<'_>,
+    turn: &TurnRecord,
+) -> Result<Option<(ReplyRouteRegistry, String, String, String)>> {
+    if !turn.trigger.as_ref().is_some_and(|trigger| {
+        trigger.kind == MessageKind::InternalFollowup
+            && trigger.authority_class == AuthorityClass::RuntimeInstruction
+            && matches!(&trigger.origin,
+                MessageOrigin::System { subsystem } if subsystem == "model_lineage_recovery")
+    }) {
+        return Ok(None);
+    }
+    let mut state = ExecutionProtocolState::empty(&turn.agent_id);
+    let mut statement =
+        tx.prepare("SELECT payload_json FROM execution_protocol_attempts WHERE agent_id = ?1")?;
+    for row in statement.query_map([&turn.agent_id], |row| row.get::<_, String>(0))? {
+        let attempt: ExecutionAttempt = serde_json::from_str(&row?)?;
+        state.attempts.insert(attempt.attempt_id.clone(), attempt);
+    }
+    let mut statement =
+        tx.prepare("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id = ?1")?;
+    for row in statement.query_map([&turn.agent_id], |row| row.get::<_, String>(0))? {
+        let outcome: ExecutionOutcomeRecord = serde_json::from_str(&row?)?;
+        state.outcomes.insert(outcome.outcome_id.clone(), outcome);
+    }
+    let mut open = state.attempts.values().filter(|attempt| {
+        attempt.state == ExecutionAttemptState::Open && attempt.agent_id == turn.agent_id
+    });
+    let Some(attempt) = open.next() else {
+        return Ok(None);
+    };
+    if open.next().is_some() || attempt.terminal_outcome_id.is_some() {
+        return Ok(None);
+    }
+    let Some(source_id) = attempt.source_message_id.as_deref() else {
+        return Ok(None);
+    };
+    if !matches!(&attempt.source.identity,
+        ExecutionSourceIdentity::RuntimeRecovery { recovery_id } if recovery_id == source_id)
+        || turn
+            .trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_deref())
+            != Some(source_id)
+    {
+        return Ok(None);
+    }
+    let execution: ReplyRouteExecutionState = serde_json::from_str(&tx.query_row(
+        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+        [&turn.agent_id],
+        |row| row.get::<_, String>(0),
+    )?)?;
+    let Some(binding) = execution.current_execution_binding else {
+        return Ok(None);
+    };
+    if execution.current_turn_id.as_deref() != Some(turn.turn_id.as_str())
+        || binding.turn_id != turn.turn_id
+        || binding.source_message_id != source_id
+        || binding.activation_id.as_deref() != Some(attempt.attempt_id.as_str())
+        || binding.owner.as_ref() != Some(&turn.effective_owner())
+        || !matches!(&binding.admission_provenance,
+            Some(crate::types::ExecutionAdmissionProvenance::Canonical { activation_id, .. })
+                if activation_id == &attempt.attempt_id)
+        || attempt.admitted_fences.host_registry_revision
+            != crate::runtime_db::transitions::authority_fences_tx(tx, &turn.agent_id)?
+                .host_registry_revision
+    {
+        return Ok(None);
+    }
+    let read_message = |id: &str| -> Result<Option<MessageEnvelope>> {
+        tx.query_row(
+            "SELECT payload_json FROM messages WHERE message_id = ?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|text| serde_json::from_str(&text).map_err(Into::into))
+        .transpose()
+    };
+    let Some(message) = read_message(source_id)? else {
+        return Ok(None);
+    };
+    let source =
+        crate::runtime::provider_recovery::resolve_with(&message, &state, read_message, |id| {
+            tx.query_row(
+                "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|text| serde_json::from_str(&text).map_err(Into::into))
+            .transpose()
+        });
+    let Ok(source) = source else { return Ok(None) };
+    if !source.is_initial_attempt(&message, attempt)
+        || source
+            .source_turns
+            .iter()
+            .any(|source_turn| source_turn.effective_owner() != turn.effective_owner())
+    {
+        return Ok(None);
+    }
+    let mut allowed =
+        std::collections::BTreeSet::from([source.root_message.id.as_str(), source_id]);
+    for predecessor in &source.predecessors {
+        if let Some(id) = predecessor.source_message_id.as_deref() {
+            allowed.insert(id);
+        }
+    }
+    if !turn
+        .input_message_ids
+        .iter()
+        .any(|id| id == &source.root_message.id)
+        || !turn.input_message_ids.iter().any(|id| id == source_id)
+        || std::iter::once(turn)
+            .chain(source.source_turns.iter())
+            .any(|source_turn| {
+                source_turn
+                    .input_message_ids
+                    .iter()
+                    .any(|id| !allowed.contains(id.as_str()))
+            })
+        || source
+            .source_turns
+            .first()
+            .is_none_or(|root| root.input_message_ids != [source.root_message.id.clone()])
+    {
+        return Ok(None);
+    }
+    let Some(request) = delivery_by_message_id_tx(tx, &source.root_message.id)? else {
+        return Ok(None);
+    };
+    let Some(root_turn) = source.source_turns.first() else {
+        return Ok(None);
+    };
+    if !request.authenticates_agent_message(&source.root_message)
+        || request.state != AgentMessageDeliveryState::Consumed
+        || request.turn_id.as_deref() != Some(root_turn.turn_id.as_str())
+        || !source.predecessors.iter().any(|prior| {
+            Some(&prior.attempt_id) == request.activation_id.as_ref()
+                && prior.source_message_id.as_deref() == Some(source.root_message.id.as_str())
+        })
+    {
+        return Ok(None);
+    }
+    let Some(route) = source.root_message.routing_context else {
+        return Ok(None);
+    };
+    if route.message_id != source.root_message.id || route.recipient_agent_id != turn.agent_id {
+        return Ok(None);
+    }
+    Ok(Some((
+        ReplyRouteRegistry {
+            activation_id: attempt.attempt_id.clone(),
+            turn_id: turn.turn_id.clone(),
+            routes: vec![route],
+            latest_input_routed: true,
+        },
+        source_id.into(),
+        request
+            .activation_id
+            .expect("validated consumed activation"),
+        root_turn.turn_id.clone(),
+    )))
 }
 
 pub(crate) fn prepare_final_brief_reply_tx(
@@ -218,18 +390,32 @@ pub(crate) fn prepare_final_brief_reply_tx(
         .is_none_or(|terminal| terminal.kind != TurnTerminalKind::Completed)
         || !turn.waiting_condition_ids.is_empty()
         || turn.runtime_failure.is_some()
-        || turn.input_message_ids.len() != 1
     {
         return Ok(None);
     }
-    let Some(registry) = load_reply_routes_for_settlement_tx(tx, &turn.agent_id, turn)? else {
-        return Ok(None);
-    };
+    let (registry, source_message_id, consumed_activation_id, consumed_turn_id) =
+        if let Some(recovery) = provider_reply_source_tx(tx, turn)? {
+            recovery
+        } else {
+            if turn.input_message_ids.len() != 1 {
+                return Ok(None);
+            }
+            let Some(registry) = load_reply_routes_for_settlement_tx(tx, &turn.agent_id, turn)?
+            else {
+                return Ok(None);
+            };
+            let consumed = (
+                turn.input_message_ids[0].clone(),
+                registry.activation_id.clone(),
+                registry.turn_id.clone(),
+            );
+            (registry, consumed.0, consumed.1, consumed.2)
+        };
     if registry.routes.len() != 1 || !registry.latest_input_routed {
         return Ok(None);
     }
     let route = &registry.routes[0];
-    if route.message_id != turn.input_message_ids[0] {
+    if !turn.input_message_ids.contains(&route.message_id) {
         return Ok(None);
     }
     let Some(request) = delivery_by_message_id_tx(tx, &route.message_id)? else {
@@ -365,6 +551,9 @@ pub(crate) fn prepare_final_brief_reply_tx(
         turn_id: registry.turn_id,
         brief: brief.clone(),
         request_message_id: route.message_id.clone(),
+        source_message_id,
+        consumed_activation_id,
+        consumed_turn_id,
     }))
 }
 
@@ -413,11 +602,12 @@ pub(crate) fn commit_final_brief_reply_tx(
     let request = delivery_by_message_id_tx(tx, &prepared.request_message_id)?;
     if attempt.state != ExecutionAttemptState::Settled
         || attempt.agent_id != prepared.brief.agent_id
-        || attempt.source_message_id.as_deref() != Some(prepared.request_message_id.as_str())
+        || attempt.source_message_id.as_deref() != Some(prepared.source_message_id.as_str())
         || request.is_none_or(|request| {
             request.state != AgentMessageDeliveryState::Consumed
-                || request.activation_id.as_deref() != Some(prepared.activation_id.as_str())
-                || request.turn_id.as_deref() != Some(prepared.turn_id.as_str())
+                || request.activation_id.as_deref()
+                    != Some(prepared.consumed_activation_id.as_str())
+                || request.turn_id.as_deref() != Some(prepared.consumed_turn_id.as_str())
         })
         || outcome.attempt_id != attempt.attempt_id
         || !matches!(

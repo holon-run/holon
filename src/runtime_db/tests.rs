@@ -875,6 +875,7 @@ mod tests {
         let connection = open_connection(db_path)?;
         connection.execute_batch(
             "DELETE FROM schema_migrations WHERE version >= 41;
+             DROP TABLE agent_message_wait_outcomes;
              DROP TABLE provider_queue_parking;
              DROP TABLE provider_recovery_requests;
              DROP TABLE provider_recovery_episodes;

@@ -9304,12 +9304,39 @@ mod tests {
     }
 
     fn test_host() -> (tempfile::TempDir, RuntimeHost) {
+        test_host_with_reply("done")
+    }
+
+    fn test_host_with_reply(reply: &str) -> (tempfile::TempDir, RuntimeHost) {
+        test_host_with_provider(Arc::new(StubProvider::new(reply)))
+    }
+
+    fn test_host_with_silent_peer(peer_id: &'static str) -> (tempfile::TempDir, RuntimeHost) {
+        struct SilentPeerProvider(&'static str);
+
+        #[async_trait]
+        impl AgentProvider for SilentPeerProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> Result<ProviderTurnResponse> {
+                let agent_id = &request.prompt_frame.cache.as_ref().unwrap().agent_id;
+                let reply = if agent_id == self.0 { "" } else { "done" };
+                StubProvider::new(reply).complete_turn(request).await
+            }
+        }
+
+        test_host_with_provider(Arc::new(SilentPeerProvider(peer_id)))
+    }
+
+    fn test_host_with_provider(
+        provider: Arc<dyn AgentProvider>,
+    ) -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
         config.user_home_dir = Some(home.path().to_path_buf());
-        let host =
-            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let host = RuntimeHost::new_with_provider(config, provider).unwrap();
         host.ensure_default_agent_identity().unwrap();
         (home, host)
     }
@@ -13568,30 +13595,23 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_existing_agent_waits_share_the_first_later_message() {
-        let (_home, host) = test_host();
+        // Keep explicit shared-channel observation separate from final-brief replies.
+        let (_home, host) = test_host_with_silent_peer("concurrent-reply-target");
         let parent = host.default_runtime().await.unwrap();
-        let created = parent
-            .agent_invocation_service()
-            .invoke(InvokeAgentRequest {
-                target: InvokeAgentTarget::NewSubagent {
-                    template: None,
-                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
-                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
-                },
-                message: "bootstrap invocation target".into(),
-                authority_class: AuthorityClass::OperatorInstruction,
-            })
+        host.create_named_agent("concurrent-reply-target", None)
             .await
             .unwrap();
-        let bootstrap = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
-        assert_eq!(bootstrap.status, TaskStatus::Completed);
+        let child = host
+            .get_public_agent("concurrent-reply-target")
+            .await
+            .unwrap();
 
         let first_service = parent.agent_invocation_service();
         let second_service = parent.agent_invocation_service();
         let first = first_service.invoke(InvokeAgentRequest {
             target: InvokeAgentTarget::ExistingAgent {
                 reply_timeout_ms: None,
-                agent_id: created.agent_id.clone(),
+                agent_id: "concurrent-reply-target".into(),
             },
             message: "first concurrent invocation".into(),
             authority_class: AuthorityClass::OperatorInstruction,
@@ -13599,7 +13619,7 @@ mod tests {
         let second = second_service.invoke(InvokeAgentRequest {
             target: InvokeAgentTarget::ExistingAgent {
                 reply_timeout_ms: None,
-                agent_id: created.agent_id.clone(),
+                agent_id: "concurrent-reply-target".into(),
             },
             message: "second concurrent invocation".into(),
             authority_class: AuthorityClass::OperatorInstruction,
@@ -13607,7 +13627,6 @@ mod tests {
         let (first, second) = tokio::join!(first, second);
         let first = first.unwrap();
         let second = second.unwrap();
-        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
         let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
         wait_for_agent_inputs_settled(&child).await;
         let response = send_agent_message(
@@ -13637,7 +13656,7 @@ mod tests {
     #[tokio::test]
     async fn shared_reply_waiter_identities_drain_in_bounded_batches() {
         for use_wait in [false, true] {
-            let (_home, host) = test_host();
+            let (_home, host) = test_host_with_silent_peer("shared-reply-target");
             let parent = host.default_runtime().await.unwrap();
             host.create_named_agent("shared-reply-target", None)
                 .await

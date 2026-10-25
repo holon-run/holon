@@ -3,16 +3,24 @@ struct ReplyGateProvider {
     first: AtomicBool,
     started: Notify,
     release: Notify,
+    recovery_started: Notify,
+    recovery_release: Notify,
     answer: &'static str,
     wait: bool,
+    recover: bool,
 }
 
 #[async_trait]
-impl AgentProvider for ReplyGateProvider {
+impl AgentProvider for Arc<ReplyGateProvider> {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if !self.first.swap(true, Ordering::SeqCst) {
             self.started.notify_one();
             self.release.notified().await;
+            if self.recover {
+                return crate::runtime::tests::support::DeferredFallbackProvider
+                    .complete_turn(request)
+                    .await;
+            }
             if self.wait {
                 return Ok(ProviderTurnResponse {
                     blocks: vec![crate::provider::ModelBlock::ToolUse {
@@ -34,8 +42,18 @@ impl AgentProvider for ReplyGateProvider {
                     request_diagnostics: None,
                 });
             }
+        } else if self.recover {
+            self.recovery_started.notify_one();
+            self.recovery_release.notified().await;
         }
         StubProvider::new(self.answer).complete_turn(request).await
+    }
+
+    fn select_model_lineage(
+        &self,
+        _: &crate::config::ModelRouteRef,
+    ) -> Option<Arc<dyn AgentProvider>> {
+        Some(Arc::new(self.clone()))
     }
 }
 
@@ -43,6 +61,22 @@ async fn reply_gate_fixture(
     timeout_ms: u64,
     answer: &'static str,
     wait: bool,
+) -> (
+    tempfile::TempDir,
+    RuntimeHost,
+    RuntimeHandle,
+    RuntimeHandle,
+    Arc<ReplyGateProvider>,
+    crate::types::AgentInvocationReceipt,
+) {
+    reply_gate_recovery_fixture(timeout_ms, answer, wait, false).await
+}
+
+async fn reply_gate_recovery_fixture(
+    timeout_ms: u64,
+    answer: &'static str,
+    wait: bool,
+    recover: bool,
 ) -> (
     tempfile::TempDir,
     RuntimeHost,
@@ -60,10 +94,13 @@ async fn reply_gate_fixture(
         first: AtomicBool::new(false),
         started: Notify::new(),
         release: Notify::new(),
+        recovery_started: Notify::new(),
+        recovery_release: Notify::new(),
         answer,
         wait,
+        recover,
     });
-    let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(provider.clone())).unwrap();
     let parent = host.default_runtime().await.unwrap();
     parent
         .agent_creation_service()
@@ -96,6 +133,151 @@ async fn reply_gate_fixture(
         .unwrap();
     let peer = host.get_public_agent("reply-gate-peer").await.unwrap();
     (home, host, parent, peer, provider, receipt)
+}
+
+#[tokio::test]
+async fn agent_message_wait_provider_fallback_returns_exact_final_without_explicit_reply() {
+    let (_home, host, parent, peer, gate, receipt) =
+        reply_gate_recovery_fixture(0, "request-bound fallback answer", false, true).await;
+    gate.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), gate.recovery_started.notified())
+        .await
+        .unwrap();
+    assert_provider_reply_rejects_unproven_sources(&host, &peer).await;
+    gate.recovery_release.notify_one();
+    wait_for_agent_inputs_settled(&peer).await;
+    let task = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+    assert_eq!(task.status, TaskStatus::Completed, "{task:?}");
+    assert_eq!(reply_outcome_count(&host, &task.id), 1);
+    let message = parent
+        .storage()
+        .read_message_by_id(&format!("message:agent-final-brief-reply:{}", task.id))
+        .unwrap()
+        .unwrap();
+    assert!(serde_json::to_string(&message)
+        .unwrap()
+        .contains("request-bound fallback answer"));
+    let turns: Vec<crate::types::TurnRecord> = host
+        .runtime_db()
+        .with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM turn_records WHERE agent_id = 'reply-gate-peer'",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        })
+        .unwrap();
+    assert!(turns.iter().any(|turn| turn.terminal.as_ref().is_some_and(
+        |terminal| terminal.kind == crate::types::TurnTerminalKind::DeferredToFallback
+    )));
+    assert!(turns.iter().any(|turn| turn
+        .terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.kind == crate::types::TurnTerminalKind::Completed)));
+}
+
+async fn assert_provider_reply_rejects_unproven_sources(host: &RuntimeHost, peer: &RuntimeHandle) {
+    use crate::runtime_db::agent_message_delivery::prepare_final_brief_reply_tx;
+    use crate::types::{
+        BriefKind, BriefRecord, TranscriptEntry, TranscriptEntryKind, TurnTerminalKind,
+        TurnTerminalSummary,
+    };
+    let state = peer.agent_state().await.unwrap();
+    let mut turn = peer
+        .storage()
+        .read_turn_by_id(state.current_turn_id.as_deref().unwrap())
+        .unwrap()
+        .unwrap();
+    let source_id = state.current_execution_binding.unwrap().source_message_id;
+    let message = peer
+        .storage()
+        .read_message_by_id(&source_id)
+        .unwrap()
+        .unwrap();
+    let root_turn_id = message.source_refs["source_turn_id"].clone();
+    let mut brief = BriefRecord::new(
+        &turn.agent_id,
+        BriefKind::Result,
+        "bound recovery final",
+        None,
+        None,
+    );
+    brief.turn_id = Some(turn.turn_id.clone());
+    brief.turn_index = Some(turn.turn_index);
+    brief.work_item_id = turn.current_work_item_id.clone();
+    let round = TranscriptEntry::new(
+        &turn.agent_id,
+        TranscriptEntryKind::AssistantRound,
+        Some(0),
+        None,
+        json!({"turn_id": turn.turn_id,
+            "round_purpose": "agent_response", "visibility": "operator_visible"}),
+    );
+    brief.finalizes_assistant_round_id = Some(round.id.clone());
+    turn.produced_brief_ids = vec![brief.id.clone()];
+    turn.terminal = Some(TurnTerminalSummary {
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        no_brief_reason: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    });
+    host.runtime_db()
+        .transaction(|tx| {
+            assert!(
+                prepare_final_brief_reply_tx(tx, &turn, &[brief.clone()], &[round.clone()])?
+                    .is_some(),
+                "the canonical resolver must prove the real provider fallback source"
+            );
+            for case in [
+                "foreign_input",
+                "ambiguous_root",
+                "forged_reference",
+                "wrong_consumption",
+            ] {
+                tx.execute_batch("SAVEPOINT recovery_reply_negative")?;
+                let mut candidate = turn.clone();
+                match case {
+                    "foreign_input" => candidate.input_message_ids.push("unrelated-request".into()),
+                    "ambiguous_root" => {
+                        tx.execute(
+                            "UPDATE turn_records SET payload_json = json_insert(payload_json,
+                     '$.input_message_ids[#]', 'second-request') WHERE turn_id = ?1",
+                            [&root_turn_id],
+                        )?;
+                    }
+                    "forged_reference" => {
+                        tx.execute(
+                            "UPDATE messages SET payload_json = json_set(payload_json,
+                     '$.source_refs.source_message_id', 'foreign-request') WHERE message_id = ?1",
+                            [&source_id],
+                        )?;
+                    }
+                    "wrong_consumption" => {
+                        tx.execute(
+                    "UPDATE agent_message_deliveries SET payload_json = json_set(payload_json,
+                     '$.activation_id', 'foreign-activation') WHERE target_agent_id = ?1",
+                    [&turn.agent_id])?;
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    prepare_final_brief_reply_tx(
+                        tx,
+                        &candidate,
+                        &[brief.clone()],
+                        &[round.clone()]
+                    )?
+                    .is_none(),
+                    "{case} must not authorize an automatic reply"
+                );
+                tx.execute_batch(
+                    "ROLLBACK TO recovery_reply_negative; RELEASE recovery_reply_negative",
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
 }
 
 fn reply_outcome_count(host: &RuntimeHost, task_id: &str) -> usize {
@@ -228,14 +410,33 @@ async fn agent_message_wait_recovered_outbox_beats_expired_deadline() {
 #[tokio::test]
 async fn agent_message_wait_recovery_keeps_deadline_and_does_not_resend() {
     let (_home, host, parent, peer, gate, receipt) =
-        reply_gate_fixture(150, "late final", false).await;
-    let task = parent
+        reply_gate_fixture(0, "late final", false).await;
+    let mut task = parent
         .storage()
         .latest_task_record(&receipt.task_handle.task_id)
         .unwrap()
         .unwrap();
     parent.abort_async_task_monitor_for_test(&task.id).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Replace the isolated orphan snapshot; production deadlines are immutable.
+    let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+        reply_deadline_at, ..
+    }) = task.recovery.as_mut()
+    else {
+        panic!("expected agent message wait recovery");
+    };
+    *reply_deadline_at = Some(Utc::now() - chrono::Duration::seconds(1));
+    host.runtime_db()
+        .transaction(|tx| {
+            assert_eq!(
+                tx.execute(
+                    "UPDATE tasks SET payload_json = ?1 WHERE task_id = ?2",
+                    rusqlite::params![serde_json::to_string(&task)?, task.id],
+                )?,
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
     parent
         .recover_supervised_child_tasks(vec![task.clone()])
         .await

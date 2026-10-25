@@ -644,7 +644,8 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
             None,
         ))?;
         db.connection()?.execute_batch(
-            "ALTER TABLE provider_quota_incidents DROP COLUMN server_not_before;
+            "DROP TABLE agent_message_wait_outcomes;
+             ALTER TABLE provider_quota_incidents DROP COLUMN server_not_before;
              ALTER TABLE provider_quota_incidents DROP COLUMN probe_token;
              ALTER TABLE provider_quota_incidents DROP COLUMN probe_lease_until;
              ALTER TABLE provider_quota_incidents DROP COLUMN cooldown_policy;

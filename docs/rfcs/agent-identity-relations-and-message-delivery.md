@@ -564,6 +564,16 @@ empty output, and ambiguous/multiple inputs or routes are not fallback replies.
 Historical requests without caller-incarnation evidence retain explicit-only
 reply behavior. A replay must independently satisfy the same binding checks.
 
+A provider fallback may carry that unique request through runtime recovery
+envelopes, but only when the canonical provider-recovery resolver proves the
+entire predecessor chain and its original consumed delivery. Every source turn
+and the final turn must contain only that request and the chain's infrastructure
+envelopes, under the same execution owner. The final brief belongs to the current
+recovery execution; the consumed request remains bound to its original execution.
+Missing, forged, cyclic, ambiguous or mixed-business-input lineage fails closed.
+This does not authorize replies across WaitFor or business continuations, or
+select the agent's latest brief. Interrupted recovery reentry is not inferred.
+
 An immutable per-task reply outcome arbitrates accepted explicit replies,
 derived brief replies and timeout under the runtime DB writer transaction.
 An already accepted eligible explicit reply wins over a proposed fallback.
