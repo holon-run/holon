@@ -674,6 +674,31 @@ fn named_agent_deletion_incomplete_error(
     )
 }
 
+fn named_agent_cleanup_repair_started_error(
+    agent_id: &str,
+    job: &AgentDeletionJob,
+) -> anyhow::Error {
+    anyhow::Error::from(
+        ToolError::new(
+            "deletion_cleanup_repair_started",
+            format!("agent {agent_id} cannot be recreated until cleanup repair completes"),
+        )
+        .with_domain(crate::runtime_error::RuntimeErrorDomain::Conflict)
+        .with_details(json!({
+            "agent_id": agent_id,
+            "deletion_id": job.deletion_id,
+            "deletion_status": job.status,
+            "deletion_phase": job.phase,
+            "deletion_mode": job.mode,
+            "repair_admitted": true,
+        }))
+        .with_recovery_hint(
+            "wait for the cleanup repair to complete, then retry creating the agent",
+        )
+        .with_retryable(true),
+    )
+}
+
 fn named_agent_invalid_name_error(agent_id: &str, error: anyhow::Error) -> anyhow::Error {
     anyhow::Error::from(
         ToolError::new("agent_name_invalid", error.to_string())
@@ -4257,6 +4282,8 @@ impl RuntimeHost {
         desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
         let agent_id = tombstone.agent_id.clone();
+        let bootstrap_lock = self.agent_bootstrap_lock(&agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
         let job = self
             .runtime_db()
             .agent_deletions()
@@ -4269,6 +4296,25 @@ impl RuntimeHost {
             return Err(named_agent_deletion_incomplete_error(
                 &agent_id,
                 job.as_ref(),
+            ));
+        }
+        if !crate::runtime_db::agent_deletion_cleanup::private_history_purge_proof_is_current(
+            self.runtime_db(),
+            &agent_id,
+            tombstone.incarnation,
+        ) {
+            let (_, repair_job, created) = self.runtime_db().agent_deletions().begin(
+                &agent_id,
+                tombstone.revision,
+                "agent_create_cleanup_repair",
+                false,
+            )?;
+            if created {
+                self.notify_deletion_coordinator();
+            }
+            return Err(named_agent_cleanup_repair_started_error(
+                &agent_id,
+                &repair_job,
             ));
         }
         let normalized_name = requested_name

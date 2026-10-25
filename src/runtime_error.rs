@@ -592,6 +592,7 @@ fn is_safe_context_key(key: &str) -> bool {
             | "status"
             | "record_type"
             | "record_id"
+            | "repair_admitted"
             | "existing_status"
             | "incoming_status"
             | "expected_revision"

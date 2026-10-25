@@ -63,6 +63,7 @@ import {
 } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useAgentAccess, type AgentAccessStatus } from "../runtime/useAgentAccess";
+import { RuntimeHttpError } from "../runtime/client";
 import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
@@ -503,7 +504,11 @@ export function App() {
         setCreateAgentError("Failed to create agent.");
       }
     } catch (error) {
-      setCreateAgentError(error instanceof Error ? error.message : String(error));
+      if (error instanceof RuntimeHttpError && error.hint) {
+        setCreateAgentError(`${error.message} ${error.hint}`);
+      } else {
+        setCreateAgentError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setCreateAgentBusy(false);
     }
