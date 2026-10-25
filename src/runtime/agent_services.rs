@@ -187,7 +187,10 @@ impl AgentInvocationService<'_> {
                 .ok_or_else(|| anyhow!("agent invocation requires a host bridge"))?;
             let summary = super::tasks::spawn_agent_task_label(&message);
             match request.target {
-                InvokeAgentTarget::ExistingAgent { agent_id } => {
+                InvokeAgentTarget::ExistingAgent {
+                    agent_id,
+                    reply_timeout_ms,
+                } => {
                     let task = self
                         .runtime
                         .create_agent_message_wait_task(
@@ -195,6 +198,7 @@ impl AgentInvocationService<'_> {
                             message.clone(),
                             agent_id.clone(),
                             request.authority_class.clone(),
+                            reply_timeout_ms,
                         )
                         .await?;
                     let mut admitted = match bridge

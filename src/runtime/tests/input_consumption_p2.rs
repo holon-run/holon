@@ -467,6 +467,8 @@ async fn task_result(
             authority_class: AuthorityClass::RuntimeInstruction,
             delivery_id: Some(request.record.delivery_id),
             after_delivery_rowid: Some(boundary),
+            reply_deadline_at: None,
+            requester_incarnation: None,
         })
     } else {
         None

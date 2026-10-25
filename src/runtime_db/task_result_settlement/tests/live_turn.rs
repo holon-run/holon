@@ -208,6 +208,8 @@ fn live_reply(
         authority_class: AuthorityClass::RuntimeInstruction,
         delivery_id: Some("live-request-delivery".into()),
         after_delivery_rowid: Some(boundary),
+        reply_deadline_at: None,
+        requester_incarnation: None,
     });
     let detail = task.detail.as_mut().unwrap();
     detail["message_id"] = serde_json::json!("live-reply");

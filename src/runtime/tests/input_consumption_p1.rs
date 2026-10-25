@@ -2928,6 +2928,8 @@ async fn p1_unreconciled_reply_wait_is_not_sender_fallback() {
                 authority_class: AuthorityClass::RuntimeInstruction,
                 delivery_id: None,
                 after_delivery_rowid: None,
+                reply_deadline_at: None,
+                requester_incarnation: None,
             }),
         })
         .unwrap();

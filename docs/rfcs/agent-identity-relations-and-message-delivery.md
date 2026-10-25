@@ -525,6 +525,7 @@ The target is an explicit discriminated union:
 ```text
 existing_agent
   agent_id
+  reply_timeout_ms? (default 1800000; 0 means unlimited)
 
 new_subagent
   create_spec
@@ -534,21 +535,68 @@ For `existing_agent`, invocation does not create, reconfigure, reparent,
 detach, or acquire lifecycle authority over the target. It persists an
 `AgentMessageWait` task, sends one message through
 `AgentMessageDeliveryService`, and anchors the wait boundary to that request's
-durable delivery row. The handle settles when a later accepted message from the
-selected sender is present after the boundary. It does not wait for the target
-agent's turn, WorkItem, lifecycle, or business task to become terminal.
-Recovery reuses the persisted delivery and boundary; if a crash happened
-before they were attached to the task, admission is retried with the task's
-same idempotency key.
+durable delivery row. Explicit replies retain the compatibility rule: the first
+later accepted message from the selected sender after the boundary may satisfy
+multiple waits. A second, runtime-derived channel can return the final brief of
+the execution that processed this exact request. Neither channel proves business
+success, WorkItem completion, or target lifecycle completion.
+Acceptance atomically binds the delivery, boundary and target incarnation to
+the task before the receiver may consume the request. Recovery reuses that
+binding; a missing accepted binding is not permission to resend business work.
 
 The runtime-owned envelope for this path also carries a reply expectation with
 the waiting task, request message, and delivery identifiers. The recipient sees
 this expectation in the runtime `current_input` context, separately from the
 message body, with an instruction that the sender is waiting for a reply.
-The first implementation retains the existing compatibility completion policy:
-the first later durable message from the target settles the wait. A future
-strict request/reply protocol may use the same identifiers for deterministic
-reply matching.
+Explicit `SendAgentMessage` remains preferred. If the recipient forgets it,
+normal execution settlement may atomically persist a reply obligation carrying
+its existing, nonempty final brief. This is runtime-derived content, not a fabricated
+`SendAgentMessage` delivery. It retains the request/task/delivery, caller and
+target incarnations, consumed input, canonical execution/turn, final assistant
+round and brief references. The runtime never uses the agent's latest brief,
+progress, internal output, or another request's answer.
+
+Fallback is fail-closed: the settled execution must have one input and one
+authenticated reply route for that input, a normal reply or completed-WorkItem
+outcome, and one attributable final result brief linked to its operator-visible
+agent-response round. Wait/continuation, failure, cancellation, replacement,
+empty output, and ambiguous/multiple inputs or routes are not fallback replies.
+Historical requests without caller-incarnation evidence retain explicit-only
+reply behavior. A replay must independently satisfy the same binding checks.
+
+A provider fallback may carry that unique request through runtime recovery
+envelopes, but only when the canonical provider-recovery resolver proves the
+entire predecessor chain and its original consumed delivery. Every source turn
+and the final turn must contain only that request and the chain's infrastructure
+envelopes, under the same execution owner. The final brief belongs to the current
+recovery execution; the consumed request remains bound to its original execution.
+Missing, forged, cyclic, ambiguous or mixed-business-input lineage fails closed.
+This does not authorize replies across WaitFor or business continuations, or
+select the agent's latest brief. Interrupted recovery reentry is not inferred.
+
+An immutable per-task reply outcome arbitrates accepted explicit replies,
+derived brief replies and timeout under the runtime DB writer transaction.
+An already accepted eligible explicit reply wins over a proposed fallback.
+The fallback outcome, its immutable content message and responding execution's
+normal settlement commit atomically as a durable outbox. The existing message
+wait monitor publishes the final text in the task result, committing the
+terminal task, result and caller queue admission atomically. It does not enqueue
+the derived content a second time as an independent caller input.
+Retry/restart reuses the same outcome and message identity. A committed timeout
+or terminal task fences later fallback. Explicit messages sent afterwards still
+deliver normally, but cannot reopen that task or consume its result twice.
+No model round or internal reminder is added to repair a missed reply.
+
+New `existing_agent` calls accept `target.reply_timeout_ms`, defaulting to
+30 minutes; `0` explicitly requests unlimited waiting. The absolute
+`reply_deadline_at` is persisted once at task creation, including recovery before
+request admission. Recovery never refreshes it. Historical tasks without this
+field retain unlimited waiting; the new default is not applied retroactively.
+At expiry, absent an explicit reply accepted by the deadline or an already
+committed final-brief outbox, the wait becomes `Failed` with structured
+`failure_reason: reply_timeout`. Read/write failures retain recovery
+responsibility rather than being interpreted as no reply. Timeout closes only
+the wait: it neither stops the target nor retries the business request.
 
 For `new_subagent`, the same application-level operation:
 

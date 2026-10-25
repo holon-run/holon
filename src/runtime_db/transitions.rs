@@ -2454,6 +2454,12 @@ impl RuntimeTransitionRepository<'_> {
                 command.operation,
                 command.scheduler_claim_work_item.as_ref(),
             )?;
+            let final_brief_reply = command.turn_record.as_ref()
+                .map(|turn| super::agent_message_delivery::prepare_final_brief_reply_tx(
+                    tx, turn, &command.brief_evidence, &command.transcript_entries,
+                ))
+                .transpose()?
+                .flatten();
             let execution_work_items = if let Some(wait_registration) = wait_registration {
                 wait_registration.work_items.as_slice()
             } else if let Some(work_item) =
@@ -2757,6 +2763,9 @@ impl RuntimeTransitionRepository<'_> {
                 .or_else(|| wait_transition.map(|transition| transition.index_changes.clone()))
                 .or_else(|| completion.map(|completion| completion.index_changes.clone()))
                 .unwrap_or_default();
+            index_changes.extend(
+                super::agent_message_delivery::commit_final_brief_reply_tx(tx, final_brief_reply)?
+            );
             index_changes.extend(message_index_changes);
             let commit = finish_transition_tx(
                 tx,
@@ -2842,6 +2851,9 @@ impl RuntimeTransitionRepository<'_> {
             validate_task_tx(tx, &command.task)?;
             // Linearize success/failure publication with the target's deletion
             // fence. The caller recomputes cancellation if deletion won.
+            if command.queue_entry.is_some() {
+                super::agent_message_delivery::validate_message_wait_terminal_tx(tx, &command.task)?;
+            }
             if command.queue_entry.is_some() && command.task.status != crate::types::TaskStatus::Cancelled {
                 if let Some(target) = command.task.target() {
                     if super::repositories::task_target_is_deleted(tx, &target)? {

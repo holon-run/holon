@@ -26,6 +26,8 @@ pub(crate) const NAME: &str = crate::tool::names::INVOKE_AGENT;
 pub(crate) enum InvokeAgentToolTarget {
     ExistingAgent {
         agent_id: String,
+        /// Defaults to 30 minutes; 0 means unlimited. Survives restart.
+        reply_timeout_ms: Option<u64>,
     },
     NewSubagent {
         template: Option<String>,
@@ -62,7 +64,10 @@ pub(crate) async fn execute(
     let args: InvokeAgentArgs = parse_tool_args(NAME, input)?;
     let initial_message = validate_non_empty(args.initial_message, NAME, "initial_message")?;
     let target = match args.target {
-        InvokeAgentToolTarget::ExistingAgent { agent_id } => {
+        InvokeAgentToolTarget::ExistingAgent {
+            agent_id,
+            reply_timeout_ms,
+        } => {
             let agent_id = validate_non_empty(agent_id, NAME, "target.agent_id")?;
             if let Err(error) = validate_agent_id_format(&agent_id) {
                 return Err(invalid_tool_input(
@@ -75,7 +80,10 @@ pub(crate) async fn execute(
                     "provide a valid existing agent id",
                 ));
             }
-            InvokeAgentTarget::ExistingAgent { agent_id }
+            InvokeAgentTarget::ExistingAgent {
+                agent_id,
+                reply_timeout_ms,
+            }
         }
         InvokeAgentToolTarget::NewSubagent {
             template,
@@ -161,6 +169,30 @@ mod tests {
     use crate::tool::helpers::parse_tool_args;
 
     use super::{reject_legacy_agent_invocation_input, InvokeAgentArgs, NAME};
+
+    #[test]
+    fn invoke_agent_reply_timeout_is_optional_zero_or_positive_only() {
+        for timeout in [None, Some(0_u64), Some(3_600_000)] {
+            let mut input = json!({
+                "target": {"kind": "existing_agent", "agent_id": "peer"},
+                "initial_message": "answer",
+            });
+            if let Some(timeout) = timeout {
+                input["target"]["reply_timeout_ms"] = json!(timeout);
+            }
+            let parsed = parse_tool_args::<InvokeAgentArgs>(NAME, &input).unwrap();
+            assert!(
+                matches!(parsed.target, super::InvokeAgentToolTarget::ExistingAgent {
+                reply_timeout_ms, ..
+            } if reply_timeout_ms == timeout)
+            );
+        }
+        let invalid = json!({
+            "target": {"kind": "existing_agent", "agent_id": "peer", "reply_timeout_ms": -1},
+            "initial_message": "answer",
+        });
+        assert!(parse_tool_args::<InvokeAgentArgs>(NAME, &invalid).is_err());
+    }
 
     #[test]
     fn invoke_agent_contract_accepts_exactly_the_two_target_variants() {

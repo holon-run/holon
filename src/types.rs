@@ -756,6 +756,9 @@ pub struct CreateAgentRequest {
 pub enum InvokeAgentTarget {
     ExistingAgent {
         agent_id: String,
+        /// Zero explicitly disables the deadline, which is fixed at task creation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_timeout_ms: Option<u64>,
     },
     NewSubagent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4812,6 +4815,12 @@ pub enum TaskRecoverySpec {
         delivery_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after_delivery_rowid: Option<i64>,
+        /// Missing on historical tasks: retain unlimited waiting.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_deadline_at: Option<DateTime<Utc>>,
+        /// Required for runtime-derived replies, never inferred on recovery.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requester_incarnation: Option<u64>,
     },
     AgentInvocation {
         summary: String,

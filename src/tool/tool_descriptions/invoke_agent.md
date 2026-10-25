@@ -1,12 +1,15 @@
 Invoke an agent asynchronously and return its `agent_id`, whether this request
 created it, and a `TaskHandle`. `target` is a strict discriminated union: use
-`kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional
+`kind=existing_agent` with `agent_id` and optional `reply_timeout_ms`, or `kind=new_subagent` with optional
 `template`, `workspace_mode`, and `model`. `initial_message` is required.
 
 For `existing_agent`, the handle waits for the first later durable message from
-that agent. The message satisfies the wait but is not a business-completion
-result, and concurrent waits may observe the same later message. The target is
-never reconfigured or reparented.
+that agent, or a runtime-derived final brief strictly bound to this request.
+Explicit messages remain preferred; concurrent waits may observe the same
+explicit message. Neither channel proves business completion. The target is
+never reconfigured or reparented. `target.reply_timeout_ms` defaults to 1800000
+(30 minutes); 0 means unlimited. The deadline survives restart. Expiry fails
+only the wait with `reply_timeout`, without stopping the agent or resending work.
 
 For `new_subagent`, the handle remains a result-bearing supervised child task.
 Caller provenance and authority are bound by the current runtime context and

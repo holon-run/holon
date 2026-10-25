@@ -609,6 +609,8 @@ async fn waiter_in_turn(
             authority_class: AuthorityClass::RuntimeInstruction,
             delivery_id: None,
             after_delivery_rowid: Some(0),
+            reply_deadline_at: None,
+            requester_incarnation: None,
         }),
     };
     if let Some((delivery_id, boundary)) = request {

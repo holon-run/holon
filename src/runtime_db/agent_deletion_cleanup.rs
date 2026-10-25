@@ -47,6 +47,7 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     ("operator_delivery_records", "agent_id"),
     ("operator_transport_bindings", "target_agent_id"),
     ("agent_message_deliveries", "target_agent_id"),
+    ("agent_message_wait_outcomes", "owner_agent_id"),
     ("task_result_settlements", "agent_id"),
     ("scheduler_continuation_admissions", "agent_id"),
     ("scheduler_activation_settlements", "agent_id"),

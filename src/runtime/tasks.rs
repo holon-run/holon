@@ -492,11 +492,27 @@ impl RuntimeHandle {
         message: String,
         target_agent_id: String,
         authority_class: AuthorityClass,
+        reply_timeout_ms: Option<u64>,
     ) -> Result<TaskRecord> {
         self.ensure_background_tasks_allowed(AGENT_MESSAGE_WAIT_TASK_KIND)
             .await?;
         let agent_id = self.agent_id().await?;
         let work_item_id = self.task_work_item_binding().await;
+        let timeout = reply_timeout_ms.unwrap_or(30 * 60 * 1000);
+        let reply_deadline_at = if timeout == 0 {
+            None
+        } else {
+            let duration = chrono::Duration::try_milliseconds(
+                i64::try_from(timeout)
+                    .map_err(|_| anyhow!("reply_timeout_ms exceeds the supported duration"))?,
+            )
+            .ok_or_else(|| anyhow!("reply_timeout_ms exceeds the supported duration"))?;
+            Some(
+                self.now()
+                    .checked_add_signed(duration)
+                    .ok_or_else(|| anyhow!("reply_timeout_ms exceeds the supported deadline"))?,
+            )
+        };
         let recovery = TaskRecoverySpec::AgentMessageWait {
             summary: summary.clone(),
             message,
@@ -504,6 +520,8 @@ impl RuntimeHandle {
             authority_class,
             delivery_id: None,
             after_delivery_rowid: None,
+            reply_deadline_at,
+            requester_incarnation: Some(self.instance_incarnation()),
         };
         let task_id = crate::ids::task_id();
         let detail = self
@@ -1436,15 +1454,17 @@ impl RuntimeHandle {
                     &target_agent_id,
                     after_delivery_rowid,
                     task_record.target().and_then(|target| target.incarnation),
+                    Some(&task_record.id),
                 )
                 .await
             {
                 Err(error)
-                    if error
-                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-                        .is_some() =>
+                    if error.downcast_ref::<crate::host::ChildInvocationReason>()
+                        != Some(&crate::host::ChildInvocationReason::IdentityMismatch) =>
                 {
-                    tokio::time::sleep(Duration::from_millis(TASK_OUTPUT_POLL_INTERVAL_MS)).await;
+                    tracing::warn!(task_id = %task_record.id, error = %error,
+                        "message wait reply read failed; monitor retains recovery responsibility");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 result => break result,
             }
@@ -1479,12 +1499,10 @@ impl RuntimeHandle {
                 )
                 .await
             {
-                Err(error)
-                    if error
-                        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-                        .is_some() =>
-                {
-                    tokio::time::sleep(Duration::from_millis(TASK_OUTPUT_POLL_INTERVAL_MS)).await;
+                Err(error) => {
+                    tracing::warn!(task_id = %task_record.id, error = %error,
+                        "message wait result commit failed; monitor retains recovery responsibility");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
                 result => return result,
             }
@@ -1538,7 +1556,11 @@ impl RuntimeHandle {
             .get("message_id")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
-        let text = if status == TaskStatus::Completed {
+        let derived =
+            detail["reply_content_source"].as_str() == Some("runtime_derived_final_brief");
+        let text = if status == TaskStatus::Completed && derived {
+            failure_text
+        } else if status == TaskStatus::Completed {
             format!(
                 "Agent reply received; see message {} / delivery {}.",
                 response
@@ -1554,7 +1576,7 @@ impl RuntimeHandle {
         };
         detail["output_summary"] = serde_json::json!(text);
         detail["business_completion"] = serde_json::json!(false);
-        if status == TaskStatus::Completed {
+        if status == TaskStatus::Completed && !derived {
             detail["reply_content_source"] = serde_json::json!("original_message");
         }
         let mut message = MessageEnvelope::new(
@@ -1630,13 +1652,13 @@ impl RuntimeHandle {
                     {
                         continue;
                     }
-                    let Some(boundary) = after_delivery_rowid else {
+                    let Some(_boundary) = after_delivery_rowid else {
                         // Invoke has accepted the request but has not attached its receipt yet.
                         return Ok(ReplyReconciliation::WaitingForReceipt);
                     };
                     if let Some(reply) = db
                         .agent_message_deliveries()
-                        .first_accepted_from_sender_after(&agent_id, target_agent_id, *boundary)?
+                        .resolve_message_wait(&task.id)?
                     {
                         replies.push((task, reply));
                     }
@@ -1650,7 +1672,6 @@ impl RuntimeHandle {
         let mut changed = false;
         for (task, reply) in replies {
             let Some(TaskRecoverySpec::AgentMessageWait {
-                target_agent_id,
                 after_delivery_rowid: Some(boundary),
                 ..
             }) = &task.recovery
@@ -1658,13 +1679,19 @@ impl RuntimeHandle {
                 unreachable!("reply snapshot requires an attached receipt");
             };
             let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
-            detail["message_wait_satisfied"] = serde_json::json!(true);
-            detail["sender_agent_id"] = serde_json::json!(target_agent_id);
-            detail["recipient_agent_id"] = serde_json::json!(message.agent_id);
-            detail["response_delivery_id"] = serde_json::json!(reply.delivery_id);
-            detail["message_id"] = serde_json::json!(reply.message_id);
-            detail["message_wait_after_delivery_rowid"] = serde_json::json!(boundary);
-            self.finish_agent_message_wait(&task, TaskStatus::Completed, detail, String::new())
+            let result = reply.terminal_result(&self.inner.storage, *boundary)?;
+            detail
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("invalid message wait detail"))?
+                .extend(
+                    result
+                        .task_detail
+                        .unwrap_or_default()
+                        .as_object()
+                        .ok_or_else(|| anyhow!("invalid message wait outcome detail"))?
+                        .clone(),
+                );
+            self.finish_agent_message_wait(&task, result.status, detail, result.text)
                 .await?;
             changed = true;
         }
@@ -1693,12 +1720,21 @@ impl RuntimeHandle {
             return Ok(());
         }
         let incarnation = task.target().and_then(|target| target.incarnation);
+        let observation = match &self.inner.host_bridge {
+            Some(bridge) => bridge.supervised_invocation_observation(&task).await?,
+            None => serde_json::Value::Null,
+        };
         let diagnostic = serde_json::json!({
+            "supervision_task_id": task.id,
+            "parent_agent_id": task.agent_id,
+            "parent_work_item_id": task.work_item_id,
+            "child_agent_id": task.target().map(|target| target.agent_id),
             "state": state,
             "reason": reason,
             "stage": stage,
             "target_incarnation": incarnation,
             "retry_attempt": retry_attempt,
+            "canonical_observation": observation,
         });
         let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
         if detail.get("recovery_diagnostic") == Some(&diagnostic) {
@@ -1759,6 +1795,9 @@ impl RuntimeHandle {
                 && retry_attempt == 1
             {
                 tracing::error!(
+                    task_id = %task_record.id,
+                    parent_agent_id = %task_record.agent_id,
+                    child_agent_id = %child_agent_id,
                     reason = "storage_unavailable",
                     stage = "monitor",
                     "supervised invocation storage failed; monitor retains recovery responsibility"
@@ -1879,7 +1918,7 @@ impl RuntimeHandle {
                         diagnostic_write_failed = false;
                     } else if !diagnostic_write_failed {
                         diagnostic_write_failed = true;
-                        tracing::error!(reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
+                        tracing::error!(task_id = %task_record.id, parent_agent_id = %task_record.agent_id, child_agent_id = %child_agent_id, reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
                     }
                 }
                 poll_interval =

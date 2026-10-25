@@ -187,8 +187,10 @@ async fn reply_reconciliation_yields_and_reader_timeout_preserves_pending_task()
         message: "await peer".into(),
         target_agent_id: "reader-pressure-peer".into(),
         authority_class: AuthorityClass::RuntimeInstruction,
-        delivery_id: None,
+        delivery_id: Some("reader-pressure-request".into()),
         after_delivery_rowid: Some(0),
+        reply_deadline_at: None,
+        requester_incarnation: None,
     });
     task.detail = Some(serde_json::json!({
         "rejoin_obligation_id": task.id,

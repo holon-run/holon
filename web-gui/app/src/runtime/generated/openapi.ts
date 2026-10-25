@@ -7932,6 +7932,16 @@ export interface components {
             /** @constant */
             kind: "agent_message_wait";
             message: string;
+            /**
+             * Format: date-time
+             * @description Missing on historical tasks: retain unlimited waiting.
+             */
+            reply_deadline_at?: string | null;
+            /**
+             * Format: uint64
+             * @description Required for runtime-derived replies, never inferred on recovery.
+             */
+            requester_incarnation?: number | null;
             summary: string;
             target_agent_id: string;
         } | {
