@@ -806,7 +806,7 @@ impl BuiltInModelCatalog {
             if legacy_model_ref != definition.model_ref {
                 aliases.insert(legacy_model_ref, definition.model_ref.clone());
             }
-            if is_turn_default_candidate(model_entry) {
+            if is_turn_default_route_candidate(model_entry, &definition.policy) {
                 preferred_models
                     .entry(definition.legacy_provider.clone())
                     .or_insert_with(|| definition.model_ref.clone());
@@ -2013,11 +2013,38 @@ fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
 
 #[cfg(test)]
 fn is_turn_default_candidate(entry: &BuiltInModelMetadata) -> bool {
-    entry.context_window_tokens.is_some()
-        || entry.capabilities.parallel_tool_calls
-        || entry.capabilities.image_input
-        || entry.capabilities.supports_reasoning
-        || entry.capabilities.interactive_exec
+    is_turn_default_route_candidate(entry, &BuiltInModelRoutePolicy::default())
+}
+
+#[cfg(test)]
+fn is_turn_default_route_candidate(
+    entry: &BuiltInModelMetadata,
+    route: &BuiltInModelRoutePolicy,
+) -> bool {
+    route
+        .context_window_tokens
+        .unwrap_or(entry.context_window_tokens)
+        .is_some()
+        || [
+            (
+                entry.capabilities.parallel_tool_calls,
+                route.capabilities.parallel_tool_calls,
+            ),
+            (
+                entry.capabilities.image_input,
+                route.capabilities.image_input,
+            ),
+            (
+                entry.capabilities.supports_reasoning,
+                route.capabilities.supports_reasoning,
+            ),
+            (
+                entry.capabilities.interactive_exec,
+                route.capabilities.interactive_exec,
+            ),
+        ]
+        .into_iter()
+        .any(|(intrinsic, constraint)| intrinsic && constraint != Some(false))
 }
 
 fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
@@ -3025,13 +3052,29 @@ mod tests {
             assert_eq!(metadata.context_window_tokens, context_window, "{model}");
             assert_eq!(metadata.capabilities.image_input, image_input, "{model}");
             assert!(metadata.capabilities.supports_reasoning, "{model}");
-            assert!(metadata.max_output_tokens_upper_limit.is_none(), "{model}");
+            assert_eq!(
+                metadata.max_output_tokens_upper_limit,
+                (model == "accounts/fireworks/models/minimax-m3").then_some(512_000),
+                "{model}"
+            );
+            assert!(metadata.default_max_output_tokens.is_none(), "{model}");
             assert_eq!(metadata.source, ModelMetadataSource::ConservativeBuiltin);
         }
 
         assert!(catalog
             .get(&ModelRef::parse("fireworks/accounts/fireworks/routers/kimi-k2p5-turbo").unwrap())
             .is_none());
+
+        let minimax = catalog.resolve_policy(
+            &ModelRef::parse("fireworks/accounts/fireworks/models/minimax-m3").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(minimax.runtime_max_output_tokens, 8192);
+        assert_eq!(minimax.max_output_tokens_upper_limit, Some(512_000));
 
         let deepseek = catalog.resolve_policy(
             &ModelRef::parse("fireworks/accounts/fireworks/models/deepseek-v4-flash").unwrap(),
@@ -3091,7 +3134,7 @@ mod tests {
     fn together_catalog_tracks_current_serverless_chat_models() {
         let catalog = curated_catalog();
         let expected = [
-            ("MiniMaxAI/MiniMax-M3", 524_288, false, true),
+            ("MiniMaxAI/MiniMax-M3", 524_288, true, true),
             ("MiniMaxAI/MiniMax-M2.7", 202_752, true, false),
             ("Qwen/Qwen3.5-9B", 262_144, true, true),
             ("moonshotai/Kimi-K2.7-Code", 262_144, false, true),
@@ -3755,35 +3798,52 @@ mod tests {
             .into_iter()
             .filter(|entry| entry.model_ref.provider == qianfan)
             .collect::<Vec<_>>();
+        let mut model_ids = models
+            .iter()
+            .map(|entry| entry.model_ref.model.as_str())
+            .collect::<Vec<_>>();
+        model_ids.sort_unstable();
 
         assert_eq!(
-            models
-                .iter()
-                .map(|entry| entry.model_ref.model.as_str())
-                .collect::<Vec<_>>(),
+            model_ids,
             vec![
                 "deepseek-v3.2",
                 "deepseek-v3.2-think",
+                "deepseek-v4-flash-0731",
+                "deepseek-v4-pro",
+                "deepseek-v4-pro-0813",
+                "deepseek-v4.1-flash",
+                "deepseek-v4.1-flash-1017",
                 "ernie-5.0",
+                "ernie-5.0-thinking-exp",
+                "ernie-5.0-thinking-latest",
                 "ernie-5.0-thinking-preview",
                 "ernie-5.1",
                 "ernie-x1.1",
+                "glm-5.1",
+                "glm-5.2",
+                "glm-5.3",
+                "glm-5.3-flash",
+                "qwen3.5-122b-a10b",
+                "qwen3.5-27b",
+                "qwen3.5-35b-a3b",
+                "qwen3.5-397b-a17b",
             ]
         );
 
         let expected = [
-            ("deepseek-v3.2", 131_072, 32_768, false, false),
-            ("deepseek-v3.2-think", 163_840, 65_536, true, false),
-            ("ernie-5.0", 248_832, 65_536, false, true),
-            ("ernie-5.0-thinking-preview", 248_832, 65_536, true, true),
-            ("ernie-5.1", 248_832, 65_536, false, false),
-            ("ernie-x1.1", 121_856, 65_536, true, false),
+            ("deepseek-v3.2", Some(131_072), 32_768, false, false),
+            ("deepseek-v3.2-think", Some(163_840), 65_536, true, false),
+            ("ernie-5.0", None, 65_536, true, true),
+            ("ernie-5.0-thinking-preview", None, 65_536, true, true),
+            ("ernie-5.1", None, 65_536, false, false),
+            ("ernie-x1.1", None, 65_536, true, false),
         ];
         for (model, context_window, max_output, reasoning, image_input) in expected {
             let metadata = catalog
                 .get(&ModelRef::parse(&format!("qianfan/{model}")).unwrap())
                 .unwrap();
-            assert_eq!(metadata.context_window_tokens, Some(context_window));
+            assert_eq!(metadata.context_window_tokens, context_window);
             assert_eq!(metadata.max_output_tokens_upper_limit, Some(max_output));
             assert_eq!(metadata.capabilities.supports_reasoning, reasoning);
             assert_eq!(metadata.capabilities.image_input, image_input);
@@ -5550,6 +5610,39 @@ mod tests {
             duplicates.is_empty(),
             "canonical model metadata must be registered once: {duplicates:#?}"
         );
+    }
+
+    #[test]
+    fn tencent_chat_k3_fields_do_not_leak_into_other_protocols() {
+        let catalog = curated_catalog();
+        for model in ["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
+            for endpoint in ["default", "messages", "responses"] {
+                let route =
+                    ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/{model}")).unwrap();
+                let policy = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base_context(),
+                    8_192,
+                );
+                assert_eq!(policy.context_window_tokens, None);
+                if endpoint == "default" {
+                    assert_eq!(policy.runtime_max_output_tokens, 131_072);
+                    assert_eq!(policy.max_output_tokens_upper_limit, Some(1_048_576));
+                    assert!(policy.capabilities.supports_reasoning);
+                    assert!(policy.capabilities.image_input);
+                    assert_eq!(policy.reasoning_effort_options, ["low", "high", "max"]);
+                } else {
+                    assert_eq!(policy.runtime_max_output_tokens, 8_192);
+                    assert_eq!(policy.max_output_tokens_upper_limit, None);
+                    assert!(!policy.capabilities.supports_reasoning);
+                    assert!(!policy.capabilities.image_input);
+                    assert!(policy.reasoning_effort_options.is_empty());
+                }
+            }
+        }
     }
 
     #[test]

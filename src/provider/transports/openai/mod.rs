@@ -190,6 +190,7 @@ pub struct OpenAiChatCompletionsProvider {
     quota_identity: Option<ProviderQuotaIdentity>,
     model: String,
     max_output_tokens: u32,
+    max_output_tokens_parameter: &'static str,
     context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
     service_tier: Option<crate::config::ServiceTier>,
@@ -544,6 +545,17 @@ impl OpenAiChatCompletionsProvider {
             service_tier: None,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
+            max_output_tokens_parameter: if provider_config.route_provider.as_str()
+                == "tencent-tokenhub"
+                && provider_config.route_endpoint.as_str() == "default"
+                && matches!(
+                    model,
+                    "kimi-k3" | "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed"
+                ) {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            },
         })
     }
 }
@@ -1281,6 +1293,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             ToolSchemaContract::Relaxed,
             false, // Streaming infrastructure exists but is not currently enabled; requests are non-streaming
             self.reasoning_effort.as_deref(),
+            self.max_output_tokens_parameter,
         )?;
         apply_service_tier(&mut full_body, self.service_tier, false);
         let (mut body, plan) =
@@ -1289,10 +1302,10 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             self.context_window_tokens,
             self.max_output_tokens,
             &body,
-            &["max_tokens"],
+            &[self.max_output_tokens_parameter],
         );
-        if body.get("max_tokens").is_some() {
-            body["max_tokens"] = Value::from(effective_output);
+        if body.get(self.max_output_tokens_parameter).is_some() {
+            body[self.max_output_tokens_parameter] = Value::from(effective_output);
         }
         let mut sent_diagnostics = plan.diagnostics.clone();
         sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();

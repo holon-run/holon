@@ -551,13 +551,16 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        fireworks_model(
-            "accounts/fireworks/models/minimax-m3",
-            "MiniMax M3",
-            Some(512_000),
-            true,
-            true,
-        ),
+        BuiltInModelMetadata {
+            max_output_tokens_upper_limit: Some(512_000),
+            ..fireworks_model(
+                "accounts/fireworks/models/minimax-m3",
+                "MiniMax M3",
+                Some(512_000),
+                true,
+                true,
+            )
+        },
         fireworks_model(
             "accounts/fireworks/models/nemotron-3-ultra-nvfp4",
             "Nemotron 3 Ultra NVFP4",
@@ -958,7 +961,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
-        together_model("MiniMaxAI/MiniMax-M3", "MiniMax M3", 524_288, false, true),
+        together_model("MiniMaxAI/MiniMax-M3", "MiniMax M3", 524_288, true, true),
         reviewed_together_model(
             "MiniMaxAI/MiniMax-M3.1-Flash",
             "MiniMax M3.1 Flash",
@@ -1085,4 +1088,59 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             true,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn together_minimax_m3_supports_reasoning_without_inventing_limits_or_effort() {
+        let model = late_entries()
+            .into_iter()
+            .find(|model| {
+                model.model_ref == ModelRef::new(provider_id("together"), "MiniMaxAI/MiniMax-M3")
+            })
+            .expect("Together MiniMax M3 builtin");
+
+        assert!(model.capabilities.supports_reasoning);
+        assert!(model.capabilities.image_input);
+        assert!(model.reasoning_effort_options.is_empty());
+        assert_eq!(model.context_window_tokens, Some(524_288));
+        assert_eq!(model.default_max_output_tokens, None);
+        assert_eq!(model.max_output_tokens_upper_limit, None);
+    }
+
+    #[test]
+    fn fireworks_minimax_m3_output_ceiling_preserves_default_and_other_models() {
+        let model = early_entries()
+            .into_iter()
+            .find(|model| {
+                model.model_ref
+                    == ModelRef::new(
+                        provider_id("fireworks"),
+                        "accounts/fireworks/models/minimax-m3",
+                    )
+            })
+            .expect("Fireworks MiniMax M3 builtin");
+
+        assert_eq!(model.max_output_tokens_upper_limit, Some(512_000));
+        assert_eq!(model.default_max_output_tokens, None);
+        assert_eq!(model.context_window_tokens, Some(512_000));
+        assert!(model.capabilities.image_input);
+        assert!(model.capabilities.supports_reasoning);
+        assert!(model.reasoning_effort_options.is_empty());
+
+        for id in [
+            "accounts/fireworks/models/gpt-oss-120b",
+            "accounts/fireworks/models/minimax-m2p7",
+        ] {
+            let other = early_entries()
+                .into_iter()
+                .find(|model| model.model_ref == ModelRef::new(provider_id("fireworks"), id))
+                .expect("existing Fireworks builtin");
+            assert_eq!(other.default_max_output_tokens, None, "{id}");
+            assert_eq!(other.max_output_tokens_upper_limit, None, "{id}");
+        }
+    }
 }
