@@ -176,7 +176,7 @@ function TimerRow({
         {timer.repeat ? (
           <div>
             <dt>{t("rightPanel.timerRepeating")}</dt>
-            <dd>{t("common.yes")}</dd>
+            <dd>{t("inspector.yes")}</dd>
           </div>
         ) : null}
       </dl>
