@@ -92,6 +92,14 @@ waits remain historical evidence; cancelled/replaced waits and ambiguous
 successors do not confer completion authority. Recovery does not re-run the
 child or infer completion from its latest brief.
 
+Provider fallback terminals are intermediate supervision states, not failed
+invocations. The walker waits for the exact recovery successor and validates it
+with the shared provider-recovery source resolver before advancing. Historical
+`Replied` result consumers may cross message identities only through that same
+validated lineage rooted in the exact task-result message; same-message replay
+still requires its interrupted predecessor. Missing, ambiguous or mismatched
+recovery evidence cannot authorize terminal publication.
+
 Supervision recovery diagnostics carry the invocation task, parent/child and
 incarnation identifiers plus source-bound root, wait and nested-result consumer
 references. A settled result with no matching continuation is a repair diagnostic,

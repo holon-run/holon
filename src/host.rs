@@ -7656,6 +7656,44 @@ impl RuntimeHost {
                         step["binding"] = json!(attempt.binding);
                         step["outcome_id"] = json!(attempt.terminal_outcome_id);
                     }
+                    if matches!(
+                        attempt.state,
+                        ExecutionAttemptState::Settled | ExecutionAttemptState::Interrupted
+                    ) && attempt
+                        .turn_id
+                        .as_deref()
+                        .map(|id| storage.read_turn_by_id(id))
+                        .transpose()?
+                        .flatten()
+                        .and_then(|turn| turn.terminal)
+                        .is_some_and(|terminal| {
+                            matches!(
+                                terminal.kind,
+                                crate::types::TurnTerminalKind::DeferredToFallback
+                                    | crate::types::TurnTerminalKind::ProviderFailedNeedsRecovery
+                            )
+                        })
+                    {
+                        let mut recoveries = execution.attempts.values().filter(|candidate| {
+                            candidate.recovery_of_attempt_id.as_deref()
+                                == Some(attempt.attempt_id.as_str())
+                        });
+                        let Some(next) = recoveries.next() else {
+                            return Ok(None);
+                        };
+                        anyhow::ensure!(
+                            recoveries.next().is_none(),
+                            ChildInvocationReason::AmbiguousContinuation
+                        );
+                        let recovery =
+                            self.invocation_provider_recovery_source(storage, &execution, next)?;
+                        anyhow::ensure!(
+                            recovery.predecessor.attempt_id == attempt.attempt_id,
+                            ChildInvocationReason::SourceMismatch
+                        );
+                        cursor = InvocationSettlementCursor::Attempt(next.attempt_id.clone());
+                        continue;
+                    }
                     match attempt.state {
                         ExecutionAttemptState::Open => return Ok(None),
                         ExecutionAttemptState::Interrupted => {
@@ -8183,6 +8221,7 @@ impl RuntimeHost {
         };
         let mut cursor = consumer;
         let mut visited = HashSet::new();
+        let mut recovered_result_source = false;
         while cursor.attempt_id != next.attempt_id {
             if !visited.insert(&cursor.attempt_id) || visited.len() > 128 {
                 return Err(ChildInvocationReason::CyclicContinuation.into());
@@ -8194,8 +8233,26 @@ impl RuntimeHost {
             else {
                 return Ok(None);
             };
-            if cursor.source != next.source || cursor.binding != next.binding {
+            if cursor.agent_id != task.agent_id || cursor.binding != next.binding {
                 return Ok(None);
+            }
+            if cursor.source == previous.source {
+                if previous.state
+                    != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+                    || cursor.source_message_id != previous.source_message_id
+                    || cursor.provenance != previous.provenance
+                {
+                    return Ok(None);
+                }
+            } else {
+                let recovery =
+                    self.invocation_provider_recovery_source(storage, execution, cursor)?;
+                if recovery.predecessor.attempt_id != previous.attempt_id
+                    || recovery.root_message.id != message_id
+                {
+                    return Ok(None);
+                }
+                recovered_result_source = true;
             }
             cursor = previous;
         }
@@ -8208,6 +8265,23 @@ impl RuntimeHost {
         else {
             return Ok(None);
         };
+        if turn.agent_id != task.agent_id {
+            return Ok(None);
+        }
+        let turn = if recovered_result_source {
+            let Some(source_turn) = next
+                .turn_id
+                .as_deref()
+                .map(|id| storage.read_turn_by_id(id))
+                .transpose()?
+                .flatten()
+            else {
+                return Ok(None);
+            };
+            source_turn
+        } else {
+            turn
+        };
         // A historical Replied is traversable only through this task's exact,
         // settled consumer, never through a later task or the child's latest brief.
         Ok((turn.agent_id == task.agent_id
@@ -8218,6 +8292,42 @@ impl RuntimeHost {
                         && batch.items.iter().any(|item| item.message_id == message_id)
                 })))
         .then_some(next))
+    }
+
+    fn invocation_provider_recovery_source(
+        &self,
+        storage: &AppStorage,
+        execution: &crate::domain::execution_protocol::ExecutionProtocolState,
+        attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    ) -> Result<crate::runtime::provider_recovery::ProviderRecoverySource> {
+        use crate::domain::execution_protocol::{
+            ExecutionOrigin, ExecutionSourceIdentity, ExecutionTrust,
+        };
+
+        let message = attempt
+            .source_message_id
+            .as_deref()
+            .map(|id| storage.read_message_by_id(id))
+            .transpose()?
+            .flatten()
+            .ok_or(ChildInvocationReason::SourceMismatch)?;
+        anyhow::ensure!(
+            matches!(&attempt.source.identity,
+                ExecutionSourceIdentity::RuntimeRecovery { recovery_id }
+                if recovery_id == &message.id)
+                && message.message_seq == Some(attempt.source.generation)
+                && attempt.admitted_fences.source_revision == attempt.source.generation
+                && attempt.provenance.origin == ExecutionOrigin::RuntimeRecovery
+                && attempt.provenance.trust == ExecutionTrust::RuntimeInstruction,
+            ChildInvocationReason::SourceMismatch
+        );
+        let recovery = crate::runtime::provider_recovery::resolve(storage, &message, execution)
+            .map_err(|_| ChildInvocationReason::SourceMismatch)?;
+        anyhow::ensure!(
+            recovery.is_initial_attempt(&message, attempt),
+            ChildInvocationReason::SourceMismatch
+        );
+        Ok(recovery)
     }
 
     fn invocation_task_result_consumed_in_turn(
@@ -11718,40 +11828,59 @@ mod tests {
 
     #[tokio::test]
     async fn supervised_invocation_settles_after_same_turn_command_consumption() {
-        assert_supervised_command_consumption(false, false).await;
+        assert_supervised_command_consumption(false, false, false).await;
     }
 
     #[tokio::test]
     async fn supervised_invocation_settles_after_late_command_wait() {
-        assert_supervised_command_consumption(true, false).await;
+        assert_supervised_command_consumption(true, false, false).await;
     }
 
     #[tokio::test]
     async fn supervised_invocation_settles_after_late_command_wait_final_report() {
-        assert_supervised_command_consumption(true, true).await;
+        assert_supervised_command_consumption(true, true, false).await;
     }
 
-    async fn assert_supervised_command_consumption(late_wait: bool, final_report: bool) {
+    #[tokio::test]
+    async fn supervised_invocation_legacy_late_wait_survives_provider_recovery() {
+        assert_supervised_command_consumption(true, false, true).await;
+    }
+
+    async fn assert_supervised_command_consumption(
+        late_wait: bool,
+        final_report: bool,
+        provider_fallback: bool,
+    ) {
         use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
         use crate::provider::{ConversationMessage, ModelBlock, ModelToolCallKind};
         use crate::runtime_db::task_result_settlement::{
             TaskResultSettlementDisposition, TaskResultSettlementState,
         };
 
-        #[derive(Default)]
+        #[derive(Clone, Default)]
         struct ReproProvider {
             late_wait: bool,
             final_report: bool,
-            parent: AsyncMutex<Option<RuntimeHandle>>,
-            parent_calls: AtomicU64,
-            child_calls: AtomicU64,
-            child_after_command: Notify,
-            release_child: Notify,
-            saw_live_result: AtomicBool,
+            provider_fallback: bool,
+            parent: Arc<AsyncMutex<Option<RuntimeHandle>>>,
+            parent_calls: Arc<AtomicU64>,
+            child_calls: Arc<AtomicU64>,
+            child_after_command: Arc<Notify>,
+            release_child: Arc<Notify>,
+            recovery_started: Arc<Notify>,
+            release_recovery: Arc<Notify>,
+            saw_live_result: Arc<AtomicBool>,
         }
 
         #[async_trait]
         impl AgentProvider for ReproProvider {
+            fn select_model_lineage(
+                &self,
+                _: &crate::config::ModelRouteRef,
+            ) -> Option<Arc<dyn AgentProvider>> {
+                Some(Arc::new(self.clone()))
+            }
+
             async fn complete_turn(
                 &self,
                 request: ProviderTurnRequest,
@@ -11850,7 +11979,23 @@ mod tests {
                         2 if self.late_wait && self.final_report => vec![ModelBlock::Text {
                             text: "waiting to consume the completed command".into(),
                         }],
+                        2 if self.provider_fallback => {
+                            return Err(crate::provider::provider_turn_error(
+                                "recover the admitted task result on a provider successor",
+                                serde_json::from_value(json!({
+                                    "attempts": [],
+                                    "requested_model_ref": "openai/gpt-5.4",
+                                    "pending_fallback_model_ref": "openai/gpt-5.4",
+                                    "pending_fallback_disposition": "immediate"
+                                }))?,
+                                anyhow::anyhow!("test provider failure before output"),
+                            ));
+                        }
                         _ => {
+                            if self.provider_fallback {
+                                self.recovery_started.notify_one();
+                                self.release_recovery.notified().await;
+                            }
                             self.saw_live_result.store(
                                 request.conversation.iter().any(|message| {
                                     matches!(message, ConversationMessage::UserText(text)
@@ -11879,6 +12024,7 @@ mod tests {
         let provider = Arc::new(ReproProvider {
             late_wait,
             final_report,
+            provider_fallback,
             ..Default::default()
         });
         let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
@@ -11939,6 +12085,35 @@ mod tests {
         .await
         .expect("parent must actually register its task-result wait before child final");
         provider.release_child.notify_one();
+        if provider_fallback {
+            tokio::time::timeout(Duration::from_secs(10), provider.recovery_started.notified())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the provider recovery must run before checking the final: calls={}, turns={:?}",
+                    provider.child_calls.load(Ordering::SeqCst),
+                    child.storage().read_recent_turns(4)
+                )
+            });
+            let resolution = host
+                .resolve_supervised_invocation(&invocation, &child_id, false)
+                .await
+                .unwrap();
+            assert!(
+                matches!(resolution, ChildInvocationResolution::Pending(_)),
+                "a provider intermediate terminal must not publish a failed result: {resolution:?}"
+            );
+            assert_eq!(
+                parent
+                    .storage()
+                    .latest_task_record(&invocation.id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                TaskStatus::Running
+            );
+            provider.release_recovery.notify_one();
+        }
         wait_for_agent_inputs_settled(&child).await;
         let state = child.agent_state().await.unwrap();
         let terminal = state.last_turn_terminal.unwrap();
@@ -11989,7 +12164,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             execution.attempts.len(),
-            if late_wait { 2 } else { 1 },
+            if provider_fallback {
+                3
+            } else if late_wait {
+                2
+            } else {
+                1
+            },
             "late waits must reenter; inline consumption stays in the original execution"
         );
         assert!(!execution.attempts.values().any(|attempt| matches!(
@@ -12018,11 +12199,17 @@ mod tests {
                 .attempts
                 .get(settlement.activation_id.as_ref().unwrap())
                 .expect("the result must identify its actual consuming execution");
-            assert!(matches!(
-                &consumer.source.identity,
-                ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. }
-                    if trigger_message_id == &result.id
-            ));
+            assert!(
+                matches!(
+                    &consumer.source.identity,
+                    ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. }
+                        if trigger_message_id == &result.id
+                ) || (provider_fallback
+                    && matches!(
+                        &consumer.source.identity,
+                        ExecutionSourceIdentity::RuntimeRecovery { .. }
+                    ))
+            );
         }
         let completed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
@@ -12200,17 +12387,100 @@ mod tests {
         let observation = host.supervised_invocation_observation(task).unwrap();
         assert_eq!(observation["resolution"], "ready");
         let steps = observation["steps"].as_array().unwrap();
-        assert_eq!(steps.len(), 2);
+        assert_eq!(steps.len(), execution.attempts.len());
         assert_eq!(steps[0]["attempt_id"], root.attempt_id);
         assert_eq!(steps[0]["outcome_kind"], "replied");
+        let consumer_id = steps[0]["nested_results"][0]["consumer_attempt_id"]
+            .as_str()
+            .unwrap();
         assert_eq!(steps[1]["attempt_id"], successor.attempt_id);
-        assert_eq!(
-            steps[0]["nested_results"][0]["consumer_attempt_id"],
-            successor.attempt_id
-        );
+        assert_eq!(steps.last().unwrap()["attempt_id"], consumer_id);
         assert!(!observation
             .to_string()
             .contains("repro child consumed command result"));
+        if consumer_id != successor.attempt_id {
+            for mismatch in [
+                "predecessor",
+                "identity",
+                "binding",
+                "generation",
+                "source_revision",
+                "source_message",
+                "trust",
+                "duplicate",
+                "missing",
+            ] {
+                let mut changed = legacy.clone();
+                let consumer = changed.attempts.get_mut(consumer_id).unwrap();
+                match mismatch {
+                    "predecessor" => {
+                        consumer.recovery_of_attempt_id = Some(root.attempt_id.clone())
+                    }
+                    "identity" => {
+                        consumer.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
+                            recovery_id: "unrelated-recovery".into(),
+                        }
+                    }
+                    "binding" => {
+                        consumer.binding = ExecutionBinding::WorkItem {
+                            work_item_id: "unrelated-owner".into(),
+                        }
+                    }
+                    "generation" => consumer.source.generation = root.source.generation,
+                    "source_revision" => consumer.admitted_fences.source_revision = u64::MAX,
+                    "source_message" => {
+                        consumer.source_message_id = Some("unrelated-result".into())
+                    }
+                    "trust" => {
+                        consumer.provenance.trust =
+                            crate::domain::execution_protocol::ExecutionTrust::ExternalEvidence
+                    }
+                    "duplicate" => {
+                        let mut duplicate = consumer.clone();
+                        duplicate.attempt_id = "ambiguous-recovery".into();
+                        let mut outcome = changed.outcomes
+                            [duplicate.terminal_outcome_id.as_ref().unwrap()]
+                        .clone();
+                        outcome.attempt_id = duplicate.attempt_id.clone();
+                        outcome.outcome_id = "ambiguous-recovery-outcome".into();
+                        duplicate.terminal_outcome_id = Some(outcome.outcome_id.clone());
+                        changed.outcomes.insert(outcome.outcome_id.clone(), outcome);
+                        changed
+                            .attempts
+                            .insert(duplicate.attempt_id.clone(), duplicate);
+                    }
+                    "missing" => {
+                        let id = consumer.terminal_outcome_id.clone().unwrap();
+                        changed.outcomes.remove(&id);
+                        changed.attempts.remove(consumer_id);
+                    }
+                    _ => unreachable!(),
+                }
+                for historical in [true, false] {
+                    changed
+                        .outcomes
+                        .get_mut(root.terminal_outcome_id.as_ref().unwrap())
+                        .unwrap()
+                        .outcome = if historical {
+                        ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+                    } else {
+                        execution.outcomes[root.terminal_outcome_id.as_ref().unwrap()]
+                            .outcome
+                            .clone()
+                    };
+                    store(&changed);
+                    let resolved = host
+                        .resolve_supervised_invocation(task, child_id, false)
+                        .await
+                        .unwrap();
+                    assert!(
+                        !matches!(resolved, ChildInvocationResolution::Ready(_)),
+                        "{mismatch} must not authorize recovery (historical={historical}): {resolved:?}"
+                    );
+                }
+            }
+            store(&legacy);
+        }
         let store_wait = |wait: &WaitConditionRecord| {
             // Adversarial historical snapshots, not legal terminal-row updates.
             host.runtime_db()
@@ -16154,11 +16424,12 @@ mod tests {
         for (kind, expected) in [
             (
                 crate::types::TurnTerminalKind::Aborted,
-                TaskStatus::Cancelled,
+                Some(TaskStatus::Cancelled),
             ),
+            (crate::types::TurnTerminalKind::DeferredToFallback, None),
             (
                 crate::types::TurnTerminalKind::ProviderFailedNeedsRecovery,
-                TaskStatus::Failed,
+                None,
             ),
         ] {
             let mut turn = original_turn.clone();
@@ -16173,11 +16444,17 @@ mod tests {
                 })
                 .unwrap();
             host.runtime_db().turn_records().upsert(&turn).unwrap();
-            assert!(matches!(
-                host.resolve_supervised_invocation(&task, child_id, false).await.unwrap(),
-                ChildInvocationResolution::Ready(result) if result.status == expected
-                    && !result.text.contains("unrelated historical failure")
-            ));
+            let resolved = host
+                .resolve_supervised_invocation(&task, child_id, false)
+                .await
+                .unwrap();
+            match expected {
+                Some(expected) => assert!(matches!(
+                    resolved, ChildInvocationResolution::Ready(result) if result.status == expected
+                        && !result.text.contains("unrelated historical failure")
+                )),
+                None => assert!(matches!(resolved, ChildInvocationResolution::Pending(_))),
+            }
         }
         host.runtime_db()
             .transaction(|tx| {
