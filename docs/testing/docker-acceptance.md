@@ -17,6 +17,10 @@ Docker container -> holon serve -> public CLI/HTTP contracts
 
 Tests must not construct `RuntimeHost` directly.
 
+For credential-free network fault injection and bounded fallback evidence, see
+[Isolated fallback-storm acceptance](fallback-storm-acceptance.md). That opt-in
+suite is separate from the real-provider release gate below.
+
 ## Environment model
 
 - Run `holon serve` in the foreground as the container's main process.
