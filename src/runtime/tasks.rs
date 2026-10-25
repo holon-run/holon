@@ -1693,12 +1693,21 @@ impl RuntimeHandle {
             return Ok(());
         }
         let incarnation = task.target().and_then(|target| target.incarnation);
+        let observation = match &self.inner.host_bridge {
+            Some(bridge) => bridge.supervised_invocation_observation(&task).await?,
+            None => serde_json::Value::Null,
+        };
         let diagnostic = serde_json::json!({
+            "supervision_task_id": task.id,
+            "parent_agent_id": task.agent_id,
+            "parent_work_item_id": task.work_item_id,
+            "child_agent_id": task.target().map(|target| target.agent_id),
             "state": state,
             "reason": reason,
             "stage": stage,
             "target_incarnation": incarnation,
             "retry_attempt": retry_attempt,
+            "canonical_observation": observation,
         });
         let mut detail = task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
         if detail.get("recovery_diagnostic") == Some(&diagnostic) {
@@ -1759,6 +1768,9 @@ impl RuntimeHandle {
                 && retry_attempt == 1
             {
                 tracing::error!(
+                    task_id = %task_record.id,
+                    parent_agent_id = %task_record.agent_id,
+                    child_agent_id = %child_agent_id,
                     reason = "storage_unavailable",
                     stage = "monitor",
                     "supervised invocation storage failed; monitor retains recovery responsibility"
@@ -1879,7 +1891,7 @@ impl RuntimeHandle {
                         diagnostic_write_failed = false;
                     } else if !diagnostic_write_failed {
                         diagnostic_write_failed = true;
-                        tracing::error!(reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
+                        tracing::error!(task_id = %task_record.id, parent_agent_id = %task_record.agent_id, child_agent_id = %child_agent_id, reason = ?reason, "could not persist supervised invocation diagnostic; monitor retains recovery responsibility");
                     }
                 }
                 poll_interval =

@@ -82,6 +82,22 @@ parent turn, result identity and live batch match a settled `ModelDelivered`
 record bound to that same execution. Attachment or a terminal task alone is not
 consumption; unconsumed results still require their canonical continuation.
 
+Late task-result waits use the same exact wait settlement as ordinary waits,
+including executions without a WorkItem. The original conversation/lifecycle
+attempt records `Wait`, and its resume retains the scheduler's `TriggeredWait`
+source. Historical `Replied` attempts may follow that edge only when the
+original turn, captured task owner/generation, exact wait and trigger, source
+generation, successor binding and settled model delivery all agree. Resolved
+waits remain historical evidence; cancelled/replaced waits and ambiguous
+successors do not confer completion authority. Recovery does not re-run the
+child or infer completion from its latest brief.
+
+Supervision recovery diagnostics carry the invocation task, parent/child and
+incarnation identifiers plus source-bound root, wait and nested-result consumer
+references. A settled result with no matching continuation is a repair diagnostic,
+not ordinary waiting. These content-free observations confer no settlement or
+admission authority and never include the child's output.
+
 Terminal task detail retains child observability and worktree metadata on both
 live and recovered paths. Observability describes the proven invocation terminal
 turn/result, not later child activity. A loaded runtime may supply worktree and

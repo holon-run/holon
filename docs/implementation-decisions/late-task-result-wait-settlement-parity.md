@@ -3,12 +3,20 @@
 ## Decision
 
 The terminal fast path of `WaitFor(wake=task_result)` (the task is already
-terminal when the wait is registered) settles with the same durable WorkItem
+terminal when the wait is registered) settles with the same durable execution
 wait semantics as a normal registration: both preserve independent business
 blockers, and the canonical execution state advances to
 `Waiting` on the exact task wait via the shared `execution_wait_settlement_transition`.
-The previous `Continue`/`HandoffToWorkItemContinue` settlement is kept only for
-agent-scope late waits with no WorkItem waiter.
+This also applies to conversation and agent-lifecycle waits without a WorkItem:
+the original attempt settles as `Conversation::Wait` on the exact wait, not
+`Replied`. The scheduler retains its distinct `TriggeredWait` and `TaskResult`
+source identities.
+
+Before this parity fix, an agent-scope late wait could commit `Replied` and then
+resume through `TriggeredWait`. Supervision cannot discharge that result as
+same-turn consumption. Recovery recognizes this historical edge only through
+the original turn's exact task wait, result identity and consuming execution;
+it does not rewrite old outcomes or select a later agent-wide brief.
 
 ## Evidence
 

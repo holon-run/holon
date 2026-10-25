@@ -742,6 +742,8 @@ pub(crate) enum ChildInvocationReason {
     MissingCanonicalTerminal,
     #[error("execution continuation is ambiguous")]
     AmbiguousContinuation,
+    #[error("settled task result has missing or inconsistent continuation evidence")]
+    MissingTaskResultContinuation,
     #[error("execution continuation is cyclic or exceeds its bound")]
     CyclicContinuation,
     #[error("terminal result commit failed")]
@@ -7447,6 +7449,60 @@ impl RuntimeHost {
         )
     }
 
+    fn supervised_invocation_observation(&self, task: &TaskRecord) -> Result<Value> {
+        use crate::domain::execution_protocol::ExecutionSourceIdentity;
+
+        let Some(target) = task.target() else {
+            return Ok(Value::Null);
+        };
+        let mut observation = json!({ "steps": [] });
+        let result = (|| {
+            let (_, source) = self.supervised_invocation_source(task, &target.agent_id)?;
+            observation["source_message_id"] = json!(source.id);
+            let execution = self
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(&target.agent_id)?
+                .ok_or(ChildInvocationReason::AwaitingAdmission)?;
+            let root =
+                unique_invocation_continuation(execution.attempts.values().filter(|attempt| {
+                    attempt.source_message_id.as_deref() == Some(&source.id)
+                        && matches!(&attempt.source.identity,
+                            ExecutionSourceIdentity::QueueMessage { message_id }
+                            | ExecutionSourceIdentity::InternalFollowup { message_id }
+                            if message_id == &source.id)
+                }))?
+                .ok_or(ChildInvocationReason::AwaitingAdmission)?;
+            observation["root_attempt_id"] = json!(root.attempt_id);
+            let storage = self.agent_storage(&target.agent_id)?;
+            self.observed_invocation_terminal_evidence(
+                &storage,
+                &target.agent_id,
+                &source.id,
+                root.attempt_id.clone(),
+                root.turn_id.clone(),
+                true,
+                &mut observation,
+            )
+        })();
+        match result {
+            Ok(evidence) => {
+                observation["resolution"] = json!(if evidence.is_some() {
+                    "ready"
+                } else {
+                    "pending"
+                });
+            }
+            Err(error) => {
+                let Some(reason) = error.downcast_ref::<ChildInvocationReason>() else {
+                    return Err(error);
+                };
+                observation["reason"] = json!(reason);
+            }
+        }
+        Ok(observation)
+    }
+
     fn canonical_invocation_terminal_evidence(
         &self,
         storage: &AppStorage,
@@ -7455,6 +7511,28 @@ impl RuntimeHost {
         root_activation_id: String,
         root_turn_id: Option<String>,
         awaiting_recovery: bool,
+    ) -> Result<Option<InvocationTerminalEvidence>> {
+        self.observed_invocation_terminal_evidence(
+            storage,
+            child_agent_id,
+            delivery_id,
+            root_activation_id,
+            root_turn_id,
+            awaiting_recovery,
+            &mut Value::Null,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observed_invocation_terminal_evidence(
+        &self,
+        storage: &AppStorage,
+        child_agent_id: &str,
+        delivery_id: &str,
+        root_activation_id: String,
+        root_turn_id: Option<String>,
+        awaiting_recovery: bool,
+        observation: &mut Value,
     ) -> Result<Option<InvocationTerminalEvidence>> {
         use crate::domain::execution_protocol::{
             ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
@@ -7482,11 +7560,32 @@ impl RuntimeHost {
             if !visited.insert(cursor_key) {
                 return Err(ChildInvocationReason::CyclicContinuation.into());
             }
+            if let Some(steps) = observation.get_mut("steps").and_then(Value::as_array_mut) {
+                steps.push(match &cursor {
+                    InvocationSettlementCursor::Attempt(attempt_id) => {
+                        json!({ "attempt_id": attempt_id })
+                    }
+                    InvocationSettlementCursor::WorkItem(work_item_id) => {
+                        json!({ "work_item_id": work_item_id })
+                    }
+                });
+            }
             match cursor.clone() {
                 InvocationSettlementCursor::Attempt(attempt_id) => {
                     let Some(attempt) = execution.attempts.get(&attempt_id).cloned() else {
                         return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                     };
+                    if let Some(step) = observation
+                        .get_mut("steps")
+                        .and_then(Value::as_array_mut)
+                        .and_then(|steps| steps.last_mut())
+                    {
+                        step["turn_id"] = json!(attempt.turn_id);
+                        step["state"] = json!(attempt.state);
+                        step["source"] = json!(attempt.source);
+                        step["binding"] = json!(attempt.binding);
+                        step["outcome_id"] = json!(attempt.terminal_outcome_id);
+                    }
                     match attempt.state {
                         ExecutionAttemptState::Open => return Ok(None),
                         ExecutionAttemptState::Interrupted => {
@@ -7579,6 +7678,15 @@ impl RuntimeHost {
                         .outcomes
                         .get(outcome_id)
                         .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+                    if let Some(step) = observation
+                        .get_mut("steps")
+                        .and_then(Value::as_array_mut)
+                        .and_then(|steps| steps.last_mut())
+                    {
+                        let value = serde_json::to_value(&outcome.outcome)?;
+                        step["outcome_kind"] = value["outcome"]["kind"].clone();
+                        step["wait_ref"] = value["outcome"]["wait"].clone();
+                    }
                     match &outcome.outcome {
                         ExecutionOutcome::Conversation(ConversationOutcome::Replied)
                         | ExecutionOutcome::Command(_) => {
@@ -7623,6 +7731,35 @@ impl RuntimeHost {
                                         == Some(turn_id)
                                 })
                                 .collect::<Vec<_>>();
+                            if let Some(step) = observation
+                                .get_mut("steps")
+                                .and_then(Value::as_array_mut)
+                                .and_then(|steps| steps.last_mut())
+                            {
+                                let mut results = Vec::new();
+                                for task in &tasks {
+                                    let settlement = task
+                                        .parent_message_id
+                                        .as_deref()
+                                        .map(|id| {
+                                            self.runtime_db()
+                                                .task_result_settlements()
+                                                .latest_for_message(id)
+                                        })
+                                        .transpose()?
+                                        .flatten();
+                                    results.push(json!({
+                                        "task_id": task.id,
+                                        "status": task.status,
+                                        "result_message_id": task.parent_message_id,
+                                        "result_identity": settlement.as_ref().map(|record| &record.result_identity),
+                                        "settlement_state": settlement.as_ref().map(|record| record.state),
+                                        "settlement_disposition": settlement.as_ref().and_then(|record| record.disposition),
+                                        "consumer_attempt_id": settlement.as_ref().and_then(|record| record.activation_id.as_ref()),
+                                    }));
+                                }
+                                step["nested_results"] = json!(results);
+                            }
                             if tasks.iter().any(|task| {
                                 matches!(
                                     task.status,
@@ -7635,41 +7772,21 @@ impl RuntimeHost {
                             }
                             if !tasks.is_empty() {
                                 let turn = storage.read_turn_by_id(turn_id)?;
-                                let mut task_ids = HashSet::new();
+                                let mut continuations = Vec::new();
                                 for task in &tasks {
                                     if !self.invocation_task_result_consumed_in_turn(
                                         task,
                                         turn.as_ref(),
                                         &attempt.attempt_id,
                                     )? {
-                                        task_ids.insert(task.id.as_str());
+                                        let Some(next) = self.invocation_task_result_continuation(
+                                            storage, &execution, &attempt, task,
+                                        )?
+                                        else {
+                                            return Ok(None);
+                                        };
+                                        continuations.push(next);
                                     }
-                                }
-                                let continuations = execution
-                                    .attempts
-                                    .values()
-                                    .filter(|candidate| {
-                                        matches!(
-                                            &candidate.source.identity,
-                                            ExecutionSourceIdentity::TaskResult {
-                                                task_id,
-                                                ..
-                                            } if task_ids.contains(task_id.as_str())
-                                        )
-                                    })
-                                    .collect::<Vec<_>>();
-                                if task_ids.iter().any(|id| {
-                                    !continuations.iter().any(|candidate| {
-                                        matches!(
-                                            &candidate.source.identity,
-                                            ExecutionSourceIdentity::TaskResult {
-                                                task_id,
-                                                ..
-                                            } if task_id == *id
-                                        )
-                                    })
-                                }) {
-                                    return Ok(None);
                                 }
                                 if let Some(continuation) = continuations
                                     .into_iter()
@@ -7883,6 +8000,154 @@ impl RuntimeHost {
             }
         }
         Err(ChildInvocationReason::CyclicContinuation.into())
+    }
+
+    fn invocation_task_result_continuation<'a>(
+        &self,
+        storage: &AppStorage,
+        execution: &'a crate::domain::execution_protocol::ExecutionProtocolState,
+        parent: &crate::domain::execution_protocol::ExecutionAttempt,
+        task: &TaskRecord,
+    ) -> Result<Option<&'a crate::domain::execution_protocol::ExecutionAttempt>> {
+        use crate::domain::execution_protocol::{
+            ExecutionBinding, ExecutionOrigin, ExecutionSourceIdentity, ExecutionTrust,
+        };
+        use crate::runtime_db::task_result_settlement::{
+            TaskResultSettlementDisposition, TaskResultSettlementState,
+        };
+
+        let (Some(turn_id), Some(message_id), Ok(fence)) = (
+            parent.turn_id.as_deref(),
+            task.parent_message_id.as_deref(),
+            task.rejoin_fence(),
+        ) else {
+            return Ok(None);
+        };
+        let Some(record) = self
+            .runtime_db()
+            .task_result_settlements()
+            .latest_for_message(message_id)?
+        else {
+            return Ok(None);
+        };
+        if record.agent_id != parent.agent_id
+            || task.agent_id != parent.agent_id
+            || record.task_id != task.id
+            || record.work_item_id != task.work_item_id
+            || record.parent_turn_id != turn_id
+            || record.parent_turn_id != fence.parent_turn_id
+            || record.rejoin_generation != fence.generation
+            || record.state != TaskResultSettlementState::Settled
+            || record.disposition != Some(TaskResultSettlementDisposition::ModelDelivered)
+        {
+            return Ok(None);
+        }
+        let Some(message) = storage.read_message_by_id(message_id)? else {
+            return Ok(None);
+        };
+        if message.agent_id != task.agent_id
+            || message.kind != MessageKind::TaskResult
+            || !matches!(&message.origin, MessageOrigin::Task { task_id } if task_id == &task.id)
+            || message.authority_class != AuthorityClass::RuntimeInstruction
+        {
+            return Ok(None);
+        }
+        let waits = storage.read_wait_conditions_for_turn(turn_id)?;
+        let next =
+            unique_invocation_continuation(execution.attempts.values().filter(|candidate| {
+                let owner_matches = match (&candidate.binding, task.work_item_id.as_deref()) {
+                    (ExecutionBinding::WorkItem { work_item_id }, Some(owner)) => {
+                        work_item_id == owner
+                    }
+                    (ExecutionBinding::AgentLifecycle { agent_id }, None) => {
+                        agent_id == &task.agent_id
+                    }
+                    _ => false,
+                };
+                candidate.agent_id == task.agent_id
+                    && candidate.source.generation > parent.source.generation
+                    && message.message_seq == Some(candidate.source.generation)
+                    && candidate.admitted_fences.source_revision == candidate.source.generation
+                    && candidate.source_message_id.as_deref() == Some(message_id)
+                    && candidate.provenance.origin == ExecutionOrigin::Task
+                    && candidate.provenance.trust == ExecutionTrust::RuntimeInstruction
+                    && owner_matches
+                    && match &candidate.source.identity {
+                        ExecutionSourceIdentity::TaskResult {
+                            task_id,
+                            result_message_id,
+                        } => task_id == &task.id && result_message_id == message_id,
+                        ExecutionSourceIdentity::TriggeredWait {
+                            wait_id,
+                            trigger_message_id,
+                            ..
+                        } => {
+                            trigger_message_id == message_id
+                                && waits.iter().any(|wait| {
+                                    wait.id == *wait_id
+                                        && wait.agent_id == task.agent_id
+                                        && wait.work_item_id == task.work_item_id
+                                        && wait.turn_id.as_deref() == Some(turn_id)
+                                        && matches!(
+                                            wait.status,
+                                            WaitConditionStatus::Triggered
+                                                | WaitConditionStatus::Resolved
+                                        )
+                                        && wait.trigger_message_id.as_deref() == Some(message_id)
+                                        && wait.wake_sources.iter().any(|wake| {
+                                            matches!(wake, WakeSource::TaskResult { task_id }
+                                                if task_id == &task.id)
+                                        })
+                                })
+                        }
+                        _ => false,
+                    }
+            }))?
+            .ok_or(ChildInvocationReason::MissingTaskResultContinuation)?;
+        let Some(consumer) = record
+            .activation_id
+            .as_ref()
+            .and_then(|id| execution.attempts.get(id))
+        else {
+            return Ok(None);
+        };
+        let mut cursor = consumer;
+        let mut visited = HashSet::new();
+        while cursor.attempt_id != next.attempt_id {
+            if !visited.insert(&cursor.attempt_id) || visited.len() > 128 {
+                return Err(ChildInvocationReason::CyclicContinuation.into());
+            }
+            let Some(previous) = cursor
+                .recovery_of_attempt_id
+                .as_ref()
+                .and_then(|id| execution.attempts.get(id))
+            else {
+                return Ok(None);
+            };
+            if cursor.source != next.source || cursor.binding != next.binding {
+                return Ok(None);
+            }
+            cursor = previous;
+        }
+        let Some(turn) = consumer
+            .turn_id
+            .as_deref()
+            .map(|id| storage.read_turn_by_id(id))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        // A historical Replied is traversable only through this task's exact,
+        // settled consumer, never through a later task or the child's latest brief.
+        Ok((turn.agent_id == task.agent_id
+            && (turn.input_message_ids.iter().any(|id| id == message_id)
+                || turn.live_input_batches.iter().any(|batch| {
+                    batch.activation_id == consumer.attempt_id
+                        && batch.result_identities.contains(&record.result_identity)
+                        && batch.items.iter().any(|item| item.message_id == message_id)
+                })))
+        .then_some(next))
     }
 
     fn invocation_task_result_consumed_in_turn(
@@ -8559,6 +8824,15 @@ impl RuntimeHostBridge {
         self.host()?
             .resolve_supervised_invocation(task, child_agent_id, worktree)
             .await
+    }
+
+    pub(crate) async fn supervised_invocation_observation(
+        &self,
+        task: &TaskRecord,
+    ) -> Result<Value> {
+        let host = self.host()?;
+        let task = task.clone();
+        spawn_blocking(move || host.supervised_invocation_observation(&task)).await?
     }
 
     pub(crate) fn agent_message_delivery_rowid(&self, delivery_id: &str) -> Result<i64> {
@@ -11370,6 +11644,21 @@ mod tests {
 
     #[tokio::test]
     async fn supervised_invocation_settles_after_same_turn_command_consumption() {
+        assert_supervised_command_consumption(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_settles_after_late_command_wait() {
+        assert_supervised_command_consumption(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn supervised_invocation_settles_after_late_command_wait_final_report() {
+        assert_supervised_command_consumption(true, true).await;
+    }
+
+    async fn assert_supervised_command_consumption(late_wait: bool, final_report: bool) {
+        use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
         use crate::provider::{ConversationMessage, ModelBlock, ModelToolCallKind};
         use crate::runtime_db::task_result_settlement::{
             TaskResultSettlementDisposition, TaskResultSettlementState,
@@ -11377,6 +11666,8 @@ mod tests {
 
         #[derive(Default)]
         struct ReproProvider {
+            late_wait: bool,
+            final_report: bool,
             parent: AsyncMutex<Option<RuntimeHandle>>,
             parent_calls: AtomicU64,
             child_calls: AtomicU64,
@@ -11449,15 +11740,47 @@ mod tests {
                         1 => {
                             self.child_after_command.notify_one();
                             self.release_child.notified().await;
-                            vec![ModelBlock::Text {
-                                text: "repro child before live result".into(),
-                            }]
+                            if self.late_wait {
+                                let parent = self.parent.lock().await.clone().unwrap();
+                                let invocation = parent
+                                    .runtime_db()
+                                    .tasks()
+                                    .latest_for_agent("default", 20)?
+                                    .into_iter()
+                                    .find(|task| task.kind == TaskKind::ActorInvocation)
+                                    .unwrap();
+                                let child_id = invocation.target().unwrap().agent_id;
+                                let command = parent
+                                    .runtime_db()
+                                    .tasks()
+                                    .latest_for_agent(&child_id, 20)?
+                                    .into_iter()
+                                    .find(|task| task.kind == TaskKind::CommandTask)
+                                    .unwrap();
+                                vec![tool(
+                                    "repro-late-wait",
+                                    "WaitFor",
+                                    json!({
+                                        "wake": "task_result",
+                                        "resource": command.id,
+                                        "delivery": if self.final_report { "final" } else { "silent" },
+                                        "reason": "consume the already completed nested command"
+                                    }),
+                                )]
+                            } else {
+                                vec![ModelBlock::Text {
+                                    text: "repro child before live result".into(),
+                                }]
+                            }
                         }
+                        2 if self.late_wait && self.final_report => vec![ModelBlock::Text {
+                            text: "waiting to consume the completed command".into(),
+                        }],
                         _ => {
                             self.saw_live_result.store(
                                 request.conversation.iter().any(|message| {
                                     matches!(message, ConversationMessage::UserText(text)
-                                        if text.contains("Current live input batch")
+                                        if (self.late_wait || text.contains("Current live input batch"))
                                             && text.contains("repro-nested-result"))
                                 }),
                                 Ordering::SeqCst,
@@ -11479,7 +11802,11 @@ mod tests {
         let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
         config.user_home_dir = Some(home.path().to_path_buf());
         config.default_agent_id = "default".into();
-        let provider = Arc::new(ReproProvider::default());
+        let provider = Arc::new(ReproProvider {
+            late_wait,
+            final_report,
+            ..Default::default()
+        });
         let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
         let parent = host.default_runtime().await.unwrap();
         *provider.parent.lock().await = Some(parent.clone());
@@ -11545,7 +11872,9 @@ mod tests {
             terminal.last_assistant_message.as_deref(),
             Some("repro child consumed command result")
         );
-        assert!(provider.saw_live_result.load(Ordering::SeqCst));
+        if !late_wait {
+            assert!(provider.saw_live_result.load(Ordering::SeqCst));
+        }
         let turn_id = command.detail.as_ref().unwrap()["parent_turn_id"]
             .as_str()
             .unwrap();
@@ -11561,10 +11890,12 @@ mod tests {
                         if task_id == &command.id)
             })
             .unwrap();
-        assert!(turn
-            .live_input_batches
-            .iter()
-            .any(|batch| batch.items.iter().any(|item| item.message_id == result.id)));
+        if !late_wait {
+            assert!(turn
+                .live_input_batches
+                .iter()
+                .any(|batch| batch.items.iter().any(|item| item.message_id == result.id)));
+        }
         let settlement = child
             .runtime_db()
             .task_result_settlements()
@@ -11584,13 +11915,41 @@ mod tests {
             .unwrap();
         assert_eq!(
             execution.attempts.len(),
-            1,
-            "result must stay in the original execution"
+            if late_wait { 2 } else { 1 },
+            "late waits must reenter; inline consumption stays in the original execution"
         );
         assert!(!execution.attempts.values().any(|attempt| matches!(
             &attempt.source.identity,
             ExecutionSourceIdentity::TaskResult { task_id, .. } if task_id == &command.id
         )));
+        if late_wait {
+            let root = execution
+                .attempts
+                .values()
+                .min_by_key(|attempt| attempt.source.generation)
+                .unwrap();
+            let outcome = &execution.outcomes[root.terminal_outcome_id.as_ref().unwrap()];
+            assert!(matches!(
+                &outcome.outcome,
+                crate::domain::execution_protocol::ExecutionOutcome::Conversation(
+                    crate::domain::execution_protocol::ConversationOutcome::Wait { .. }
+                )
+            ));
+            assert!(execution.attempts.values().any(|attempt| matches!(
+                &attempt.source.identity,
+                ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. }
+                    if trigger_message_id == &result.id
+            )));
+            let consumer = execution
+                .attempts
+                .get(settlement.activation_id.as_ref().unwrap())
+                .expect("the result must identify its actual consuming execution");
+            assert!(matches!(
+                &consumer.source.identity,
+                ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. }
+                    if trigger_message_id == &result.id
+            ));
+        }
         let completed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let task = parent
@@ -11666,6 +12025,21 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(results.len(), 1, "publish exactly one invocation result");
+        if late_wait {
+            let root = execution
+                .attempts
+                .values()
+                .min_by_key(|attempt| attempt.source.generation)
+                .unwrap();
+            let outcome = &execution.outcomes[root.terminal_outcome_id.as_ref().unwrap()];
+            assert!(matches!(
+                &outcome.outcome,
+                ExecutionOutcome::Conversation(ConversationOutcome::Wait { .. })
+            ));
+            if !final_report {
+                assert_legacy_supervised_wait_snapshot(&host, &task, &child_id, &execution).await;
+            }
+        }
         let settlement = parent
             .runtime_db()
             .task_result_settlements()
@@ -11677,6 +12051,243 @@ mod tests {
             settlement.disposition,
             Some(TaskResultSettlementDisposition::ModelDelivered)
         );
+    }
+
+    async fn assert_legacy_supervised_wait_snapshot(
+        host: &RuntimeHost,
+        task: &TaskRecord,
+        child_id: &str,
+        execution: &crate::domain::execution_protocol::ExecutionProtocolState,
+    ) {
+        use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
+
+        let root = execution
+            .attempts
+            .values()
+            .min_by_key(|attempt| attempt.source.generation)
+            .unwrap();
+        let successor = execution
+            .attempts
+            .values()
+            .find(|attempt| {
+                matches!(
+                    &attempt.source.identity,
+                    ExecutionSourceIdentity::TriggeredWait { .. }
+                )
+            })
+            .unwrap();
+        let wait = host
+            .agent_storage(child_id)
+            .unwrap()
+            .read_wait_conditions_for_turn(root.turn_id.as_ref().unwrap())
+            .unwrap()
+            .into_iter()
+            .find(|wait| {
+                matches!(&successor.source.identity,
+                    ExecutionSourceIdentity::TriggeredWait { wait_id, .. } if wait_id == &wait.id)
+            })
+            .unwrap();
+        assert_eq!(wait.status, WaitConditionStatus::Resolved);
+        let mut legacy = execution.clone();
+        legacy
+            .outcomes
+            .get_mut(root.terminal_outcome_id.as_ref().unwrap())
+            .unwrap()
+            .outcome = ExecutionOutcome::Conversation(ConversationOutcome::Replied);
+        let store = |state: &crate::domain::execution_protocol::ExecutionProtocolState| {
+            host.runtime_db()
+                .transaction(|tx| {
+                    // Simulate a pre-upgrade snapshot after the real runtime stopped.
+                    for table in [
+                        "execution_protocol_outcomes",
+                        "execution_protocol_attempts",
+                        "execution_protocol_work_items",
+                    ] {
+                        tx.execute(
+                            &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                            [child_id],
+                        )?;
+                    }
+                    crate::runtime_db::transitions::persist_state_tx(tx, state)
+                })
+                .unwrap();
+        };
+        store(&legacy);
+        let resolved = host
+            .resolve_supervised_invocation(task, child_id, false)
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resolved, ChildInvocationResolution::Ready(result)
+                if result.status == TaskStatus::Completed
+                    && result.text == "repro child consumed command result"),
+            "a legacy Replied root must resolve its exact historical wait: {resolved:?}"
+        );
+        let observation = host.supervised_invocation_observation(task).unwrap();
+        assert_eq!(observation["resolution"], "ready");
+        let steps = observation["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0]["attempt_id"], root.attempt_id);
+        assert_eq!(steps[0]["outcome_kind"], "replied");
+        assert_eq!(steps[1]["attempt_id"], successor.attempt_id);
+        assert_eq!(
+            steps[0]["nested_results"][0]["consumer_attempt_id"],
+            successor.attempt_id
+        );
+        assert!(!observation
+            .to_string()
+            .contains("repro child consumed command result"));
+        let store_wait = |wait: &WaitConditionRecord| {
+            // Adversarial historical snapshots, not legal terminal-row updates.
+            host.runtime_db()
+                .transaction(|tx| {
+                    tx.execute(
+                        "DELETE FROM wait_conditions WHERE wait_condition_id = ?1",
+                        [&wait.id],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM conversation_source_revisions
+                         WHERE source_kind = 'wait' AND source_id = ?1",
+                        [&wait.id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            host.runtime_db().wait_conditions().upsert(wait).unwrap();
+        };
+        for mismatch in ["turn", "trigger", "task", "owner", "cancelled"] {
+            let mut changed = wait.clone();
+            match mismatch {
+                "turn" => changed.turn_id = Some("unrelated-turn".into()),
+                "trigger" => changed.trigger_message_id = Some("unrelated-result".into()),
+                "task" => {
+                    changed.wake_sources = vec![WakeSource::TaskResult {
+                        task_id: "unrelated-task".into(),
+                    }];
+                }
+                "owner" => changed.work_item_id = Some("unrelated-owner".into()),
+                "cancelled" => changed.status = WaitConditionStatus::Cancelled,
+                _ => unreachable!(),
+            }
+            store_wait(&changed);
+            let resolved = host
+                .resolve_supervised_invocation(task, child_id, false)
+                .await
+                .unwrap();
+            assert!(
+                !matches!(resolved, ChildInvocationResolution::Ready(_)),
+                "{mismatch} must not authorize a legacy continuation"
+            );
+            store_wait(&wait);
+        }
+        for mismatch in [
+            "trigger",
+            "binding",
+            "generation",
+            "source_revision",
+            "source_message",
+            "trust",
+            "duplicate",
+        ] {
+            let mut changed = legacy.clone();
+            let candidate = changed.attempts.get_mut(&successor.attempt_id).unwrap();
+            match mismatch {
+                "trigger" => {
+                    let ExecutionSourceIdentity::TriggeredWait {
+                        trigger_message_id, ..
+                    } = &mut candidate.source.identity
+                    else {
+                        unreachable!()
+                    };
+                    *trigger_message_id = "unrelated-result".into();
+                }
+                "binding" => {
+                    candidate.binding = ExecutionBinding::WorkItem {
+                        work_item_id: "unrelated-owner".into(),
+                    };
+                }
+                "generation" => candidate.source.generation = root.source.generation,
+                "source_revision" => candidate.admitted_fences.source_revision = u64::MAX,
+                "source_message" => candidate.source_message_id = Some("unrelated-result".into()),
+                "trust" => {
+                    candidate.provenance.trust =
+                        crate::domain::execution_protocol::ExecutionTrust::ExternalEvidence
+                }
+                "duplicate" => {
+                    let mut duplicate = candidate.clone();
+                    duplicate.attempt_id = "ambiguous-successor".into();
+                    let mut outcome =
+                        changed.outcomes[duplicate.terminal_outcome_id.as_ref().unwrap()].clone();
+                    outcome.attempt_id = duplicate.attempt_id.clone();
+                    outcome.outcome_id = "ambiguous-successor-outcome".into();
+                    duplicate.terminal_outcome_id = Some(outcome.outcome_id.clone());
+                    changed.outcomes.insert(outcome.outcome_id.clone(), outcome);
+                    changed
+                        .attempts
+                        .insert(duplicate.attempt_id.clone(), duplicate);
+                }
+                _ => unreachable!(),
+            }
+            store(&changed);
+            let resolved = host
+                .resolve_supervised_invocation(task, child_id, false)
+                .await
+                .unwrap();
+            assert!(
+                !matches!(resolved, ChildInvocationResolution::Ready(_)),
+                "{mismatch} must not authorize a legacy continuation"
+            );
+        }
+        store(&legacy);
+        let storage = host.agent_storage(child_id).unwrap();
+        let nested = host
+            .runtime_db()
+            .tasks()
+            .latest_for_agent(child_id, 20)
+            .unwrap()
+            .into_iter()
+            .find(|task| {
+                task.detail
+                    .as_ref()
+                    .and_then(|detail| detail["parent_turn_id"].as_str())
+                    == root.turn_id.as_deref()
+            })
+            .unwrap();
+        for mismatch in ["generation", "turn", "owner", "result", "task"] {
+            let mut changed = nested.clone();
+            match mismatch {
+                "generation" => {
+                    changed.detail.as_mut().unwrap()["rejoin_generation"] = json!(u64::MAX)
+                }
+                "turn" => changed.detail.as_mut().unwrap()["parent_turn_id"] = json!("unrelated"),
+                "owner" => changed.work_item_id = Some("unrelated-owner".into()),
+                "result" => changed.parent_message_id = Some("unrelated-result".into()),
+                "task" => changed.id = "unrelated-task".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                host.invocation_task_result_continuation(&storage, &legacy, root, &changed)
+                    .unwrap()
+                    .is_none(),
+                "{mismatch} must not authorize a legacy task-result edge"
+            );
+        }
+        let turn = storage
+            .read_turn_by_id(successor.turn_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap();
+        let mut changed = turn.clone();
+        changed.input_message_ids.clear();
+        changed.live_input_batches.clear();
+        host.runtime_db().turn_records().upsert(&changed).unwrap();
+        assert!(
+            host.invocation_task_result_continuation(&storage, &legacy, root, &nested)
+                .unwrap()
+                .is_none(),
+            "settlement without actual consumer input must not authorize completion"
+        );
+        host.runtime_db().turn_records().upsert(&turn).unwrap();
+        store(execution);
     }
 
     #[tokio::test]
@@ -15836,11 +16447,11 @@ mod tests {
                         host.resolve_supervised_invocation(&invocation, child_id, false)
                             .await
                             .unwrap(),
-                        ChildInvocationResolution::Pending(
-                            ChildInvocationReason::AwaitingContinuation
+                        ChildInvocationResolution::RecoveryBlocked(
+                            ChildInvocationReason::MissingTaskResultContinuation
                         )
                     ),
-                    "mismatch {mismatch} must remain pending"
+                    "mismatch {mismatch} must expose missing consumption as repair evidence"
                 );
             }
         }
@@ -16078,6 +16689,15 @@ mod tests {
         });
         assert_eq!(diagnostic["reason"], "monitor_commit_failed");
         assert_eq!(diagnostic["state"], "recovery_blocked");
+        assert_eq!(diagnostic["supervision_task_id"], task.id);
+        assert_eq!(diagnostic["parent_agent_id"], task.agent_id);
+        assert_eq!(diagnostic["child_agent_id"], "source-bound-child");
+        let roots = diagnostic["canonical_observation"]["steps"]
+            .as_array()
+            .unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0]["turn_id"], "original-source-turn");
+        assert_eq!(roots[0]["outcome_kind"], "replied");
         assert!(!diagnostic.to_string().contains("original-source-result"));
         // A second recovery must not replace the effective monitor.
         parent

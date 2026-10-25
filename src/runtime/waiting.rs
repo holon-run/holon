@@ -1273,18 +1273,9 @@ impl RuntimeHandle {
             work_item = Some(updated);
         }
         let expected_task = task_expectation(&task);
-        let execution_protocol = if work_item.is_some() {
-            self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
-                .await?
-        } else {
-            self.execution_continue_settlement_transition(
-                &task,
-                waiter_work_item_id.as_deref(),
-                &result_message,
-                now,
-            )
-            .await?
-        };
+        let execution_protocol = self
+            .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
+            .await?;
         let guard = self.inner.agent.lock().await;
         let already_in_memory = guard
             .queue
@@ -1383,73 +1374,6 @@ impl RuntimeHandle {
                 brief_publication_scope: None,
             },
         )))
-    }
-
-    async fn execution_continue_settlement_transition(
-        &self,
-        task: &TaskRecord,
-        waiter_work_item_id: Option<&str>,
-        result_message: &MessageEnvelope,
-        settled_at: DateTime<Utc>,
-    ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
-        use crate::domain::execution_protocol::{
-            ConversationOutcome, ExecutionBinding, ExecutionOutcome, ExecutionOutcomeRecord,
-            ExecutionProtocolCommand, SettleExecution, WorkItemOutcome,
-        };
-
-        let db = self.inner.runtime_db.clone();
-        let agent_id = task.agent_id.clone();
-        let Some(state) = tokio::task::spawn_blocking(move || {
-            db.transitions()
-                .load_execution_protocol_state_if_initialized(&agent_id)
-        })
-        .await??
-        else {
-            return Ok(Default::default());
-        };
-        let Some(attempt) = state.open_attempt() else {
-            return Ok(Default::default());
-        };
-        let outcome = match &attempt.binding {
-            ExecutionBinding::WorkItem { work_item_id }
-                if waiter_work_item_id == Some(work_item_id.as_str()) =>
-            {
-                ExecutionOutcome::WorkItem(WorkItemOutcome::Continue)
-            }
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-                if let Some(work_item_id) = waiter_work_item_id {
-                    ExecutionOutcome::Conversation(ConversationOutcome::HandoffToWorkItemContinue {
-                        work_item_id: work_item_id.to_string(),
-                    })
-                } else {
-                    ExecutionOutcome::Conversation(ConversationOutcome::Replied)
-                }
-            }
-            ExecutionBinding::Command => {
-                return Err(anyhow!("command execution cannot settle through WaitFor"));
-            }
-            _ => {
-                return Err(anyhow!(
-                    "WaitFor waiter does not match the current execution binding"
-                ));
-            }
-        };
-        Ok(
-            crate::runtime_db::transitions::ExecutionProtocolTransition {
-                bootstrap: None,
-                commands: vec![ExecutionProtocolCommand::Settle(SettleExecution {
-                    outcome: ExecutionOutcomeRecord {
-                        outcome_id: format!(
-                            "outcome:late-task-result:{}:{}",
-                            attempt.attempt_id, result_message.id
-                        ),
-                        attempt_id: attempt.attempt_id.clone(),
-                        outcome,
-                        created_at: settled_at.to_rfc3339(),
-                    },
-                })],
-            },
-        )
     }
 
     async fn execution_wait_settlement_transition(
