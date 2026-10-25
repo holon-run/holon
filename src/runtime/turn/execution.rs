@@ -1010,7 +1010,21 @@ impl RuntimeHandle {
         budget
     }
 
-    pub(in crate::runtime) async fn drain_operator_interjections_with_budget(
+    pub(in crate::runtime) fn drain_operator_interjections_with_budget<'a>(
+        &'a self,
+        agent_id: &'a str,
+        round: usize,
+        boundary: scheduler::InterjectionBoundary,
+        budget: crate::runtime::input_consumption::projection::InputBudget,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Vec<String>>> + Send + 'a>>
+    {
+        // Unwind admission's construction frame before polling nested provider callbacks.
+        Box::pin(
+            self.drain_operator_interjections_with_budget_inner(agent_id, round, boundary, budget),
+        )
+    }
+
+    async fn drain_operator_interjections_with_budget_inner(
         &self,
         agent_id: &str,
         round: usize,

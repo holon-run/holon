@@ -54,6 +54,7 @@ fn root() -> ExecutionAttempt {
         run_id: None,
         turn_id: None,
         recovery_of_attempt_id: None,
+        input_projection: None,
         terminal_outcome_id: None,
         admitted_at: timestamp(now()),
         terminal_at: None,

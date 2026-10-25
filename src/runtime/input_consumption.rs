@@ -7,7 +7,9 @@ use super::*;
 use crate::runtime_error::{
     IdleInputRecoveryPredicate as RecoveryPredicate, IdleInputRecoveryRejection,
 };
-use crate::types::{IdleInputBatchItem, IdleInputBatchRecord};
+#[cfg(test)]
+use crate::types::IdleInputBatchItem;
+use crate::types::IdleInputBatchRecord;
 use rusqlite::OptionalExtension;
 
 pub(crate) const INPUT_BATCH_ITEMS: usize = 8;
