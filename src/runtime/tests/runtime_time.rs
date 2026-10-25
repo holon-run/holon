@@ -167,7 +167,9 @@ async fn runtime_time_uses_execution_clock_and_appends_across_midnight() {
             .prompt_frame
             .context_blocks
             .iter()
-            .any(|block| block.text.contains("message_created_at=2024-01-01"),));
+            .any(|block| block
+                .text
+                .contains("\"created_at\":\"2024-01-01T00:00:00Z\"")));
         assert!(!requests[0]
             .prompt_frame
             .system_prompt

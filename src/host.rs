@@ -11339,6 +11339,7 @@ mod tests {
         assert_eq!(reused.agent_id, created.agent_id);
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
         let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        wait_for_agent_inputs_settled(&child).await;
         send_agent_message(
             &child,
             &parent_agent_id,

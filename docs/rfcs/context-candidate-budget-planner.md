@@ -161,6 +161,11 @@ planned canonical execution binding, not the independently focused WorkItem.
 The source representation preserves immutable ingress provenance; legacy
 cross-agent caller bindings remain isolated from dispatch and execution ownership.
 
+Admitted `current_input` uses `Current input batch` with per-item JSON provenance.
+Message creation time remains in that provenance's `created_at` field, distinct
+from the runtime execution-time sample; the legacy `message_created_at=` text
+annotation is not part of the admitted representation's contract.
+
 For evidence that permits a bounded preview, admission may select a compact
 representation before claiming it. The representation retains the source id,
 origin and authority, owner, complete reply route/selector, content version,
