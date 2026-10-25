@@ -7300,19 +7300,26 @@ code {
 }
 .agent-timer-summary { justify-content: space-between; gap: 8px; }
 .agent-timer-heading { gap: 7px; overflow: hidden; }
-.agent-timer-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-timer-heading strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.35;
+}
 .agent-timer-type {
   flex: none;
-  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .03em;
-  text-transform: uppercase;
 }
 .agent-timer-schedule { gap: 7px; color: var(--muted); font-size: 12px; }
+.agent-timer-schedule strong { color: var(--text); font-weight: 600; }
 .agent-timer-schedule code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-timer-schedule span { flex: none; color: var(--faint); }
 .agent-timer-meta {
