@@ -16,6 +16,7 @@ use tokio::time::{Duration, Instant};
 
 fn test_config() -> AppConfig {
     let home_dir = tempdir().unwrap().keep();
+    let context = holon::context::ContextConfig::default();
     AppConfig {
         default_agent_id: "default".into(),
         http_addr: "127.0.0.1:0".into(),
@@ -29,9 +30,9 @@ fn test_config() -> AppConfig {
         context_window_briefs: 8,
         compaction_trigger_messages: 10,
         compaction_keep_recent_messages: 4,
-        compaction_trigger_estimated_tokens: 2048,
-        compaction_keep_recent_estimated_tokens: 768,
-        prompt_budget_estimated_tokens: 4096,
+        compaction_trigger_estimated_tokens: context.compaction_trigger_estimated_tokens,
+        compaction_keep_recent_estimated_tokens: context.compaction_keep_recent_estimated_tokens,
+        prompt_budget_estimated_tokens: context.prompt_budget_estimated_tokens,
         recent_episode_candidates: 12,
         max_relevant_episodes: 3,
         control_token: Some("secret".into()),
