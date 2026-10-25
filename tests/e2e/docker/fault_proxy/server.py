@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from email.utils import formatdate
 import select
 import signal
 import socket
@@ -38,6 +39,17 @@ def record(**fields):
     print(json.dumps(row), flush=True)
 
 
+def retry_after_headers(side, status):
+    if status != 429:
+        return {}
+    value = setting(f"RETRY_AFTER_{side.upper()}", "1")
+    if isinstance(value, dict):
+        seconds = int(value["seconds"])
+        value = (formatdate(time.time() + seconds, usegmt=True)
+                 if value["format"] == "http-date" else str(seconds))
+    return {} if value is None else {"Retry-After": str(value)}
+
+
 class Mock(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -69,11 +81,12 @@ class Mock(BaseHTTPRequestHandler):
             self.reply(status, body)
             return
         status = int(setting(f"STATUS_{side.upper()}", "200"))
+        headers = retry_after_headers(side, status)
         record(layer="mock_http", side=side, status=status, model=payload.get("model"),
-               stream=payload.get("stream", False))
+               stream=payload.get("stream", False), retry_after=headers.get("Retry-After"))
         if status != 200:
             self.reply(status, {"error": {"message": "fixture failure", "type": "fixture"}},
-                       {"Retry-After": "1"} if status == 429 else {})
+                       headers)
         else:
             # The fixture state does not advance on a failed request.
             self.reply(200, response([text_item("QA_FALLBACK_COMPLETED")],
@@ -106,10 +119,11 @@ class Proxy(socketserver.BaseRequestHandler):
             except (OSError, TimeoutError):
                 pass
             return
-        with socket.create_connection(("mock", 8080), timeout=10) as upstream:
+        upstream_timeout = float(setting("UPSTREAM_TIMEOUT", 10))
+        with socket.create_connection(("mock", 8080), timeout=upstream_timeout) as upstream:
             peers = [self.request, upstream]
             while True:
-                readable, _, _ = select.select(peers, [], [], 30)
+                readable, _, _ = select.select(peers, [], [], max(30, upstream_timeout))
                 if not readable:
                     return
                 for source in readable:
@@ -148,7 +162,7 @@ def request():
         print(json.dumps({"status": error.code, "body": raw}))
 
 
-def database(*, task_result=False):
+def database(*, task_result=False, route_throttle=False):
     candidates = list(Path("/evidence-home").glob("**/runtime.sqlite"))
     if len(candidates) != 1:
         raise RuntimeError(f"expected one isolated runtime database, found {len(candidates)}")
@@ -162,7 +176,8 @@ def database(*, task_result=False):
     for table in tables:
         if (any(word in table for word in ("turn", "work_item", "queue", "recovery",
                                           "settlement", "provider_admission"))
-                or task_result and table in {
+                or route_throttle and table.endswith("_incidents")
+                or (task_result or route_throttle) and table in {
                     "tasks", "messages", "briefs", "wait_conditions",
                     "execution_protocol_attempts", "execution_protocol_outcomes",
                 }):
@@ -191,6 +206,8 @@ def main():
         database()
     elif mode == "task-result-database":
         database(task_result=True)
+    elif mode == "route-throttle-database":
+        database(route_throttle=True)
     else:
         raise SystemExit("unknown fixture mode")
 

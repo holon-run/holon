@@ -12,7 +12,8 @@ from .fallback_storm import FaultRun, SCRIPT, command, require_build
 from .runner import redact_evidence, require, write_json
 from .task_result_oracle import (
     IDENTITY_FIELDS, payload, recovery_ledger, recovery_root,
-    require_recovery_exhausted, require_restart_preserved, require_task_reentry,
+    require_live_task_owner, require_recovery_exhausted, require_restart_preserved,
+    require_task_reentry,
 )
 
 MANIFEST = Path(__file__).resolve().parents[2] / "tests/e2e/docker/task-result-recovery.json"
@@ -49,6 +50,8 @@ class RecoveryRun(FaultRun):
     database_mode = "task-result-database"
 
     def __init__(self, args, case, spec):
+        if spec.get("alive_owner"):
+            args = argparse.Namespace(**{**vars(args), "http_timeout": 90})
         super().__init__(args, case)
         self.spec = spec
         self.captured = None
@@ -57,6 +60,8 @@ class RecoveryRun(FaultRun):
         self.joins = []
         self.restarted = False
         self.setup_identity = None
+        self.alive_activation = None
+        self.alive_owner_verified = False
 
     def configure(self, container, path, value):
         # Atomic replacement affects only provider fixture control, never the DB.
@@ -165,6 +170,8 @@ class RecoveryRun(FaultRun):
         else:
             raise TimeoutError("healthy bootstrap did not finish")
         self.configure(self.mock, "/tmp/qa-fault.json", {"TASK_RESULT_RECOVERY": True})
+        if self.spec.get("alive_owner"):
+            self.configure(self.proxy, "/tmp/qa-fault.json", {"UPSTREAM_TIMEOUT": 90})
         marker = self.prefix.rsplit("-", 1)[-1]
         self.api("POST", "/api/control/agents/qa/prompt", {"text": (
             f"Create one ready WorkItem SCHEDULER-TASK-WAIT-{marker}. "
@@ -208,6 +215,29 @@ class RecoveryRun(FaultRun):
                 time.sleep(.5)
                 continue
             barriers = self.barriers()
+            if self.spec.get("alive_owner") and not self.alive_owner_verified and barriers:
+                first = self.alive_activation is None
+                self.alive_activation = require_live_task_owner(
+                    snapshot, captured=self.captured, activation_id=self.alive_activation,
+                )
+                if first:
+                    write_json(self.evidence / "alive-owner-before.json", redact_evidence(snapshot))
+                due = datetime.fromisoformat(record["next_recheck_at"].replace("Z", "+00:00"))
+                observed_at = datetime.now(timezone.utc)
+                if (observed_at - due).total_seconds() < 5:
+                    time.sleep(.5)
+                    continue
+                require_live_task_owner(
+                    snapshot, captured=self.captured, activation_id=self.alive_activation,
+                    observed_at=observed_at,
+                )
+                require(len(barriers) == 1, "more than one provider request owns the live result")
+                write_json(self.evidence / "alive-owner-after.json", redact_evidence(snapshot))
+                write_json(self.evidence / "alive-owner-observed.json", {
+                    "at": observed_at.isoformat(), "activation_id": self.alive_activation,
+                    "provider_request_id": barriers[0]["request_id"],
+                })
+                self.alive_owner_verified = True
             restart = self.spec.get("restart")
             if restart and not self.restarted:
                 due = record.get("next_recheck_at")
@@ -293,14 +323,24 @@ class RecoveryRun(FaultRun):
                 require(recovery_root(snapshot, "qa", record["activation_id"])
                         == rows[-1]["root_attempt_id"], "success did not consume the fifth root")
             else:
+                root = recovery_root(snapshot, "qa", record["activation_id"])
                 attempts = [
                     payload(row) for row in snapshot["execution_protocol_attempts"]
-                    if row["agent_id"] == "qa" and row["attempt_id"] == record["activation_id"]
+                    if row["agent_id"] == "qa" and row["attempt_id"] == root
                 ]
                 require(len(attempts) == 1
                         and attempts[0]["source"]["identity"]["kind"] == "task_result",
                         "fast exact baseline was not admitted from its actual TaskResult")
         require(not self.spec.get("restart") or self.restarted, "restart checkpoint was skipped")
+        if self.spec.get("alive_owner"):
+            observed = json.loads((self.evidence / "alive-owner-observed.json").read_text())
+            for name in ("before", "after"):
+                active = json.loads((self.evidence / f"alive-owner-{name}.json").read_text())
+                require_live_task_owner(
+                    active, captured=self.captured, activation_id=observed["activation_id"],
+                    observed_at=datetime.fromisoformat(observed["at"].replace("Z", "+00:00"))
+                    if name == "after" else None,
+                )
         if self.spec.get("fallback"):
             proxy = (self.evidence / f"{self.proxy}.log").read_text()
             require('"fault": "rst"' in proxy and any(row["side"] == "b" for row in self.joins),

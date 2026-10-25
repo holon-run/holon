@@ -149,6 +149,57 @@ def require_result_brief(
     return brief
 
 
+def require_live_task_owner(
+    snapshot: dict[str, Any], *, captured: dict[str, Any],
+    activation_id: str | None = None, observed_at: datetime | None = None,
+) -> str:
+    record, _ = task_identity(
+        snapshot, agent_id=captured["agent_id"], task_id=captured["task_id"],
+        parent_turn_id=captured["parent_turn_id"], captured=captured,
+    )
+    require(
+        record["state"] == "caller_admitted" and not record.get("settled_at")
+        and not record.get("disposition") and bool(record.get("activation_id"))
+        and (activation_id is None or activation_id == record["activation_id"]),
+        f"task-result owner is no longer admitted and alive: {record}",
+    )
+    attempts = [
+        row for row in snapshot["execution_protocol_attempts"]
+        if row["agent_id"] == captured["agent_id"]
+        and row["attempt_id"] == record["activation_id"]
+    ]
+    require(len(attempts) == 1 and attempts[0]["lifecycle_state"] == "open",
+            "task-result owner has no live execution attempt")
+    attempt = payload(attempts[0])
+    require(
+        attempt.get("binding") == {
+            "kind": "work_item", "work_item_id": captured["work_item_id"],
+        },
+        "live attempt is not bound to the captured task-result owner",
+    )
+    turns = [
+        row for row in snapshot["turn_records"]
+        if row["agent_id"] == captured["agent_id"]
+        and row["turn_id"] == attempt.get("turn_id")
+    ]
+    require(
+        len(turns) == 1 and turns[0].get("terminal_kind") is None
+        and turns[0].get("current_work_item_id") == captured["work_item_id"],
+        "task-result owner turn is terminal or belongs to another WorkItem",
+    )
+    recovery_ledger(snapshot, record, expected_count=0)
+    require(
+        not any(payload(row).get("source_refs", {}).get("task_result_identity")
+                == captured["result_identity"] for row in snapshot["messages"]),
+        "a recovery wake competed with the live exact task-result owner",
+    )
+    if observed_at is not None:
+        require(bool(record.get("next_recheck_at")), "live owner lost its recheck deadline")
+        due = datetime.fromisoformat(record["next_recheck_at"].replace("Z", "+00:00"))
+        require(observed_at >= due, "live owner was not observed beyond its recheck deadline")
+    return record["activation_id"]
+
+
 def require_task_reentry(
     snapshot: dict[str, Any], *, agent_id: str, task_id: str,
     parent_turn_id: str, captured: dict[str, Any] | None = None,

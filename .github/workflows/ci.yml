@@ -624,10 +624,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare revision-bearing acceptance context
+        run: python3 scripts/prepare-identified-docker-context.py --destination "$RUNNER_TEMP/holon-identified"
+
       - name: Build image
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ runner.temp }}/holon-identified/context
+          file: ${{ runner.temp }}/holon-identified/Dockerfile
           load: true
           push: false
           tags: holon:ci
@@ -1069,11 +1073,16 @@ jobs:
         if: needs.docker.result == 'skipped'
         uses: docker/setup-buildx-action@v4
 
+      - name: Prepare revision-bearing acceptance context
+        if: needs.docker.result == 'skipped'
+        run: python3 scripts/prepare-identified-docker-context.py --destination "$RUNNER_TEMP/holon-identified"
+
       - name: Build image
         if: needs.docker.result == 'skipped'
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ runner.temp }}/holon-identified/context
+          file: ${{ runner.temp }}/holon-identified/Dockerfile
           load: true
           push: false
           tags: holon:scheduler-required

@@ -1,0 +1,70 @@
+"""Real Git fixtures for the acceptance image's source identity contract."""
+from pathlib import Path
+import tempfile
+import unittest
+
+from scripts.docker_e2e.identified_build import git, prepare
+
+
+class IdentifiedBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        git(self.source, "init", "--quiet")
+        git(self.source, "config", "user.name", "Acceptance Fixture")
+        git(self.source, "config", "user.email", "fixture@example.invalid")
+        (self.source / "Dockerfile").write_text("FROM scratch\nCOPY . /src\n")
+        (self.source / ".dockerignore").write_text(".git\n.github\n")
+        (self.source / ".github").mkdir()
+        (self.source / ".github" / "tracked").write_text("must remain in the clean context\n")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "--quiet", "-m", "fixture")
+
+    def check_context(self, source):
+        revision = git(source, "rev-parse", "HEAD")
+        result = prepare(source, self.root / "identified")
+        context, dockerfile = Path(result["context"]), Path(result["dockerfile"])
+        self.assertEqual(result["revision"], revision)
+        self.assertEqual(git(context, "rev-parse", "HEAD"), revision)
+        self.assertEqual(git(context, "status", "--porcelain"), "")
+        self.assertEqual(git(source, "status", "--porcelain"), "")
+        self.assertTrue((context / ".git").is_dir())
+        self.assertTrue((context / ".github" / "tracked").is_file())
+        self.assertFalse((context / ".git/objects/info/alternates").exists())
+        self.assertEqual(dockerfile.read_bytes(), (source / "Dockerfile").read_bytes())
+        self.assertEqual(dockerfile.with_name("Dockerfile.dockerignore").read_text(), "")
+        self.assertNotIn("extraheader", git(context, "config", "--list").lower())
+
+    def test_clean_checkout_uses_real_self_contained_git_metadata(self):
+        git(self.source, "config", "http.https://example.invalid/.extraheader", "private fixture")
+        self.check_context(self.source)
+
+    def test_linked_worktree_does_not_copy_a_host_local_git_pointer(self):
+        worktree = self.root / "worktree"
+        git(self.source, "worktree", "add", "--detach", worktree, "HEAD")
+        self.assertTrue((worktree / ".git").is_file())
+        self.check_context(worktree)
+
+    def test_dirty_source_and_existing_destination_fail_closed(self):
+        for name in ("Dockerfile", "untracked"):
+            with self.subTest(name=name):
+                path = self.source / name
+                original = path.read_text() if path.exists() else None
+                path.write_text("dirty\n")
+                with self.assertRaisesRegex(ValueError, "clean committed"):
+                    prepare(self.source, self.root / "identified")
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_text(original)
+        destination = self.root / "identified"
+        destination.mkdir()
+        with self.assertRaises(FileExistsError):
+            prepare(self.source, destination)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -39,7 +39,7 @@ class RecoveryScenario(Scenario):
             )
         return super().task_wait()
 
-    def consume_gated(self, request, side, record, *, timeout=20):
+    def consume_gated(self, request, side, record, *, timeout=75):
         # Bootstrap and the real CreateWorkItem/ExecCommand/WaitFor setup stay healthy.
         items = self.current_input_items(request)
         bootstrap = items and all(

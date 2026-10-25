@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from argparse import Namespace
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from scripts.docker_e2e import task_recovery as recovery
@@ -462,6 +463,83 @@ class RecoveryRunnerTests(unittest.TestCase):
         }]
         return snapshot, record
 
+    def live_owner_snapshot(self, snapshot):
+        snapshot = copy.deepcopy(snapshot)
+        record = snapshot["task_result_settlements"][0]
+        record.update(state="caller_admitted", settled_at=None, disposition=None,
+                      next_recheck_at="2026-10-25T13:00:30Z")
+        snapshot["execution_protocol_attempts"][0]["lifecycle_state"] = "open"
+        snapshot["turn_records"][0]["terminal_kind"] = None
+        return snapshot
+
+    def test_live_owner_requires_open_bound_attempt_beyond_recheck_deadline(self):
+        snapshot, record = self.owned_snapshot({"goal": 0, "outcome": "success"})
+        snapshot = self.live_owner_snapshot(snapshot)
+        captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
+        observed = datetime(2026, 10, 25, 13, 0, 35, tzinfo=timezone.utc)
+
+        def check(value, at=observed):
+            return oracle.require_live_task_owner(
+                value, captured=captured, activation_id=record["activation_id"], observed_at=at,
+            )
+
+        self.assertEqual(check(snapshot), record["activation_id"])
+        with self.assertRaisesRegex(AssertionError, "beyond"):
+            check(snapshot, datetime(2026, 10, 25, 13, 0, 29, tzinfo=timezone.utc))
+        for mutation in ("settled", "closed", "terminal", "owner", "wake"):
+            broken = copy.deepcopy(snapshot)
+            if mutation == "settled":
+                broken["task_result_settlements"][0]["state"] = "settled"
+            elif mutation == "closed":
+                broken["execution_protocol_attempts"][0]["lifecycle_state"] = "settled"
+            elif mutation == "terminal":
+                broken["turn_records"][0]["terminal_kind"] = "failed"
+            elif mutation == "owner":
+                row = broken["execution_protocol_attempts"][0]
+                value = oracle.payload(row)
+                value["binding"]["work_item_id"] = "foreign"
+                row["payload_json"] = json.dumps(value)
+            else:
+                broken["messages"].append({
+                    "message_id": "competing-wake", "payload_json": json.dumps({
+                        "source_refs": {"task_result_identity": captured["result_identity"]},
+                    }),
+                })
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                check(broken)
+
+    def test_fast_fallback_keeps_exact_task_result_root(self):
+        spec = {"goal": 0, "outcome": "success", "fallback": True}
+        snapshot, record = self.owned_snapshot(spec)
+        row = snapshot["execution_protocol_attempts"][0]
+        original = oracle.payload(row)
+        snapshot["execution_protocol_attempts"].append({
+            **row, "attempt_id": "task-root",
+            "payload_json": json.dumps({**original, "attempt_id": "task-root"}),
+        })
+        row["payload_json"] = json.dumps({
+            **original, "recovery_of_attempt_id": "task-root",
+            "source": {"identity": {"kind": "runtime_recovery"}, "generation": 2},
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(Namespace(evidence_dir=Path(directory)),
+                                       "fallback-success", spec)
+            run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
+            run.joins = [{"side": "b", "action": "success", "recovery_attempts": 0}]
+            (run.evidence / "database.json").write_text(json.dumps({
+                "rows": snapshot, "truncated_tables": [],
+            }))
+            (run.evidence / f"{run.proxy}.log").write_text('{"fault": "rst"}\n')
+            self.assertEqual(run.verify_frozen()["recovery_roots"], 0)
+            parent = oracle.payload(snapshot["execution_protocol_attempts"][-1])
+            parent["source"]["identity"]["kind"] = "queue_message"
+            snapshot["execution_protocol_attempts"][-1]["payload_json"] = json.dumps(parent)
+            (run.evidence / "database.json").write_text(json.dumps({
+                "rows": snapshot, "truncated_tables": [],
+            }))
+            with self.assertRaises(AssertionError):
+                run.verify_frozen()
+
     def test_each_manifest_case_runs_its_frozen_oracle(self):
         manifest = json.loads(recovery.MANIFEST.read_text())
         for case, spec in manifest["cases"].items():
@@ -485,6 +563,15 @@ class RecoveryRunnerTests(unittest.TestCase):
                     "rows": snapshot, "truncated_tables": [],
                 }))
                 (run.evidence / f"{run.proxy}.log").write_text('{"fault": "rst"}\n')
+                if spec.get("alive_owner"):
+                    active = self.live_owner_snapshot(snapshot)
+                    for checkpoint in ("before", "after"):
+                        (run.evidence / f"alive-owner-{checkpoint}.json").write_text(
+                            json.dumps(active))
+                    (run.evidence / "alive-owner-observed.json").write_text(json.dumps({
+                        "at": "2026-10-25T13:00:35Z",
+                        "activation_id": record["activation_id"],
+                    }))
                 result = run.verify_frozen()
                 self.assertEqual(result["status"], "verified-task-result-isolated")
                 self.assertEqual(result["recovery_roots"], spec["goal"])

@@ -59,11 +59,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare revision-bearing acceptance context
+        run: python3 scripts/prepare-identified-docker-context.py --destination "$RUNNER_TEMP/holon-identified"
+
       - name: Build and push candidate
         id: build
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ runner.temp }}/holon-identified/context
+          file: ${{ runner.temp }}/holon-identified/Dockerfile
           push: true
           platforms: linux/amd64
           tags: ${{ steps.image.outputs.ref }}

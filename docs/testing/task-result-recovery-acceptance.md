@@ -43,7 +43,8 @@ settlements, or scheduler state. A barrier timeout is a failed fixture.
 
 | Suite | Cases | Required evidence |
 | --- | --- | --- |
-| fast | `exact-success`, `fallback-success` | Actual TaskResult activation, zero recovery charges, exact Result completion; fallback must actually exercise backup |
+| fast | `exact-success`, `fallback-success` | Actual TaskResult root (including its legitimate fallback/replay successor), zero recovery charges, exact Result completion; fallback must actually exercise backup |
+| fast | `alive-owner` | One open canonical attempt and nonterminal captured-owner turn remain unchanged beyond the persisted recheck deadline; no recovery charge/wake, followed by exact Result completion |
 | slow | `fifth-success` | Four failed charged roots, fifth consumed successfully; primary RST and actual backup |
 | slow | `exhausted` | Five distinct failed roots, one Failure diagnostic, pending unconsumed obligation, no automatic deadline, at least 65 seconds without a sixth admission |
 | slow | `restart-backoff` | SIGKILL in charged backoff, same image/volume, unchanged identity/epoch/count/ledger/deadline, then fifth-root success |
@@ -54,7 +55,7 @@ the first and fifth charged roots, plus setup, model and restart time. Each slow
 case has a CLI minimum of **1800 seconds**; `--timeout 120` is rejected before
 Docker is invoked. Release E2E runs four required matrix jobs, each with a
 40-minute workflow timeout. The core/attestation job depends on all four.
-PR scheduler-required runs both fast cases as hard-failure steps; this does not
+PR scheduler-required runs all three fast cases as hard-failure steps; this does not
 claim that a PR ran the slow suite. Python asset validation runs in
 `make docker-e2e-validate` without Docker.
 
@@ -63,6 +64,8 @@ claim that a PR ran the slow suite. Python asset validation runs in
 Prepare the candidate and the existing Python fixture image separately, as
 described in W1. The binary must embed a clean matching source revision; no
 label-only fallback is accepted. The runner neither builds nor pulls images.
+The read-only fixture directories and Python files must be readable by container
+UID 10001 (normal checkout permissions are directories 755 and files 644).
 
 ```bash
 python3 scripts/docker-task-result-recovery.py \
@@ -102,13 +105,26 @@ The runnable cases do **not** complete the full #3749 acceptance matrix:
   admission. A narrowly scoped daemon test barrier still requires review;
   no production scanner switch or database injection is introduced here.
 - Observing five charges followed by persistent pause proves no sixth
-  admission, not an explicitly attempted-and-rejected sixth root.
+  admission, not an explicitly attempted-and-rejected sixth root. The daemon
+  drills therefore add no coverage for an explicit sixth wake.
 - Coexisting-obligation fairness is not covered by these single-owner drills.
-- The provider barrier does not separately attest that an alive canonical owner
-  rejects a competing recovery admission. HTTP 400 is fail-fast for retries but
-  still eligible for immediate fallback; it must not stand in for owner exit.
-  These drills release failure on every resulting provider barrier and count
-  durable recovery roots, not HTTP failures.
+
+The first three gaps have deterministic in-process coverage that runs a real
+command task against the real runtime, in
+`src/runtime/task_result_recovery/live_command_tests.rs`: both scanner/exact
+registration orders converge on one canonical admission, an explicit sixth
+source fails closed with no charge and no provider call, and an exhausted
+obligation does not starve a coexisting fresh result. In-process coverage is not
+a daemon-side proof, so the manifest entries stay pending.
+
+`alive-owner` holds an actual provider request across the stored 30-second
+recheck deadline, captures its open attempt and nonterminal owner turn before
+and after that deadline, then releases success. It does not force a particular
+scanner/exact race order. Its longer fixture/proxy and request timeout budgets
+do not change runtime recovery deadlines or backoff. HTTP 400 is still eligible
+for immediate fallback and never stands in for owner exit; failure cases release
+failure on every resulting provider barrier and count durable recovery roots,
+not HTTP failures.
 
 These gaps are also recorded in `tests/e2e/docker/task-result-recovery.json`.
 Passing this subset must not be reported as the full recovery matrix passing.
