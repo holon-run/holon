@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use crate::config::built_in_provider_endpoint_identity;
 use crate::config::{ModelRef, ModelRouteRef, ProviderEndpointId, ProviderId};
-use crate::context::ContextConfig;
+use crate::context::{
+    default_compaction_keep_recent_estimated_tokens, default_compaction_trigger_estimated_tokens,
+    ContextConfig, DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
+};
 #[cfg(test)]
 use crate::provider::provider_definitions;
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
-const DEFAULT_COMPACTION_TRIGGER_PERCENT: u8 = 90;
-const DEFAULT_KEEP_RECENT_PERCENT: u8 = 38;
-const DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS: usize = 128_000;
 const DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS: usize = 2_500;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +40,7 @@ impl Default for ModelMetadataSource {
 #[serde(rename_all = "snake_case")]
 pub enum ModelMetadataOrigin {
     ExplicitOverride,
+    EnvironmentOverride,
     RemoteDiscovered,
     RouteBuiltin,
     ModelBuiltin,
@@ -83,6 +84,7 @@ pub enum ModelMetadataConstraintKind {
 #[serde(rename_all = "snake_case")]
 pub enum ModelMetadataConstraintSource {
     ModelUpperLimit,
+    RuntimeBudget,
     EndpointPolicy,
     TransportCapability,
 }
@@ -635,18 +637,16 @@ impl Default for ResolvedRuntimeModelPolicy {
             description: "Legacy model state without resolved runtime policy.".into(),
             context_window_tokens: None,
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
-            prompt_budget_estimated_tokens: DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS,
-            compaction_trigger_estimated_tokens: percent_of(
-                DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS,
-                usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
+            prompt_budget_estimated_tokens: DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
+            compaction_trigger_estimated_tokens: default_compaction_trigger_estimated_tokens(
+                DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
             ),
-            compaction_keep_recent_estimated_tokens: percent_of(
-                percent_of(
-                    DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS,
-                    usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
+            compaction_keep_recent_estimated_tokens:
+                default_compaction_keep_recent_estimated_tokens(
+                    default_compaction_trigger_estimated_tokens(
+                        DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
+                    ),
                 ),
-                usize::from(DEFAULT_KEEP_RECENT_PERCENT),
-            ),
             runtime_max_output_tokens: 8192,
             verbosity: None,
             tool_output_truncation_estimated_tokens:
@@ -1128,7 +1128,7 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::ModelBuiltin,
                 ),
                 (
-                    fallback_override
+                    unknown_fallback
                         .and_then(|value| value.context_window_tokens)
                         .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
@@ -1143,6 +1143,17 @@ impl BuiltInModelCatalog {
                 ModelMetadataOrigin::Derived,
             );
         }
+        // A name or capability is not a context limit; budget fallback is field-based.
+        let budget_fallback_override = if context_window_tokens.is_none()
+            || !has_metadata
+            || evidence.source_for(ModelMetadataField::ContextWindowTokens)
+                == Some(ModelMetadataOrigin::UnknownFallback)
+        {
+            unknown_fallback
+        } else {
+            None
+        };
+        let environment_budget = base_context_config.budget_overrides;
         let effective_context_window_percent = validated_percent(
             select_field(
                 &mut evidence,
@@ -1165,7 +1176,8 @@ impl BuiltInModelCatalog {
                         ModelMetadataOrigin::RemoteDiscovered,
                     ),
                     (
-                        fallback_override.and_then(|value| value.effective_context_window_percent),
+                        budget_fallback_override
+                            .and_then(|value| value.effective_context_window_percent),
                         ModelMetadataOrigin::UnknownFallback,
                     ),
                 ],
@@ -1188,8 +1200,12 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
-                    fallback_override.and_then(|value| value.prompt_budget_estimated_tokens),
+                    budget_fallback_override.and_then(|value| value.prompt_budget_estimated_tokens),
                     ModelMetadataOrigin::UnknownFallback,
+                ),
+                (
+                    environment_budget.prompt_budget_estimated_tokens,
+                    ModelMetadataOrigin::EnvironmentOverride,
                 ),
             ],
         )
@@ -1201,22 +1217,25 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::Derived,
                 );
                 percent_of(window, usize::from(effective_context_window_percent))
-            } else if has_metadata {
+            } else {
                 record_origin(
                     &mut evidence,
                     ModelMetadataField::PromptBudgetEstimatedTokens,
                     ModelMetadataOrigin::RuntimeDefault,
                 );
                 base_context_config.prompt_budget_estimated_tokens
-            } else {
-                record_origin(
-                    &mut evidence,
-                    ModelMetadataField::PromptBudgetEstimatedTokens,
-                    ModelMetadataOrigin::Derived,
-                );
-                DEFAULT_UNKNOWN_FALLBACK_PROMPT_BUDGET_ESTIMATED_TOKENS
             }
         });
+        let prompt_budget_estimated_tokens = match context_window_tokens {
+            Some(window) => constrain_budget(
+                &mut evidence,
+                ModelMetadataField::PromptBudgetEstimatedTokens,
+                prompt_budget_estimated_tokens,
+                window,
+                ModelMetadataConstraintSource::ModelUpperLimit,
+            ),
+            None => prompt_budget_estimated_tokens,
+        };
         let auto_compact_token_limit = select_field(
             &mut evidence,
             ModelMetadataField::AutoCompactTokenLimit,
@@ -1244,7 +1263,7 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    fallback_override
+                    budget_fallback_override
                         .and_then(|value| value.auto_compact_token_limit)
                         .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
@@ -1268,8 +1287,13 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
-                    fallback_override.and_then(|value| value.compaction_trigger_estimated_tokens),
+                    budget_fallback_override
+                        .and_then(|value| value.compaction_trigger_estimated_tokens),
                     ModelMetadataOrigin::UnknownFallback,
+                ),
+                (
+                    environment_budget.compaction_trigger_estimated_tokens,
+                    ModelMetadataOrigin::EnvironmentOverride,
                 ),
                 (auto_compact_token_limit, ModelMetadataOrigin::Derived),
             ],
@@ -1280,11 +1304,15 @@ impl BuiltInModelCatalog {
                 ModelMetadataField::CompactionTriggerEstimatedTokens,
                 ModelMetadataOrigin::Derived,
             );
-            percent_of(
-                prompt_budget_estimated_tokens,
-                usize::from(DEFAULT_COMPACTION_TRIGGER_PERCENT),
-            )
+            default_compaction_trigger_estimated_tokens(prompt_budget_estimated_tokens)
         });
+        let compaction_trigger_estimated_tokens = constrain_budget(
+            &mut evidence,
+            ModelMetadataField::CompactionTriggerEstimatedTokens,
+            compaction_trigger_estimated_tokens,
+            prompt_budget_estimated_tokens,
+            ModelMetadataConstraintSource::RuntimeBudget,
+        );
         let compaction_keep_recent_estimated_tokens = select_field(
             &mut evidence,
             ModelMetadataField::CompactionKeepRecentEstimatedTokens,
@@ -1294,9 +1322,13 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::ExplicitOverride,
                 ),
                 (
-                    fallback_override
+                    budget_fallback_override
                         .and_then(|value| value.compaction_keep_recent_estimated_tokens),
                     ModelMetadataOrigin::UnknownFallback,
+                ),
+                (
+                    environment_budget.compaction_keep_recent_estimated_tokens,
+                    ModelMetadataOrigin::EnvironmentOverride,
                 ),
             ],
         )
@@ -1306,11 +1338,15 @@ impl BuiltInModelCatalog {
                 ModelMetadataField::CompactionKeepRecentEstimatedTokens,
                 ModelMetadataOrigin::Derived,
             );
-            percent_of(
-                compaction_trigger_estimated_tokens,
-                usize::from(DEFAULT_KEEP_RECENT_PERCENT),
-            )
+            default_compaction_keep_recent_estimated_tokens(compaction_trigger_estimated_tokens)
         });
+        let compaction_keep_recent_estimated_tokens = constrain_budget(
+            &mut evidence,
+            ModelMetadataField::CompactionKeepRecentEstimatedTokens,
+            compaction_keep_recent_estimated_tokens,
+            compaction_trigger_estimated_tokens,
+            ModelMetadataConstraintSource::RuntimeBudget,
+        );
         let default_max_output_tokens = select_field(
             &mut evidence,
             ModelMetadataField::RuntimeMaxOutputTokens,
@@ -1338,7 +1374,7 @@ impl BuiltInModelCatalog {
                     ModelMetadataOrigin::RemoteDiscovered,
                 ),
                 (
-                    fallback_override
+                    budget_fallback_override
                         .and_then(|value| value.runtime_max_output_tokens)
                         .map(Some),
                     ModelMetadataOrigin::UnknownFallback,
@@ -1726,6 +1762,7 @@ impl BuiltInModelCatalog {
             prompt_budget_estimated_tokens: policy.prompt_budget_estimated_tokens,
             compaction_trigger_estimated_tokens: policy.compaction_trigger_estimated_tokens,
             compaction_keep_recent_estimated_tokens: policy.compaction_keep_recent_estimated_tokens,
+            budget_overrides: base_context_config.budget_overrides,
             recent_episode_candidates: base_context_config.recent_episode_candidates,
             max_relevant_episodes: base_context_config.max_relevant_episodes,
             turn_projection_budget_ratio: base_context_config.turn_projection_budget_ratio,
@@ -1838,6 +1875,26 @@ fn validated_percent(percent: u8) -> u8 {
 
 fn percent_of(total: usize, percent: usize) -> usize {
     total.saturating_mul(percent) / 100
+}
+
+fn constrain_budget(
+    evidence: &mut ModelMetadataEvidence,
+    field: ModelMetadataField,
+    requested: usize,
+    upper: usize,
+    source: ModelMetadataConstraintSource,
+) -> usize {
+    let effective = requested.min(upper);
+    if effective != requested {
+        evidence.constraints.push(ModelMetadataConstraint {
+            field,
+            kind: ModelMetadataConstraintKind::Clamped,
+            source,
+            requested: requested.to_string(),
+            effective: effective.to_string(),
+        });
+    }
+    effective
 }
 
 #[cfg(test)]
@@ -1980,18 +2037,7 @@ mod tests {
     use crate::provider::{provider_definitions, ProviderCatalogPolicy, ProviderMaterializer};
 
     fn base_context() -> ContextConfig {
-        ContextConfig {
-            recent_messages: 12,
-            recent_briefs: 8,
-            compaction_trigger_messages: 20,
-            compaction_keep_recent_messages: 8,
-            prompt_budget_estimated_tokens: 4096,
-            compaction_trigger_estimated_tokens: 2048,
-            compaction_keep_recent_estimated_tokens: 768,
-            recent_episode_candidates: 12,
-            max_relevant_episodes: 3,
-            ..ContextConfig::default()
-        }
+        ContextConfig::default()
     }
 
     #[test]
@@ -2317,9 +2363,9 @@ mod tests {
         assert!(metadata.capabilities.image_input);
         assert!(!metadata.capabilities.image_generation);
         assert!(metadata.capabilities.supports_reasoning);
-        assert_eq!(metadata.context_window_tokens, None);
+        assert_eq!(metadata.context_window_tokens, Some(1_000_000));
         assert_eq!(metadata.default_max_output_tokens, None);
-        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, Some(384_000));
         assert_eq!(metadata.auto_compact_token_limit, None);
         let responses = ModelRouteRef::parse("deepseek@responses/deepseek-flash").unwrap();
         assert!(catalog.get_route(&responses).is_some());
@@ -4224,6 +4270,396 @@ mod tests {
                 .source_for(ModelMetadataField::ReasoningEffortOptions),
             Some(ModelMetadataOrigin::RemoteDiscovered)
         );
+    }
+
+    #[test]
+    fn budget_fallback_is_independent_of_partial_metadata() {
+        let catalog = BuiltInModelCatalog::new();
+        let mut model = catalog_model(
+            "openai",
+            "budget-model",
+            "Budget model",
+            128_000,
+            8_192,
+            false,
+            false,
+        );
+        model.context_window_tokens = None;
+        model.default_max_output_tokens = None;
+        model.max_output_tokens_upper_limit = None;
+        let model_ref = model.model_ref.clone();
+        let mut discovered = model.clone();
+        discovered.source = ModelMetadataSource::RemoteDiscovered;
+        let discovered_models = HashMap::from([(model_ref.clone(), discovered)]);
+
+        for (builtin, discovery, expected_source) in [
+            (None, HashMap::new(), ModelMetadataSource::UnknownFallback),
+            (
+                Some(&model),
+                HashMap::new(),
+                ModelMetadataSource::BuiltInCatalog,
+            ),
+            (
+                None,
+                discovered_models,
+                ModelMetadataSource::RemoteDiscovered,
+            ),
+        ] {
+            let resolved = catalog.resolve_metadata(
+                &model_ref,
+                None,
+                builtin,
+                &HashMap::new(),
+                &discovery,
+                None,
+                &base_context(),
+                8_192,
+                None,
+            );
+            let policy = resolved.policy;
+            assert_eq!(policy.context_window_tokens, None);
+            assert_eq!(resolved.catalog_entry.context_window_tokens, None);
+            assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
+            assert_eq!(policy.compaction_trigger_estimated_tokens, 115_200);
+            assert_eq!(policy.compaction_keep_recent_estimated_tokens, 43_776);
+            assert_eq!(policy.source, expected_source);
+            assert_eq!(
+                policy
+                    .evidence
+                    .source_for(ModelMetadataField::PromptBudgetEstimatedTokens),
+                Some(ModelMetadataOrigin::RuntimeDefault),
+            );
+            assert_eq!(
+                policy
+                    .evidence
+                    .source_for(ModelMetadataField::CompactionTriggerEstimatedTokens),
+                Some(ModelMetadataOrigin::Derived),
+            );
+        }
+    }
+
+    #[test]
+    fn budget_partial_metadata_keeps_independently_known_context() {
+        let catalog = BuiltInModelCatalog::new();
+        for discovered_has_context in [false, true] {
+            let mut builtin = catalog_model(
+                "openai",
+                "budget-model",
+                "Budget model",
+                8_000,
+                1_000,
+                false,
+                false,
+            );
+            let mut discovered = builtin.clone();
+            discovered.source = ModelMetadataSource::RemoteDiscovered;
+            if discovered_has_context {
+                builtin.context_window_tokens = None;
+            } else {
+                discovered.context_window_tokens = None;
+            }
+            let discovery = HashMap::from([(builtin.model_ref.clone(), discovered)]);
+            let fallback = ModelRuntimeOverride {
+                prompt_budget_estimated_tokens: Some(128_000),
+                ..ModelRuntimeOverride::default()
+            };
+            let policy = catalog
+                .resolve_metadata(
+                    &builtin.model_ref,
+                    None,
+                    Some(&builtin),
+                    &HashMap::new(),
+                    &discovery,
+                    Some(&fallback),
+                    &base_context(),
+                    1_000,
+                    None,
+                )
+                .policy;
+            assert_eq!(policy.context_window_tokens, Some(8_000));
+            assert_eq!(policy.prompt_budget_estimated_tokens, 7_600);
+            assert_eq!(
+                policy
+                    .evidence
+                    .source_for(ModelMetadataField::ContextWindowTokens),
+                Some(if discovered_has_context {
+                    ModelMetadataOrigin::RemoteDiscovered
+                } else {
+                    ModelMetadataOrigin::ModelBuiltin
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn budget_fallback_does_not_reinstate_context_cleared_by_an_endpoint() {
+        let catalog = BuiltInModelCatalog::new();
+        let model = catalog_model(
+            "openai",
+            "budget-model",
+            "Budget model",
+            256_000,
+            8_192,
+            false,
+            false,
+        );
+        let route = BuiltInModelRoutePolicy {
+            context_window_tokens: Some(None),
+            ..BuiltInModelRoutePolicy::default()
+        };
+        let fallback = ModelRuntimeOverride {
+            context_window_tokens: Some(200_000),
+            prompt_budget_estimated_tokens: Some(64_000),
+            ..ModelRuntimeOverride::default()
+        };
+        let resolved = catalog.resolve_metadata(
+            &model.model_ref,
+            Some(&route),
+            Some(&model),
+            &HashMap::new(),
+            &HashMap::new(),
+            Some(&fallback),
+            &base_context(),
+            8_192,
+            None,
+        );
+        assert_eq!(resolved.policy.context_window_tokens, None);
+        assert_eq!(resolved.catalog_entry.context_window_tokens, None);
+        assert_eq!(resolved.policy.prompt_budget_estimated_tokens, 64_000);
+    }
+
+    #[test]
+    fn budget_fallback_preserves_explicit_small_and_zero_runtime_budgets() {
+        let catalog = BuiltInModelCatalog::new();
+        for budget in [0, 512, 4_096] {
+            let base = ContextConfig {
+                prompt_budget_estimated_tokens: budget,
+                ..base_context()
+            };
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse("openai/budget-model").unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base,
+                8_192,
+            );
+            assert_eq!(policy.prompt_budget_estimated_tokens, budget);
+            assert_eq!(
+                policy.compaction_trigger_estimated_tokens,
+                default_compaction_trigger_estimated_tokens(budget),
+            );
+            assert_eq!(
+                policy.compaction_keep_recent_estimated_tokens,
+                default_compaction_keep_recent_estimated_tokens(
+                    policy.compaction_trigger_estimated_tokens,
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn budget_fallback_overrides_are_fieldwise_and_do_not_override_known_context() {
+        let catalog = BuiltInModelCatalog::new();
+        let mut model = catalog_model(
+            "openai",
+            "budget-model",
+            "Budget model",
+            8_000,
+            1_000,
+            false,
+            false,
+        );
+        let fallback = ModelRuntimeOverride {
+            context_window_tokens: Some(16_000),
+            prompt_budget_estimated_tokens: Some(4_000),
+            compaction_trigger_estimated_tokens: Some(3_000),
+            ..ModelRuntimeOverride::default()
+        };
+        for (window, budget, trigger, origin) in [
+            (Some(8_000), 7_600, 6_840, ModelMetadataOrigin::Derived),
+            (None, 4_000, 3_000, ModelMetadataOrigin::UnknownFallback),
+        ] {
+            model.context_window_tokens = window;
+            let policy = catalog
+                .resolve_metadata(
+                    &model.model_ref,
+                    None,
+                    Some(&model),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    Some(&fallback),
+                    &base_context(),
+                    1_000,
+                    None,
+                )
+                .policy;
+            assert_eq!(policy.context_window_tokens, window.or(Some(16_000)));
+            assert_eq!(policy.prompt_budget_estimated_tokens, budget);
+            assert_eq!(policy.compaction_trigger_estimated_tokens, trigger);
+            assert_eq!(
+                policy
+                    .evidence
+                    .source_for(ModelMetadataField::PromptBudgetEstimatedTokens),
+                Some(origin),
+            );
+        }
+    }
+
+    #[test]
+    fn budget_environment_overrides_keep_model_and_fallback_precedence() {
+        let catalog = BuiltInModelCatalog::new();
+        let model_ref = ModelRef::parse("openai/budget-model").unwrap();
+        let base = ContextConfig {
+            budget_overrides: crate::context::ContextBudgetOverrides {
+                prompt_budget_estimated_tokens: Some(64_000),
+                compaction_trigger_estimated_tokens: Some(30_000),
+                compaction_keep_recent_estimated_tokens: Some(10_000),
+            },
+            ..base_context()
+        };
+        let fallback = ModelRuntimeOverride {
+            prompt_budget_estimated_tokens: Some(48_000),
+            ..ModelRuntimeOverride::default()
+        };
+        let overrides = HashMap::from([(
+            model_ref.clone(),
+            ModelRuntimeOverride {
+                prompt_budget_estimated_tokens: Some(32_000),
+                compaction_trigger_estimated_tokens: Some(28_000),
+                ..ModelRuntimeOverride::default()
+            },
+        )]);
+        for (overrides, fallback, budget, trigger, origin) in [
+            (
+                HashMap::new(),
+                None,
+                64_000,
+                30_000,
+                ModelMetadataOrigin::EnvironmentOverride,
+            ),
+            (
+                HashMap::new(),
+                Some(&fallback),
+                48_000,
+                30_000,
+                ModelMetadataOrigin::UnknownFallback,
+            ),
+            (
+                overrides,
+                Some(&fallback),
+                32_000,
+                28_000,
+                ModelMetadataOrigin::ExplicitOverride,
+            ),
+        ] {
+            let policy = catalog.resolve_policy(
+                &model_ref,
+                &overrides,
+                &HashMap::new(),
+                fallback,
+                &base,
+                8_192,
+            );
+            assert_eq!(policy.prompt_budget_estimated_tokens, budget);
+            assert_eq!(policy.compaction_trigger_estimated_tokens, trigger);
+            assert_eq!(policy.compaction_keep_recent_estimated_tokens, 10_000);
+            assert_eq!(
+                policy
+                    .evidence
+                    .source_for(ModelMetadataField::PromptBudgetEstimatedTokens),
+                Some(origin),
+            );
+        }
+    }
+
+    #[test]
+    fn budget_limits_narrow_without_inflating_small_windows_or_overrides() {
+        let catalog = BuiltInModelCatalog::new();
+        let model = catalog_model(
+            "openai",
+            "budget-model",
+            "Budget model",
+            1_000,
+            100,
+            false,
+            false,
+        );
+        for (requested, expected) in [(128_000, 1_000), (512, 512), (0, 0)] {
+            let base = ContextConfig {
+                budget_overrides: crate::context::ContextBudgetOverrides {
+                    prompt_budget_estimated_tokens: Some(requested),
+                    compaction_trigger_estimated_tokens: Some(5_000),
+                    compaction_keep_recent_estimated_tokens: Some(2_000),
+                },
+                ..base_context()
+            };
+            let policy = catalog
+                .resolve_metadata(
+                    &model.model_ref,
+                    None,
+                    Some(&model),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base,
+                    100,
+                    None,
+                )
+                .policy;
+            assert_eq!(policy.context_window_tokens, Some(1_000));
+            assert_eq!(policy.prompt_budget_estimated_tokens, expected);
+            assert_eq!(policy.compaction_trigger_estimated_tokens, expected);
+            assert_eq!(policy.compaction_keep_recent_estimated_tokens, expected);
+            assert!(policy.evidence.constraints.iter().any(|constraint| {
+                constraint.field == ModelMetadataField::CompactionTriggerEstimatedTokens
+                    && constraint.source == ModelMetadataConstraintSource::RuntimeBudget
+            }));
+        }
+    }
+
+    #[test]
+    fn budget_input_policy_does_not_subtract_the_output_allowance_again() {
+        let catalog = BuiltInModelCatalog::new();
+        let mut model = catalog_model(
+            "openai",
+            "budget-model",
+            "Budget model",
+            100_000,
+            8_192,
+            false,
+            false,
+        );
+        model.default_max_output_tokens = None;
+        model.max_output_tokens_upper_limit = None;
+        for output in [1_000, 8_192] {
+            let policy = catalog.resolve_policy(
+                &ModelRef::parse("openai/budget-model").unwrap(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &base_context(),
+                output,
+            );
+            assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
+            assert_eq!(policy.runtime_max_output_tokens, output);
+            assert_eq!(policy.context_window_tokens, None);
+            let known = catalog
+                .resolve_metadata(
+                    &model.model_ref,
+                    None,
+                    Some(&model),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &base_context(),
+                    output,
+                    None,
+                )
+                .policy;
+            assert_eq!(known.prompt_budget_estimated_tokens, 95_000);
+            assert_eq!(known.runtime_max_output_tokens, output);
+        }
     }
 
     #[test]

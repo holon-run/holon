@@ -1,4 +1,107 @@
 #[test]
+fn app_config_budget_defaults_match_context_and_catalog_defaults() {
+    let mut env = EnvVarGuard::unset_many(&[
+        "HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS",
+        "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS",
+        "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS",
+    ]);
+    env.set_var("HOLON_MODEL", "openai@default/gpt-5.4");
+    let home = tempdir().unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().into())).unwrap();
+    let base = ContextConfig::default();
+    assert_eq!(
+        config.prompt_budget_estimated_tokens,
+        base.prompt_budget_estimated_tokens
+    );
+    assert_eq!(
+        config.compaction_trigger_estimated_tokens,
+        base.compaction_trigger_estimated_tokens,
+    );
+    assert_eq!(
+        config.compaction_keep_recent_estimated_tokens,
+        base.compaction_keep_recent_estimated_tokens,
+    );
+    let policy = RuntimeModelCatalog::from_config(&config).resolved_model_policy(
+        &base,
+        Some(&route_ref("openai@default/budget-test-unknown")),
+    );
+    assert_eq!(policy.context_window_tokens, None);
+    assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
+    assert_eq!(policy.compaction_trigger_estimated_tokens, 115_200);
+    assert_eq!(policy.compaction_keep_recent_estimated_tokens, 43_776);
+}
+
+#[test]
+fn app_config_budget_environment_is_explicit_snapshotted_and_not_persisted() {
+    use crate::model_catalog::{ModelMetadataField, ModelMetadataOrigin};
+
+    let mut env = EnvVarGuard::unset_many(&[
+        "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS",
+        "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS",
+    ]);
+    env.set_var("HOLON_MODEL", "openai@default/gpt-5.4");
+    env.set_var("HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS", "128000");
+    let home = tempdir().unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().into())).unwrap();
+    assert_eq!(config.prompt_budget_estimated_tokens, 128_000);
+    assert_eq!(config.compaction_trigger_estimated_tokens, 115_200);
+    assert_eq!(config.compaction_keep_recent_estimated_tokens, 43_776);
+    env.set_var("HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS", "512");
+
+    for config in [config.clone(), config.reload_runtime_config().unwrap()] {
+        let catalog = RuntimeModelCatalog::from_config(&config);
+        let policy = catalog.resolved_model_policy(&ContextConfig::default(), None);
+        assert_eq!(policy.prompt_budget_estimated_tokens, 128_000);
+        assert_eq!(policy.compaction_trigger_estimated_tokens, 115_200);
+        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 43_776);
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::PromptBudgetEstimatedTokens),
+            Some(ModelMetadataOrigin::EnvironmentOverride),
+        );
+        assert_eq!(
+            policy
+                .evidence
+                .source_for(ModelMetadataField::CompactionTriggerEstimatedTokens),
+            Some(ModelMetadataOrigin::Derived),
+        );
+        let persisted = serde_json::to_value(&config.stored_config).unwrap();
+        assert!(persisted
+            .pointer("/runtime/context_budget_overrides")
+            .is_none());
+    }
+}
+
+#[test]
+fn app_config_explicit_small_budget_derives_compression_and_preserves_overrides() {
+    let mut env = EnvVarGuard::new();
+    env.set_var("HOLON_MODEL", "openai@default/gpt-5.4");
+    env.set_var("HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS", "1000");
+    env.set_var("HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS", "700");
+    env.set_var("HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS", "200");
+    let home = tempdir().unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().into())).unwrap();
+    let catalog = RuntimeModelCatalog::from_config(&config);
+    for route in [
+        "openai@default/gpt-5.4",
+        "openai@default/budget-test-unknown",
+        "opencode-go@default/iceman-contributor-free",
+    ] {
+        let policy =
+            catalog.resolved_model_policy(&ContextConfig::default(), Some(&route_ref(route)));
+        assert_eq!(policy.prompt_budget_estimated_tokens, 1_000);
+        assert_eq!(policy.compaction_trigger_estimated_tokens, 700);
+        assert_eq!(policy.compaction_keep_recent_estimated_tokens, 200);
+    }
+    env.unset_var("HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS");
+    env.unset_var("HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS");
+    let config = AppConfig::load_with_home(Some(home.path().into())).unwrap();
+    assert_eq!(config.compaction_trigger_estimated_tokens, 900);
+    assert_eq!(config.compaction_keep_recent_estimated_tokens, 342);
+}
+
+#[test]
 fn runtime_timezone_configuration_validation_and_compatibility() {
     let mut config: HolonConfigFile = toml::from_str("").unwrap();
     assert!(config.runtime.timezone.is_none());

@@ -138,6 +138,8 @@ impl AppConfig {
         reloaded.compaction_trigger_estimated_tokens = self.compaction_trigger_estimated_tokens;
         reloaded.compaction_keep_recent_estimated_tokens =
             self.compaction_keep_recent_estimated_tokens;
+        reloaded.stored_config.runtime.context_budget_overrides =
+            self.stored_config.runtime.context_budget_overrides;
         reloaded.recent_episode_candidates = self.recent_episode_candidates;
         reloaded.max_relevant_episodes = self.max_relevant_episodes;
         reloaded.control_token = self.control_token.clone();
@@ -181,7 +183,7 @@ impl AppConfig {
                 .unwrap_or_else(|_| default_holon_home())
         });
         let config_file_path = persisted_config_path(&home_dir);
-        let stored_config = load_persisted_config_at(&config_file_path)?;
+        let mut stored_config = load_persisted_config_at(&config_file_path)?;
         validate_api_cors_config(&stored_config.api.cors)?;
         validate_api_csrf_config(&stored_config.api.csrf)?;
         validate_api_projection_config(&stored_config.api.projection)?;
@@ -222,20 +224,39 @@ impl AppConfig {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(8);
-        let prompt_budget_estimated_tokens = env::var("HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS")
+        let budget_overrides = crate::context::ContextBudgetOverrides {
+            prompt_budget_estimated_tokens: env::var("HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS")
+                .ok()
+                .and_then(|value| value.parse().ok()),
+            compaction_trigger_estimated_tokens: env::var(
+                "HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS",
+            )
             .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(4096);
-        let compaction_trigger_estimated_tokens =
-            env::var("HOLON_COMPACTION_TRIGGER_ESTIMATED_TOKENS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(2048);
-        let compaction_keep_recent_estimated_tokens =
-            env::var("HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(768);
+            .and_then(|value| value.parse().ok()),
+            compaction_keep_recent_estimated_tokens: env::var(
+                "HOLON_COMPACTION_KEEP_RECENT_ESTIMATED_TOKENS",
+            )
+            .ok()
+            .and_then(|value| value.parse().ok()),
+        };
+        stored_config.runtime.context_budget_overrides = budget_overrides;
+        let prompt_budget_estimated_tokens = budget_overrides
+            .prompt_budget_estimated_tokens
+            .unwrap_or(crate::context::DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS);
+        let compaction_trigger_estimated_tokens = budget_overrides
+            .compaction_trigger_estimated_tokens
+            .unwrap_or_else(|| {
+                crate::context::default_compaction_trigger_estimated_tokens(
+                    prompt_budget_estimated_tokens,
+                )
+            });
+        let compaction_keep_recent_estimated_tokens = budget_overrides
+            .compaction_keep_recent_estimated_tokens
+            .unwrap_or_else(|| {
+                crate::context::default_compaction_keep_recent_estimated_tokens(
+                    compaction_trigger_estimated_tokens,
+                )
+            });
         let recent_episode_candidates = env::var("HOLON_RECENT_EPISODE_CANDIDATES")
             .ok()
             .and_then(|value| value.parse().ok())

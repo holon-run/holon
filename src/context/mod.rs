@@ -54,6 +54,24 @@ const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
 const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
 const ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET: usize = 240;
 
+pub(crate) const DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS: usize = 128_000;
+
+pub(crate) fn default_compaction_trigger_estimated_tokens(prompt_budget: usize) -> usize {
+    prompt_budget.saturating_mul(90) / 100
+}
+
+pub(crate) fn default_compaction_keep_recent_estimated_tokens(trigger_budget: usize) -> usize {
+    trigger_budget.saturating_mul(38) / 100
+}
+
+/// Explicit environment policy, captured at config load rather than during resolution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextBudgetOverrides {
+    pub prompt_budget_estimated_tokens: Option<usize>,
+    pub compaction_trigger_estimated_tokens: Option<usize>,
+    pub compaction_keep_recent_estimated_tokens: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
     pub recent_messages: usize,
@@ -63,6 +81,8 @@ pub struct ContextConfig {
     pub prompt_budget_estimated_tokens: usize,
     pub compaction_trigger_estimated_tokens: usize,
     pub compaction_keep_recent_estimated_tokens: usize,
+    /// Explicit policy fields, separate from fallback/effective numeric values.
+    pub budget_overrides: ContextBudgetOverrides,
     pub recent_episode_candidates: usize,
     pub max_relevant_episodes: usize,
     pub turn_projection_budget_ratio: f32,
@@ -73,14 +93,18 @@ pub struct ContextConfig {
 
 impl Default for ContextConfig {
     fn default() -> Self {
+        let prompt_budget = DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS;
+        let compaction_trigger = default_compaction_trigger_estimated_tokens(prompt_budget);
         Self {
             recent_messages: 12,
             recent_briefs: 8,
             compaction_trigger_messages: 20,
             compaction_keep_recent_messages: 8,
-            prompt_budget_estimated_tokens: 4096,
-            compaction_trigger_estimated_tokens: 2048,
-            compaction_keep_recent_estimated_tokens: 768,
+            prompt_budget_estimated_tokens: prompt_budget,
+            compaction_trigger_estimated_tokens: compaction_trigger,
+            compaction_keep_recent_estimated_tokens:
+                default_compaction_keep_recent_estimated_tokens(compaction_trigger),
+            budget_overrides: ContextBudgetOverrides::default(),
             recent_episode_candidates: 12,
             max_relevant_episodes: 3,
             turn_projection_budget_ratio: 0.30,
@@ -4416,6 +4440,17 @@ mod tests {
             detail,
             recovery: None,
         }
+    }
+
+    #[test]
+    fn context_defaults_share_the_internal_prompt_budget_policy() {
+        let config = ContextConfig::default();
+        assert_eq!(config.prompt_budget_estimated_tokens, 128_000);
+        assert_eq!(config.compaction_trigger_estimated_tokens, 115_200);
+        assert_eq!(config.compaction_keep_recent_estimated_tokens, 43_776);
+        assert_eq!(config.budget_overrides, ContextBudgetOverrides::default());
+        assert_eq!(config.turn_projection_min_budget, 4_096);
+        assert_eq!(config.turn_projection_max_budget, 64_000);
     }
 
     #[test]

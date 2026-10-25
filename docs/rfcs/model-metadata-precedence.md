@@ -58,6 +58,7 @@ Winner evidence uses these source classes:
 - `route_builtin`: a sparse built-in policy for the exact `ModelRouteRef`;
 - `model_builtin`: built-in metadata for the canonical `ModelRef`;
 - `unknown_fallback`: the explicit unknown-model fallback;
+- `environment_override`: an explicit load-time runtime budget environment value;
 - `runtime_default`: a runtime configuration default;
 - `derived`: a value calculated from other resolved fields or a stable
   built-in formula.
@@ -80,7 +81,7 @@ discovery data must not implicitly enable or disable a capability.
 | Intrinsic/provider-reported fact | `context_window_tokens`, intrinsic capability flags | explicit override, remote discovery, canonical model builtin, unknown fallback |
 | Route/endpoint contract | `max_output_tokens_upper_limit`, `reasoning_effort_options` | explicit override where supported, route builtin, remote discovery, model builtin, unknown fallback |
 | Runtime policy | effective context percent, auto-compaction limit, default output size, verbosity, tool-output truncation | explicit override, route builtin, model builtin, remote discovery, unknown fallback, runtime default |
-| Derived runtime policy | prompt budget, compaction trigger, compaction retention | explicit override, unknown fallback override, derived from resolved limits, runtime default |
+| Derived runtime policy | prompt budget, compaction trigger, compaction retention | explicit override, applicable unknown fallback override, explicit environment override, derived from resolved limits, runtime default |
 
 An endpoint capability value is a constraint rather than an intrinsic metadata
 winner. Missing means inherit the canonical model. `false` explicitly disables
@@ -94,6 +95,57 @@ without a configurable effort. Empty legacy route/model built-in lists cannot
 be distinguished from omitted values, so they fall through to deterministic
 route/model derivation. That derivation may itself produce an empty list and
 never borrows options from another route.
+
+### Internal prompt budget fallback
+
+`ContextConfig::default()`, environment configuration defaults, and the model
+resolver share an internal prompt budget of `128000` estimated tokens. Missing
+context metadata uses this same policy for wholly unknown models, partial
+builtins, and partial discovery entries. A display name or capability does not
+establish a context limit. The selected prompt field records `runtime_default`;
+the summary metadata source can still be builtin or remote discovery.
+
+This is an input-planning policy, not a claim about backend capacity. The resolver
+does not synthesize `context_window_tokens` from a prompt budget. An unknown
+window stays absent unless an explicit context override/fallback supplies it;
+that explicit value retains its field origin. Unknown endpoints can reject
+requests below the internal default and may need a smaller configured budget.
+
+The explicit unknown fallback supplies missing budget fields even when a partial
+builtin or discovery entry exists. It does not replace an independently known
+context window or its derived policy. Model-specific overrides still win over
+fallback overrides. Explicit environment budget fields win over derivation, but
+do not overwrite those existing explicit model/fallback winners. Environment
+values equal to defaults remain explicit rather than being detected by value
+comparison. They are captured at configuration load, carried as non-persisted
+runtime policy, and preserved across runtime config reload; the resolver never
+reads the process environment.
+
+Absent explicit compression values, derive the trigger as `90%` of the resolved
+prompt budget and retention as `38%` of that trigger, rounding down at each step.
+The default tuple is `128000 / 115200 / 43776`. An explicit prompt budget alone
+therefore also changes both derived compression budgets. Explicit compression
+values retain their source and are narrowed only by hard budget limits.
+
+A known context window caps the prompt budget; the effective prompt budget caps
+the trigger, which caps retention. Constraints record these narrowings as
+`model_upper_limit` or `runtime_budget`, without changing field winners. Small or
+zero budgets are never enlarged to fit fixed input. The existing planner still
+fails when mandatory input or a continuation baseline cannot fit. Message-count
+limits, turn-projection bounds, and tool-output limits are separate policies and
+are not enlarged by this fallback.
+
+The prompt budget is already the input allowance. Derivation keeps the existing
+effective-context percentage policy; it does not subtract
+`runtime_max_output_tokens` from an explicit/default input allowance a second
+time, or invent a total context window by adding an output reserve.
+
+Regression coverage includes the `budget_` catalog tests, `app_config_*budget*`
+configuration tests, the context-default test, and `cargo test --locked --test
+context_budget`. The integration target runs in a subprocess with an isolated
+`HOLON_HOME` and loopback-only HTTP stub: new-agent initialization, an actual
+`GetAgent` tool continuation, a later turn, and model switches through known,
+unknown, and partial-discovery context metadata.
 
 ## Resolution Stages
 
