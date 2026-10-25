@@ -1751,7 +1751,7 @@ describe("roster refresh cadence", () => {
   it.each([429, 503])("honors %i Retry-After across hints, local changes and stream reopen", async (status) => {
     const h = harness();
     h.response.mockRejectedValueOnce(new RuntimeHttpError(
-      "GET", "/agents/snapshot", status, "busy", "projection_busy", 5,
+      "GET", "/agents/snapshot", status, "busy", "projection_busy", undefined, undefined, 5,
     ));
     await h.open();
     expect(h.get().discovery).toMatchObject({ freshness: "stale", retryAttempt: 1 });
