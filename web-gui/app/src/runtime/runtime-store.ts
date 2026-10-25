@@ -1,4 +1,12 @@
 import i18next from "i18next";
+import {
+  bootstrapProgress,
+  validCreationIdentity,
+  validCreationResponse,
+  type AgentCreationLookup,
+  type AgentCreationProgress,
+  type AgentCreationResult,
+} from "./agent-creation";
 import { hydrateInputActivity } from "./conversation-input";
 import { readPanelPreferences, writePanelPreferences, rememberPanelView } from "./panel-preferences";
 import { panelLayout, PANEL_DEFAULT } from "../features/right-panel/panel-layout";
@@ -323,6 +331,8 @@ export interface RuntimeStoreState {
   templateCatalog: AgentTemplateCatalogState;
   templateCatalogLoading: boolean;
   templateCatalogError?: string;
+  agentCreations: Record<string, AgentCreationProgress>;
+  agentCreationContext: number;
   dismissedTemplateDiagnostics: string[];
   templateSyncInProgress: boolean;
   templateSyncMessage?: string;
@@ -405,7 +415,9 @@ export interface RuntimeStoreState {
   syncTemplateRemoteSources: () => Promise<boolean>;
   dismissTemplateDiagnostics: () => void;
   dismissTemplateError: () => void;
-  createAgentFromTemplate: (agentId: string, template: string, name?: string) => Promise<boolean>;
+  createAgentFromTemplate: (agentId: string, template: string, name?: string) => Promise<AgentCreationResult>;
+  lookupCreatedAgent: (agentId: string) => Promise<AgentCreationLookup>;
+  refreshAgentCreation: (agentId: string) => Promise<void>;
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
   updateSkillCatalog: (name?: string) => Promise<boolean>;
@@ -600,6 +612,19 @@ export function skillDetailCacheKey(skillId: string, agentId?: string): string {
 interface ClientRequest {
   client: RuntimeClient;
   generation: number;
+}
+
+interface AgentCreationRequest extends ClientRequest {
+  creationContext: number;
+}
+
+function captureAgentCreationRequest(get: () => RuntimeStoreState): AgentCreationRequest {
+  return { ...captureClientRequest(), creationContext: get().agentCreationContext };
+}
+
+function isCurrentAgentCreationRequest(get: () => RuntimeStoreState, request: AgentCreationRequest): boolean {
+  return isCurrentClientRequest(request) && get().agentCreationContext === request.creationContext
+    && !presentationAuthRejected(get());
 }
 
 function captureClientRequest(): ClientRequest {
@@ -951,6 +976,10 @@ async function applyRosterSnapshotToStore(
         identity,
       },
       agentRosterSource: "http",
+      ...(identityReset ? {
+        agentCreations: {},
+        agentCreationContext: state.agentCreationContext + 1,
+      } : {}),
       sessionsByAgentId,
       rosterActivityByAgentId,
       briefReadStateByAgentId,
@@ -1377,6 +1406,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   templateCatalog: emptyTemplateCatalog,
   templateCatalogLoading: false,
   templateCatalogError: undefined,
+  agentCreations: {},
+  agentCreationContext: 0,
   dismissedTemplateDiagnostics: [],
   templateSyncInProgress: false,
   templateSyncMessage: undefined,
@@ -1749,6 +1780,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   setRuntimeConnection: async (config) => {
     nextClientGeneration();
+    set((state) => ({ agentCreations: {}, agentCreationContext: state.agentCreationContext + 1 }));
     const generation = clientGeneration;
     cancelClientGenerationWork();
     await clearConversationCaches();
@@ -1799,6 +1831,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       templateCatalog: emptyTemplateCatalog,
       templateCatalogLoading: false,
       templateCatalogError: undefined,
+      agentCreations: {},
       dismissedTemplateDiagnostics: [],
       templateSyncInProgress: false,
       templateSyncMessage: undefined,
@@ -1881,6 +1914,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         set((state) => ({
           currentUser: currentUser ?? undefined, currentUserLoaded: true,
           ...(subjectChanged ? {
+            agentCreations: {},
+            agentCreationContext: state.agentCreationContext + 1,
             agentRosterSource: undefined,
             discovery: { mode: "pending", freshness: "fresh", retryAttempt: 0 },
             sessionsByAgentId: {},
@@ -2355,41 +2390,56 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   },
 
   createAgentFromTemplate: async (agentId, template, name) => {
-    const request = captureClientRequest();
-    set({ templateCatalogError: undefined });
+    const request = captureAgentCreationRequest(get);
+    let created;
     try {
-      const created = await request.client.createAgentFromTemplate(agentId, template, name);
-      if (!isCurrentClientRequest(request)) return false;
-      const refreshRosterAfterCreate = async (): Promise<void> => {
-        if (get().discovery.mode === "authoritative") {
-          // The authoritative roster owns membership; refresh the snapshot
-          // so the new agent appears through the same atomic apply.
-          globalSyncCoordinator.refreshRoster(get, set);
-        } else {
-          await get().refreshBootstrap({ background: true });
-        }
-      };
-      await refreshRosterAfterCreate();
-      const jobId = created.receipt?.job_id;
-      if (created.receipt?.stage === "provisioning" && jobId) {
-        // Bootstrap runs in the background; poll its job until it reaches a
-        // terminal state so creation no longer depends on one 8s request.
-        const outcome = await pollAgentBootstrapJob(request, jobId);
-        if (!isCurrentClientRequest(request)) return false;
-        await refreshRosterAfterCreate();
-        if (outcome.status === "failed") {
-          set({
-            templateCatalogError: outcome.error
-              ? `Agent ${agentId} bootstrap failed: ${outcome.error}`
-              : `Agent ${agentId} bootstrap failed.`,
-          });
-        }
-      }
-      return true;
+      created = await request.client.createAgentFromTemplate(agentId, template, name);
     } catch (error) {
-      if (!isCurrentClientRequest(request)) return false;
-      throw error;
+      if (!isCurrentAgentCreationRequest(get, request)) return { kind: "stale" };
+      if (!(error instanceof RuntimeHttpError)) return { kind: "uncertain" };
+      // Raw HTTP errors can contain private paths, SQL, or credentials.
+      const problem = error.code === "deletion_incomplete" ? "deletion_incomplete"
+        : error.code === "already_exists" ? "conflict"
+        : error.code === "agent_name_invalid" || error.status === 400 || error.status === 422 ? "invalid"
+        : error.status === 401 ? "unauthorized"
+        : error.status === 403 ? "forbidden"
+        : error.status === 404 ? "not_found"
+        : error.status === 429 || error.status === 503 ? "busy"
+        : error.status >= 500 ? "server" : "unexpected";
+      return { kind: "rejected", problem, status: error.status };
     }
+    if (!isCurrentAgentCreationRequest(get, request)) return { kind: "stale" };
+    if (!validCreationResponse(created, agentId)) return { kind: "uncertain" };
+    const progress: AgentCreationProgress = {
+      creation: created,
+      status: created.receipt.stage === "provisioning" ? "initializing"
+        : created.receipt.stage === "degraded" ? "degraded" : "ready",
+      bootstrap: created.receipt.bootstrap,
+      observationRevision: 0,
+    };
+    set((state) => ({ agentCreations: { ...state.agentCreations, [agentId]: progress } }));
+    // POST acceptance is final; observation cannot delay navigation or turn
+    // an accepted create into a rejected one.
+    void observeAgentCreation(set, get, request, agentId, progress);
+    return { kind: "accepted", creation: created };
+  },
+
+  lookupCreatedAgent: async (agentId) => {
+    const request = captureAgentCreationRequest(get);
+    try {
+      const detail = await request.client.getAgentIdentity(agentId);
+      if (!isCurrentAgentCreationRequest(get, request)) return { kind: "stale" };
+      return validCreationIdentity(detail.identity, agentId)
+        ? { kind: "found", identity: detail.identity } : { kind: "missing" };
+    } catch (error) {
+      if (!isCurrentAgentCreationRequest(get, request)) return { kind: "stale" };
+      return { kind: error instanceof RuntimeHttpError && error.status === 404 ? "missing" : "unavailable" };
+    }
+  },
+
+  refreshAgentCreation: async (agentId) => {
+    const progress = get().agentCreations[agentId];
+    if (progress) await reconcileAgentCreation(set, get, captureAgentCreationRequest(get), agentId, progress);
   },
 
   dismissTemplateDiagnostics: () => {
@@ -4207,41 +4257,104 @@ async function pollTemplateSyncJob(
 const AGENT_BOOTSTRAP_POLL_INTERVAL_MS = 1_000;
 const AGENT_BOOTSTRAP_POLL_TIMEOUT_MS = 120_000;
 
-type AgentBootstrapJobOutcome =
-  | { status: "completed" }
-  | { status: "failed"; error?: string }
-  | { status: "timeout" };
+function isCurrentAgentCreation(
+  get: () => RuntimeStoreState,
+  request: AgentCreationRequest,
+  agentId: string,
+  progress: AgentCreationProgress,
+): boolean {
+  return isCurrentAgentCreationRequest(get, request) && get().agentCreations[agentId]?.creation === progress.creation;
+}
 
-/**
- * Poll the background `agent.bootstrap` job returned by agent creation.
- * The job registry is in-memory: when the job disappears (for example after
- * a daemon restart) the poll resolves like a timeout, because the durable
- * bootstrap record keeps progressing regardless.
- */
-async function pollAgentBootstrapJob(
-  request: ClientRequest,
-  jobId: string,
-): Promise<AgentBootstrapJobOutcome> {
+async function reconcileAgentCreation(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  request: AgentCreationRequest,
+  agentId: string,
+  progress: AgentCreationProgress,
+  observationEnded = false,
+): Promise<void> {
+  if (!isCurrentAgentCreation(get, request, agentId, progress)) return;
+  const observationRevision = get().agentCreations[agentId].observationRevision + 1;
+  set((state) => ({ agentCreations: {
+    ...state.agentCreations,
+    [agentId]: { ...state.agentCreations[agentId], observationRevision },
+  } }));
+  const current = () => isCurrentAgentCreation(get, request, agentId, progress)
+    && get().agentCreations[agentId]?.observationRevision === observationRevision;
+  try {
+    const detail = await request.client.getAgentIdentity(agentId);
+    if (!current()) return;
+    if (!validCreationIdentity(detail.identity, agentId)
+      || detail.identity.incarnation !== progress.creation.identity.incarnation) {
+      set((state) => {
+        const agentCreations = { ...state.agentCreations };
+        delete agentCreations[agentId];
+        return { agentCreations };
+      });
+      return;
+    }
+    const bootstrap = detail.bootstrap ?? undefined;
+    const status = bootstrapProgress(bootstrap);
+    set((state) => ({
+      agentCreations: {
+        ...state.agentCreations,
+        [agentId]: {
+          creation: progress.creation,
+          observationRevision,
+          bootstrap,
+          status: observationEnded && status === "initializing" ? "uncertain" : status,
+        },
+      },
+    }));
+  } catch {
+    if (!current()) return;
+    set((state) => ({
+      agentCreations: {
+        ...state.agentCreations,
+        [agentId]: { ...state.agentCreations[agentId], status: "uncertain" },
+      },
+    }));
+  }
+}
+
+async function observeAgentCreation(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  request: AgentCreationRequest,
+  agentId: string,
+  progress: AgentCreationProgress,
+): Promise<void> {
+  const refreshRoster = async () => {
+    if (!isCurrentAgentCreation(get, request, agentId, progress)) return;
+    if (get().discovery.mode === "authoritative") globalSyncCoordinator.refreshRoster(get, set);
+    else await get().refreshBootstrap({ background: true });
+  };
+  // Roster availability and initialization observation are independent.
+  void refreshRoster().catch(() => undefined);
+  const jobId = progress.creation.receipt.job_id;
+  if (progress.creation.receipt.stage !== "provisioning" || !jobId) {
+    if (progress.creation.receipt.stage === "provisioning") {
+      await reconcileAgentCreation(set, get, request, agentId, progress, true);
+    }
+    return;
+  }
   const deadline = Date.now() + AGENT_BOOTSTRAP_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (!isCurrentClientRequest(request)) return { status: "timeout" };
+    if (!isCurrentAgentCreation(get, request, agentId, progress)) return;
     await new Promise((resolve) => globalThis.setTimeout(resolve, AGENT_BOOTSTRAP_POLL_INTERVAL_MS));
-    if (!isCurrentClientRequest(request)) return { status: "timeout" };
+    if (!isCurrentAgentCreation(get, request, agentId, progress)) return;
     try {
       const job = await request.client.getJob(jobId);
-      if (!isCurrentClientRequest(request)) return { status: "timeout" };
-      if (job.status === "completed") {
-        return { status: "completed" };
-      }
-      if (job.status === "failed") {
-        return { status: "failed", error: job.error ?? job.summary };
-      }
+      if (!isCurrentAgentCreation(get, request, agentId, progress)) return;
+      if (job.status === "completed" || job.status === "failed") break;
     } catch {
-      return { status: "timeout" };
+      // Jobs are volatile; detail's durable bootstrap is authoritative.
+      break;
     }
-    // status is "queued" or "running" — keep polling
   }
-  return { status: "timeout" };
+  await reconcileAgentCreation(set, get, request, agentId, progress, true);
+  void refreshRoster().catch(() => undefined);
 }
 
 function updateSkillInstallJob(
@@ -4871,6 +4984,10 @@ useRuntimeStore.subscribe((state, previous) => {
       // Auth rejection is terminal for both presentation and conversation
       // caches, including async hydration still in flight.
       void clearConversationCaches();
+      useRuntimeStore.setState({
+        agentCreations: {},
+        agentCreationContext: state.agentCreationContext + 1,
+      });
     }
     if (state.currentUser || !state.currentUserLoaded || state.bootstrap.agents.length > 0 || state.agentRosterSource !== undefined) {
       useRuntimeStore.setState({

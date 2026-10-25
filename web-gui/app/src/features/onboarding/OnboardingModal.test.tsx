@@ -11,6 +11,15 @@ import type {
   RuntimeModelCatalog,
 } from "../../runtime/types";
 import { OnboardingModal } from "./OnboardingModal";
+import type { AgentCreationResult } from "../../runtime/agent-creation";
+
+const accepted = async (): Promise<AgentCreationResult> => ({
+  kind: "accepted",
+  creation: {
+    identity: { agent_id: "my-agent", incarnation: 1, status: "active" },
+    receipt: { receipt_id: "receipt", agent_id: "my-agent", stage: "provisioning" },
+  },
+});
 
 const modelCatalog: RuntimeModelCatalog = {
   source: "fixture",
@@ -56,7 +65,7 @@ const roots: { root: Root; container: HTMLElement }[] = [];
 
 async function renderOnboardingModal(
   templateCatalog: AgentTemplateCatalogState,
-  onCreateAgent: (agentId: string, template: string, name?: string) => Promise<boolean>,
+  onCreateAgent: (agentId: string, template: string, name?: string) => Promise<AgentCreationResult>,
   config: RuntimeConfigState = runtimeConfig,
   existingAgents: Array<{ id: string; name?: string }> = [],
 ): Promise<HTMLElement> {
@@ -75,6 +84,7 @@ async function renderOnboardingModal(
         templateCatalogLoading={false}
         onSaveModel={vi.fn(async () => true)}
         onCreateAgent={onCreateAgent}
+        onLookupAgent={async () => ({ kind: "unavailable" })}
         existingAgents={existingAgents}
         onClose={vi.fn()}
       />,
@@ -143,7 +153,7 @@ afterEach(async () => {
 
 describe("OnboardingModal template selection", () => {
   it("finishes with the built-in holon-default template when the catalog is empty", async () => {
-    const onCreateAgent = vi.fn(async () => true);
+    const onCreateAgent = vi.fn(accepted);
     const container = await renderOnboardingModal(catalogState([]), onCreateAgent);
 
     await advanceToAgentStep(container);
@@ -159,7 +169,7 @@ describe("OnboardingModal template selection", () => {
   });
 
   it("lists catalog entries besides the built-in default and creates with the selected template", async () => {
-    const onCreateAgent = vi.fn(async () => true);
+    const onCreateAgent = vi.fn(accepted);
     const container = await renderOnboardingModal(catalogState([remoteEntry]), onCreateAgent);
 
     await advanceToAgentStep(container);
@@ -178,7 +188,7 @@ describe("OnboardingModal template selection", () => {
   });
 
   it("requires an explicit model choice and prefills a separate editable name and stable ID", async () => {
-    const create = vi.fn(async () => true);
+    const create = vi.fn(accepted);
     const container = await renderOnboardingModal(catalogState([]), create);
     expect(container.querySelector<HTMLButtonElement>(".modal-actions button.bg-accent")!.disabled).toBe(true);
     await advanceToAgentStep(container);
@@ -192,7 +202,7 @@ describe("OnboardingModal template selection", () => {
   });
 
   it("does not create an Agent while authoritative setup is blocked", async () => {
-    const create = vi.fn(async () => true);
+    const create = vi.fn(accepted);
     const container = await renderOnboardingModal(catalogState([]), create, {
       ...runtimeConfig, setup: { ...runtimeConfig.setup!, status: "blocked", actions: ["configure_model_credential"] },
     });
@@ -203,7 +213,7 @@ describe("OnboardingModal template selection", () => {
   });
 
   it("keeps existing ID collisions explicit and never overwrites the Agent", async () => {
-    const create = vi.fn(async () => true);
+    const create = vi.fn(accepted);
     const container = await renderOnboardingModal(catalogState([]), create, runtimeConfig, [{ id: "holon-bot" }]);
     await advanceToAgentStep(container);
     await act(async () => container.querySelector("form")!.requestSubmit());
@@ -211,13 +221,29 @@ describe("OnboardingModal template selection", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("does not retry an ambiguous or degraded create outcome", async () => {
-    const create = vi.fn(async () => false);
+  it("does not retry an ambiguous create outcome", async () => {
+    const create = vi.fn(async (): Promise<AgentCreationResult> => ({ kind: "uncertain" }));
     const container = await renderOnboardingModal(catalogState([]), create);
     await advanceToAgentStep(container);
     await act(async () => container.querySelector("form")!.requestSubmit());
     await act(async () => container.querySelector("form")!.requestSubmit());
     expect(create).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[role="alert"]')!.textContent).toContain("Check existing Agents");
+  });
+
+  it("preserves a rejected request's form inputs and shows its operation-specific reason", async () => {
+    const create = vi.fn(async (): Promise<AgentCreationResult> => ({
+      kind: "rejected", problem: "deletion_incomplete", status: 409,
+    }));
+    const container = await renderOnboardingModal(catalogState([]), create);
+    await advanceToAgentStep(container);
+    const finish = await submitOnboarding(container, "reused-agent");
+    await act(async () => container.querySelector("form")!.requestSubmit());
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain("Deletion is incomplete");
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain("HTTP 409");
+    expect(finish.disabled).toBe(false);
+    expect(container.querySelector<HTMLInputElement>('input[value="reused-agent"]')?.disabled).toBe(false);
+    expect(container.querySelector<HTMLSelectElement>("select")!.value).toBe("holon-default");
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });

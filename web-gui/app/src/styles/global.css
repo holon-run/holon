@@ -6051,6 +6051,27 @@ code {
   gap: 12px;
 }
 
+.agent-creation-status {
+  margin: 12px 20px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.agent-creation-status p { margin: 6px 0; color: var(--muted); }
+.agent-creation-status ul { display: flex; flex-wrap: wrap; gap: 6px 18px; padding-left: 18px; }
+.agent-creation-feedback button,
+.agent-creation-status button {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 6px 8px;
+  text-decoration: underline;
+}
+.agent-creation-feedback button:disabled,
+.agent-creation-status button:disabled { opacity: 0.5; cursor: wait; }
+
 .modal-body label {
   display: flex;
   flex-direction: column;

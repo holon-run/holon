@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { ModelSelect } from "../../components/models/ModelSelect";
 import { Button } from "../../components/ui/Button";
 import { SetupStatusCard, setupIsReady } from "./SetupStatusCard";
+import { AgentCreationError } from "../agent/AgentCreationFeedback";
+import type { AgentCreationLookup, AgentCreationResult } from "../../runtime/agent-creation";
 import type {
   AgentTemplateCatalogState,
   RuntimeConfigState,
@@ -21,11 +23,12 @@ interface OnboardingModalProps {
   templateCatalog: AgentTemplateCatalogState;
   templateCatalogLoading: boolean;
   onSaveModel: (model: string) => Promise<boolean>;
-  onCreateAgent: (agentId: string, template: string, name?: string) => Promise<boolean>;
+  onCreateAgent: (agentId: string, template: string, name?: string) => Promise<AgentCreationResult>;
+  onLookupAgent: (agentId: string) => Promise<AgentCreationLookup>;
   onConfigure?: (action: string, provider: string | null) => void;
   onRefresh?: () => void;
   existingAgents?: Array<{ id: string; name?: string }>;
-  onOpenAgent?: (agentId: string) => void;
+  onOpenAgent?: (agentId: string, incarnation?: number) => void;
   onClose: () => void;
 }
 
@@ -39,6 +42,7 @@ export function OnboardingModal({
   templateCatalogLoading,
   onSaveModel,
   onCreateAgent,
+  onLookupAgent,
   onConfigure,
   onRefresh,
   existingAgents = [],
@@ -55,7 +59,8 @@ export function OnboardingModal({
   const [error, setError] = useState<string | undefined>();
   const submitting = useRef(false);
   const dialog = useRef<HTMLDivElement>(null);
-  const [creationUncertain, setCreationUncertain] = useState(false);
+  const [creationResult, setCreationResult] = useState<AgentCreationResult>();
+  const creationUncertain = creationResult?.kind === "uncertain";
 
   const templates = templateCatalog.catalog;
   const availableModels = modelCatalog.options.filter((option) => option.available);
@@ -99,22 +104,19 @@ export function OnboardingModal({
     if (submitting.current || creationUncertain || !setupIsReady(runtimeConfig)
       || !trimmedAgentId || !name.trim()) return;
     if (existingAgents.some((agent) => agent.id === trimmedAgentId)) {
-      setError(t("setup.idConflict"));
+      setCreationResult({ kind: "rejected", problem: "conflict", status: 409 });
       return;
     }
     submitting.current = true;
     setBusy(true);
     setError(undefined);
+    setCreationResult(undefined);
     try {
-      if (!(await onCreateAgent(trimmedAgentId, template, name.trim()))) {
-        setCreationUncertain(true);
-        setError(t("setup.createUncertain"));
-        return;
-      }
-      onClose();
-    } catch (cause) {
-      setCreationUncertain(true);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const result = await onCreateAgent(trimmedAgentId, template, name.trim());
+      if (result.kind === "accepted") onClose();
+      else if (result.kind !== "stale") setCreationResult(result);
+    } catch {
+      setCreationResult({ kind: "uncertain" });
     } finally {
       submitting.current = false;
       setBusy(false);
@@ -214,7 +216,7 @@ export function OnboardingModal({
               <span>{t("app.agentId")}</span>
               <input
                 value={agentId}
-                onChange={(event) => setAgentId(event.target.value)}
+                onChange={(event) => { setAgentId(event.target.value); setCreationResult(undefined); }}
                 disabled={busy || creationUncertain}
               />
             </label>
@@ -239,6 +241,9 @@ export function OnboardingModal({
             ) : null}
             </details>
             {error ? <span className="connection-error" role="alert">{error}</span> : null}
+            {creationResult ? <AgentCreationError key={`${agentId}:${creationResult.kind}`} result={creationResult}
+              onCheck={() => onLookupAgent(agentId.trim())}
+              onOpen={(identity) => { onClose(); onOpenAgent?.(identity.agent_id, identity.incarnation); }} /> : null}
             <div className="modal-actions">
               <Button type="button" variant="outline" disabled={busy} onClick={() => setStep(1)}>{t("onboarding.back")}</Button>
               <Button type="submit" variant="accent" disabled={busy || creationUncertain || !setupIsReady(runtimeConfig) || !agentId.trim() || !name.trim()}>

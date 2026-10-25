@@ -1,4 +1,6 @@
 import { connectionLocation } from "../runtime/connection-location";
+import type { AgentCreationResult } from "../runtime/agent-creation";
+import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
 import { useCopyText } from "../components/ClipboardProvider";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
@@ -63,7 +65,6 @@ import {
 } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useAgentAccess, type AgentAccessStatus } from "../runtime/useAgentAccess";
-import { RuntimeHttpError } from "../runtime/client";
 import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
@@ -107,8 +108,9 @@ export function App() {
   const [showCreateAgentModal, setShowCreateAgentModal] = useState(false);
   const [createAgentId, setCreateAgentId] = useState("");
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
-  const [createAgentError, setCreateAgentError] = useState<string | undefined>();
+  const [createAgentError, setCreateAgentError] = useState<AgentCreationResult>();
   const [createAgentBusy, setCreateAgentBusy] = useState(false);
+  const createAgentSubmitting = useRef(false);
   const [agentFilter, setAgentFilter] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const route = useRuntimeStore((state) => state.route);
@@ -246,6 +248,14 @@ export function App() {
  const dismissTemplateDiagnostics = useRuntimeStore((state) => state.dismissTemplateDiagnostics);
  const dismissTemplateError = useRuntimeStore((state) => state.dismissTemplateError);
   const createAgentFromTemplate = useRuntimeStore((state) => state.createAgentFromTemplate);
+  const agentCreationContext = useRuntimeStore((state) => state.agentCreationContext);
+  useLayoutEffect(() => {
+    setShowCreateAgentModal(false);
+    setCreateAgentError(undefined);
+  }, [agentCreationContext]);
+  const lookupCreatedAgent = useRuntimeStore((state) => state.lookupCreatedAgent);
+  const refreshAgentCreation = useRuntimeStore((state) => state.refreshAgentCreation);
+  const agentCreation = useRuntimeStore((state) => state.selectedAgentId ? state.agentCreations[state.selectedAgentId] : undefined);
   const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
   const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
   const disableAgentSkill = useRuntimeStore((state) => state.disableAgentSkill);
@@ -491,25 +501,21 @@ export function App() {
   async function handleCreateAgentSubmit(): Promise<void> {
     const id = createAgentId.trim();
     const tmpl = createAgentTemplate.trim();
-    if (!id || !tmpl) return;
+    if (!id || !tmpl || createAgentSubmitting.current || createAgentError?.kind === "uncertain") return;
+    createAgentSubmitting.current = true;
     setCreateAgentBusy(true);
     setCreateAgentError(undefined);
     try {
-      const ok = await createTemplateAgent(id, tmpl);
-      if (ok) {
+      const result = await createTemplateAgent(id, tmpl);
+      if (result.kind === "accepted") {
         setCreateAgentId("");
         setCreateAgentTemplate("");
         setShowCreateAgentModal(false);
-      } else {
-        setCreateAgentError("Failed to create agent.");
-      }
-    } catch (error) {
-      if (error instanceof RuntimeHttpError && error.hint) {
-        setCreateAgentError(`${error.message} ${error.hint}`);
-      } else {
-        setCreateAgentError(error instanceof Error ? error.message : String(error));
-      }
+      } else if (result.kind !== "stale") setCreateAgentError(result);
+    } catch {
+      setCreateAgentError({ kind: "uncertain" });
     } finally {
+      createAgentSubmitting.current = false;
       setCreateAgentBusy(false);
     }
   }
@@ -544,10 +550,10 @@ export function App() {
     }
   }
 
-  async function createTemplateAgent(agentId: string, template: string, name?: string): Promise<boolean> {
-    const ok = await createAgentFromTemplate(agentId, template, name);
-    if (ok) navigateAgent(agentId);
-    return ok;
+  async function createTemplateAgent(agentId: string, template: string, name?: string): Promise<AgentCreationResult> {
+    const result = await createAgentFromTemplate(agentId, template, name);
+    if (result.kind === "accepted") navigateAgent(agentId, undefined, { incarnation: result.creation.identity.incarnation });
+    return result;
   }
 
   function openOnboarding(): void {
@@ -826,6 +832,10 @@ export function App() {
             }}
             onOpenAgent={navigateAgent}
           />
+        ) : null}
+        {route === "agent" && agentCreation && agentCreation.creation.identity.incarnation === agentAccess.agent?.incarnation ? (
+          <AgentCreationStatus key={`${agentCreationContext}:${agentCreation.creation.receipt.receipt_id}`}
+            progress={agentCreation} onRefresh={() => refreshAgentCreation(agentCreation.creation.identity.agent_id)} />
         ) : null}
         {route === "agent" && activeAgent ? (
           <AgentPage
@@ -1129,6 +1139,7 @@ export function App() {
       {showOnboardingModal || onboardingSuspended ? (
         <div hidden={!showOnboardingModal}>
         <OnboardingModal
+          key={agentCreationContext}
           active={showOnboardingModal}
           modelCatalog={modelCatalog}
           modelCatalogLoading={modelCatalogLoading}
@@ -1138,8 +1149,9 @@ export function App() {
           templateCatalogLoading={templateCatalogLoading}
           onSaveModel={saveOnboardingModel}
           onCreateAgent={createTemplateAgent}
+          onLookupAgent={lookupCreatedAgent}
           existingAgents={visibleAgents}
-          onOpenAgent={(id) => { setShowOnboardingModal(false); setOnboardingSuspended(false); navigateAgent(id); }}
+          onOpenAgent={(id, incarnation) => { setShowOnboardingModal(false); setOnboardingSuspended(false); navigateAgent(id, undefined, { incarnation }); }}
           onRefresh={() => void refreshRuntimeConfig()}
           onConfigure={(action, provider) => {
             setSetupTarget({ action, provider });
@@ -1153,21 +1165,21 @@ export function App() {
       ) : null}
 
       {showCreateAgentModal ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("app.createAgentTitle")} onClick={(e) => { if (e.target === e.currentTarget) setShowCreateAgentModal(false); }}>
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("app.createAgentTitle")} onClick={(e) => { if (e.target === e.currentTarget && !createAgentBusy) setShowCreateAgentModal(false); }}>
           <div className="modal-card">
             <div className="modal-head">
               <strong>{t("app.createAgentTitle")}</strong>
-              <button type="button" className="modal-close" aria-label={t("common.close")} onClick={() => setShowCreateAgentModal(false)}>×</button>
+              <button type="button" className="modal-close" disabled={createAgentBusy} aria-label={t("common.close")} onClick={() => setShowCreateAgentModal(false)}>×</button>
             </div>
             <form className="modal-body" onSubmit={(e) => { e.preventDefault(); void handleCreateAgentSubmit(); }}>
               <label>
                 <span>{t("app.agentId")}</span>
                 <input
                   value={createAgentId}
-                  onChange={(e) => setCreateAgentId(e.target.value)}
+                  onChange={(e) => { setCreateAgentId(e.target.value); setCreateAgentError(undefined); }}
                   placeholder="new-agent-id"
                   autoFocus
-                  disabled={createAgentBusy}
+                  disabled={createAgentBusy || createAgentError?.kind === "uncertain"}
                 />
               </label>
               <label>
@@ -1185,12 +1197,14 @@ export function App() {
                   ))}
                 </select>
               </label>
-              {createAgentError ? <span className="connection-error" role="alert">{createAgentError}</span> : null}
+              {createAgentError ? <AgentCreationError key={`${agentCreationContext}:${createAgentId}:${createAgentError.kind}`} result={createAgentError}
+                onCheck={() => lookupCreatedAgent(createAgentId.trim())}
+                onOpen={(identity) => { setShowCreateAgentModal(false); navigateAgent(identity.agent_id, undefined, { incarnation: identity.incarnation }); }} /> : null}
               <div className="modal-actions">
                 <Button type="button" variant="outline" disabled={createAgentBusy} onClick={() => setShowCreateAgentModal(false)}>
                   {t("common.cancel")}
                 </Button>
-                <Button type="submit" variant="accent" disabled={createAgentBusy || !createAgentId.trim() || !createAgentTemplate.trim()}>
+                <Button type="submit" variant="accent" disabled={createAgentBusy || createAgentError?.kind === "uncertain" || !createAgentId.trim() || !createAgentTemplate.trim()}>
                   {createAgentBusy ? t("common.creating") : t("common.create")}
                 </Button>
               </div>

@@ -18,6 +18,7 @@ Prefer one decision per file. Keep each note short and focused:
 
 Current decision notes:
 
+- [Web Agent Creation Feedback Boundary](./web-agent-creation-feedback.md)
 - [Core Protocol And Transition Navigation Boundary](./core-transition-navigation-boundary.md)
 - [Android Release Signing And Cadence](./android-release-signing-and-cadence.md)
 - [Workspace Test Migration Script Boundary](./workspace-test-migration-script-boundary.md)

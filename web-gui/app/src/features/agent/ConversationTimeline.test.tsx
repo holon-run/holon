@@ -190,6 +190,16 @@ describe("executionProcessActivities", () => {
 });
 
 describe("ConversationTimeline", () => {
+  it("shows budget exhaustion as a run failure rather than a create failure", () => {
+    const html = renderTimeline([turnSummary("budget-failed", 1, {
+      execution: { kind: "terminal", outcome: "baseline_over_budget" },
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "failed" } },
+      settled: true,
+    })]);
+    expect(html).toContain("baseline_over_budget");
+    expect(html).toContain("This is not a failed agent creation.");
+    expect(html).not.toContain("Failed to create agent.");
+  });
   it("renders operator inputs and briefs with a compact turn header", () => {
     const html = renderTimeline([
       turnSummary("turn-1", 1, {
