@@ -269,6 +269,102 @@ fn output_text(output: &Output) -> (String, String) {
 }
 
 #[test]
+fn models_dev_refresh_retains_only_matching_capacity_reviews() {
+    use holon::model_catalog::models_dev::{
+        coverage::{
+            endpoint_associations, generate_coverage, CoverageBaseline, LimitStatus, ReviewedRoute,
+            UnknownReview,
+        },
+        parse_snapshot,
+    };
+
+    let report = generate_coverage(
+        &parse_snapshot("{}").unwrap(),
+        &holon::model_catalog::legacy_builtin_catalog().unwrap(),
+        &endpoint_associations().unwrap(),
+    )
+    .unwrap();
+    let row = report
+        .routes
+        .iter()
+        .find(|row| {
+            row.effective.context_window_tokens.is_none()
+                && row.effective.max_output_tokens_upper_limit.is_none()
+        })
+        .expect("catalog contains a route with unknown capacities");
+
+    for stale in [false, true] {
+        let (mut command, home) = isolated_holon_command();
+        let output_dir = home.path().join("models-dev");
+        std::fs::create_dir(&output_dir).unwrap();
+        let mut reviewed = ReviewedRoute {
+            route_ref: row.route_ref.clone(),
+            facts: row.effective.clone(),
+            inputs: row.reviewed_inputs(),
+            context_status: LimitStatus::Dynamic,
+            output_status: LimitStatus::NotApplicable,
+            review: Some(UnknownReview {
+                owner: "catalog-maintainer".into(),
+                reviewed_at: "2026-10-25".into(),
+                reason: "CLI fixture: reviewed dynamic selector.".into(),
+                recheck: "When the selector changes.".into(),
+                evidence: vec!["fixture:exact-endpoint".into()],
+            }),
+        };
+        if stale {
+            reviewed.facts.prompt_budget_estimated_tokens += 1;
+        }
+        let review_path = output_dir.join("metadata-review.json");
+        let review_json = serde_json::to_string(&CoverageBaseline {
+            schema_version: 1,
+            routes: vec![reviewed],
+        })
+        .unwrap();
+        std::fs::write(&review_path, &review_json).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api.json", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        assert!(read_http_request(&mut stream).starts_with("GET /api.json "));
+                        write_json_response(&mut stream, "{}");
+                        break;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "refresh never fetched its fixture"
+                        );
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("accept refresh fixture: {err}"),
+                }
+            }
+        });
+        let output = command
+            .args(["models-dev", "refresh", "--url", &url, "--output-dir"])
+            .arg(&output_dir)
+            .output()
+            .unwrap();
+        server.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let summary = std::fs::read_to_string(output_dir.join("refresh-summary.md")).unwrap();
+        let retained =
+            summary.contains("Dynamic | NotApplicable | CLI fixture: reviewed dynamic selector.");
+        assert_eq!(retained, !stale);
+        assert_eq!(std::fs::read_to_string(review_path).unwrap(), review_json);
+    }
+}
+
+#[test]
 fn events_tail_resolves_caller_and_operator_targets() {
     for (caller, explicit, default, expected) in [
         (

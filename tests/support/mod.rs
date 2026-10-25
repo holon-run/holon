@@ -117,6 +117,7 @@ pub async fn test_work_item(
 
 impl TestConfigBuilder {
     pub fn new() -> Self {
+        let context = holon::context::ContextConfig::default();
         Self {
             data_dir: None,
             workspace_dir: None,
@@ -125,9 +126,10 @@ impl TestConfigBuilder {
             control_auth_mode: ControlAuthMode::Auto,
             compaction_trigger_messages: 10,
             compaction_keep_recent_messages: 4,
-            prompt_budget_estimated_tokens: 16384,
-            compaction_trigger_estimated_tokens: 8192,
-            compaction_keep_recent_estimated_tokens: 2048,
+            prompt_budget_estimated_tokens: context.prompt_budget_estimated_tokens,
+            compaction_trigger_estimated_tokens: context.compaction_trigger_estimated_tokens,
+            compaction_keep_recent_estimated_tokens: context
+                .compaction_keep_recent_estimated_tokens,
         }
     }
 

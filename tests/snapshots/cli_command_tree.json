@@ -1686,6 +1686,47 @@
     "aliases": []
   },
   {
+    "path": "models-dev.coverage",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "baseline",
+        "short": null,
+        "default_value": "models.dev/metadata-review.json",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "check",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "snapshot",
+        "short": null,
+        "default_value": "models.dev/snapshot.json",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "models-dev.refresh",
     "positionals": [],
     "flags": [

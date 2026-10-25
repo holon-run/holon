@@ -442,6 +442,9 @@ impl AgentTemplateRemoteSourceConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuntimeConfigFile {
+    /// Load-time environment policy; never read from or written to config.json.
+    #[serde(skip)]
+    pub context_budget_overrides: crate::context::ContextBudgetOverrides,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

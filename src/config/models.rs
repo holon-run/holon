@@ -432,6 +432,7 @@ pub struct RuntimeModelCatalog {
     pub provider_cache_overrides: HashMap<ProviderId, bool>,
     pub unknown_model_fallback: Option<ModelRuntimeOverride>,
     pub configured_runtime_max_output_tokens: u32,
+    pub context_budget_overrides: crate::context::ContextBudgetOverrides,
 }
 
 impl RuntimeModelCatalog {
@@ -485,6 +486,7 @@ impl RuntimeModelCatalog {
             provider_cache_overrides: explicit_provider_cache_overrides(&config.stored_config),
             unknown_model_fallback: config.validated_unknown_model_fallback.clone(),
             configured_runtime_max_output_tokens: config.runtime_max_output_tokens,
+            context_budget_overrides: config.stored_config.runtime.context_budget_overrides,
         }
     }
 
@@ -721,6 +723,7 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
     ) -> ResolvedRuntimeModelPolicy {
+        let base_context_config = self.context_config_for_resolution(base_context_config);
         let canonical_model_ref = self
             .built_in_catalog
             .canonicalize_model_ref(&route_ref.model_ref());
@@ -734,7 +737,7 @@ impl RuntimeModelCatalog {
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
-            base_context_config,
+            &base_context_config,
             self.configured_runtime_max_output_tokens,
         )
     }
@@ -751,6 +754,27 @@ impl RuntimeModelCatalog {
         resolved.compaction_keep_recent_estimated_tokens =
             policy.compaction_keep_recent_estimated_tokens;
         resolved
+    }
+
+    fn context_config_for_resolution(&self, base: &ContextConfig) -> ContextConfig {
+        let mut context = base.clone();
+        context.budget_overrides = crate::context::ContextBudgetOverrides {
+            prompt_budget_estimated_tokens: self
+                .context_budget_overrides
+                .prompt_budget_estimated_tokens
+                .or(base.budget_overrides.prompt_budget_estimated_tokens),
+            compaction_trigger_estimated_tokens: self
+                .context_budget_overrides
+                .compaction_trigger_estimated_tokens
+                .or(base.budget_overrides.compaction_trigger_estimated_tokens),
+            compaction_keep_recent_estimated_tokens: self
+                .context_budget_overrides
+                .compaction_keep_recent_estimated_tokens
+                .or(base
+                    .budget_overrides
+                    .compaction_keep_recent_estimated_tokens),
+        };
+        context
     }
 
     pub fn available_models(&self) -> Vec<BuiltInModelMetadata> {
@@ -780,13 +804,14 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         model_ref: &ModelRef,
     ) -> BuiltInModelMetadata {
+        let base_context_config = self.context_config_for_resolution(base_context_config);
         let canonical_model_ref = self.built_in_catalog.canonicalize_model_ref(model_ref);
         self.built_in_catalog.resolve_catalog_entry(
             &canonical_model_ref,
             &self.model_overrides,
             &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
-            base_context_config,
+            &base_context_config,
             self.configured_runtime_max_output_tokens,
         )
     }
@@ -1126,6 +1151,7 @@ impl Default for RuntimeModelCatalog {
             provider_cache_overrides: HashMap::new(),
             unknown_model_fallback: None,
             configured_runtime_max_output_tokens: 8192,
+            context_budget_overrides: crate::context::ContextBudgetOverrides::default(),
         }
     }
 }

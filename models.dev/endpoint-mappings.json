@@ -1,0 +1,14 @@
+[
+  {
+    "models_dev_id": "alibaba-token-plan-cn",
+    "route_registration": "dashscope@token-plan",
+    "region": "China; default personal Token Plan endpoint only, not international or custom team URLs",
+    "owner": "holon-model-provider",
+    "reviewed_at": "2026-10-25",
+    "evidence": [
+      "https://help.aliyun.com/zh/model-studio/token-plan-personal-overview",
+      "models.dev/snapshot.json#/alibaba-token-plan-cn",
+      "src/provider/registry/providers.rs"
+    ]
+  }
+]

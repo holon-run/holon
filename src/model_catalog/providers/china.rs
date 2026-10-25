@@ -1285,14 +1285,22 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             false,
             false,
         ),
-        reviewed_subscription_model(
-            "dashscope",
-            "token-plan",
-            "deepseek-v4.1-flash-1017",
-            "DeepSeek V4.1 Flash 1017",
-            true,
-            true,
-        ),
+        BuiltInModelMetadata {
+            context_window_tokens: Some(1_000_000),
+            max_output_tokens_upper_limit: Some(384_000),
+            description: "DashScope Beijing Token Plan DeepSeek V4.1 Flash 1017; \
+                reviewed advisory limits from models.dev alibaba-token-plan-cn, \
+                not a default output policy or other region's guarantee."
+                .into(),
+            ..reviewed_subscription_model(
+                "dashscope",
+                "token-plan",
+                "deepseek-v4.1-flash-1017",
+                "DeepSeek V4.1 Flash 1017",
+                true,
+                true,
+            )
+        },
         reviewed_subscription_model(
             "stepfun",
             "plan",
@@ -1318,26 +1326,28 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             entry
         }),
     );
-    // The remaining Messages IDs have eligibility evidence only; do not
-    // infer limits, capabilities, or subscription eligibility from their names.
+    // Beijing model cards reviewed on 2026-10-25; capacity is not a default
+    // generation policy, capability assertion, or subscription entitlement.
     entries.extend(
         [
-            "qwen-plus-latest",
-            "qwen-flash-2025-07-28",
-            "qwen3.5-flash-2026-02-23",
-            "qwen3.5-plus-2026-02-15",
-            "qwen3.5-plus-2026-04-20",
-            "qwen3.6-flash-2026-04-16",
-            "qwen3.6-plus-2026-04-02",
-            "qwen3.7-flash-2026-07-15",
+            ("qwen-plus-latest", 32_768),
+            ("qwen-flash-2025-07-28", 32_768),
+            ("qwen3.5-flash-2026-02-23", 65_536),
+            ("qwen3.5-plus-2026-02-15", 65_536),
+            ("qwen3.5-plus-2026-04-20", 65_536),
+            ("qwen3.6-flash-2026-04-16", 65_536),
+            ("qwen3.6-plus-2026-04-02", 65_536),
+            ("qwen3.7-flash-2026-07-15", 131_072),
         ]
         .into_iter()
-        .map(|model| {
+        .map(|(model, output)| {
             let mut entry =
                 reviewed_subscription_model("dashscope", "default", model, model, false, false);
+            entry.context_window_tokens = Some(1_000_000);
+            entry.max_output_tokens_upper_limit = Some(output);
             entry.description = format!(
-                "DashScope default Anthropic-compatible API {model}; eligibility reviewed, \
-                 exact token limits and model capabilities unconfirmed."
+                "DashScope Beijing default Anthropic-compatible API {model}; \
+                 token capacity reviewed 2026-10-25, model capabilities unconfirmed."
             );
             entry
         }),
@@ -1633,17 +1643,19 @@ fn reviewed_dashscope_anthropic_ids_are_default_only_and_conservative() {
             .unwrap();
         assert_eq!(metadata.endpoint.as_ref().unwrap().as_str(), "default");
         let has_model_card = model.starts_with("qwen3.8-");
-        assert_eq!(
-            metadata.context_window_tokens,
-            has_model_card.then_some(1_000_000)
-        );
+        assert_eq!(metadata.context_window_tokens, Some(1_000_000));
         assert_eq!(
             metadata.default_max_output_tokens,
             has_model_card.then_some(131_072)
         );
         assert_eq!(
             metadata.max_output_tokens_upper_limit,
-            has_model_card.then_some(131_072)
+            Some(match model {
+                "qwen-plus-latest" | "qwen-flash-2025-07-28" => 32_768,
+                "qwen3.7-flash-2026-07-15" => 131_072,
+                _ if has_model_card => 131_072,
+                _ => 65_536,
+            })
         );
         assert!(metadata.reasoning_effort_options.is_empty());
         assert_eq!(metadata.capabilities.supports_reasoning, has_model_card);

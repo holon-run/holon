@@ -10,6 +10,31 @@ use tokio::sync::Semaphore;
 const MAX_CONCURRENT_RUNTIME_TESTS: usize = 4;
 static RUNTIME_TEST_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_RUNTIME_TESTS);
 
+#[test]
+fn runtime_fixture_budget_defaults_and_explicit_limits() {
+    let context = holon::context::ContextConfig::default();
+    let fixture = support::TestConfigBuilder::new().build();
+    assert_eq!(
+        fixture.config().prompt_budget_estimated_tokens,
+        context.prompt_budget_estimated_tokens
+    );
+    assert_eq!(
+        fixture.config().compaction_trigger_estimated_tokens,
+        context.compaction_trigger_estimated_tokens
+    );
+    assert_eq!(
+        fixture.config().compaction_keep_recent_estimated_tokens,
+        context.compaction_keep_recent_estimated_tokens
+    );
+
+    let small = support::TestConfigBuilder::new()
+        .with_compaction(2, 1, 512, 128, 4096)
+        .build();
+    assert_eq!(small.config().prompt_budget_estimated_tokens, 4096);
+    assert_eq!(small.config().compaction_trigger_estimated_tokens, 512);
+    assert_eq!(small.config().compaction_keep_recent_estimated_tokens, 128);
+}
+
 fn run_on_large_stack<F, Fut>(name: &str, test: F) -> anyhow::Result<()>
 where
     F: FnOnce() -> Fut + Send + 'static,
