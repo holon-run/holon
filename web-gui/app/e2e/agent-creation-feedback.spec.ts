@@ -87,6 +87,29 @@ for (const outcome of ["ready", "degraded", "lost-job"] as const) {
   });
 }
 
+test("200 bootstrapped navigates immediately with initialization complete", async ({ page, request }, info) => {
+  const session = sessionFor(info, "creation");
+  const id = "bootstrapped-feedback-agent";
+  let posted = 0;
+  await page.route(`**/api/control/agents/${id}/create`, async (route) => {
+    posted += 1;
+    await request.post(`/__e2e__/configure?session=${encodeURIComponent(session)}`, {
+      data: { visibleAgentIds: ["bootstrap-agent", id] },
+    });
+    await route.fulfill({ status: 200, json: {
+      identity: { agent_id: id, incarnation: 1, status: "active" },
+      receipt: { receipt_id: "receipt-bootstrapped", agent_id: id, stage: "bootstrapped", bootstrap: bootstrap("succeeded") },
+    } });
+  });
+  await page.goto("/");
+  const dialog = await openCreate(page, id);
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id}/conversation\\?incarnation=1`));
+  await expect(page.getByText("Created — initialization complete", { exact: true })).toBeVisible();
+  expect(posted).toBe(1);
+});
+
 test("409 is an operation error with an explicit verified existing-agent entry", async ({ page }) => {
   let posted = 0;
   await page.route("**/api/control/agents/bootstrap-agent/create", (route) => {

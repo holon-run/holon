@@ -9,7 +9,7 @@ export interface AgentCreateResponse {
   receipt: {
     receipt_id: string;
     agent_id: string;
-    stage: "provisioning" | "ready" | "degraded";
+    stage: "provisioning" | "bootstrapped" | "degraded";
     job_id?: string;
     bootstrap?: AgentBootstrap;
   };
@@ -45,7 +45,7 @@ export function validCreationResponse(value: AgentCreateResponse, agentId: strin
   return validCreationIdentity(value?.identity, agentId)
     && value.receipt?.agent_id === agentId
     && typeof value.receipt.receipt_id === "string" && value.receipt.receipt_id.length > 0
-    && ["provisioning", "ready", "degraded"].includes(value.receipt.stage);
+    && ["provisioning", "bootstrapped", "degraded"].includes(value.receipt.stage);
 }
 
 export function bootstrapProgress(bootstrap: AgentBootstrap | undefined): AgentCreationProgress["status"] {

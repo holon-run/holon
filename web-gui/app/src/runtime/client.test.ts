@@ -312,7 +312,7 @@ describe("projectModelOptions", () => {
 });
 
 describe("createRuntimeClient", () => {
-  it.each(["provisioning", "degraded", "ready"])("preserves a %s create receipt without converting it to an exception", async (stage) => {
+  it.each(["provisioning", "degraded", "bootstrapped"])("preserves a %s create receipt without converting it to an exception", async (stage) => {
     const response = {
       identity: { agent_id: "new-agent", incarnation: 2, status: "active" },
       receipt: { agent_id: "new-agent", receipt_id: "receipt-2", stage, bootstrap: { status: "degraded" } },

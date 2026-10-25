@@ -30,7 +30,7 @@ function creation(stage: AgentCreateResponse["receipt"]["stage"] = "provisioning
   return {
     identity, receipt: {
       receipt_id: "receipt-3", agent_id: identity.agent_id, stage, job_id: "job-3",
-      bootstrap: bootstrap(stage === "ready" ? "succeeded" : stage === "degraded" ? "failed" : "pending"),
+      bootstrap: bootstrap(stage === "bootstrapped" ? "succeeded" : stage === "degraded" ? "failed" : "pending"),
     },
   };
 }
@@ -72,6 +72,21 @@ describe("agent creation boundaries", () => {
     expect(await create()).toMatchObject({ kind: "accepted" });
     expect(progress().status).toBe("degraded");
     expect(useRuntimeStore.getState().templateCatalogError).toBe("catalog-only");
+  });
+
+  it("accepts bootstrapped receipts as completed initialization without another POST", async () => {
+    mocks.create.mockResolvedValue(creation("bootstrapped"));
+    expect(await create()).toMatchObject({ kind: "accepted", creation: { identity } });
+    expect(progress().status).toBe("ready");
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not accept bootstrap summary status as a receipt stage", async () => {
+    const response = creation("bootstrapped");
+    mocks.create.mockResolvedValue({ ...response, receipt: { ...response.receipt, stage: "ready" } });
+    expect(await create()).toEqual({ kind: "uncertain" });
+    expect(progress()).toBeUndefined();
+    expect(mocks.create).toHaveBeenCalledTimes(1);
   });
 
   it("keeps roster refresh failure separate from accepted creation and successful initialization", async () => {
