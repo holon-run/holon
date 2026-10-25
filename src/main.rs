@@ -4932,7 +4932,37 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
                 .map_err(|e| anyhow!("failed to serialize supplement: {e}"))?;
             std::fs::write(&supplement_path, format!("{supplement_json}\n"))
                 .map_err(|e| anyhow!("failed to write supplement: {e}"))?;
-            let summary = holon::model_catalog::models_dev::render_summary_markdown(&update);
+            let mut summary = holon::model_catalog::models_dev::render_summary_markdown(&update);
+            let mut refreshed_catalog = legacy.clone();
+            update
+                .supplement
+                .apply_to(&mut refreshed_catalog)
+                .map_err(anyhow::Error::msg)?;
+            let mut coverage = holon::model_catalog::models_dev::coverage::generate_coverage(
+                &parsed_snapshot,
+                &refreshed_catalog,
+                &holon::model_catalog::models_dev::coverage::endpoint_associations()
+                    .map_err(anyhow::Error::msg)?,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let review_path = output_dir.join("metadata-review.json");
+            match std::fs::read_to_string(&review_path) {
+                Ok(raw) => {
+                    let reviewed = serde_json::from_str::<
+                        holon::model_catalog::models_dev::coverage::CoverageBaseline,
+                    >(&raw)
+                    .map_err(|e| anyhow!("failed to parse metadata review: {e}"))?;
+                    holon::model_catalog::models_dev::coverage::annotate_reviews(
+                        &mut coverage,
+                        &reviewed,
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(anyhow!("failed to read metadata review: {e}")),
+            }
+            summary.push_str(
+                &holon::model_catalog::models_dev::coverage::render_coverage_summary(&coverage),
+            );
             let summary_path = output_dir.join("refresh-summary.md");
             std::fs::write(&summary_path, &summary)
                 .map_err(|e| anyhow!("failed to write refresh summary: {e}"))?;
@@ -5009,6 +5039,51 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
                     .apply_to(&mut catalog)
                     .map_err(|e| anyhow!("supplement validation failed: {e}"))?;
                 println!("Supplement valid ({} models)", supplement.models.len());
+            }
+            Ok(())
+        }
+        ModelsDevCommands::Coverage {
+            snapshot,
+            baseline,
+            check,
+            json,
+        } => {
+            use holon::model_catalog::models_dev::coverage::{
+                annotate_reviews, check_coverage, endpoint_associations, generate_coverage,
+                render_coverage_summary, CoverageBaseline,
+            };
+            let raw = std::fs::read_to_string(&snapshot)
+                .map_err(|e| anyhow!("failed to read snapshot: {e}"))?;
+            let parsed =
+                parse_snapshot(&raw).map_err(|e| anyhow!("failed to parse snapshot: {e}"))?;
+            let mut report = generate_coverage(
+                &parsed,
+                &holon::model_catalog::BuiltInModelCatalog::new(),
+                &endpoint_associations().map_err(anyhow::Error::msg)?,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let reviewed = match std::fs::read_to_string(&baseline) {
+                Ok(raw) => Some(
+                    serde_json::from_str::<CoverageBaseline>(&raw)
+                        .map_err(|e| anyhow!("failed to parse metadata review: {e}"))?,
+                ),
+                Err(e) if !check && e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(anyhow!("failed to read metadata review: {e}")),
+            };
+            if let Some(reviewed) = &reviewed {
+                annotate_reviews(&mut report, reviewed);
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", render_coverage_summary(&report));
+            }
+            if check {
+                let errors =
+                    check_coverage(&report, reviewed.as_ref().expect("check requires baseline"));
+                if !errors.is_empty() {
+                    anyhow::bail!("metadata coverage review failed:\n{}", errors.join("\n"));
+                }
             }
             Ok(())
         }

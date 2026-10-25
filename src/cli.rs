@@ -793,6 +793,19 @@ pub enum ModelsDevCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Report checked-in route metadata and exact-endpoint upstream review candidates (offline)"
+    )]
+    Coverage {
+        #[arg(long, default_value = "models.dev/snapshot.json")]
+        snapshot: PathBuf,
+        #[arg(long, default_value = "models.dev/metadata-review.json")]
+        baseline: PathBuf,
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -28,6 +28,7 @@
 //! enter Holon through review and merge.
 
 pub mod artifact;
+pub mod coverage;
 pub mod dto;
 pub mod mapping;
 pub mod projection;
