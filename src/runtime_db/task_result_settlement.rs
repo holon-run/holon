@@ -17,6 +17,8 @@ pub(crate) const TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT: usize = 8;
 // InterruptedReplaySourceInvalid for queue-head containment, and startup
 // repair reuses its strict attached-turn matcher.
 mod exact_waiter;
+mod local_dispatch;
+pub(crate) use local_dispatch::pause_local_dispatch_rejected_tx;
 pub(crate) mod live_turn;
 mod obligation;
 pub(crate) use obligation::{

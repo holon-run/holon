@@ -307,6 +307,36 @@ lowering. Local prompt, payload, header, and HTTP-request construction complete
 before the guard charges IO; SDK retries and redirects cannot silently bypass
 it. Canonical execution fences, admission fences, and budget charging share one
 writer transaction. An unknown HTTP outcome remains charged.
+The guard's rejection is a typed local execution/admission outcome, not a
+provider failure. It bypasses provider retry, fallback classification and
+cross-turn recovery even when an earlier real HTTP failure remains in the
+diagnostic chain. The rejected send consumes no request or candidate cursor;
+earlier requests and unknown outcomes are never refunded or erased.
+Dispatch diagnostics distinguish canonical source, owner, generation, authority
+and recovery-root failures from availability/budget refusals.
+
+An unrecoverable guard/canonical contradiction while the attempt still owns
+its lane settles a WorkItem to `NeedsRepair`, not `Interrupted`/`Runnable`.
+Lifecycle and conversation attempts pause. Availability refusals park the
+original queue source until its existing provider deadline, then replay the
+interrupted canonical lineage without replacing its root or budget. After that
+interrupted settlement is durably confirmed, runtime restores the original
+persisted source to its live queue, including when commit success is established
+by readback. The parking deadline still gates admission; restart is not required.
+Queue restoration changes only `pending` against the latest durable agent-state
+snapshot with OCC, then reconciles memory; it must not upsert a stale pre-terminal
+projection or overwrite a newer control-plane Stop.
+An aborted fallback settlement or ordinary interruption does not gain this
+automatic reentry. Infrastructure
+errors keep their storage classification and retryability while still bypassing
+provider fallback. Settlement retains the source and unresolved
+task-result responsibility; it cannot replace a newer attempt, clear a business
+blocker, or claim that zero dispatch fulfilled a task result.
+An exact-wait local stop retains either its direct runtime-owned TaskResult
+grant or a synthetic recovery grant. The direct source must be the original
+result; a synthetic source requires its internal-followup marker, exact result
+identity and charged recovery root. Both require the resolved wait and canonical
+owner/turn witness; neither path consumes the result.
 Adapters settle each complete HTTP response before auth refresh, lossless
 replay, or remote compaction can dispatch another request. A known ordinary
 protocol/auxiliary result may end a healthy sequence, but never replenishes
@@ -355,6 +385,13 @@ same-agent message, Turn terminal, and predecessor execution records before
 admission. The recovery attempt inherits the predecessor's complete binding,
 including Conversation identity or explicit AgentLifecycle ownership. An
 absent source WorkItem must not fall back to the current focus.
+
+If a resolved exact-wait continuation ends in a provider failure before fulfilling
+its source, terminal settlement retains that wait's canonical `Waiting` reference
+when no newer wait or source revision supersedes it. Recovery must prove the same
+durable resolved wait, trigger, predecessor lineage and generation. An independent
+business blocker remains intact; it cannot consume the failed continuation or
+authorize ordinary blocked, paused or repair-needed work.
 
 For repeated fallback, follow validated predecessor links to the original task
 input with a bounded, cycle-checked traversal. Intermediate recovery messages

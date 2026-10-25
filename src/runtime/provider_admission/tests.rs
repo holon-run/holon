@@ -1,3 +1,5 @@
+mod local_dispatch;
+
 use super::*;
 use crate::{
     config::{AppConfig, ProviderId, RuntimeModelCatalog},
@@ -11,6 +13,37 @@ use crate::{
 
 fn runtime() -> (tempfile::TempDir, RuntimeHandle) {
     runtime_with_urls(["http://127.0.0.1:1/v1", "http://127.0.0.1:2"])
+}
+
+#[test]
+fn exact_task_result_interrupted_recovery_replay_preserves_wait_and_task_owner() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TaskResult,
+        ContinuationDispatchFault::HttpFailureInterruptedReplay,
+    );
+}
+
+#[test]
+fn exact_timer_wait_interrupted_recovery_replay_preserves_wait() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TimerWait,
+        ContinuationDispatchFault::HttpFailureInterruptedReplay,
+    );
+}
+
+#[test]
+fn exact_timer_wait_provider_recovery_rejects_changed_authority() {
+    for change in [
+        RecoveryAuthorityChange::Paused,
+        RecoveryAuthorityChange::NeedsRepair,
+        RecoveryAuthorityChange::Terminal,
+        RecoveryAuthorityChange::ReplacedWait,
+    ] {
+        run_continuation_dispatch(
+            ContinuationDispatch::TimerWait,
+            ContinuationDispatchFault::HttpFailureWithAuthority(change),
+        );
+    }
 }
 
 fn runtime_with_urls(urls: [&str; 2]) -> (tempfile::TempDir, RuntimeHandle) {
@@ -494,6 +527,870 @@ async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
     );
     admission.before_dispatch().unwrap();
     assert_eq!(admission.episode().unwrap().total_requests, 1);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ContinuationDispatch {
+    TaskResult,
+    Timer,
+    TimerWait,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ContinuationDispatchFault {
+    None,
+    HttpFailure,
+    HttpFailureSecondHop,
+    HttpFailureInterruptedReplay,
+    HttpFailureWithAuthority(RecoveryAuthorityChange),
+    LocalRejection,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RecoveryAuthorityChange {
+    Paused,
+    NeedsRepair,
+    Terminal,
+    ReplacedWait,
+}
+
+#[test]
+fn exact_task_result_continuation_dispatches_with_canonical_fences() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TaskResult,
+        ContinuationDispatchFault::None,
+    );
+}
+
+#[test]
+fn direct_timer_continuation_dispatches_with_canonical_fences() {
+    run_continuation_dispatch(ContinuationDispatch::Timer, ContinuationDispatchFault::None);
+}
+
+#[test]
+fn exact_timer_wait_continuation_dispatches_with_canonical_fences() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TimerWait,
+        ContinuationDispatchFault::None,
+    );
+}
+
+#[test]
+fn exact_task_result_provider_recovery_preserves_business_blocker_and_task_owner() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TaskResult,
+        ContinuationDispatchFault::HttpFailure,
+    );
+}
+
+#[test]
+fn exact_timer_wait_provider_recovery_preserves_business_blocker() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TimerWait,
+        ContinuationDispatchFault::HttpFailure,
+    );
+}
+
+#[test]
+fn exact_task_result_second_provider_hop_preserves_wait_generation() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TaskResult,
+        ContinuationDispatchFault::HttpFailureSecondHop,
+    );
+}
+
+#[test]
+fn exact_timer_wait_second_provider_hop_preserves_wait_generation() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TimerWait,
+        ContinuationDispatchFault::HttpFailureSecondHop,
+    );
+}
+
+#[test]
+fn exact_task_result_local_dispatch_rejection_preserves_settlement_obligation() {
+    run_continuation_dispatch(
+        ContinuationDispatch::TaskResult,
+        ContinuationDispatchFault::LocalRejection,
+    );
+}
+
+fn run_continuation_dispatch(kind: ContinuationDispatch, fault: ContinuationDispatchFault) {
+    let thread = std::thread::Builder::new()
+        .name("continuation-dispatch".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(continuation_dispatch_scenario(kind, fault));
+        })
+        .unwrap();
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn continuation_dispatch_scenario(
+    kind: ContinuationDispatch,
+    fault: ContinuationDispatchFault,
+) {
+    use crate::{
+        domain::execution_protocol::{
+            ExecutionBinding, WaitReference, WorkItemExecutionRecord, WorkItemExecutionState,
+        },
+        runtime::waiting::WaitForWakeKind,
+        runtime_db::task_result_settlement::TaskResultSettlementState,
+        types::{TaskKind, TaskRecord, TaskStatus},
+    };
+    use std::sync::atomic::Ordering;
+
+    let server = OutageServer::start(false).await;
+    server.healthy.store(
+        matches!(
+            fault,
+            ContinuationDispatchFault::None | ContinuationDispatchFault::LocalRejection
+        ),
+        Ordering::SeqCst,
+    );
+    let home = tempfile::tempdir().unwrap();
+    let mut config = config_with_urls(home.path(), [&server.url, &server.url]);
+    if matches!(
+        fault,
+        ContinuationDispatchFault::HttpFailureSecondHop
+            | ContinuationDispatchFault::HttpFailureInterruptedReplay
+    ) {
+        config
+            .fallback_models
+            .push(ModelRouteRef::parse("openai@default/gpt-5.4-mini").unwrap());
+    }
+    let clock = Arc::new(crate::runtime::clock::TestClock::new(Utc::now()));
+    let runtime = open_runtime_with_clock(home.path(), config.clone(), clock.clone());
+    let captured = runtime
+        .create_work_item("captured task owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let waiter = runtime
+        .create_work_item("exact continuation waiter".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(waiter.id.clone()).await.unwrap();
+    let task_id = "task-exact-dispatch";
+    let mut task = TaskRecord {
+        id: task_id.into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: runtime.now(),
+        updated_at: runtime.now(),
+        parent_message_id: None,
+        work_item_id: Some(captured.id.clone()),
+        summary: Some("cross-owner task".into()),
+        detail: None,
+        recovery: None,
+    };
+    let mut timer = None;
+    let mut result_message_id = None;
+    let registration = match kind {
+        ContinuationDispatch::TaskResult => {
+            runtime.storage().append_task(&task).unwrap();
+            None
+        }
+        ContinuationDispatch::Timer | ContinuationDispatch::TimerWait => {
+            let scheduled = runtime
+                .schedule_timer(60_000, None, Some("dispatch timer".into()))
+                .await
+                .unwrap();
+            let registration = if matches!(kind, ContinuationDispatch::TimerWait) {
+                Some(
+                    runtime
+                        .register_wait_for(
+                            "default",
+                            Some(waiter.id.clone()),
+                            WaitForWakeKind::Timer,
+                            Some(scheduled.id.clone()),
+                            "wait for exact timer".into(),
+                            None,
+                        )
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            timer = Some(scheduled);
+            registration
+        }
+    };
+    runtime
+        .update_work_item_fields(
+            waiter.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("independent business blocker".into())),
+        )
+        .await
+        .unwrap();
+    let mut wait_id = registration.map(|registration| registration.condition.id);
+    if let Some(mut timer) = timer {
+        clock.advance(std::time::Duration::from_secs(60));
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+    } else {
+        task.status = TaskStatus::Completed;
+        task.detail = Some(serde_json::json!({
+            "rejoin_obligation_id": task_id,
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-captured-task",
+        }));
+        let mut result = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task_id.into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "exact task completed".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        result.task_id = Some(task_id.into());
+        result.work_item_id = Some(captured.id.clone());
+        result_message_id = Some(result.id.clone());
+        task.parent_message_id = Some(result.id.clone());
+        runtime
+            .commit_terminal_task_result(&task, "task_completed", &result)
+            .await
+            .unwrap();
+        let outcome = runtime
+            .register_wait_for_outcome(
+                "default",
+                Some(waiter.id.clone()),
+                WaitForWakeKind::TaskResult,
+                Some(task_id.into()),
+                "wait for exact result".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let crate::runtime::waiting::WaitForRegistrationOutcome::TaskResultQueued {
+            wait_condition_id,
+            ..
+        } = outcome
+        else {
+            panic!("terminal task must queue its exact result");
+        };
+        wait_id = Some(wait_condition_id);
+    }
+    let blocked = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
+    if let Some(wait_id) = wait_id.as_ref() {
+        // No model attempt is open in this fixture: model its committed yield.
+        let mut protocol = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        protocol.work_items.insert(
+            waiter.id.clone(),
+            WorkItemExecutionRecord {
+                source_revision: blocked.revision,
+                state: WorkItemExecutionState::Waiting {
+                    generation: 1,
+                    wait: WaitReference {
+                        wait_id: wait_id.clone(),
+                    },
+                },
+            },
+        );
+        runtime
+            .inner
+            .runtime_db
+            .transaction(|tx| {
+                crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
+                    tx, &protocol,
+                )
+            })
+            .unwrap();
+    }
+
+    let RunLoopPoll::Message(mut scheduled) = SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap()
+    else {
+        panic!(
+            "{kind:?} must admit its exact continuation; events={:?}",
+            runtime.storage().read_recent_events(5).unwrap()
+        );
+    };
+    let admission = scheduled.dispatch_plan.provider_admission.as_ref().unwrap();
+    let protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let committed = &protocol.attempts[&admission.attempt.attempt_id];
+    assert_eq!(admission.attempt.admitted_fences, committed.admitted_fences);
+    assert_eq!(admission.attempt.source, committed.source);
+    assert_eq!(admission.attempt.binding, committed.binding);
+    assert_eq!(
+        committed.binding,
+        if matches!(kind, ContinuationDispatch::Timer) {
+            ExecutionBinding::AgentLifecycle {
+                agent_id: "default".into(),
+            }
+        } else {
+            ExecutionBinding::WorkItem {
+                work_item_id: waiter.id.clone(),
+            }
+        }
+    );
+    assert_eq!(admission.episode().unwrap().total_requests, 0);
+    let admission = scheduled.dispatch_plan.provider_admission.as_mut().unwrap();
+    if matches!(fault, ContinuationDispatchFault::LocalRejection) {
+        Arc::get_mut(admission)
+            .expect("pre-dispatch guard has one owner")
+            .attempt
+            .admitted_fences
+            .host_registry_revision += 1;
+    }
+    let admission = admission.clone();
+    let message = scheduled.message;
+    let processing_started = std::time::Instant::now();
+    let result = Box::pin(runtime.process_message_with_plan_deferred(
+        message.clone(),
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ))
+    .await;
+    if matches!(fault, ContinuationDispatchFault::LocalRejection) {
+        let error = result.as_ref().err().expect("local guard must reject");
+        let failure = crate::runtime_error::describe_runtime_error(error);
+        assert_eq!(failure.code, "provider_dispatch_rejected");
+        assert!(!failure.retryable);
+        runtime
+            .settle_processed_message(message, result, processing_started)
+            .await
+            .unwrap();
+        let protocol = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            protocol.work_items[&waiter.id].state,
+            WorkItemExecutionState::NeedsRepair { .. }
+        ));
+        let settlement = runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(result_message_id.as_ref().unwrap())
+            .unwrap()
+            .expect("local rejection must retain durable result responsibility");
+        assert_ne!(settlement.state, TaskResultSettlementState::Settled);
+        assert!(settlement.disposition.is_none());
+        assert!(settlement.settled_at.is_none());
+        let episode = admission.episode().unwrap();
+        assert_eq!(episode.total_requests, 0);
+        assert_eq!(episode.candidate_cursor, 0);
+        assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    } else {
+        let terminal = result.unwrap();
+        assert_eq!(
+            server.calls.load(Ordering::SeqCst),
+            1,
+            "{kind:?}: first real dispatch must pass the guard; attempt={:?}",
+            admission.attempt
+        );
+        assert_eq!(admission.episode().unwrap().total_requests, 1);
+        runtime
+            .commit_queue_terminal_settlement(
+                crate::types::QueueEntryRecord {
+                    message_id: message.id,
+                    agent_id: message.agent_id,
+                    priority: message.priority,
+                    status: crate::types::QueueEntryStatus::Processed,
+                    created_at: message.created_at,
+                    updated_at: runtime.now(),
+                },
+                Vec::new(),
+                true,
+                Some(&terminal),
+            )
+            .await
+            .unwrap();
+        let assert_wait_generation = |generation| {
+            let protocol = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            let record = &protocol.work_items[&waiter.id];
+            assert_eq!(record.source_revision, blocked.revision);
+            assert_eq!(
+                record.state,
+                WorkItemExecutionState::Waiting {
+                    generation,
+                    wait: WaitReference {
+                        wait_id: wait_id.clone().unwrap(),
+                    },
+                },
+                "provider failure must retain the exact source after each hop"
+            );
+        };
+        let failed_generation = admission.attempt.admitted_fences.work_item_generation;
+        if !matches!(fault, ContinuationDispatchFault::None) {
+            assert_wait_generation(failed_generation.unwrap() + 1);
+        }
+        if matches!(fault, ContinuationDispatchFault::HttpFailureSecondHop) {
+            assert!(process_next_model_input(&runtime).await);
+            assert_eq!(server.calls.load(Ordering::SeqCst), 2);
+            assert_wait_generation(failed_generation.unwrap() + 2);
+            assert_recovery_source_accepts_only_exact_interrupted_replay(&runtime);
+        }
+        if matches!(
+            fault,
+            ContinuationDispatchFault::HttpFailureInterruptedReplay
+        ) {
+            let RunLoopPoll::Message(recovery) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("the first HTTP failure must enqueue a real recovery");
+            };
+            let admission = recovery.dispatch_plan.provider_admission.as_ref().unwrap();
+            let initial_attempt = admission.attempt.clone();
+            let episode_key = admission.episode_key.clone();
+            let lease = admission.state.lock().unwrap().lease.take().unwrap();
+            assert!(runtime
+                .runtime_db()
+                .record_provider_admission_failure(
+                    &lease,
+                    &admission.candidate.connection,
+                    ProviderCooldownPolicy::Transport,
+                    runtime.now(),
+                    Some(runtime.now() + Duration::minutes(10)),
+                    &admission.candidate.model.as_string(),
+                )
+                .unwrap());
+            let deadline = runtime
+                .runtime_db()
+                .provider_admission_blocked(&admission.candidate.scopes, runtime.now())
+                .unwrap()
+                .unwrap()
+                .not_before;
+            let recovery_message = recovery.message.clone();
+            let started = std::time::Instant::now();
+            let result = Box::pin(runtime.process_message_with_plan_deferred(
+                recovery.message,
+                recovery.dispatch_plan,
+                &recovery.scheduler_decision,
+            ))
+            .await;
+            assert!(is_parked_dispatch_rejection(
+                result
+                    .as_ref()
+                    .err()
+                    .expect("cooling must stop before HTTP")
+            ));
+            runtime
+                .settle_processed_message(recovery_message.clone(), result, started)
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(&recovery_message.id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                crate::types::QueueEntryStatus::Interrupted
+            );
+            assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+            let interrupted = runtime
+                .storage()
+                .read_recent_turns(8)
+                .unwrap()
+                .into_iter()
+                .find(|turn| {
+                    turn.trigger
+                        .as_ref()
+                        .and_then(|trigger| trigger.message_id.as_deref())
+                        == Some(recovery_message.id.as_str())
+                })
+                .unwrap();
+            assert_eq!(
+                interrupted.terminal.as_ref().unwrap().kind,
+                crate::types::TurnTerminalKind::Interrupted
+            );
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .provider_queue_parking("default", &recovery_message.id)
+                    .unwrap()
+                    .unwrap()
+                    .not_before,
+                deadline
+            );
+            assert!(
+                runtime
+                    .inner
+                    .agent
+                    .lock()
+                    .await
+                    .queue
+                    .peek_next_matching(|message| message.id == recovery_message.id)
+                    .is_some(),
+                "parked Interrupted recovery must retain its live queue input"
+            );
+            clock.advance(
+                (deadline - runtime.now() + Duration::seconds(1))
+                    .to_std()
+                    .unwrap(),
+            );
+            let RunLoopPoll::Message(replay) = SchedulerDecisionExecutor::new(&runtime)
+                .poll()
+                .await
+                .unwrap()
+            else {
+                panic!("the same recovery must reenter after cooling");
+            };
+            assert_eq!(
+                replay.message.id,
+                recovery_message.id,
+                "interrupted recovery must retain its source; events={:?}",
+                runtime
+                    .storage()
+                    .read_recent_events(100)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| {
+                        event.kind == "scheduler_diagnostic"
+                            || event.kind == "scheduler_decision"
+                            || event.kind == "provider_dispatch_rejected"
+                    })
+                    .map(|event| (event.kind, event.data))
+                    .collect::<Vec<_>>()
+            );
+            let admission = replay.dispatch_plan.provider_admission.as_ref().unwrap();
+            assert_eq!(admission.episode_key, episode_key);
+            assert_eq!(
+                admission.attempt.recovery_of_attempt_id.as_deref(),
+                Some(initial_attempt.attempt_id.as_str())
+            );
+            assert_eq!(admission.episode().unwrap().total_requests, 1);
+            let replay_generation = admission
+                .attempt
+                .admitted_fences
+                .work_item_generation
+                .unwrap();
+            let result = Box::pin(runtime.process_message_with_plan_deferred(
+                replay.message.clone(),
+                replay.dispatch_plan,
+                &replay.scheduler_decision,
+            ))
+            .await;
+            let terminal = result.as_ref().unwrap();
+            assert_eq!(
+                terminal.turn_record.replay.as_ref().unwrap().source_turn_id,
+                interrupted.turn_id
+            );
+            assert_eq!(server.calls.load(Ordering::SeqCst), 2);
+            runtime
+                .settle_processed_message(replay.message, result, std::time::Instant::now())
+                .await
+                .unwrap();
+            assert_wait_generation(replay_generation + 1);
+            let after = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
+            assert_eq!(after.blocked_by, blocked.blocked_by);
+            assert_eq!(after.blocked_by_wait_id, blocked.blocked_by_wait_id);
+            assert_eq!(after.recheck_at, blocked.recheck_at);
+        }
+        if let ContinuationDispatchFault::HttpFailureWithAuthority(change) = fault {
+            let mut protocol = runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            let record = protocol.work_items.get_mut(&waiter.id).unwrap();
+            let generation = record.generation() + 1;
+            record.state = match change {
+                RecoveryAuthorityChange::Paused => WorkItemExecutionState::Paused {
+                    generation,
+                    reason: "operator paused after provider failure".into(),
+                },
+                RecoveryAuthorityChange::NeedsRepair => WorkItemExecutionState::NeedsRepair {
+                    generation,
+                    repair_id: "repair-after-provider-failure".into(),
+                },
+                RecoveryAuthorityChange::Terminal => WorkItemExecutionState::Terminal {
+                    generation,
+                    completion: "completed-after-provider-failure".into(),
+                },
+                RecoveryAuthorityChange::ReplacedWait => WorkItemExecutionState::Waiting {
+                    generation,
+                    wait: WaitReference {
+                        wait_id: "replacement-wait".into(),
+                    },
+                },
+            };
+            runtime
+                .inner
+                .runtime_db
+                .transaction(|tx| {
+                    crate::runtime_db::transitions::execution_protocol_repository::persist_state_tx(
+                        tx, &protocol,
+                    )
+                })
+                .unwrap();
+        }
+        if matches!(
+            fault,
+            ContinuationDispatchFault::HttpFailure
+                | ContinuationDispatchFault::HttpFailureSecondHop
+                | ContinuationDispatchFault::HttpFailureInterruptedReplay
+                | ContinuationDispatchFault::HttpFailureWithAuthority(_)
+        ) {
+            server.healthy.store(true, Ordering::SeqCst);
+            let should_recover = matches!(
+                fault,
+                ContinuationDispatchFault::HttpFailure
+                    | ContinuationDispatchFault::HttpFailureSecondHop
+                    | ContinuationDispatchFault::HttpFailureInterruptedReplay
+            );
+            assert_eq!(
+                process_next_model_input(&runtime).await,
+                should_recover,
+                "recovery must follow the current exact continuation authority ({fault:?}); events={:?}",
+                runtime.storage().read_recent_events(10).unwrap()
+            );
+            assert_eq!(
+                server.calls.load(Ordering::SeqCst),
+                1 + usize::from(matches!(
+                    fault,
+                    ContinuationDispatchFault::HttpFailureSecondHop
+                        | ContinuationDispatchFault::HttpFailureInterruptedReplay
+                )) + usize::from(should_recover)
+            );
+        }
+    }
+    let after = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
+    assert_eq!(after.blocked_by, blocked.blocked_by);
+    assert_eq!(after.blocked_by_wait_id, blocked.blocked_by_wait_id);
+    assert_eq!(after.recheck_at, blocked.recheck_at);
+    if matches!(kind, ContinuationDispatch::TaskResult) {
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_task_record(task_id)
+                .unwrap()
+                .unwrap()
+                .work_item_id,
+            Some(captured.id),
+            "the waiter must not migrate the captured task owner"
+        );
+    }
+    if matches!(fault, ContinuationDispatchFault::LocalRejection) {
+        let turns = runtime.storage().read_recent_turns(20).unwrap().len();
+        drop(admission);
+        drop(runtime);
+        let restored = open_runtime_with_clock(home.path(), config, clock.clone());
+        let settlement = restored
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(result_message_id.as_ref().unwrap())
+            .unwrap()
+            .expect("restart must retain the undelivered task result");
+        assert_ne!(settlement.state, TaskResultSettlementState::Settled);
+        assert!(settlement.disposition.is_none());
+        assert!(settlement.recovery_paused_at.is_some());
+        assert_eq!(
+            settlement.deferred_reason.as_deref(),
+            Some("provider_dispatch_rejected")
+        );
+        for _ in 0..5 {
+            clock.advance(std::time::Duration::from_secs(2));
+            if let RunLoopPoll::Message(unexpected) = SchedulerDecisionExecutor::new(&restored)
+                .poll()
+                .await
+                .unwrap()
+            {
+                assert_ne!(
+                    unexpected.message.id,
+                    *result_message_id.as_ref().unwrap(),
+                    "local rejection must not replay the paused task result"
+                );
+                assert_eq!(unexpected.message.task_id, None);
+                assert_eq!(unexpected.message.kind, MessageKind::SystemTick);
+                assert_eq!(
+                    unexpected
+                        .message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("work_queue"))
+                        .and_then(|work_queue| work_queue.get("work_item_id"))
+                        .and_then(serde_json::Value::as_str),
+                    settlement.work_item_id.as_deref(),
+                    "only the unrelated captured-owner work-queue tick may run"
+                );
+            }
+        }
+        let after_poll = restored
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(result_message_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_poll.state, settlement.state);
+        assert_eq!(after_poll.recovery_paused_at, settlement.recovery_paused_at);
+        assert_eq!(after_poll.recovery_attempts, settlement.recovery_attempts);
+        assert!(after_poll.next_recheck_at.is_none());
+        assert_eq!(
+            restored.storage().read_recent_turns(20).unwrap().len(),
+            turns
+        );
+        assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+fn assert_recovery_source_accepts_only_exact_interrupted_replay(runtime: &RuntimeHandle) {
+    use crate::{
+        domain::execution_protocol::{ExecutionAttemptState, ExecutionSourceIdentity},
+        types::{TurnReplayProvenance, TurnTerminalKind},
+    };
+
+    let mut protocol = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let initial = protocol
+        .attempts
+        .values()
+        .find(|attempt| {
+            matches!(
+                attempt.source.identity,
+                ExecutionSourceIdentity::RuntimeRecovery { .. }
+            )
+        })
+        .unwrap()
+        .clone();
+    let message = runtime
+        .storage()
+        .read_message_by_id(initial.source_message_id.as_deref().unwrap())
+        .unwrap()
+        .unwrap();
+    let source =
+        crate::runtime::provider_recovery::resolve(runtime.storage(), &message, &protocol).unwrap();
+    let turn = runtime
+        .storage()
+        .read_recent_turns(8)
+        .unwrap()
+        .into_iter()
+        .find(|turn| {
+            turn.trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+                == Some(message.id.as_str())
+        })
+        .unwrap();
+    assert!(source
+        .matches_attempt(&message, &turn, &initial, &protocol, |id| {
+            runtime.storage().read_turn_by_id(id)
+        })
+        .unwrap());
+
+    let mut interrupted = turn.clone();
+    interrupted.terminal.as_mut().unwrap().kind = TurnTerminalKind::Interrupted;
+    protocol
+        .attempts
+        .get_mut(&initial.attempt_id)
+        .unwrap()
+        .state = ExecutionAttemptState::Interrupted;
+    let mut replay = turn.clone();
+    replay.turn_id = "exact-recovery-replay-turn".into();
+    replay.replay = Some(TurnReplayProvenance {
+        source_message_id: message.id.clone(),
+        source_turn_id: turn.turn_id.clone(),
+        reason: "interrupted_queue_claim_reentry".into(),
+        prior_terminal: interrupted.terminal.clone(),
+    });
+    let mut successor = initial.clone();
+    successor.attempt_id = "exact-recovery-replay-attempt".into();
+    successor.recovery_of_attempt_id = Some(initial.attempt_id.clone());
+    successor.state = ExecutionAttemptState::Open;
+    assert!(!source.is_initial_attempt(&message, &successor));
+    assert!(source
+        .matches_attempt(&message, &replay, &successor, &protocol, |_| {
+            Ok(Some(interrupted.clone()))
+        })
+        .unwrap());
+    for mutation in 0..5 {
+        let mut changed = protocol.clone();
+        let mut changed_replay = replay.clone();
+        let mut changed_source = source.clone();
+        match mutation {
+            0 => {
+                changed.attempts.get_mut(&initial.attempt_id).unwrap().state =
+                    ExecutionAttemptState::Settled;
+            }
+            1 => {
+                changed
+                    .attempts
+                    .get_mut(&initial.attempt_id)
+                    .unwrap()
+                    .source
+                    .generation += 1
+            }
+            2 => changed_replay.replay.as_mut().unwrap().reason = "unrelated-replay".into(),
+            3 => changed_source.predecessor.attempt_id = "unrelated-ancestor".into(),
+            4 => {
+                changed
+                    .attempts
+                    .get_mut(&initial.attempt_id)
+                    .unwrap()
+                    .recovery_of_attempt_id = Some(initial.attempt_id.clone());
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            !changed_source
+                .matches_attempt(&message, &changed_replay, &successor, &changed, |_| {
+                    Ok(Some(interrupted.clone()))
+                })
+                .unwrap(),
+            "unproven replay mutation {mutation} must be rejected"
+        );
+    }
+    assert!(!source
+        .matches_attempt(&message, &replay, &successor, &protocol, |_| {
+            Ok(Some(turn.clone()))
+        })
+        .unwrap());
 }
 
 #[tokio::test]

@@ -3,6 +3,7 @@ use chrono::{Duration, TimeZone};
 use tempfile::tempdir;
 
 mod live_turn;
+mod local_dispatch;
 mod obligation;
 mod recovery_admission;
 mod recovery_budget;

@@ -12,6 +12,7 @@ use reqwest::Client;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+pub(crate) use http::is_dispatch_guard_rejected;
 use http::{read_error_response_body, send_provider_request, RequestDeadline};
 use timeouts::http_timeouts;
 #[cfg(test)]

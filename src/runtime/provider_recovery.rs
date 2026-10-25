@@ -9,7 +9,10 @@ use crate::{
         ExecutionSourceIdentity,
     },
     storage::AppStorage,
-    types::{MessageEnvelope, TurnOwner, TurnRecord, TurnTerminalKind},
+    types::{
+        MessageEnvelope, TurnOwner, TurnRecord, TurnTerminalKind, WaitConditionRecord,
+        WaitConditionStatus,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -21,6 +24,19 @@ pub(crate) struct ProviderRecoverySource {
 }
 
 impl ProviderRecoverySource {
+    pub fn exact_wait_id(&self) -> Option<&str> {
+        self.predecessors
+            .iter()
+            .find_map(|attempt| match &attempt.source.identity {
+                ExecutionSourceIdentity::TriggeredWait {
+                    wait_id,
+                    trigger_message_id,
+                    ..
+                } if trigger_message_id == &self.root_message.id => Some(wait_id.as_str()),
+                _ => None,
+            })
+    }
+
     pub fn source_turn(&self) -> &TurnRecord {
         self.source_turns
             .last()
@@ -37,6 +53,36 @@ impl ProviderRecoverySource {
             && attempt.binding == self.predecessor.binding
             && attempt.recovery_of_attempt_id.as_deref()
                 == Some(self.predecessor.attempt_id.as_str())
+    }
+
+    pub fn matches_attempt(
+        &self,
+        message: &MessageEnvelope,
+        turn: &TurnRecord,
+        attempt: &ExecutionAttempt,
+        state: &ExecutionProtocolState,
+        mut read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
+    ) -> Result<bool> {
+        if state.agent_id != message.agent_id
+            || turn.agent_id != message.agent_id
+            || turn.effective_owner() != self.source_turn().effective_owner()
+            || turn
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+                != Some(message.id.as_str())
+        {
+            return Ok(false);
+        }
+        if self.is_initial_attempt(message, attempt) {
+            return Ok(true);
+        }
+        // Only the bounded, same-message interrupted replay may bridge the
+        // current attempt to this recovery directive's exact predecessor.
+        Ok(
+            initial_source_attempt(message, turn, attempt, state, &mut read_turn)?
+                .is_some_and(|initial| self.is_initial_attempt(message, initial)),
+        )
     }
 
     pub fn interrupted_initial_attempt<'a>(
@@ -67,6 +113,24 @@ pub(crate) fn resolve(
         |id| storage.read_message_by_id(id),
         |id| storage.read_turn_by_id(id),
     )
+}
+
+pub(crate) fn resolved_exact_wait(
+    storage: &AppStorage,
+    root_message: &MessageEnvelope,
+    work_item_id: &str,
+    wait_id: &str,
+) -> Result<Option<WaitConditionRecord>> {
+    Ok(storage
+        .latest_wait_conditions_for_agent(&root_message.agent_id)?
+        .into_iter()
+        .find(|wait| {
+            wait.id == wait_id
+                && wait.work_item_id.as_deref() == Some(work_item_id)
+                && wait.status == WaitConditionStatus::Resolved
+                && wait.trigger_message_id() == Some(root_message.id.as_str())
+                && super::scheduler::message_matches_wait_condition(root_message, wait)
+        }))
 }
 
 /// The transition uses the same resolver against its transaction snapshot.

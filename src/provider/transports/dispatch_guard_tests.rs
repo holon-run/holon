@@ -11,6 +11,7 @@ use tokio::net::TcpListener;
 use super::{
     build_http_client,
     http::{send_provider_request, RequestDeadline},
+    is_dispatch_guard_rejected,
 };
 use crate::provider::{
     retry::{classify_provider_error, ProviderTransportError, RetryDisposition},
@@ -20,6 +21,12 @@ use crate::provider::{
 #[derive(Debug, thiserror::Error)]
 #[error("test dispatch denied")]
 struct GuardDenied;
+
+#[test]
+fn dispatch_guard_rejection_requires_the_transport_marker() {
+    let error = anyhow::Error::new(GuardDenied).context("test dispatch denied");
+    assert!(!is_dispatch_guard_rejected(&error));
+}
 
 #[derive(Debug, Default)]
 struct CountingGuard {
@@ -133,6 +140,7 @@ async fn dispatch_guard_rejection_preserves_type_without_network() {
     for (index, deadline) in DEADLINES.into_iter().enumerate() {
         let error = send(client.post(&url), deadline, &guard).await.unwrap_err();
         assert!(error.is::<GuardDenied>());
+        assert!(is_dispatch_guard_rejected(&error));
         assert!(!error.is::<ProviderTransportError>());
         assert_eq!(
             classify_provider_error(&error).disposition,

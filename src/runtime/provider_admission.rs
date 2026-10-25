@@ -17,7 +17,8 @@ use crate::{
         ProviderAdmissionLease, ProviderAdmissionScope, ProviderCooldownPolicy,
         ProviderQueueParking, ProviderRecoveryAdmissionReservation, ProviderRecoveryBinding,
         ProviderRecoveryBudgetKind, ProviderRecoveryBudgetState, ProviderRecoveryDispatch,
-        ProviderRecoveryDispatchResult, ProviderRecoveryEpisode, ProviderRecoveryRequestOutcome,
+        ProviderRecoveryDispatchDenial, ProviderRecoveryDispatchResult, ProviderRecoveryEpisode,
+        ProviderRecoveryRequestOutcome,
     },
     runtime_db::RuntimeDb,
     types::{AdmissionContext, AuditEvent, AuthorityClass, MessageEnvelope, MessageOrigin},
@@ -28,6 +29,9 @@ use super::{RuntimeHandle, RuntimeInner};
 // A lease permits controlled takeover after a crashed owner, not exactly-once
 // external IO and not a new wall-clock timeout for a streaming model request.
 const PROBE_LEASE: Duration = Duration::minutes(10);
+
+mod local_failure;
+pub(super) use local_failure::local_dispatch_failure_settlement;
 
 #[derive(Debug, Clone)]
 struct Candidate {
@@ -51,7 +55,47 @@ pub(super) enum ProviderTurnGate {
 
 #[derive(Debug, thiserror::Error)]
 #[error("provider admission deferred before dispatch: {0}")]
-struct DispatchDeferred(String);
+struct DispatchDeferred(LocalDispatchDenial);
+
+pub(super) fn is_parked_dispatch_rejection(error: &anyhow::Error) -> bool {
+    crate::provider::is_dispatch_guard_rejected(error)
+        && error.chain().any(|source| {
+            source
+                .downcast_ref::<DispatchDeferred>()
+                .is_some_and(|denial| denial.0.is_availability_pause())
+        })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LocalDispatchDenial {
+    ScopeCooling { not_before: DateTime<Utc> },
+    EpisodeChanged,
+    Reservation(ProviderRecoveryDispatchDenial),
+    Dispatch(ProviderRecoveryDispatchDenial),
+}
+
+impl std::fmt::Display for LocalDispatchDenial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{self:?}")
+    }
+}
+
+impl LocalDispatchDenial {
+    fn is_availability_pause(self) -> bool {
+        matches!(
+            self,
+            Self::ScopeCooling { .. }
+                | Self::Reservation(
+                    ProviderRecoveryDispatchDenial::EpisodePaused
+                        | ProviderRecoveryDispatchDenial::BudgetExhausted
+                )
+                | Self::Dispatch(
+                    ProviderRecoveryDispatchDenial::EpisodePaused
+                        | ProviderRecoveryDispatchDenial::BudgetExhausted
+                )
+        )
+    }
+}
 
 #[derive(Debug)]
 struct RequestState {
@@ -66,6 +110,7 @@ pub(super) struct ProviderTurnAdmission {
     clock: Arc<dyn super::clock::Clock>,
     attempt: ExecutionAttempt,
     episode_key: String,
+    chain_fingerprint: String,
     candidate: Candidate,
     next_cursor: u32,
     state: Mutex<RequestState>,
@@ -83,6 +128,45 @@ impl std::fmt::Debug for ProviderTurnAdmission {
 }
 
 impl ProviderTurnAdmission {
+    fn deny(&self, state: &mut RequestState, reason: LocalDispatchDenial) -> Result<()> {
+        // A rejected send is not IO. Never release an earlier unknown request.
+        if state.dispatch.is_none() && !state.unknown_dispatch {
+            if let Some(lease) = state.lease.as_ref() {
+                self.db.release_provider_admission(lease)?;
+                state.lease = None;
+            }
+        }
+        if reason.is_availability_pause() {
+            let episode = self.episode()?;
+            let not_before = match reason {
+                LocalDispatchDenial::ScopeCooling { not_before } => not_before,
+                _ => episode
+                    .not_before
+                    .context("provider pause deadline missing")?,
+            };
+            // Persist the original deadline before releasing execution ownership.
+            // Interrupted replay retains this attempt's canonical recovery root.
+            self.db.park_provider_queue(&ProviderQueueParking {
+                agent_id: self.attempt.agent_id.clone(),
+                message_id: self
+                    .attempt
+                    .source_message_id
+                    .clone()
+                    .context("provider source message missing")?,
+                chain_fingerprint: self.chain_fingerprint.clone(),
+                episode_key: episode.key().to_owned(),
+                not_before,
+                reason: if episode.state == ProviderRecoveryBudgetState::BudgetExhausted {
+                    "recovery_budget_exhausted"
+                } else {
+                    "chain_cooling"
+                }
+                .into(),
+            })?;
+        }
+        Err(DispatchDeferred(reason).into())
+    }
+
     pub(super) fn model(&self) -> &ModelRouteRef {
         &self.candidate.model
     }
@@ -127,10 +211,11 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
         }
         let mut episode = self.episode()?;
         if episode.state == ProviderRecoveryBudgetState::Resolved {
-            episode = self
-                .db
-                .begin_provider_recovery_probe_epoch(&episode, now)?
-                .ok_or_else(|| DispatchDeferred("episode changed".into()))?;
+            let next = self.db.begin_provider_recovery_probe_epoch(&episode, now)?;
+            let Some(next) = next else {
+                return self.deny(&mut state, LocalDispatchDenial::EpisodeChanged);
+            };
+            episode = next;
         }
         if state.lease.is_none() {
             state.lease = match self.db.reserve_provider_recovery_admission(
@@ -140,11 +225,16 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                 PROBE_LEASE,
             )? {
                 ProviderRecoveryAdmissionReservation::Granted(lease) => Some(lease),
-                ProviderRecoveryAdmissionReservation::Blocked(_) => {
-                    return Err(DispatchDeferred("scope cooling".into()).into());
+                ProviderRecoveryAdmissionReservation::Blocked(blocked) => {
+                    return self.deny(
+                        &mut state,
+                        LocalDispatchDenial::ScopeCooling {
+                            not_before: blocked.not_before,
+                        },
+                    );
                 }
                 ProviderRecoveryAdmissionReservation::Denied(reason) => {
-                    return Err(DispatchDeferred(format!("reservation denied: {reason:?}")).into());
+                    return self.deny(&mut state, LocalDispatchDenial::Reservation(reason));
                 }
             };
         }
@@ -164,7 +254,7 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                 Ok(())
             }
             ProviderRecoveryDispatchResult::Denied(reason) => {
-                Err(DispatchDeferred(format!("dispatch denied: {reason:?}")).into())
+                self.deny(&mut state, LocalDispatchDenial::Dispatch(reason))
             }
         }
     }
@@ -315,6 +405,52 @@ impl Drop for ActiveAdmission {
 }
 
 impl RuntimeHandle {
+    pub(super) fn local_provider_dispatch_error(&self, mut error: anyhow::Error) -> anyhow::Error {
+        if !crate::provider::is_dispatch_guard_rejected(&error) {
+            return error;
+        }
+        let Some(denial) = error
+            .chain()
+            .find_map(|source| source.downcast_ref::<DispatchDeferred>())
+            .map(|error| error.0)
+        else {
+            // The transport marker also covers storage/infrastructure failures.
+            // Keep their domain, code and retryability rather than inventing a denial.
+            return error;
+        };
+        let disposition = if denial.is_availability_pause() {
+            "parked"
+        } else {
+            "needs_repair"
+        };
+        // The marker describes only this send. Earlier requests remain charged
+        // and their diagnostics stay attached to the original error chain.
+        let category = denial.to_string();
+        if let Err(audit_error) = self.inner.storage.append_event(&AuditEvent::legacy(
+            "provider_dispatch_rejected",
+            serde_json::json!({
+                "dispatch_occurred": false,
+                "denial": category,
+                "recovery_disposition": disposition,
+            }),
+        )) {
+            error = error.context(audit_error);
+        }
+        error.context(
+            crate::runtime_error::RuntimeError::new(
+                crate::runtime_error::RuntimeErrorDomain::Conflict,
+                "provider_dispatch_rejected",
+                "Local provider dispatch admission rejected the send; no provider fallback was scheduled.",
+            )
+            .with_safe_context("stage", "before_dispatch")
+            .with_safe_context("predicate", category)
+            .with_safe_context("recovery_disposition", disposition)
+            .with_recovery_hint(
+                "Recheck the canonical execution and admission state before resuming the retained source.",
+            ),
+        )
+    }
+
     fn provider_admission_chain(&self, state: &crate::types::AgentState) -> Result<Option<Chain>> {
         let snapshot = self.inner.config_snapshot.load();
         let Some(reconfig) = snapshot.provider_reconfig.as_ref() else {
@@ -405,6 +541,16 @@ impl RuntimeHandle {
             return Ok(ProviderTurnGate::Bypass);
         };
         let now = self.now();
+        if self
+            .inner
+            .runtime_db
+            .provider_queue_parking(&message.agent_id, &message.id)?
+            .is_some_and(|parking| {
+                parking.chain_fingerprint == chain.fingerprint && parking.not_before > now
+            })
+        {
+            return Ok(ProviderTurnGate::Parked);
+        }
         // Canonical admission already resolved source/owner eligibility. Walk
         // that exact predecessor chain, never select a root by current focus.
         let protocol = self
@@ -532,6 +678,7 @@ impl RuntimeHandle {
                         clock: self.inner.clock.clone(),
                         attempt: attempt.clone(),
                         episode_key: episode.key().to_owned(),
+                        chain_fingerprint: chain.fingerprint.clone(),
                         candidate: candidate.clone(),
                         next_cursor: u32::try_from(index + 1).context("provider chain too long")?,
                         state: Mutex::new(RequestState {

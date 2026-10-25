@@ -7,7 +7,9 @@ use crate::domain::execution_protocol::{
     WorkItemExecutionRecord, WorkItemExecutionState,
 };
 use crate::runtime_db::transitions::execution_protocol_repository::authority_fences_tx;
-use crate::types::{WorkItemRecord, WorkItemState};
+use crate::types::{
+    AgentIdentityRecord, AgentRegistryStatus, AgentStatus, WorkItemRecord, WorkItemState,
+};
 
 use super::*;
 
@@ -129,12 +131,45 @@ impl ProviderRecoveryEpisode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderRecoveryDispatchDenial {
     DuplicateRequest,
-    StaleExecution,
+    StaleExecution(ProviderDispatchRejection),
     StaleEpisode,
     StaleAdmission,
     EpisodePaused,
     BudgetExhausted,
     ScopeAlreadyAttempted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDispatchRejection {
+    AttemptMissing,
+    AttemptNotOpen,
+    AttemptTerminal,
+    SnapshotSourceMismatch,
+    SnapshotOwnerMismatch,
+    SnapshotFencesMismatch,
+    SnapshotProvenanceMismatch,
+    SnapshotAncestryMismatch,
+    SourceGenerationMismatch,
+    InvalidAdmittedFences,
+    AuthorityControlMissing,
+    AuthorityStopped,
+    AuthorityIdentityMissing,
+    AuthorityIdentityInactive,
+    AuthorityFenceMismatch,
+    OwnerMissing,
+    OwnerMismatch,
+    OwnerNotOpen,
+    WorkItemRevisionMismatch,
+    LaneGenerationMismatch,
+    EpisodeBindingMissing,
+    EpisodeBindingMismatch,
+    RootMismatch,
+    RootBindingMismatch,
+    AncestryCycle,
+    AncestorMissing,
+    AncestorNotClosed,
+    AncestorOwnerMismatch,
 }
 
 #[derive(Debug)]
@@ -198,40 +233,102 @@ fn canonical_attempt(
     .transpose()
 }
 
-fn dispatch_attempt_is_current(
+fn dispatch_authority_rejection(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<ProviderDispatchRejection>> {
+    let control = tx
+        .query_row(
+            "SELECT status, control_revision FROM agent_states WHERE agent_id = ?1",
+            [agent_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((status, control_revision)) = control else {
+        return Ok(Some(ProviderDispatchRejection::AuthorityControlMissing));
+    };
+    let status: AgentStatus =
+        serde_json::from_str(&format!("\"{status}\"")).context("decoding agent control status")?;
+    if status == AgentStatus::Stopped {
+        return Ok(Some(ProviderDispatchRejection::AuthorityStopped));
+    }
+    let control_revision =
+        u64::try_from(control_revision).context("agent control revision is negative")?;
+    ensure!(
+        control_revision > 0,
+        "agent control revision must be nonzero"
+    );
+    let identity = tx
+        .query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(identity) = identity else {
+        return Ok(Some(ProviderDispatchRejection::AuthorityIdentityMissing));
+    };
+    let identity: AgentIdentityRecord =
+        serde_json::from_str(&identity).context("decoding host identity")?;
+    if identity.status != AgentRegistryStatus::Active {
+        return Ok(Some(ProviderDispatchRejection::AuthorityIdentityInactive));
+    }
+    Ok(None)
+}
+
+fn dispatch_attempt_rejection(
     tx: &Transaction<'_>,
     episode: &ProviderRecoveryEpisode,
     expected: &ExecutionAttempt,
-) -> Result<bool> {
+) -> Result<Option<ProviderDispatchRejection>> {
     let Some(attempt) = canonical_attempt(tx, &expected.agent_id, &expected.attempt_id)? else {
-        return Ok(false);
+        return Ok(Some(ProviderDispatchRejection::AttemptMissing));
     };
     // Queue claim and turn startup fill run/turn IDs after the guard snapshot.
     // Only stable authorization fields are compared with that snapshot.
-    if attempt.state != ExecutionAttemptState::Open
-        || expected.state != ExecutionAttemptState::Open
-        || attempt.source_message_id != expected.source_message_id
-        || attempt.source != expected.source
-        || attempt.binding != expected.binding
-        || attempt.admitted_fences != expected.admitted_fences
-        || attempt.recovery_of_attempt_id != expected.recovery_of_attempt_id
-        || attempt.provenance != expected.provenance
-        || attempt.terminal_at.is_some()
-        || attempt.terminal_outcome_id.is_some()
-        || attempt.source.generation == 0
+    if attempt.state != ExecutionAttemptState::Open || expected.state != ExecutionAttemptState::Open
+    {
+        return Ok(Some(ProviderDispatchRejection::AttemptNotOpen));
+    }
+    if attempt.source_message_id != expected.source_message_id || attempt.source != expected.source
+    {
+        return Ok(Some(ProviderDispatchRejection::SnapshotSourceMismatch));
+    }
+    if attempt.binding != expected.binding {
+        return Ok(Some(ProviderDispatchRejection::SnapshotOwnerMismatch));
+    }
+    if attempt.admitted_fences != expected.admitted_fences {
+        return Ok(Some(ProviderDispatchRejection::SnapshotFencesMismatch));
+    }
+    if attempt.recovery_of_attempt_id != expected.recovery_of_attempt_id {
+        return Ok(Some(ProviderDispatchRejection::SnapshotAncestryMismatch));
+    }
+    if attempt.provenance != expected.provenance {
+        return Ok(Some(ProviderDispatchRejection::SnapshotProvenanceMismatch));
+    }
+    if attempt.terminal_at.is_some() || attempt.terminal_outcome_id.is_some() {
+        return Ok(Some(ProviderDispatchRejection::AttemptTerminal));
+    }
+    if attempt.source.generation == 0
         || attempt.source.generation != attempt.admitted_fences.source_revision
-        || attempt.admitted_fences.agent_control_revision == 0
+    {
+        return Ok(Some(ProviderDispatchRejection::SourceGenerationMismatch));
+    }
+    if attempt.admitted_fences.agent_control_revision == 0
         || attempt.admitted_fences.host_registry_revision == 0
     {
-        return Ok(false);
+        return Ok(Some(ProviderDispatchRejection::InvalidAdmittedFences));
     }
-    let Ok(authority) = authority_fences_tx(tx, &attempt.agent_id) else {
-        return Ok(false);
-    };
+    if let Some(rejection) = dispatch_authority_rejection(tx, &attempt.agent_id)? {
+        return Ok(Some(rejection));
+    }
+    // Expected lifecycle denials were classified above in this transaction.
+    // Do not turn corrupt authority records or storage errors into a denial.
+    let authority = authority_fences_tx(tx, &attempt.agent_id)?;
     // Control revisions also advance on benign state persistence. The canonical
     // authority helper checks stop/deletion; only host identity is a stable fence.
     if authority.host_registry_revision != attempt.admitted_fences.host_registry_revision {
-        return Ok(false);
+        return Ok(Some(ProviderDispatchRejection::AuthorityFenceMismatch));
     }
     match &attempt.binding {
         ExecutionBinding::WorkItem { work_item_id } => {
@@ -246,30 +343,35 @@ fn dispatch_attempt_is_current(
                 )
                 .optional()?;
             let Some((work, execution)) = owner else {
-                return Ok(false);
+                return Ok(Some(ProviderDispatchRejection::OwnerMissing));
             };
             let work: WorkItemRecord = serde_json::from_str(&work)?;
             let execution: WorkItemExecutionRecord = serde_json::from_str(&execution)?;
-            if work.agent_id != attempt.agent_id
-                || work.id != *work_item_id
-                || work.state != WorkItemState::Open
-                || work.revision != execution.source_revision
-                || !matches!(
-                    &execution.state,
-                    WorkItemExecutionState::InFlight { generation, attempt_id }
-                        if attempt_id == &attempt.attempt_id
-                            && Some(*generation) == attempt.admitted_fences.work_item_generation
-                )
+            if work.agent_id != attempt.agent_id || work.id != *work_item_id {
+                return Ok(Some(ProviderDispatchRejection::OwnerMismatch));
+            }
+            if work.state != WorkItemState::Open {
+                return Ok(Some(ProviderDispatchRejection::OwnerNotOpen));
+            }
+            if work.revision != execution.source_revision
                 || !attempt
                     .admitted_fences
                     .work_item_source_revision
                     .is_some_and(|revision| revision > 0 && revision <= execution.source_revision)
             {
-                return Ok(false);
+                return Ok(Some(ProviderDispatchRejection::WorkItemRevisionMismatch));
+            }
+            if !matches!(
+                &execution.state,
+                WorkItemExecutionState::InFlight { generation, attempt_id }
+                    if attempt_id == &attempt.attempt_id
+                        && Some(*generation) == attempt.admitted_fences.work_item_generation
+            ) {
+                return Ok(Some(ProviderDispatchRejection::LaneGenerationMismatch));
             }
         }
         ExecutionBinding::AgentLifecycle { agent_id } if agent_id != &attempt.agent_id => {
-            return Ok(false);
+            return Ok(Some(ProviderDispatchRejection::OwnerMismatch));
         }
         _ => {}
     }
@@ -282,34 +384,45 @@ fn dispatch_attempt_is_current(
         )
         .optional()?;
     let Some(binding) = binding else {
-        return Ok(false);
+        return Ok(Some(ProviderDispatchRejection::EpisodeBindingMissing));
     };
     let binding: ProviderRecoveryBinding = serde_json::from_str(&binding)?;
     if binding.agent_id != attempt.agent_id
         || binding.owner != attempt.binding
         || binding.key()? != episode.key
     {
-        return Ok(false);
+        return Ok(Some(ProviderDispatchRejection::EpisodeBindingMismatch));
     }
     let mut ancestor = attempt;
     let mut visited = BTreeSet::new();
     loop {
         if !visited.insert(ancestor.attempt_id.clone()) {
-            return Ok(false);
+            return Ok(Some(ProviderDispatchRejection::AncestryCycle));
         }
         let Some(prior_id) = &ancestor.recovery_of_attempt_id else {
             if ancestor.attempt_id != binding.root_attempt_id {
-                return Ok(false);
+                return Ok(Some(ProviderDispatchRejection::RootMismatch));
             }
-            let root =
-                ProviderRecoveryBinding::from_root_attempt(&ancestor, &binding.chain_fingerprint)?;
-            return Ok(root == binding);
+            // Construction only checks in-memory root semantics; SQL/decoding
+            // failures from canonical_attempt must still propagate.
+            return Ok(
+                match ProviderRecoveryBinding::from_root_attempt(
+                    &ancestor,
+                    &binding.chain_fingerprint,
+                ) {
+                    Ok(root) if root == binding => None,
+                    _ => Some(ProviderDispatchRejection::RootBindingMismatch),
+                },
+            );
         };
         let Some(prior) = canonical_attempt(tx, &ancestor.agent_id, prior_id)? else {
-            return Ok(false);
+            return Ok(Some(ProviderDispatchRejection::AncestorMissing));
         };
-        if prior.state == ExecutionAttemptState::Open || prior.binding != binding.owner {
-            return Ok(false);
+        if prior.state == ExecutionAttemptState::Open {
+            return Ok(Some(ProviderDispatchRejection::AncestorNotClosed));
+        }
+        if prior.binding != binding.owner {
+            return Ok(Some(ProviderDispatchRejection::AncestorOwnerMismatch));
         }
         ancestor = prior;
     }
@@ -539,9 +652,9 @@ impl RuntimeDb {
         now: DateTime<Utc>,
     ) -> Result<ProviderRecoveryDispatchResult> {
         self.transaction(|tx| {
-            if !dispatch_attempt_is_current(tx, expected, attempt)? {
+            if let Some(rejection) = dispatch_attempt_rejection(tx, expected, attempt)? {
                 return Ok(ProviderRecoveryDispatchResult::Denied(
-                    ProviderRecoveryDispatchDenial::StaleExecution,
+                    ProviderRecoveryDispatchDenial::StaleExecution(rejection),
                 ));
             }
             Self::charge_provider_recovery_dispatch_tx(

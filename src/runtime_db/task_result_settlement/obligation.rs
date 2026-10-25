@@ -447,7 +447,9 @@ pub(crate) fn classify_obligation_tx(
         if matches!(
             queue.status,
             QueueEntryStatus::Aborted | QueueEntryStatus::Dropped | QueueEntryStatus::Quarantined
-        ) {
+        ) && !(queue.status == QueueEntryStatus::Aborted
+            && super::local_dispatch::source_was_locally_rejected_tx(tx, &record)?)
+        {
             return Ok(TaskResultObligation::InvalidOrStale);
         }
     }
@@ -491,7 +493,8 @@ pub(crate) fn classify_obligation_tx(
                 // continuation; it does not transfer its promise back to the
                 // task's captured owner.
                 if record.state == TaskResultSettlementState::CallerAdmitted
-                    && super::exact_waiter::wait_claims_result_tx(tx, &wait, &record)?
+                    && (super::exact_waiter::direct_wait_claims_result(&message, &wait, &record)
+                        || super::exact_waiter::wait_claims_result_tx(tx, &wait, &record)?)
                 {
                     return Ok(TaskResultObligation::InvalidOrStale);
                 }

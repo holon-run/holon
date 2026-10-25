@@ -124,7 +124,31 @@ pub(super) fn wait_claims_result_tx(
     Ok(source_matches(&source, record)
         && source.work_item_id == wait.work_item_id
         && source.source_refs.get("wait_id") == Some(&wait.id)
-        && wait.agent_id == record.agent_id
+        && wait_matches_result(wait, record))
+}
+
+/// Original ingress keeps the captured owner; the exact wait names its consumer.
+/// It carries neither synthetic recovery markers nor a recovery admission charge.
+pub(super) fn direct_wait_claims_result(
+    source: &MessageEnvelope,
+    wait: &WaitConditionRecord,
+    record: &TaskResultSettlementRecord,
+) -> bool {
+    source.id == record.message_id
+        && source.agent_id == record.agent_id
+        && source.work_item_id == record.work_item_id
+        && source.task_id.as_deref() == Some(record.task_id.as_str())
+        && source.kind == MessageKind::TaskResult
+        && matches!(&source.origin, MessageOrigin::Task { task_id } if task_id == &record.task_id)
+        && source.authority_class == AuthorityClass::RuntimeInstruction
+        && source.delivery_surface == Some(MessageDeliverySurface::TaskRejoin)
+        && source.admission_context == Some(AdmissionContext::RuntimeOwned)
+        && wait.trigger_message_id() == Some(source.id.as_str())
+        && wait_matches_result(wait, record)
+}
+
+fn wait_matches_result(wait: &WaitConditionRecord, record: &TaskResultSettlementRecord) -> bool {
+    wait.agent_id == record.agent_id
         && wait.source.as_deref() == Some("WaitFor")
         && wait.subject_ref.as_deref() == Some(record.task_id.as_str())
         && wait.kind == WaitConditionKind::Task
@@ -135,7 +159,7 @@ pub(super) fn wait_claims_result_tx(
         && wait.wake_sources
             == [WakeSource::TaskResult {
                 task_id: record.task_id.clone(),
-            }])
+            }]
 }
 
 pub(super) fn candidate_tx(

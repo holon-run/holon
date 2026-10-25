@@ -2025,7 +2025,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     | crate::types::WorkItemSchedulingState::WaitingExternal
                     | crate::types::WorkItemSchedulingState::WaitingTimer
                     | crate::types::WorkItemSchedulingState::WaitingSystem
-            ) {
+            ) && !(work_projection.scheduling_state
+                == crate::types::WorkItemSchedulingState::Blocked
+                && self.provider_recovery_resumes_exact_wait(
+                    message,
+                    existing_execution.as_ref(),
+                    &work_item,
+                )?)
+            {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
                     reason: "canonical_provider_recovery_work_item_not_recoverable",
@@ -3103,6 +3110,87 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 commands,
             },
         )
+    }
+
+    fn provider_recovery_resumes_exact_wait(
+        &self,
+        message: &MessageEnvelope,
+        execution: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+        work_item: &crate::types::WorkItemRecord,
+    ) -> Result<bool> {
+        use crate::domain::execution_protocol::WorkItemExecutionState;
+        let Some(execution) = execution else {
+            return Ok(false);
+        };
+        let Ok(source) =
+            super::provider_recovery::resolve(&self.runtime.inner.storage, message, execution)
+        else {
+            return Ok(false);
+        };
+        let Some(wait_id) = source.exact_wait_id() else {
+            return Ok(false);
+        };
+        let Some(record) = execution.work_items.get(&work_item.id) else {
+            return Ok(false);
+        };
+        if record.source_revision != work_item.revision {
+            return Ok(false);
+        }
+        let waiting_generation = source
+            .predecessor
+            .admitted_fences
+            .work_item_generation
+            .and_then(|generation| generation.checked_add(1));
+        let exact_authority = match &record.state {
+            WorkItemExecutionState::Waiting { generation, wait } => {
+                wait.wait_id == wait_id && Some(*generation) == waiting_generation
+            }
+            WorkItemExecutionState::Runnable {
+                generation,
+                recovery_ref: Some(recovery_ref),
+            } if recovery_ref == "interrupted" => {
+                let interrupted = self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .queue_entries()
+                    .latest(&message.id)?
+                    .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted);
+                interrupted
+                    && source
+                        .interrupted_initial_attempt(message, execution)
+                        .is_some_and(|attempt| {
+                            execution_attempt_matches_scenario(
+                                attempt,
+                                message,
+                                &scheduler::CanonicalActivationScenario::ProviderRecovery {
+                                    work_item_id: work_item.id.clone(),
+                                },
+                            ) && attempt.admitted_fences.work_item_source_revision
+                                == Some(work_item.revision)
+                                && attempt.admitted_fences.work_item_generation
+                                    == waiting_generation
+                                && attempt
+                                    .admitted_fences
+                                    .work_item_generation
+                                    .and_then(|generation| generation.checked_add(1))
+                                    == Some(*generation)
+                        })
+            }
+            _ => false,
+        };
+        if !exact_authority {
+            return Ok(false);
+        }
+        // Only the failed exact continuation is recoverable. This neither
+        // clears the business blocker nor authorizes ordinary WorkItem work.
+        Ok(super::provider_recovery::resolved_exact_wait(
+            &self.runtime.inner.storage,
+            &source.root_message,
+            &work_item.id,
+            wait_id,
+        )?
+        .is_some())
     }
 
     fn provider_recovery_source_attempt_id(
