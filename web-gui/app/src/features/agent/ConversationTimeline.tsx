@@ -496,6 +496,9 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
             {t(`agentPage.executionState.${execution === "waitingResult" && hasReadableBrief ? "finishingResult" : execution}`)}
           </div>
         ) : null}
+        {turn.execution.kind === "terminal" && turn.execution.outcome === "baseline_over_budget" ? (
+          <div className="conversation-turn-notice is-error" role="note">{t("agentCreation.budgetFailure")}</div>
+        ) : null}
         {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
         {presentation.kind === "unavailable" ? (
           <div className="conversation-turn-notice is-error" role="note">{t("agentPage.turnResultUnavailable")}</div>

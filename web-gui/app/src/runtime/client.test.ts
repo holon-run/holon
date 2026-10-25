@@ -312,6 +312,18 @@ describe("projectModelOptions", () => {
 });
 
 describe("createRuntimeClient", () => {
+  it.each(["provisioning", "degraded", "bootstrapped"])("preserves a %s create receipt without converting it to an exception", async (stage) => {
+    const response = {
+      identity: { agent_id: "new-agent", incarnation: 2, status: "active" },
+      receipt: { agent_id: "new-agent", receipt_id: "receipt-2", stage, bootstrap: { status: "degraded" } },
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(response), {
+      status: stage === "provisioning" ? 202 : 200,
+    }));
+    const client = createRuntimeClient({ baseUrl: "/api", fetchImpl });
+    expect(await client.createAgentFromTemplate("new-agent", "template")).toEqual(response);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
   it("maps the current session user response", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({

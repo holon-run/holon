@@ -770,16 +770,6 @@ interface JobDto {
   error?: string | null;
 }
 
-interface AgentCreateReceiptDto {
-  stage?: string;
-  job_id?: string;
-  bootstrap?: { status?: string };
-}
-
-interface AgentCreateResponseDto {
-  receipt?: AgentCreateReceiptDto;
-}
-
 interface WorkspaceDirectoryEntryDto {
   name: string;
   type: string;
@@ -1301,21 +1291,17 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       agentId: string,
       template: string,
       name?: string,
-    ): Promise<AgentCreateResponseDto> {
+    ): Promise<import("./agent-creation").AgentCreateResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      const result = await postJson<AgentCreateResponseDto>(
+      return postJson<import("./agent-creation").AgentCreateResponse>(
         fetchImpl,
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/create`,
         { template, ...(name === undefined ? {} : { name }) },
         requestHeaders,
       );
-      if (result.receipt?.stage === "degraded" || result.receipt?.bootstrap?.status === "degraded") {
-        throw new Error(`Agent ${agentId} was created, but bootstrap is degraded. Open the existing Agent to repair it; do not create it again.`);
-      }
-      return result;
     },
     async addSkillToCatalog(input: AddSkillInput): Promise<string> {
       if (!baseUrl) {

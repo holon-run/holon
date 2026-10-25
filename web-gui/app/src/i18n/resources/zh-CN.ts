@@ -5,6 +5,39 @@ import type { EnResource } from "./en";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const zh: Record<string, any> = {
+  agentCreation: {
+    title: "智能体创建",
+    budgetFailure: "运行失败：提示词基线超过当前模型预算（baseline_over_budget）。请检查模型与预算配置，再显式继续运行。这不表示智能体创建失败。",
+    uncertain: "创建结果待确认。请先检查已有智能体，再决定是否重新提交；不要换 ID 重复创建。",
+    checkExisting: "检查已有智能体",
+    openExisting: "打开已有智能体",
+    checkInitialization: "检查初始化状态",
+    doNotRecreate: "智能体已创建，请勿重复创建。请检查未完成的初始化步骤，必要时显式执行修复。",
+    executionSeparate: "初始化已完成；排队、运行中或运行失败会在会话中单独展示。这不代表首轮已成功响应。",
+    progress: {
+      initializing: "已创建，正在初始化",
+      ready: "已创建，初始化完成",
+      degraded: "已创建，初始化未完成",
+      uncertain: "已创建，初始化状态待确认",
+    },
+    problems: {
+      conflict: "该 ID 或显示名称已被使用。请检查已有身份，或调整显示名称。",
+      deletion_incomplete: "删除尚未完成，不能复用此 ID。请先查看删除状态并解决阻塞。",
+      invalid: "创建请求无效。请检查 ID、显示名称和模板。",
+      unauthorized: "创建智能体需要认证。请登录，并在再次提交前检查已有身份。",
+      forbidden: "当前连接无权创建此智能体。请检查访问权限。",
+      not_found: "未找到创建所需资源。请刷新模板目录并检查所选模板。",
+      busy: "运行时暂时不可用或繁忙。再次提交前，请先检查智能体是否已存在。",
+      server: "运行时未能完成创建请求。请检查已有身份；若复用旧 ID，请同时检查删除状态。持续失败时查看运行时诊断。",
+      unexpected: "运行时拒绝了创建请求。再次提交前，请检查已有身份及运行时诊断。",
+    },
+    lookup: {
+      missing: "未找到此 ID 的活跃身份，但这不能单独证明先前请求从未提交成功。",
+      unavailable: "暂时无法检查身份。结果仍待确认，请勿重新提交。",
+    },
+    steps: { template: "模板", runtime: "运行时", workspace: "工作区", model: "模型", initial_message: "初始消息入队" },
+    stepStatus: { pending: "待完成", succeeded: "已完成", failed: "失败" },
+  },
   agentAccess: {
     loading: "正在加载智能体…",
     refreshDelayed: "智能体状态刷新暂时延迟，正在后台重试。",

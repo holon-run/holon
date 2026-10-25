@@ -2,6 +2,39 @@
  * English translation resources.
  */
 const en = {
+  agentCreation: {
+    title: "Agent creation",
+    budgetFailure: "Run failed: the prompt baseline exceeds the configured model budget (baseline_over_budget). Review the model and budget settings before explicitly continuing. This is not a failed agent creation.",
+    uncertain: "Creation result is not confirmed. Check existing Agents before submitting again; do not change the ID and create another agent.",
+    checkExisting: "Check existing agent",
+    openExisting: "Open existing agent",
+    checkInitialization: "Check initialization",
+    doNotRecreate: "The agent was created. Do not create it again. Inspect incomplete initialization steps and explicitly repair them if needed.",
+    executionSeparate: "Initialization is complete; queued, running, or failed turns are shown separately in the conversation. This does not confirm a successful first response.",
+    progress: {
+      initializing: "Created — initializing",
+      ready: "Created — initialization complete",
+      degraded: "Created — initialization incomplete",
+      uncertain: "Created — initialization status unconfirmed",
+    },
+    problems: {
+      conflict: "The ID or display name is already in use. Check the existing identity or choose a different display name.",
+      deletion_incomplete: "Deletion is incomplete; this ID cannot be reused. Check deletion status and resolve its blocker first.",
+      invalid: "The creation request is invalid. Check the ID, display name, and template.",
+      unauthorized: "Authentication is required to create an agent. Sign in and check the existing identity before trying again.",
+      forbidden: "This connection is not allowed to create this agent. Check access permissions.",
+      not_found: "The requested creation resource was not found. Refresh the template catalog and check the selection.",
+      busy: "The runtime is temporarily unavailable or busy. Check whether the agent exists before another submission.",
+      server: "The runtime could not complete the creation request. Check the existing identity and, for a reused ID, deletion status; consult runtime diagnostics if it persists.",
+      unexpected: "The runtime rejected the creation request. Check the existing identity and runtime diagnostics before another submission.",
+    },
+    lookup: {
+      missing: "No active identity was found for this ID. This alone does not prove that the previous request was never committed.",
+      unavailable: "The identity could not be checked. Keep the result unconfirmed; do not resubmit yet.",
+    },
+    steps: { template: "Template", runtime: "Runtime", workspace: "Workspace", model: "Model", initial_message: "Initial message enqueue" },
+    stepStatus: { pending: "Pending", succeeded: "Complete", failed: "Failed" },
+  },
   agentAccess: {
     loading: "Loading agent…",
     refreshDelayed: "Agent status refresh is delayed — retrying in the background.",
