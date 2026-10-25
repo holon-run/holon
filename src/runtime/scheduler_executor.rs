@@ -1620,7 +1620,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             )?;
             for record in records {
                 if crate::runtime::task_result_recovery::recovery_owner_key(&record) == *owner_key
-                    && self.task_result_record_is_deliverable(&message.agent_id, &record)?
+                    && self.task_result_record_is_deliverable(
+                        &message.agent_id,
+                        &record,
+                        Some(message.id.as_str()),
+                    )?
                 {
                     return Ok(true);
                 }
@@ -1647,14 +1651,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(false);
         }
-        self.task_result_record_is_deliverable(&message.agent_id, &record)
+        self.task_result_record_is_deliverable(
+            &message.agent_id,
+            &record,
+            Some(message.id.as_str()),
+        )
     }
 
     fn task_result_record_is_deliverable(
         &self,
         agent_id: &str,
         record: &crate::runtime_db::TaskResultSettlementRecord,
+        source_message_id: Option<&str>,
     ) -> Result<bool> {
+        // An exhausted recovery budget waits for operator action. Waking the
+        // model for it would spend a provider call without any admission fence
+        // able to charge it, so fail closed instead.
+        if record.recovery_paused_at.is_some() {
+            return Ok(false);
+        }
         if self
             .runtime
             .inner
@@ -1694,7 +1709,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .storage
             .active_wait_conditions_for_agent(agent_id)?
             .iter()
-            .any(|wait| wait.work_item_id == record.work_item_id))
+            .any(|wait| {
+                wait.work_item_id == record.work_item_id
+                    && !(wait.kind == crate::types::WaitConditionKind::Task
+                        && source_message_id
+                            .is_some_and(|id| wait.trigger_message_id() == Some(id)))
+            }))
     }
 
     fn canonical_activation_plan(
@@ -1750,17 +1770,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let repaired_wait = matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
-        ) && self
-            .runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .exact_waiter_recovery_source(message)?
-            .is_some();
-        let candidate = if repaired_wait {
+        )
+        .then(|| {
+            self.runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .exact_waiter_recovery_wait(message)
+        })
+        .transpose()?
+        .flatten();
+        let candidate = if let Some(wait) = &repaired_wait {
             Some(scheduler::CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: message.work_item_id.clone(),
-                correlated_wait: message.source_refs.get("wait_id").cloned(),
+                correlated_wait: Some(wait.id.clone()),
             })
         } else {
             scheduler::canonical_activation_candidate(
@@ -1804,7 +1827,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .transitions()
             .load_execution_protocol_state_if_initialized(&message.agent_id)?;
-        let interrupted_exact_wait = if repaired_wait {
+        let interrupted_exact_wait = if repaired_wait.is_some() {
             self.interrupted_exact_wait_recovery(message, existing_execution.as_ref())?
         } else {
             None
@@ -4447,7 +4470,7 @@ mod tests {
             .unwrap();
         let executor = SchedulerDecisionExecutor::new(&runtime);
         assert!(executor
-            .task_result_record_is_deliverable("default", &record)
+            .task_result_record_is_deliverable("default", &record, None)
             .unwrap());
 
         runtime
@@ -4477,7 +4500,7 @@ mod tests {
             })
             .unwrap();
         assert!(!executor
-            .task_result_record_is_deliverable("default", &record)
+            .task_result_record_is_deliverable("default", &record, None)
             .unwrap());
     }
 

@@ -12,6 +12,9 @@ use crate::types::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "live_command_tests.rs"]
+mod live_command_tests;
+
 #[tokio::test(start_paused = true)]
 async fn exact_recovery_restarts_after_anchor_snapshot_before_first_result_admission() {
     Box::pin(assert_exact_recovery_restart_before_admission(
