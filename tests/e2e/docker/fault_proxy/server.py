@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 import select
 import signal
+import shutil
 import socket
 import socketserver
 import sqlite3
 import struct
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -18,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "openai_stub"))
-from server import response, text_item  # noqa: E402
+from server import call_item, response, text_item  # noqa: E402
 
 LOCK = threading.Lock()
 RECORDS: list[dict] = []
@@ -59,13 +62,78 @@ class Mock(BaseHTTPRequestHandler):
 
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        body = json.dumps(payload, ensure_ascii=False)
         side = self.path.split("/")[1]
         status = int(setting(f"STATUS_{side.upper()}", "200"))
+        scenario = setting("SCENARIO", "")
+        markers = re.findall(r"QA_[A-Z0-9_]+", body)
+        marker = next((value for value in (
+            "QA_TIMER", "QA_TOOL_CONTINUE", "QA_COOL_A", "QA_PARK", "QA_FRESH"
+        ) if value in markers), next(iter(markers), None))
+        tool_output = "function_call_output" in body or "tool_result" in body
+        if scenario == "tool-continuation" and side == "a" and "QA_COOL_A" in body:
+            record(layer="mock_http", side=side, status=503, scenario=scenario,
+                   marker=marker, tool_output=tool_output, response="cooling")
+            self.reply(503, {"error": {"message": "fixture cooling", "type": "fixture"}},
+                       {"Retry-After": "60"})
+            return
+        if scenario == "interjection" and "QA_PARK" in body and side in ("a", "b"):
+            record(layer="mock_http", side=side, status=503, scenario=scenario,
+                   marker=marker, tool_output=tool_output, response="park")
+            self.reply(503, {"error": {"message": "fixture parked", "type": "fixture"}},
+                       {"Retry-After": "120"})
+            return
         record(layer="mock_http", side=side, status=status, model=payload.get("model"),
-               stream=payload.get("stream", False))
+               stream=payload.get("stream", False), scenario=scenario, marker=marker,
+               tool_output=tool_output)
         if status != 200:
             self.reply(status, {"error": {"message": "fixture failure", "type": "fixture"}},
                        {"Retry-After": "1"} if status == 429 else {})
+            return
+        if scenario == "tool-continuation":
+            if tool_output:
+                record(layer="mock_http", side=side, response="continuation")
+                self.reply(200, response([text_item("QA_TOOL_CONTINUED")],
+                                         f"resp_{side}_{len(RECORDS)}"))
+            elif marker == "QA_TOOL_CONTINUE" and side == "a":
+                record(layer="mock_http", side=side, response="tool_call")
+                self.reply(200, response(
+                    [call_item("call-tool", "ExecCommand", {
+                        "cmd": "while [ ! -f /var/lib/holon/qa-3753-gate ]; "
+                               "do sleep 0.2; done; printf QA_TOOL_DONE",
+                        "yield_time_ms": 20000,
+                    })], f"resp_{side}_{len(RECORDS)}"))
+            else:
+                self.reply(200, response([text_item("QA_COOL_HANDLED")],
+                                         f"resp_{side}_{len(RECORDS)}"))
+        elif scenario == "interjection":
+            if setting("RECOVER_PARK", False):
+                record(layer="mock_http", side=side, marker="QA_PARK",
+                       response="recovered")
+                self.reply(200, response([text_item("QA_PARK_DONE")],
+                                         f"resp_{side}_{len(RECORDS)}"))
+            elif "QA_TIMER" in body and not tool_output:
+                record(layer="mock_http", side=side, marker="QA_TIMER",
+                       response="tool_call",
+                       response_held=bool(setting("HOLD_TIMER_RESPONSE", False)))
+                deadline = time.monotonic() + 120
+                while setting("HOLD_TIMER_RESPONSE", False):
+                    if time.monotonic() >= deadline:
+                        self.reply(504, {"error": {"message": "timer response gate timed out"}})
+                        return
+                    time.sleep(0.05)
+                self.reply(200, response(
+                    [call_item("call-timer", "ExecCommand", {
+                        "cmd": "while [ ! -f /var/lib/holon/qa-3754-gate ]; "
+                               "do sleep 0.2; done; printf QA_TIMER_TOOL_DONE",
+                        "yield_time_ms": 20000,
+                    })], f"resp_{side}_{len(RECORDS)}"))
+            elif tool_output:
+                self.reply(200, response([text_item("QA_TIMER_DONE")],
+                                         f"resp_{side}_{len(RECORDS)}"))
+            else:
+                self.reply(200, response([text_item("QA_OTHER_DONE")],
+                                         f"resp_{side}_{len(RECORDS)}"))
         else:
             # The fixture state does not advance on a failed request.
             self.reply(200, response([text_item("QA_FALLBACK_COMPLETED")],
@@ -144,7 +212,17 @@ def database():
     candidates = list(Path("/evidence-home").glob("**/runtime.sqlite"))
     if len(candidates) != 1:
         raise RuntimeError(f"expected one isolated runtime database, found {len(candidates)}")
-    db = sqlite3.connect(f"file:{candidates[0]}?mode=ro", uri=True)
+    source = candidates[0]
+    # A live WAL database cannot be opened read-only through the read-only
+    # evidence mount; copy the database plus sidecars before reading.
+    scratch = tempfile.TemporaryDirectory()
+    target = Path(scratch.name) / "runtime.sqlite"
+    shutil.copy2(source, target)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(source) + suffix)
+        if sidecar.exists():
+            shutil.copy2(sidecar, Path(str(target) + suffix))
+    db = sqlite3.connect(f"file:{target}", uri=True)
     db.row_factory = sqlite3.Row
     db.execute("BEGIN")
     tables = [r[0] for r in db.execute("select name from sqlite_master where type='table'")]
@@ -153,10 +231,13 @@ def database():
     rows, truncated = {}, []
     for table in tables:
         if any(word in table for word in ("turn", "work_item", "queue", "recovery",
-                                          "settlement", "provider_admission")):
+                                          "settlement", "provider_admission",
+                                          "incident", "tool", "message", "activation_input")):
             rows[table] = [dict(r) for r in db.execute(f'SELECT * FROM "{table}" LIMIT 500')]
             if counts[table] > len(rows[table]):
                 truncated.append(table)
+    db.close()
+    scratch.cleanup()
     print(json.dumps({"counts": counts, "rows": rows, "truncated_tables": truncated},
                      default=str))
 
@@ -166,7 +247,7 @@ def main():
     if mode == "mock":
         ThreadingHTTPServer(("0.0.0.0", 8080), Mock).serve_forever()
     elif mode == "proxy":
-        for side, port in (("a", 8081), ("b", 8082)):
+        for side, port in (("a", 8081), ("b", 8082), ("c", 8083)):
             server = ProxyServer(("0.0.0.0", port), Proxy)
             server.side = side
             threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -175,6 +256,8 @@ def main():
         signal.pause()
     elif mode == "request":
         request()
+    elif mode == "snapshot":
+        database()
     elif mode == "database":
         database()
     else:

@@ -178,17 +178,19 @@ class FaultRun:
         self.docker("network", "connect", "--alias", "proxy", front, self.proxy)
         self.container(self.controller, self.args.python_image, control, SCRIPT, "controller",
                        mounts=[fixtures, f"{self.volume}:/evidence-home:ro"])
+        routes = [("qa-a", "a", 8081), ("qa-b", "b", 8082)]
+        routes.extend(getattr(self, "extra_routes", []))
         config = {
             "model": {"default": "qa-a/gpt-5.4", "fallbacks": ["qa-b/gpt-5.4"]},
             "providers": {
                 name: {"transport": "openai_responses",
                        "base_url": f"http://proxy:{port}/{side}/v1",
                        "auth": {"kind": "none", "source": "none"}}
-                for name, side, port in (("qa-a", "a", 8081), ("qa-b", "b", 8082))
+                for name, side, port in routes
             },
             "models": {"catalog": {route: {"context_window": 128000,
                                            "max_output_tokens": 4096}
-                                   for route in ("qa-a/gpt-5.4", "qa-b/gpt-5.4")}},
+                                   for route in (f"{name}/gpt-5.4" for name, _, _ in routes)}},
         }
         # Only this new empty volume is initialized; no host configuration.
         self.docker("run", "--rm", "-i", "--pull=never", "--network", "none", "--user", "0",
