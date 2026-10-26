@@ -470,6 +470,159 @@ async fn p1_issue_3669_real_task_rejoin_restart_keeps_source_and_delivers_once()
 }
 
 #[tokio::test(start_paused = true)]
+async fn issue_3484_consumed_task_result_keeps_backlog_live_across_restart() {
+    use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
+    use crate::runtime_db::TaskResultSettlementDisposition;
+
+    for kind in [TaskKind::CommandTask, TaskKind::ChildAgentTask] {
+        for restart in [false, true] {
+            let (mut harness, provider, result_id, _) =
+                interrupted_result(kind, true, true, true).await;
+            let runtime = harness.runtime();
+            let scheduled = claim_model_input(runtime).await;
+            assert_eq!(scheduled.message.id, result_id);
+            process_result_batch(runtime, scheduled).await;
+            let delivered = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+            let consumed = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&result_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(consumed.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                consumed.disposition,
+                Some(TaskResultSettlementDisposition::ModelDelivered)
+            );
+            assert_eq!(provider.requests.lock().await.len(), 1);
+            let task = runtime
+                .storage()
+                .latest_task_record(&format!("replay-source-{}", kind.as_str()))
+                .unwrap()
+                .unwrap();
+
+            // The text-only provider leaves its owner runnable. Park that work
+            // so autonomous continuations do not obscure backlog delivery.
+            runtime
+                .update_work_item_fields(
+                    task.work_item_id.clone().unwrap(),
+                    None,
+                    Some(WorkItemPlanStatus::NeedsInput),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+
+            // Exercise today's durable consumption contract before the legacy
+            // envelope; this is not a replay of the old database transaction.
+            let mut late = MessageEnvelope::new(
+                "default",
+                MessageKind::TaskStatus,
+                MessageOrigin::Task {
+                    task_id: task.id.clone(),
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Background,
+                MessageBody::Text {
+                    text: "already consumed task notification".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::TaskRejoin,
+                AdmissionContext::RuntimeOwned,
+            );
+            late.turn_id = Some(delivered.turn_id.clone());
+            late.metadata = Some(serde_json::json!({
+                "task_id": task.id,
+                "task_kind": kind.as_str(),
+                "task_status": "completed",
+                "task_detail": task.detail,
+            }));
+            let late = runtime.enqueue(late).await.unwrap();
+            let follower = runtime
+                .enqueue(
+                    MessageEnvelope::new(
+                        "default",
+                        MessageKind::InternalFollowup,
+                        MessageOrigin::System {
+                            subsystem: "issue-3484-backlog".into(),
+                        },
+                        AuthorityClass::OperatorInstruction,
+                        Priority::Background,
+                        MessageBody::Text {
+                            text: "handle the already queued internal report".into(),
+                        },
+                    )
+                    .with_admission(
+                        MessageDeliverySurface::RuntimeSystem,
+                        AdmissionContext::RuntimeOwned,
+                    ),
+                )
+                .await
+                .unwrap();
+            assert!(late.work_item_id.is_none());
+            assert!(follower.work_item_id.is_none());
+            if restart {
+                harness.restart();
+            }
+            let runtime = harness.runtime();
+            let mut runner = tokio::spawn(runtime.clone().run());
+            let drained = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    assert!(
+                        !runner.is_finished(),
+                        "runtime exited before draining the backlog: {:?}",
+                        (&mut runner).await
+                    );
+                    let entries = runtime.storage().latest_queue_entries().unwrap();
+                    if [&late.id, &follower.id].iter().all(|message_id| {
+                        entries.iter().any(|entry| {
+                            &entry.message_id == *message_id
+                                && entry.status == QueueEntryStatus::Processed
+                        })
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            runner.abort();
+            let _ = runner.await;
+            drained.expect("a consumed task notification must not strand queued input");
+            assert_eq!(provider.requests.lock().await.len(), 2);
+            assert_eq!(
+                runtime
+                    .storage()
+                    .read_turn_by_id(&delivered.turn_id)
+                    .unwrap(),
+                Some(delivered)
+            );
+            assert_eq!(
+                runtime
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(&result_id)
+                    .unwrap(),
+                Some(consumed)
+            );
+            assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+            let execution = runtime
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            assert!(!execution
+                .attempts
+                .contains_key(&scheduler_executor::canonical_activation_id(&late.id)));
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn p1_issue_3669_reloading_ingress_loses_claim_selector_but_not_durable_edge() {
     let (harness, provider, message_id, source) =
         interrupted_result(TaskKind::CommandTask, false, true, true).await;

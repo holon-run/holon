@@ -528,6 +528,146 @@ async fn dispatch_interactive_kind_with_model_reentry_false_skips_interactive_pr
         .expect("model_reentry=false dispatch should be a silent no-op for interactive kinds");
 }
 
+#[tokio::test]
+async fn issue_3484_legacy_task_status_keeps_queued_input_live_across_restart() {
+    use crate::types::{QueueEntryStatus, TurnRecord};
+
+    for restart in [false, true] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let provider = Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "queued input handled",
+        });
+        let open_runtime = || {
+            RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                provider.clone(),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap()
+        };
+        let mut runtime = open_runtime();
+        let mut parent = TurnRecord::new("default", "turn:agent-message-wait:legacy-task", 1);
+        parent.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Completed,
+            reason: Some("reducer_only/parent_turn_already_delivered".into()),
+            no_brief_reason: Some(TurnNoBriefReason::ReducerOnly {
+                reason: "parent_turn_already_delivered".into(),
+            }),
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        });
+        runtime.storage().append_turn(&parent).unwrap();
+
+        // Historical #3484 envelope after its rejoin turn already settled.
+        // There is deliberately no live exact-wait or terminal-reentry grant.
+        let mut late = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskStatus,
+            MessageOrigin::Task {
+                task_id: "legacy-task".into(),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "already delivered task status".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        late.turn_id = Some(parent.turn_id.clone());
+        late.metadata = Some(serde_json::json!({
+            "task_id": "legacy-task",
+            "task_kind": "child_agent_task",
+            "task_status": "completed",
+            "task_detail": {
+                "parent_turn_id": parent.turn_id,
+                "rejoin_obligation_id": "legacy-task",
+                "rejoin_generation": 1,
+                "terminal_reentry": false,
+            },
+        }));
+        let late = runtime.enqueue(late).await.unwrap();
+        let mut follower = message_of_kind(
+            MessageKind::OperatorPrompt,
+            MessageBody::Text {
+                text: "handle the input behind the late status".into(),
+            },
+        );
+        follower.priority = Priority::Background;
+        let follower = runtime.enqueue(follower).await.unwrap();
+        assert_eq!(late.authority_class, AuthorityClass::OperatorInstruction);
+        assert!(late.work_item_id.is_none());
+
+        if restart {
+            drop(runtime);
+            runtime = open_runtime();
+        }
+        // Both inputs predate loop startup; draining cannot depend on new ingress.
+        let mut runner = tokio::spawn(runtime.clone().run());
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                assert!(
+                    !runner.is_finished(),
+                    "runtime exited before draining the queued input: {:?}",
+                    (&mut runner).await
+                );
+                let entries = runtime.storage().latest_queue_entries().unwrap();
+                if [&late.id, &follower.id].iter().all(|message_id| {
+                    entries.iter().any(|entry| {
+                        &entry.message_id == *message_id
+                            && entry.status == QueueEntryStatus::Processed
+                    })
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        runner.abort();
+        let _ = runner.await;
+        drained.expect("late task status must not strand already queued input");
+
+        assert_eq!(provider.call_count().await, 1);
+        assert_eq!(
+            runtime.storage().read_turn_by_id(&parent.turn_id).unwrap(),
+            Some(parent)
+        );
+        let turns = runtime.storage().read_recent_turns(10).unwrap();
+        let status_turns = turns
+            .iter()
+            .filter(|turn| turn.input_message_ids.contains(&late.id))
+            .collect::<Vec<_>>();
+        assert_eq!(status_turns.len(), 1);
+        assert_eq!(
+            status_turns[0]
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.reason.as_deref()),
+            Some("reducer_only/task_status")
+        );
+        assert!(status_turns[0].produced_brief_ids.is_empty());
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(!execution
+            .attempts
+            .contains_key(&scheduler_executor::canonical_activation_id(&late.id)));
+    }
+}
+
 // ── dispatch_plan struct visibility (sanity) ───────────────────────
 
 #[test]
