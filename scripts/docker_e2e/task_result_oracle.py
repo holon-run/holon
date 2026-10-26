@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +20,17 @@ def require(condition: Any, message: str) -> None:
 
 def payload(row: dict[str, Any]) -> dict[str, Any]:
     return json.loads(row["payload_json"])
+
+
+def rfc3339_order_key(value: str) -> tuple[datetime, int]:
+    """Preserve Rust ACK nanoseconds without relying on Python's ISO fraction support."""
+    parts = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})",
+        value,
+    )
+    require(parts is not None, "invalid RFC3339 timestamp")
+    seconds = datetime.fromisoformat(parts[1] + parts[3].replace("Z", "+00:00"))
+    return seconds, int((parts[2] or "").ljust(9, "0"))
 
 
 def require_terminal_task_receipt(
@@ -213,6 +225,24 @@ def task_result_consuming_turns(snapshot, record, *, admitted_turn_id=None):
         if row["agent_id"] != record["agent_id"] or row["terminal_kind"] != "completed":
             continue
         stored = payload(row) if "payload_json" in row else {}
+        terminal = stored.get("terminal") or {}
+        # The losing original notification can finish without any model re-entry.
+        if (
+            row["turn_id"] != admitted_turn_id
+            and terminal.get("kind") == "completed"
+            and terminal.get("reason") == "reducer_only/parent_turn_already_delivered"
+            and terminal.get("no_brief_reason") == {
+                "kind": "reducer_only", "reason": "parent_turn_already_delivered",
+            }
+            and stored.get("external_side_effect_possible") is False
+            and not any(stored.get(key) for key in (
+                "idle_input_batch", "live_input_batches",
+                "produced_brief_ids", "completed_work_item_ids",
+            ))
+            and not any(brief.get("turn_id") == row["turn_id"]
+                        for brief in snapshot.get("briefs", []))
+        ):
+            continue
         inputs = list(stored.get("input_message_ids", []))
         if stored.get("idle_input_batch"):
             inputs += [item["message_id"] for item in stored["idle_input_batch"]["items"]]
@@ -568,8 +598,8 @@ def require_first_admission(before, *, captured, order, held, scanner, released,
             and not held.get("last_recovery_root_attempt_id"),
             "gate was not armed before first recovery admission")
     if released is not None:
-        require(datetime.fromisoformat(released["observed_at"].replace("Z", "+00:00"))
-                >= datetime.fromisoformat(held["observed_at"].replace("Z", "+00:00")),
+        require(rfc3339_order_key(released["observed_at"])
+                >= rfc3339_order_key(held["observed_at"]),
                 "losing source released before it was held")
     source_id = scanner["source_message_id"] if scanner_first else record["message_id"]
     attempt_rows = [row for row in before["execution_protocol_attempts"]

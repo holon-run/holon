@@ -341,6 +341,47 @@ class RecoveryOracleTests(unittest.TestCase):
                 snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
             )
 
+    def test_reducer_only_duplicate_notification_is_not_successful_consumption(self):
+        snapshot = runner_tests.LiveAcceptanceEvidenceTests().task_snapshot()
+        duplicate = {
+            "agent_id": "parent", "turn_id": "reduced-notification",
+            "terminal_kind": "completed", "trigger_message_id": "result-1",
+            "payload_json": json.dumps({
+                "turn_id": "reduced-notification", "input_message_ids": ["result-1"],
+                "external_side_effect_possible": False,
+                "terminal": {
+                    "kind": "completed", "reason": "reducer_only/parent_turn_already_delivered",
+                    "no_brief_reason": {
+                        "kind": "reducer_only", "reason": "parent_turn_already_delivered",
+                    },
+                },
+            }),
+        }
+        snapshot["turn_records"].append(duplicate)
+
+        def check(value=snapshot):
+            return oracle.require_task_reentry(
+                value, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
+            )
+
+        check()
+        for mutation in ("reason-only", "side-effect", "model-input", "brief", "completion"):
+            broken = copy.deepcopy(snapshot)
+            stored = oracle.payload(broken["turn_records"][-1])
+            if mutation == "reason-only":
+                del stored["terminal"]["no_brief_reason"]
+            elif mutation == "side-effect":
+                stored["external_side_effect_possible"] = True
+            elif mutation == "model-input":
+                stored["idle_input_batch"] = {"items": [{"message_id": "result-1"}]}
+            elif mutation == "brief":
+                stored["produced_brief_ids"] = ["real-brief"]
+            else:
+                stored["completed_work_item_ids"] = ["owner"]
+            broken["turn_records"][-1]["payload_json"] = json.dumps(stored)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(AssertionError, "duplicate"):
+                check(broken)
+
     def test_failed_typed_outcome_is_not_delivery_and_fifth_pause_is_not_a_rejection(self):
         snapshot = runner_tests.LiveAcceptanceEvidenceTests().task_snapshot()
         snapshot["task_result_settlements"][0]["recovery_paused_at"] = "2026-10-25T13:00:00Z"
@@ -659,6 +700,27 @@ class ScannerSetupTests(unittest.TestCase):
 
 
 class ProviderFixtureTests(unittest.TestCase):
+    def test_scanner_first_owner_resume_does_not_open_recovery_barrier(self):
+        for provenance, recovery_input in (
+            ({"kind": "work_item_resume"}, False),
+            ({"kind": "internal_followup", "origin": {"kind": "system", "subsystem": "other"}}, False),
+            ({"kind": "task_result"}, True),
+            ({"kind": "internal_followup",
+              "origin": {"kind": "system", "subsystem": "task_result_recovery"}}, True),
+        ):
+            with self.subTest(provenance=provenance), tempfile.TemporaryDirectory() as directory:
+                scenario = fixture.RecoveryScenario()
+                scenario.phase, scenario.scanner_first = 4, True
+                record = Mock()
+                with patch.object(fixture, "CONTROL", Path(directory) / "missing.json"), patch.object(
+                    scenario, "current_input_items",
+                    return_value=[{"body": "Handle the pending task results", "provenance": provenance}],
+                ):
+                    status, _ = scenario.consume_gated({}, "a", record, timeout=0)
+                self.assertEqual(status, 504 if recovery_input else 200)
+                self.assertEqual(scenario.phase, 4)
+                self.assertEqual(record.called, recovery_input)
+
     def test_only_scanner_first_setup_leaves_owner_runnable_without_waitfor(self):
         for scanner_first in (False, True):
             scenario = fixture.RecoveryScenario()
@@ -976,6 +1038,25 @@ class RecoveryRunnerTests(unittest.TestCase):
                     })
                 with self.subTest(order=order, mutation=mutation), self.assertRaises(AssertionError):
                     check(left, right, gate, release=release, candidate=candidate)
+
+    def test_controlled_order_preserves_nanosecond_ack_order(self):
+        for order in ("exact-first", "scanner-first"):
+            before, after, record, held, scanner, released, build = self.order_evidence(order)
+            held["observed_at"] = "2026-10-26T04:26:03.711528800Z"
+            released["observed_at"] = "2026-10-26T05:26:03.711528801+01:00"
+
+            def check():
+                return oracle.require_first_admission(
+                    before, after=after, captured={key: record[key] for key in oracle.IDENTITY_FIELDS},
+                    order=order, held=held, scanner=scanner, released=released,
+                    request_id="order", expected_build=build,
+                )
+
+            with self.subTest(order=order):
+                check()
+                released["observed_at"] = "2026-10-26T04:26:03.711528799Z"
+                with self.assertRaisesRegex(AssertionError, "before it was held"):
+                    check()
 
     def test_order_controller_waits_for_claim_before_releasing_the_loser(self):
         for order in ("exact-first", "scanner-first"):

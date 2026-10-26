@@ -92,6 +92,18 @@ class RecoveryScenario(Scenario):
             self.scanner_first = bool(control.get("scanner_first"))
         if self.phase != 4 or bootstrap:
             return self.consume(request)
+        if self.scanner_first and not any(
+            item["provenance"].get("kind") == "task_result"
+            or (item["provenance"].get("kind") == "internal_followup"
+                and item["provenance"].get("origin") == {
+                    "kind": "system", "subsystem": "task_result_recovery",
+                })
+            for item in items
+        ):
+            # A runnable owner may resume before the gated command terminates.
+            return 200, response(
+                [text_item("SCHEDULER-TASK-SCANNER-READY")], "resp_scanner_ready",
+            )
         request_id = secrets.token_hex(12)
         record(layer="recovery_barrier", request_id=request_id, side=side, state="waiting")
         deadline = time.monotonic() + timeout
