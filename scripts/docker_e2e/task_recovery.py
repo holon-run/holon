@@ -97,13 +97,32 @@ def provider_barrier_identity(snapshot, record, source_message_ids):
     if not candidates:
         # The provider log may become visible after this observation's DB snapshot.
         return None
-    require(len(candidates) == 1, "provider barrier has ambiguous canonical input sources")
-    attempt = candidates[0]
-    root = recovery_root(snapshot, record["agent_id"], attempt["attempt_id"])
-    ancestors = {
+    if len(candidates) > 1:
+        # A restart replays the same input message into a new attempt. Only the
+        # in-flight attempt can own the pending provider request.
+        live = [row for row in candidates if not payload(row).get("terminal_at")]
+        require(live, "provider barrier only matched terminal attempts")
+        candidates = live
+    attempts = {
         row["attempt_id"]: payload(row) for row in snapshot["execution_protocol_attempts"]
         if row["agent_id"] == record["agent_id"]
     }
+    chains = {}
+    for row in candidates:
+        chain, ancestor = [], row["attempt_id"]
+        while ancestor is not None:
+            require(ancestor in attempts and ancestor not in chain,
+                    f"missing/cyclic recovery attempt ancestry: {ancestor}")
+            chain.append(ancestor)
+            ancestor = attempts[ancestor].get("recovery_of_attempt_id")
+        chains[row["attempt_id"]] = chain
+    deepest = max(candidates, key=lambda row: len(chains[row["attempt_id"]]))
+    deepest_chain = chains[deepest["attempt_id"]]
+    require(all(set(chains[row["attempt_id"]]) <= set(deepest_chain) for row in candidates),
+            "provider barrier has ambiguous canonical input sources")
+    attempt = deepest
+    root = recovery_root(snapshot, record["agent_id"], attempt["attempt_id"])
+    ancestors = attempts
     ancestor = attempt["attempt_id"]
     while True:
         require(ancestors[ancestor].get("binding") == {
@@ -286,14 +305,16 @@ class RecoveryRun(FaultRun):
 
     def provider_outcomes_complete(self, snapshot, record):
         rows = recovery_ledger(snapshot, record)
-        return len(rows) == self.spec["goal"] and all(
-            any(join["root_attempt_id"] == row["root_attempt_id"]
-                and join["action"] == (
-                    "success" if self.spec["outcome"] == "success"
-                    and index == len(rows) - 1 else "fail"
-                ) for join in self.joins)
-            for index, row in enumerate(rows)
-        )
+        if len(rows) != self.spec["goal"]:
+            return False
+        released = [join for join in self.joins if join["action"] == "success"]
+        if self.spec["outcome"] == "success":
+            # The successful response is only granted once the recovery budget
+            # is fully charged; whichever lineage request carries it is recorded
+            # with its real root instead of being relabeled as the last root.
+            return (len(released) == 1
+                    and released[0]["budget_before_release"] == self.spec["goal"])
+        return not released
 
     def record(self, snapshot):
         records = [
@@ -565,8 +586,8 @@ class RecoveryRun(FaultRun):
                     > datetime.now(timezone.utc)
                 )
                 if in_backoff or (restart == "fifth"
-                                  and any(barrier["recovery_attempts"] == 5
-                                          for barrier in barriers)):
+                                  and record["recovery_attempts"] == 5
+                                  and barriers):
                     self.restart(snapshot, backoff=restart == "backoff")
                     continue
             for barrier in barriers:
@@ -574,10 +595,12 @@ class RecoveryRun(FaultRun):
                 if request_id in self.releases:
                     continue
                 success = (self.spec["outcome"] == "success"
-                           and barrier["recovery_attempts"] == self.spec["goal"])
+                           and record["recovery_attempts"] == self.spec["goal"]
+                           and "success" not in self.releases.values())
                 self.releases[request_id] = "success" if success else "fail"
                 self.joins.append({
                     **barrier, "action": self.releases[request_id],
+                    "budget_before_release": record["recovery_attempts"],
                     "result_identity": record["result_identity"],
                     "recovery_epoch": record["recovery_epoch"],
                 })
@@ -637,17 +660,16 @@ class RecoveryRun(FaultRun):
             require(identity is not None
                     and all(join[key] == value for key, value in identity.items()),
                     "provider barrier was relabeled as another activation/root")
-        for index, row in enumerate(rows):
-            expected = ("success" if self.spec["outcome"] == "success"
-                        and index == len(rows) - 1 else "fail")
-            require(any(join["root_attempt_id"] == row["root_attempt_id"]
-                        and join["action"] == expected for join in self.joins),
-                    f"charged recovery root lacks its actual provider outcome: {row}")
-        require(
-            all(join["action"] != "success"
-                or join["recovery_attempts"] == self.spec["goal"] for join in self.joins),
-            "provider released success before the designated recovery root",
-        )
+        released = [join for join in self.joins if join["action"] == "success"]
+        require(self.joins, "no provider release was recorded")
+        require(all(join["action"] in {"success", "fail"} for join in self.joins),
+                "unknown provider release action")
+        if self.spec["outcome"] == "success":
+            require(len(released) == 1
+                    and released[0]["budget_before_release"] == self.spec["goal"],
+                    "provider released success before the recovery budget was charged")
+        else:
+            require(not released, "exhausted case released a successful model response")
         if self.spec["outcome"] == "exhausted":
             require_recovery_exhausted(snapshot, captured=self.captured)
             if self.spec.get("sixth"):
@@ -676,8 +698,10 @@ class RecoveryRun(FaultRun):
                 wait_policy="none" if self.spec.get("first_order") == "scanner-first" else "exact",
             )
             if rows:
-                require(recovery_root(snapshot, "qa", record["activation_id"])
-                        == rows[-1]["root_attempt_id"], "success did not consume the fifth root")
+                require(released
+                        and recovery_root(snapshot, "qa", record["activation_id"])
+                        == released[0]["root_attempt_id"],
+                        "successful settlement is not bound to the released provider request")
             else:
                 root = recovery_root(snapshot, "qa", record["activation_id"])
                 attempts = [

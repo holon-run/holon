@@ -33,6 +33,13 @@ def rfc3339_order_key(value: str) -> tuple[datetime, int]:
     return seconds, int((parts[2] or "").ljust(9, "0"))
 
 
+def same_durable_instant(left: str, right: str) -> bool:
+    """Compare instants whose durable column may truncate below milliseconds."""
+    left_seconds, left_nanos = rfc3339_order_key(left)
+    right_seconds, right_nanos = rfc3339_order_key(right)
+    return left_seconds == right_seconds and left_nanos // 1_000_000 == right_nanos // 1_000_000
+
+
 def require_terminal_task_receipt(
     detail: dict[str, Any], *, task_id: str, result_message_id: str,
     activation_id: str,
@@ -679,8 +686,10 @@ def require_sixth_rejected(before, after, *, captured, enqueued, rejected,
             "sixth-source evidence requires the separately identified test binary")
     require(
         all(left[key] == right[key] for key in (
-            *IDENTITY_FIELDS, "recovery_epoch", "recovery_paused_at",
-            "recovery_diagnostic_at", "last_recovery_root_attempt_id",
+            *IDENTITY_FIELDS, "recovery_epoch", "last_recovery_root_attempt_id",
+        ))
+        and all(same_durable_instant(left[key], right[key]) for key in (
+            "recovery_paused_at", "recovery_diagnostic_at",
         ))
         and recovery_ledger(before, left) == recovery_ledger(after, right),
         "sixth-source rejection changed the exhausted obligation or ledger",
@@ -703,7 +712,8 @@ def require_sixth_rejected(before, after, *, captured, enqueued, rejected,
             and event.get("recovery_attempts") == 5
             and event.get("last_recovery_root_attempt_id")
             == right["last_recovery_root_attempt_id"]
-            and event.get("recovery_paused_at") == right["recovery_paused_at"],
+            and same_durable_instant(event.get("recovery_paused_at") or "",
+                                     right["recovery_paused_at"]),
             f"missing or incorrectly fenced private acceptance event: {name}",
         )
     require(

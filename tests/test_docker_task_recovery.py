@@ -1010,26 +1010,69 @@ class RecoveryRunnerTests(unittest.TestCase):
             ):
                 check(broken, ids)
 
-    def test_exhaustion_checkpoint_waits_for_every_charged_provider_outcome(self):
+    def test_exhausted_case_never_waits_for_a_successful_release(self):
         snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "exhausted"})
         with tempfile.TemporaryDirectory() as directory:
             run = recovery.RecoveryRun(
                 Namespace(evidence_dir=Path(directory)), "restart-fifth-exhausted",
                 {"goal": 5, "outcome": "exhausted"},
             )
-            run.joins = [
-                {"root_attempt_id": row["root_attempt_id"], "action": "fail"}
-                for row in snapshot["task_result_recovery_admissions"]
-            ]
+            # A replayed provider request reports its real charged root and the
+            # budget it observed; it is not relabeled as the fifth root request.
+            run.joins = [{"root_attempt_id": "root-1", "action": "fail",
+                          "budget_before_release": 5}]
             self.assertTrue(run.provider_outcomes_complete(snapshot, record))
-            fifth = run.joins.pop()
+            run.joins.append({"root_attempt_id": "root-1", "action": "success",
+                              "budget_before_release": 5})
             self.assertFalse(run.provider_outcomes_complete(snapshot, record))
-            run.joins.append(run.joins[-1].copy())
+            uncharged, uncharged_record = self.owned_snapshot(
+                {"goal": 5, "outcome": "exhausted"})
+            uncharged["task_result_recovery_admissions"].pop()
+            uncharged_record["recovery_attempts"] = 4
+            uncharged_record["last_recovery_root_attempt_id"] = "root-4"
+            self.assertFalse(run.provider_outcomes_complete(uncharged, uncharged_record))
+
+    def test_success_release_requires_the_fully_charged_budget(self):
+        snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "success"})
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "fifth-success",
+                {"goal": 5, "outcome": "success"},
+            )
+            run.joins = [{"root_attempt_id": "root-1", "action": "fail",
+                          "budget_before_release": 1}]
             self.assertFalse(run.provider_outcomes_complete(snapshot, record))
-            run.joins[-1] = {**fifth, "action": "success"}
+            run.joins.append({"root_attempt_id": "root-1", "action": "success",
+                              "budget_before_release": 4})
             self.assertFalse(run.provider_outcomes_complete(snapshot, record))
-            run.joins[-1] = fifth
+            run.joins[-1] = {**run.joins[-1], "budget_before_release": 5}
             self.assertTrue(run.provider_outcomes_complete(snapshot, record))
+
+    def test_restart_replay_resolves_to_the_live_attempt_on_one_chain(self):
+        snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "success"})
+        original = next(row for row in snapshot["execution_protocol_attempts"]
+                        if row["attempt_id"] == "root-5")
+        stored = oracle.payload(original)
+        stored["terminal_at"] = "2026-10-25T13:15:00Z"
+        original["payload_json"] = json.dumps(stored)
+        snapshot["execution_protocol_attempts"].append({
+            "agent_id": "qa", "attempt_id": "replay-5",
+            "payload_json": json.dumps({
+                "source_message_id": "message-root-5",
+                "recovery_of_attempt_id": "root-5",
+                "binding": {"kind": "work_item", "work_item_id": "owner"},
+            }),
+        })
+        identity = recovery.provider_barrier_identity(
+            snapshot, record, ["message-root-5"])
+        self.assertEqual(identity["activation_id"], "replay-5")
+        self.assertEqual(identity["recovery_attempts"], 5)
+        replay = snapshot["execution_protocol_attempts"][-1]
+        value = oracle.payload(replay)
+        value["terminal_at"] = "2026-10-25T13:16:00Z"
+        replay["payload_json"] = json.dumps(value)
+        with self.assertRaisesRegex(AssertionError, "only matched terminal attempts"):
+            recovery.provider_barrier_identity(snapshot, record, ["message-root-5"])
 
     def test_released_barrier_cannot_trigger_another_restart(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1607,6 +1650,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                 "side": "b", "action": "success", "recovery_attempts": 0,
                 "source_message_ids": ["fallback-source"],
                 "activation_id": row["attempt_id"], "root_attempt_id": "task-root",
+                "budget_before_release": 0,
             }]
             (run.evidence / "database.json").write_text(json.dumps({
                 "rows": snapshot, "truncated_tables": [],
@@ -1641,6 +1685,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                 "source_message_ids": [f"message-root-{index}"],
                 "recovery_attempts": index, "side": "a",
                 "action": "success" if index == 5 else "fail",
+                "budget_before_release": 5 if index == 5 else index,
             } for index in range(1, 6)]
             (run.evidence / "database.json").write_text(json.dumps({
                 "rows": snapshot, "truncated_tables": [],
@@ -1699,6 +1744,8 @@ class RecoveryRunnerTests(unittest.TestCase):
                     "side": "b" if spec.get("fallback") else "a",
                     "action": "success" if spec["outcome"] == "success"
                     and index + 1 == spec["goal"] else "fail",
+                    "budget_before_release": spec["goal"] if spec["outcome"] == "success"
+                    and index + 1 == spec["goal"] else index + 1,
                 } for index, row in enumerate(snapshot["task_result_recovery_admissions"])]
                 if not spec["goal"]:
                     run.joins.append({
@@ -1706,6 +1753,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                         "activation_id": "attempt-1",
                         "source_message_ids": [record["message_id"]],
                         "action": "success", "side": "b" if spec.get("fallback") else "a",
+                        "budget_before_release": 0,
                     })
                 (run.evidence / "database.json").write_text(json.dumps({
                     "rows": snapshot, "truncated_tables": [],
@@ -1760,7 +1808,7 @@ class RecoveryRunnerTests(unittest.TestCase):
                         run.verify_frozen()
                 if spec["goal"]:
                     run.joins = []
-                    with self.assertRaisesRegex(AssertionError, "provider outcome"):
+                    with self.assertRaisesRegex(AssertionError, "provider release"):
                         run.verify_frozen()
 
     def test_backoff_restart_uses_exact_same_volume_and_candidate(self):

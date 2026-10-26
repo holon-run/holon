@@ -61,10 +61,10 @@ retained ingress attachment alone is not an execution witness.
 | --- | --- | --- |
 | fast | `exact-success`, `fallback-success` | Actual TaskResult root (including its legitimate fallback/replay successor), zero recovery charges, exact Result completion; fallback must actually exercise backup |
 | fast | `alive-owner` | One open canonical attempt and nonterminal captured-owner turn remain unchanged beyond the persisted recheck deadline; no recovery charge/wake, followed by exact Result completion |
-| slow | `fifth-success` | Four failed charged roots, fifth consumed successfully; primary RST and actual backup |
+| slow | `fifth-success` | Four failed charged roots, then one successful release once the fifth root is charged, consumed successfully; primary RST and actual backup |
 | slow | `exhausted` | Five distinct failed roots, one Failure diagnostic, pending unconsumed obligation, no automatic deadline, at least 65 seconds without a sixth admission |
-| slow | `restart-backoff` | SIGKILL in charged backoff, same image/volume, unchanged identity/epoch/count/ledger/deadline, then fifth-root success |
-| slow | `restart-fifth` | SIGKILL behind the fifth admission's provider barrier, no sixth charge on replay, then fifth-root success |
+| slow | `restart-backoff` | SIGKILL in charged backoff, same image/volume, unchanged identity/epoch/count/ledger/deadline, then one successful release after the fifth charge |
+| slow | `restart-fifth` | SIGKILL behind the fifth admission's provider barrier, no sixth charge on replay, then one successful release after the fifth charge |
 | slow | `restart-fifth-exhausted` | Primary RST/backup failure, SIGKILL behind the fifth admission's provider barrier, same image/volume and original identity/owner/generation/epoch/five-root ledger on replay, then persistent exhaustion with one diagnostic, no consumption/deadline/sixth charge and 65 seconds of quiet observation |
 | slow | `coexisting-owner` | After A exhausts, a new real command B under the same agent/captured owner establishes its own exact wait and is independently consumed with a bound Result brief; the shared WorkItem remains open while A's epoch/five roots/pause/diagnostic and nonconsumption persist for 65 seconds |
 | controlled | `controlled-exact-first` | Prearmed scanner gate, actual original TaskResult canonical claim, zero recovery charges; release scanner only after freezing the winner, then exact Result completion |
@@ -136,8 +136,15 @@ Per-case evidence includes pre-terminal/captured identity, atomic read-only DB
 snapshots, provider request-to-activation/root joins, policy, restart before/after
 snapshots and mounted-volume identity, pinned build/isolation evidence, logs,
 and cleanup status. Final evaluation uses the frozen database collected after
-dispatch stops and recomputes each provider join from its recorded input IDs;
-relabeling an old request as the fifth root fails closed. Truncated/missing
+dispatch stops and recomputes each provider join from the input IDs the stub
+actually observed. A join is accepted only while every candidate attempt stays
+inside this result's owner binding and ancestry: an interrupted attempt is
+replaced by its live replay, candidates on disjoint chains fail closed, and a
+join can never be relabeled onto another activation/root.
+Once the durable budget is fully charged, the fixture grants exactly one
+successful response; the join records the request's real root and its observed
+budget instead of claiming the last charged root served it, and a successful
+settlement must match that released barrier's root. Truncated/missing
 tables and cleanup errors cannot pass.
 When a case is delivered through a scanner wake, the oracle requires that wake
 message to be the activation's model input and joins it to the frozen task
