@@ -1,6 +1,6 @@
 ---
 title: Configure OIDC authentication
-summary: Set up OpenID Connect single sign-on, configure session policies, and audit user prompts.
+summary: Set up OpenID Connect single sign-on, attribute prompts in shared team runtimes, tune session policies, and audit user activity.
 order: 180
 ---
 
@@ -9,7 +9,8 @@ order: 180
 By default, Holon uses local control tokens for authentication. For shared team
 servers or remote deployments, you can switch to OpenID Connect (OIDC). Team
 members log in through your existing identity provider (IdP), and Holon records
-which user prompted an agent.
+which user prompted an agent, enabling multiple team members to share an agent
+runtime with clear accountability.
 
 This guide covers registering an OIDC client, configuring Holon, tuning
 session timeouts, and verifying logins.
@@ -167,7 +168,42 @@ When auditing agent transcripts or inspecting messages via `GET
 That attribution does not mean the user individually approved every later
 tool call.
 
-### 4. Log out
+### 4. Verify a shared task with two test users
+
+For team deployments where multiple users interact with the same agent runtime,
+verify that individual sessions produce attributable tasks and that team members
+can follow shared work according to your intended policy:
+
+1. **Pre-flight scope table**: Agree on the testing boundaries before running the verification:
+
+   | Scope item | Setting in test |
+   | --- | --- |
+   | **Test users** | Two provisioned test accounts (e.g. `alice@example.com` and `bob@example.com`) |
+   | **Target agent** | An existing shared agent (e.g. `team-assistant`) |
+   | **Permitted shared task** | A bounded, read-only check (e.g. inspecting a status report or build result) |
+   | **Expected sharing boundary** | Both members can inspect the task result; each prompt records its own `actor_id` |
+   | **Out of scope** | File system sandboxing or per-user workspace isolation (not provided by OIDC) |
+
+2. **User A submits the task**:
+   - Alice logs in via browser session A and submits a prompt: *"Check the build status of commit 6a21e3c4"*.
+   - Alice receives a WorkItem or task ID.
+   - Inspecting the message record confirms `actor_display_name: "Alice Chen"` and Alice's `actor_id`.
+
+3. **User B follows up on the shared result**:
+   - In an independent browser window (or private session), Bob logs in as `bob@example.com`.
+   - Bob navigates to the shared agent, locates Alice's completed task, and submits a follow-up query: *"Summarize the verification items from that check"*.
+   - The message transcript records Bob's distinct `actor_id` and display name while maintaining context continuity on the shared WorkItem.
+
+4. **Verify audit trail**:
+   - Inspect the agent transcript via `GET /api/agents/{agent_id}/messages`:
+   - Both prompts appear in order, each with its authenticated user attribution (`actor_id` and `actor_display_name`).
+
+> **Security & isolation boundary:**
+> - **Authentication vs Authorization vs Execution:** OIDC verifies *who* the user is and attributes prompt submissions. It does not provide multi-tenant filesystem virtualization, container boundaries, or per-user workspace isolation.
+> - **Execution environment:** Tools invoked by agents execute under the daemon process user on the host. To isolate untrusted workloads, configure separate daemon instances or containerized host environments. See [Security and execution boundaries](../concepts/security-and-execution-boundaries.md) and [Agents in a small team](../blog/agents-in-a-small-team.md).
+> - **Testing requirements:** End-to-end multi-user verification requires an authorized non-production test instance and two test IdP credentials. In environments without multi-user test credentials, verify single-user attribution (Step 3) and mark multi-user task tests as pending authorization.
+
+### 5. Log out
 
 To end a session, click **Log out** in the Web GUI or issue:
 
@@ -179,7 +215,7 @@ curl -X POST -H "Authorization: Bearer <session-token>" \
 Logout invalidates the session record. Browser logout also clears its cookie;
 a separate `curl` request does not clear a cookie in your browser.
 
-### 5. Verify rejection of unauthorized requests
+### 6. Verify rejection of unauthorized requests
 
 Make a request without a cookie or bearer credential:
 
@@ -211,3 +247,5 @@ already authenticated session.
 - [Configuration reference](/reference/configuration.md) — Full list of `auth.*` options
 - [Connect to a remote Holon runtime](/guides/connect-remote-runtime.md) — Remote access options and networking
 - [Use the Web GUI](/guides/use-web-gui.md) — Working with agents and tasks in the browser
+- [Security and execution boundaries](../concepts/security-and-execution-boundaries.md) — Authentication, authorization, and isolation boundaries
+- [Agents in a small team](../blog/agents-in-a-small-team.md) — Shared team agent workflows and attribution

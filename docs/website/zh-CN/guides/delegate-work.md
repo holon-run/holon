@@ -1,6 +1,6 @@
 ---
 title: 将工作委派给另一个 Agent
-summary: 挑选子 Agent 或对等 Agent、跟进其回复、验证工作结果并安全清理下属实例。
+summary: 挑选子 Agent 或对等 Agent、交接已提交版本做只读审查、验证工作结果并安全清理下属实例。
 order: 80
 ---
 
@@ -51,6 +51,53 @@ order: 80
 ### 子 Agent Token 消耗
 
 在排查开销或非预期任务量时，可通过任务快照审查 `token_usage`。字段定义见[委派任务参考](../reference/work-items.md#delegated-task-snapshots)。Token 消耗仅代表资源消耗量，并不等同于任务进度或正确性。
+
+## 交接已提交改动做只读审查
+
+常见的多 Agent 协作场景是：开发 Agent 完成代码实现后，将已提交的版本（Commit）交接给审查 Agent 执行独立审查。这种方式能确保审查方核对精确的提交快照，避免读取到未提交的脏改动，也防止两个 Agent 在同一工作目录下并发写冲突。
+
+### 1. 明确交接输入清单
+
+在调用 `InvokeAgent` 之前，必须从 Git 仓库获取真实的提交 SHA，并明确约束审查边界：
+
+| 输入项 | 约定要求 | 示例 |
+| --- | --- | --- |
+| **目标仓库** | 规范路径或已绑定的工作区 | `/home/user/project` |
+| **基准版本（Base ref）** | 目标分支或基线 Commit SHA | `main` 或 `b4adb08a` |
+| **目标提交 SHA** | 待审查的具体提交（通过 `git rev-parse HEAD` 获取） | `6a21e3c4` |
+| **审查范围** | 限定的具体子目录或模块路径 | `src/runtime/` |
+| **权限约束** | 严格只读；禁止编辑、提交、合并或对外发布 | 只读审查 |
+| **工作区模式** | 独立 Worktree 或干净的只读检出 | `workspace_mode: "worktree"` |
+| **交付格式** | 包含文件/行号、严重级别与依据的结构化清单 | 严重级、文件:行号、问题依据、未覆盖缺口 |
+
+### 2. 调用审查子 Agent
+
+使用 `code-reviewer` 模板并在独立 Worktree 中启动子 Agent：
+
+```json
+{
+  "target": {
+    "kind": "new_subagent",
+    "template": "code-reviewer",
+    "workspace_mode": "worktree"
+  },
+  "initial_message": "审查 src/runtime/ 下从 main 到提交 6a21e3c4 的改动。仅限只读检查；禁止编辑、提交或推送代码。重点检查逻辑回归、错误处理与测试覆盖。返回发现的问题清单（需包含具体文件:行号、严重级别与事实依据）。若未发现问题，明确列出已检查的文件清单与审查范围。"
+}
+```
+
+> **Worktree 隔离提示：** 以 `workspace_mode: "worktree"` 启动的子 Agent 会在独立目录检出指定分支或基准引用。它**不会**自动包含父工作区中未提交的脏改动。委派前请确保改动已提交或显式传入补丁。有关 Worktree 的生命周期管理，请参阅[操作工作区](work-with-workspaces.md)。
+
+### 3. 核验审查交付物
+
+审查子 Agent 执行完毕后，父 Agent 在向操作者交付或采纳结论前，必须核验审查质量：
+
+| 核验项 | 验收标准 |
+| --- | --- |
+| **版本对齐** | 审查方实际检查的 SHA 与委派指定的提交 SHA 完全一致，未审查错分支或版本。 |
+| **定位精确** | 报告中的每项问题均对应具体的文件路径与有效代码行号范围。 |
+| **事实依据** | 问题结论基于真实代码逻辑、接口契约或测试表现，不包含泛泛推测。 |
+| **阴性确认** | 未发现问题时，必须明确列出已检查的文件清单与范围，不能仅回复空话或简单回执。 |
+| **权限边界** | 审查结论属于咨询性质的参考证据。合并、发布和最终采纳权始终在父级与操作者手中，子级无权代替做出合并决定。 |
 
 ## 监督流程
 
@@ -106,5 +153,6 @@ order: 80
 ## 另见
 
 - [多 Agent 协作](../concepts/multi-agent-collaboration.md)
+- [操作工作区](work-with-workspaces.md)
 - [任务规格（Tasks specification）](../spec/tasks.md)
 - [观察 Agent 工作](observe-agent-work.md)

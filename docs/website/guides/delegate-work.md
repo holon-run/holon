@@ -1,6 +1,6 @@
 ---
 title: Delegate work to another agent
-summary: Choose a child or peer, follow its reply, verify the result, and clean up owned children.
+summary: Choose a child or peer, hand off committed revisions for review, verify results, and clean up owned children.
 order: 80
 ---
 
@@ -71,6 +71,62 @@ work. The field definitions are in the
 [delegated task reference](../reference/work-items.md#delegated-task-snapshots).
 Token consumption does not establish progress or correctness.
 
+## Hand off a committed change for read-only review
+
+A common multi-agent workflow is having a development agent complete an
+implementation and hand off the committed revision to a reviewer agent. This
+ensures the reviewer inspects the exact commit without reading uncommitted dirty
+files or modifying code concurrently.
+
+### 1. Define the handoff input
+
+Before calling `InvokeAgent`, obtain the exact Git revision and specify the
+review boundaries:
+
+| Input item | Requirement | Example |
+| --- | --- | --- |
+| **Target repository** | Canonical path or attached workspace | `/home/user/project` |
+| **Base ref** | Parent branch or baseline commit SHA | `main` or `b4adb08a` |
+| **Target commit SHA** | Exact commit to review (resolve via `git rev-parse HEAD`) | `6a21e3c4` |
+| **Review scope** | Specific directory or subsystem | `src/runtime/` |
+| **Permissions** | Strictly read-only; no edits, commits, or publishing | `read_only: true` |
+| **Handoff workspace** | Independent worktree or clean shared checkout | `workspace_mode: "worktree"` |
+| **Required output format** | Structured findings with file/line evidence or clean scope | Severity, file:line, reason, verification gap |
+
+### 2. Invoke the reviewer subagent
+
+Call `InvokeAgent` using the `code-reviewer` template in a separate worktree:
+
+```json
+{
+  "target": {
+    "kind": "new_subagent",
+    "template": "code-reviewer",
+    "workspace_mode": "worktree"
+  },
+  "initial_message": "Review committed changes between main and commit 6a21e3c4 in src/runtime/. Read only; do not edit, commit, or push. Check for logic regressions, error handling, and test coverage. Return findings with file:line references, severity, and verified evidence. If no issues are found, state the exact scope and files checked."
+}
+```
+
+> **Worktree isolation reminder:** A subagent launched with `workspace_mode: "worktree"`
+> checks out the specified branch or base reference in an isolated directory. It
+> does **not** see uncommitted changes from the parent workspace. Ensure your
+> changes are committed or explicitly supplied. For detailed worktree lifecycle
+> management, see [Work with workspaces](work-with-workspaces.md).
+
+### 3. Verify the review deliverable
+
+When the reviewer subagent finishes, the parent agent must verify the output
+against the assigned task before accepting:
+
+| Check item | Acceptance criterion |
+| --- | --- |
+| **Commit alignment** | Reviewer inspected the requested target SHA, not an arbitrary commit or branch head. |
+| **Location precision** | Every reported issue references a concrete file path and valid line range in that revision. |
+| **Evidence basis** | Findings cite concrete code logic, contracts, or test failures, not generic speculation. |
+| **Negative confirmation** | When no issues are found, the reviewer enumerates the checked files rather than returning an empty acknowledgement. |
+| **Authority boundary** | Reviewer output is advisory evidence. Acceptance, merge, and deployment decisions remain with the parent and operator. |
+
 ## Supervision Flow
 
 1. **Invoke** — Save the task handle returned by `InvokeAgent`.
@@ -134,5 +190,6 @@ has either retained the child intentionally or completed safe cleanup.
 ## See Also
 
 - [Multi-agent collaboration](../concepts/multi-agent-collaboration.md)
+- [Work with workspaces](work-with-workspaces.md)
 - [Tasks specification](../spec/tasks.md)
 - [Observe agent work](observe-agent-work.md)

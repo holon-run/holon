@@ -1,6 +1,6 @@
 ---
 title: 配置 OIDC 认证
-summary: 配置 OpenID Connect 单点登录、会话超时策略及用户提示词审计。
+summary: 配置 OpenID Connect 单点登录、团队共享运行时提示词审计与会话超时策略。
 order: 180
 ---
 
@@ -8,7 +8,7 @@ order: 180
 
 默认情况下，Holon 使用本地控制 Token 进行身份认证。对于团队共享服务器或远程多用户部署，可以切换为 OpenID Connect (OIDC) 单点登录。团队成员通过企业现有的身份提供商（IdP）登录，Holon 会精准记录向 Agent 发起提示词的具体用户身份。
 
-本指南涵盖在 IdP 中注册 OIDC 客户端、配置 Holon、调整会话生命周期以及验证登录流程。
+本指南涵盖在 IdP 中注册 OIDC 客户端、配置 Holon、调整会话生命周期、多成员共享任务核验以及登录流程验证。
 
 ## 前置条件
 
@@ -144,7 +144,40 @@ curl -H "Authorization: Bearer <session-token>" https://<your-holon-host>/api/au
 
 在审计 Agent 运行轨迹或通过 `GET /api/agents/{agent_id}/messages/{message_id}` 查询消息时，可以明确追溯是谁下发的指令。该归属信息并不代表该用户逐一手动批准了后续触发的每一次具体工具调用。
 
-### 4. 退出登录
+### 4. 用两名测试成员核对同一项共享任务
+
+在团队多人共用同一套 Agent 运行时的部署场景下，建议核对独立会话发起的任务归属，以及成员协同查看共享任务结果的流程：
+
+1. **前置测试范围约定**：在执行测试前明确测试边界：
+
+   | 约定项 | 测试配置要求 |
+   | --- | --- |
+   | **测试账号** | 两名已配置的测试用户（例如 `alice@example.com` 与 `bob@example.com`） |
+   | **目标 Agent** | 约定的团队共享 Agent（例如 `team-assistant`） |
+   | **允许执行的任务** | 有界的只读检查任务（例如查询某次构建状态或报告） |
+   | **预期共享范围** | 两位成员均可查阅该任务结果；每条提示词精准记录对应的发送者 `actor_id` |
+   | **非预期范围** | 用户间底层文件系统沙箱或隔离工作区（OIDC 不提供此类隔离） |
+
+2. **成员 A 发起任务**：
+   - 成员 Alice 在独立浏览器会话 A 中登录，向共享 Agent 发送指令：“检查提交 6a21e3c4 的构建状态”。
+   - Alice 获得任务或工作项 ID。
+   - 查看该消息详情，确认 `actor_display_name` 记录为 Alice，且携带其专属 `actor_id`。
+
+3. **成员 B 跟进共享结果**：
+   - 在另一个独立的浏览器窗口或无痕会话中，成员 Bob 登录。
+   - Bob 进入该共享 Agent，找到 Alice 发起的任务结果，并提交跟进提示词：“总结刚才检查中的验证项”。
+   - 消息轨迹中清晰记录 Bob 的独立 `actor_id` 与显示名称，同时保持了该工作项任务上下文的连贯性。
+
+4. **核对审计轨迹**：
+   - 通过 `GET /api/agents/{agent_id}/messages` 查看消息列表：
+   - 两条提示词按时间顺序记录，各自绑定真实发送者的 OIDC 身份。
+
+> **安全与隔离边界说明：**
+> - **认证、授权与底层执行的三重边界：** OIDC 负责解决“发起者是谁”的身份认证与审计归因。它**不提供**多租户文件系统虚拟化、容器安全边界或每用户独立工作区隔离。
+> - **底层执行环境：** Agent 调用的工具均运行在主机守护进程的用户权限下。如需对不可信任务进行硬隔离，应部署独立的守护进程实例或容器环境。具体请参阅[安全与执行边界](../concepts/security-and-execution-boundaries.md)以及[小团队中的 Agent 实践](../blog/agents-in-a-small-team.md)。
+> - **实测先决条件：** 完整的双用户端到端测试需要获授权的非生产测试实例以及两个测试身份。在尚未具备多用户测试凭据时，核对单用户归因即可，并将双用户任务测试标记为等待环境授权，切勿虚构测试记录。
+
+### 5. 退出登录
 
 点击 Web GUI 中的 **Log out**，或调用登出接口：
 
@@ -154,7 +187,7 @@ curl -X POST -H "Authorization: Bearer <session-token>"   https://<your-holon-ho
 
 登出会注销服务端对应的会话记录。在浏览器中登出会同步清除本地 Cookie；单独执行 `curl` 请求不会清理你浏览器中的 Cookie。
 
-### 5. 验证未经授权请求的拦截表现
+### 6. 验证未经授权请求的拦截表现
 
 发起不带 Cookie 和 Bearer 凭据的请求：
 
@@ -179,3 +212,5 @@ curl -i https://<your-holon-host>/api/auth/session/me
 - [配置参考](/zh-CN/reference/configuration.md) — `auth.*` 配置项完整清单
 - [连接到远程 Holon 运行时](/zh-CN/guides/connect-remote-runtime.md) — 远程访问方案与网络拓扑
 - [使用 Web GUI](/zh-CN/guides/use-web-gui.md) — 在浏览器中操作 Agent 与任务
+- [安全与执行边界](../concepts/security-and-execution-boundaries.md) — 认证、授权与隔离的三重边界
+- [小团队中的 Agent 实践](../blog/agents-in-a-small-team.md) — 团队共享 Agent 协作与审计实践
