@@ -19,6 +19,17 @@ fn runtime() -> (tempfile::TempDir, RuntimeHandle) {
 }
 
 #[test]
+fn exact_continuations_cooling_pause_retains_source_and_blocker_across_restart() {
+    for kind in [
+        ContinuationDispatch::TaskResult,
+        ContinuationDispatch::Timer,
+        ContinuationDispatch::TimerWait,
+    ] {
+        run_continuation_dispatch(kind, ContinuationDispatchFault::LocalCooling);
+    }
+}
+
+#[test]
 fn exact_task_result_interrupted_recovery_replay_preserves_wait_and_task_owner() {
     run_continuation_dispatch(
         ContinuationDispatch::TaskResult,
@@ -574,6 +585,7 @@ enum ContinuationDispatchFault {
     HttpFailureInterruptedReplay,
     HttpFailureWithAuthority(RecoveryAuthorityChange),
     LocalRejection,
+    LocalCooling,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -680,7 +692,9 @@ async fn continuation_dispatch_scenario(
     server.healthy.store(
         matches!(
             fault,
-            ContinuationDispatchFault::None | ContinuationDispatchFault::LocalRejection
+            ContinuationDispatchFault::None
+                | ContinuationDispatchFault::LocalRejection
+                | ContinuationDispatchFault::LocalCooling
         ),
         Ordering::SeqCst,
     );
@@ -896,6 +910,34 @@ async fn continuation_dispatch_scenario(
             .host_registry_revision += 1;
     }
     let admission = admission.clone();
+    let cooling_deadline = if matches!(fault, ContinuationDispatchFault::LocalCooling) {
+        let lease = admission.state.lock().unwrap().lease.take().unwrap();
+        let server_deadline = runtime.now() + Duration::minutes(10);
+        assert!(runtime
+            .runtime_db()
+            .record_provider_admission_failure(
+                &lease,
+                &admission.candidate.connection,
+                ProviderCooldownPolicy::Transport,
+                runtime.now(),
+                Some(server_deadline),
+                &admission.candidate.model.as_string(),
+            )
+            .unwrap());
+        let deadline = runtime
+            .runtime_db()
+            .provider_admission_blocked(
+                std::slice::from_ref(&admission.candidate.connection),
+                runtime.now(),
+            )
+            .unwrap()
+            .unwrap()
+            .not_before;
+        assert!(deadline >= server_deadline);
+        Some(deadline)
+    } else {
+        None
+    };
     let message = scheduled.message;
     let processing_started = std::time::Instant::now();
     let result = Box::pin(runtime.process_message_with_plan_deferred(
@@ -904,6 +946,86 @@ async fn continuation_dispatch_scenario(
         &scheduled.scheduler_decision,
     ))
     .await;
+    if let Some(deadline) = cooling_deadline {
+        assert!(is_parked_dispatch_rejection(result.as_ref().unwrap_err()));
+        let source_id = message.id.clone();
+        runtime
+            .settle_processed_message(message, result, processing_started)
+            .await
+            .unwrap();
+        assert_eq!(server.calls.load(Ordering::SeqCst), 0, "{kind:?}");
+        let paused = runtime.agent_state().await.unwrap();
+        assert!(paused.last_runtime_failure.is_none(), "{kind:?}");
+        assert_eq!(paused.pending, 1, "{kind:?}");
+        let turn = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+        assert!(turn.runtime_failure.is_none(), "{kind:?}");
+        assert_eq!(
+            turn.terminal.as_ref().unwrap().kind,
+            crate::types::TurnTerminalKind::Interrupted
+        );
+        assert!(turn
+            .produced_brief_ids
+            .iter()
+            .map(|id| runtime.storage().read_brief_by_id(id).unwrap().unwrap())
+            .all(|brief| brief.kind == crate::types::BriefKind::Ack));
+        assert!(runtime
+            .storage()
+            .read_recent_events(256)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "provider_dispatch_paused"
+                && event.data["message_id"] == source_id));
+        if let Some(id) = result_message_id.as_ref() {
+            let settlement = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(id)
+                .unwrap()
+                .unwrap();
+            assert_ne!(settlement.state, TaskResultSettlementState::Settled);
+            assert!(settlement.disposition.is_none());
+        }
+        drop(admission);
+        drop(runtime);
+        let restored = open_runtime_with_clock(home.path(), config, clock.clone());
+        assert_eq!(
+            restored
+                .runtime_db()
+                .provider_queue_parking("default", &source_id)
+                .unwrap()
+                .unwrap()
+                .not_before,
+            deadline
+        );
+        assert!(!process_next_model_input(&restored).await, "{kind:?}");
+        clock.advance(
+            (deadline - restored.now() + Duration::seconds(1))
+                .to_std()
+                .unwrap(),
+        );
+        assert!(process_next_model_input(&restored).await, "{kind:?}");
+        assert_eq!(server.calls.load(Ordering::SeqCst), 1, "{kind:?}");
+        let after = restored
+            .latest_work_item(&waiter.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.blocked_by, blocked.blocked_by);
+        assert_eq!(after.blocked_by_wait_id, blocked.blocked_by_wait_id);
+        assert_eq!(after.recheck_at, blocked.recheck_at);
+        if matches!(kind, ContinuationDispatch::TaskResult) {
+            assert_eq!(
+                restored
+                    .storage()
+                    .latest_task_record(task_id)
+                    .unwrap()
+                    .unwrap()
+                    .work_item_id,
+                Some(captured.id),
+            );
+        }
+        return;
+    }
     if matches!(fault, ContinuationDispatchFault::LocalRejection) {
         let error = result.as_ref().err().expect("local guard must reject");
         let failure = crate::runtime_error::describe_runtime_error(error);
@@ -1071,6 +1193,20 @@ async fn continuation_dispatch_scenario(
                 interrupted.terminal.as_ref().unwrap().kind,
                 crate::types::TurnTerminalKind::Interrupted
             );
+            assert!(interrupted.runtime_failure.is_none());
+            assert!(runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .last_runtime_failure
+                .is_none());
+            assert!(runtime
+                .storage()
+                .read_recent_events(256)
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "provider_dispatch_paused"
+                    && event.data["message_id"] == recovery_message.id));
             assert_eq!(
                 runtime
                     .runtime_db()

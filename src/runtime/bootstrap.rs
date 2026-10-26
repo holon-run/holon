@@ -863,6 +863,10 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 terminal_tool_interjection_checkpoint:
                     super::TerminalToolInterjectionCheckpoint::default(),
+                #[cfg(test)]
+                queued_message_projection_checkpoint: StdMutex::new(None),
+                #[cfg(test)]
+                provider_pause_commit_checkpoint: StdMutex::new(None),
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };

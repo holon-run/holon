@@ -379,15 +379,36 @@ idempotent reconciliation.
 
 An unrecoverable guard/canonical contradiction while the attempt still owns
 its lane settles a WorkItem to `NeedsRepair`, not `Interrupted`/`Runnable`.
-Lifecycle and conversation attempts pause. Availability refusals park the
-original queue source until its existing provider deadline, then replay the
-interrupted canonical lineage without replacing its root or budget. After that
-interrupted settlement is durably confirmed, runtime restores the original
-persisted source to its live queue, including when commit success is established
-by readback. The parking deadline still gates admission; restart is not required.
-Queue restoration changes only `pending` against the latest durable agent-state
-snapshot with OCC, then reconciles memory; it must not upsert a stale pre-terminal
-projection or overwrite a newer control-plane Stop.
+Lifecycle and conversation attempts pause. Availability refusals can retain the
+original source for its existing provider deadline, then replay the interrupted
+canonical lineage without replacing its root or budget. A dispatch rejection
+is only a pending disposition, not confirmation that recovery has committed.
+For a replay-safe pause, the existing queue terminal transaction validates the
+original parking and open attempt, commits interruption, retains the source and
+pending projection, and publishes `provider_dispatch_paused` with a nonterminal
+acknowledgement. It does not create a failure Brief, `runtime_error`, or current
+runtime-failure summary. The audit event retains the dispatch descriptor,
+source/attempt identity and absolute deadline; request-level `retryable` remains
+distinct from runtime resume responsibility.
+The parking deadline still gates admission; restart is not required. Live queue
+restoration is a post-commit projection, also reconciled when success is
+established by readback. It must not overwrite a newer control-plane Stop.
+The synchronous pause commit and its live state/source queue projection share
+one agent lock, so concurrent enqueue cannot observe either a stale pre-commit
+baseline or the retained pending count without the retained source. Release the
+lock before cache updates, event publication, and scheduler notification.
+Each settlement OCC attempt derives the acknowledgement and both
+`provider_dispatch_paused` / `queue_entry_settled` dispositions from the same
+agent-state baseline. A committed Stop selects `suspended_by_control`: the input
+and admission deadline remain retained, but explicit Start is required. Otherwise
+the disposition is `waiting`, describing retry eligibility rather than
+unconditional execution; source, owner, wait and budget fences still apply.
+Readback verifies the acknowledgement chosen by the final attempt, not an
+earlier waiting proposal. A subsequent Stop does not rewrite historical evidence.
+Missing or changed parking, failed settlement, exhausted budget, unknown IO or
+a crossed tool side-effect boundary cannot promise safe automatic source replay.
+These remain failures or repair blockers; no acknowledgement of automatic
+recovery may escape an uncommitted transaction.
 An aborted fallback settlement or ordinary interruption does not gain this
 automatic reentry. Infrastructure
 errors keep their storage classification and retryability while still bypassing

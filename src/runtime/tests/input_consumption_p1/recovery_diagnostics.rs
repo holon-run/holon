@@ -383,6 +383,7 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
                 Some(state.clone()),
                 vec![artifacts.transcript.clone()],
                 vec![artifacts.brief.clone()],
+                None,
             )
             .await;
         assert!(result.is_err(), "{fault:?}");
@@ -440,6 +441,7 @@ async fn p1_idle_recovery_rejection_terminal_fault_rolls_back_metadata_and_evide
                 Some(state),
                 vec![artifacts.transcript],
                 vec![artifacts.brief],
+                None,
             )
             .await
             .unwrap());
