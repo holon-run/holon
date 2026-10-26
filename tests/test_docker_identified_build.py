@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from scripts.docker_e2e.identified_build import git, prepare
+from scripts.docker_e2e.fallback_storm import require_build
 
 
 class IdentifiedBuildTests(unittest.TestCase):
@@ -25,10 +26,15 @@ class IdentifiedBuildTests(unittest.TestCase):
 
     def check_context(self, source):
         revision = git(source, "rev-parse", "HEAD")
+        source_short_revision = git(source, "rev-parse", "--short", "HEAD")
         result = prepare(source, self.root / "identified")
         context, dockerfile = Path(result["context"]), Path(result["dockerfile"])
         self.assertEqual(result["revision"], revision)
         self.assertEqual(git(context, "rev-parse", "HEAD"), revision)
+        short_revision = git(context, "rev-parse", "--short", "HEAD")
+        self.assertEqual(short_revision, revision[:12])
+        require_build(f"holon test ({short_revision})", revision)
+        self.assertEqual(git(source, "rev-parse", "--short", "HEAD"), source_short_revision)
         self.assertEqual(git(context, "status", "--porcelain"), "")
         self.assertEqual(git(source, "status", "--porcelain"), "")
         self.assertTrue((context / ".git").is_dir())
@@ -42,6 +48,7 @@ class IdentifiedBuildTests(unittest.TestCase):
         self.assertNotIn("extraheader", git(context, "config", "--list").lower())
 
     def test_clean_checkout_uses_real_self_contained_git_metadata(self):
+        git(self.source, "config", "core.abbrev", "7")
         git(self.source, "config", "http.https://example.invalid/.extraheader", "private fixture")
         self.check_context(self.source)
 
@@ -77,6 +84,9 @@ class IdentifiedBuildTests(unittest.TestCase):
         self.assertIn("--features recovery-acceptance", Path(result["dockerfile"]).read_text())
         self.assertEqual((Path(result["context"]) / "Dockerfile").read_text(), original)
         self.assertEqual(git(Path(result["context"]), "status", "--porcelain"), "")
+        short_revision = git(Path(result["context"]), "rev-parse", "--short", "HEAD")
+        self.assertEqual(short_revision, result["revision"][:12])
+        require_build(f"holon test ({short_revision}) [recovery-acceptance-test]", result["revision"])
         self.assertEqual((self.source / "Dockerfile").read_text(), original)
 
     def test_acceptance_build_rejects_missing_or_ambiguous_cargo_command(self):

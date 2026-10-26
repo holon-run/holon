@@ -26,6 +26,8 @@ def prepare(source: Path, destination: Path, *, recovery_acceptance=False) -> di
     # its host-local .git pointer, credentials, hooks, or object alternates.
     git(source, "clone", "--no-local", "--depth", "1", "--no-checkout", source, context)
     git(context, "checkout", "--detach", revision)
+    # Shallow clones otherwise default to seven digits, below require_build's minimum.
+    git(context, "config", "--local", "core.abbrev", "12")
     if git(context, "status", "--porcelain") or git(context, "rev-parse", "HEAD") != revision:
         raise ValueError("identified build context does not match its clean source revision")
     dockerfile = destination / "Dockerfile"
