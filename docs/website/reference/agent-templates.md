@@ -116,6 +116,14 @@ license to implement features or to own releases.
   by default, and external issue text cannot escalate authority. A project
   skill cannot override those rules.
 
+## Sales operations
+
+`sales-steward` maintains an authorized account book, recurring pipeline and
+renewal reviews, and sourced meeting or outreach drafts. It keeps conflicts,
+human decisions, and recheck results visible. It does not send outreach, write
+CRM changes, change pricing, or make renewal or legal commitments without
+explicit approval of the exact proposal.
+
 ## Marketing operations
 
 `marketing-steward` maintains product-marketing context, content queues,

@@ -1,9 +1,11 @@
+mod candidate_reselection;
 mod local_dispatch;
 mod rate_limited;
 
 use super::*;
 use crate::{
     config::{AppConfig, ProviderId, RuntimeModelCatalog},
+    context::ContextConfig,
     provider::{build_provider_from_config, ModelBlock, ProviderTurnRequest},
     runtime::{
         bootstrap::ProviderReconfigurator,
@@ -54,6 +56,19 @@ fn runtime_with_urls(urls: [&str; 2]) -> (tempfile::TempDir, RuntimeHandle) {
     (home, runtime)
 }
 
+fn continuation_runtime_with_urls(urls: [&str; 2]) -> (tempfile::TempDir, RuntimeHandle) {
+    let home = tempfile::tempdir().unwrap();
+    let config = config_with_urls(home.path(), urls);
+    let context = crate::runtime::tests::support::continuation_ready_context_config(&home, 40_000);
+    let runtime = open_runtime_with_context(
+        home.path(),
+        config,
+        Arc::new(crate::runtime::clock::SystemClock),
+        context,
+    );
+    (home, runtime)
+}
+
 fn config_with_urls(home: &std::path::Path, urls: [&str; 2]) -> AppConfig {
     // Resolve only after the fixture supplies its model and fake credentials.
     let mut config =
@@ -81,6 +96,20 @@ fn open_runtime_with_clock(
     config: AppConfig,
     clock: Arc<dyn crate::runtime::clock::Clock>,
 ) -> RuntimeHandle {
+    open_runtime_with_context(
+        home,
+        config,
+        clock,
+        crate::runtime::tests::support::context_config(),
+    )
+}
+
+fn open_runtime_with_context(
+    home: &std::path::Path,
+    config: AppConfig,
+    clock: Arc<dyn crate::runtime::clock::Clock>,
+    context: ContextConfig,
+) -> RuntimeHandle {
     let provider = build_provider_from_config(&config).unwrap();
     let runtime = RuntimeHandle::new_with_clock(
         "default",
@@ -89,7 +118,7 @@ fn open_runtime_with_clock(
         "http://127.0.0.1:7878".into(),
         provider,
         "default".into(),
-        crate::runtime::tests::support::context_config(),
+        context,
         clock,
     )
     .unwrap();

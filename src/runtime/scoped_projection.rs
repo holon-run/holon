@@ -141,19 +141,25 @@ impl RuntimeHandle {
     ) -> Result<ChildAgentObservabilitySnapshot> {
         let storage = self.inner.storage.read_only_with_db(db.clone())?;
         let agent = self.agent_state_scoped(db, handle)?;
+        let closure_timer = attribution::CHILD_CLOSURE.start();
         let work_queue = storage.work_queue_prompt_projection()?;
         let closure =
             Self::closure_decision_with_storage_at(&storage, &agent, None, work_queue, self.now())?;
-        // Preserve loaded latest-task semantics without nested spawn_blocking.
-        let mut tasks = db.tasks().latest_all()?;
-        tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        drop(closure_timer);
+        let tasks_timer = attribution::CHILD_TASK_READ.start();
+        let tasks = db.tasks().active_for_agent(&agent.id, usize::MAX)?;
+        drop(tasks_timer);
+        let briefs_timer = attribution::CHILD_BRIEFS.start();
         let briefs = storage.read_recent_briefs(16)?;
+        drop(briefs_timer);
+        let assemble_timer = attribution::CHILD_ASSEMBLE.start();
         let result = lifecycle::build_child_agent_observability(
             &agent,
             closure.waiting_reason,
             &tasks,
             &briefs,
         );
+        drop(assemble_timer);
         db.check_read_scope()?;
         Ok(result)
     }
@@ -197,6 +203,258 @@ mod tests {
             "triggers": projection.external_triggers,
             "waits": projection.waits,
         })
+    }
+
+    async fn parent_projection(
+        host: &crate::host::RuntimeHost,
+        agent_id: &str,
+    ) -> Result<AgentStateReadProjection> {
+        let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
+            Instant::now() + Duration::from_secs(30),
+        ));
+        let host = host.clone();
+        let agent_id = agent_id.to_owned();
+        let handle = Handle::current();
+        tokio::task::spawn_blocking(move || {
+            host.operator_agent_state_projection_scoped(&agent_id, 10, 10, &db, &handle)
+        })
+        .await?
+        .map_err(Into::into)
+    }
+
+    fn child_identity(id: &str, parent: &str) -> crate::types::AgentIdentityRecord {
+        crate::types::AgentIdentityRecord::new(
+            id,
+            crate::types::AgentKind::Child,
+            crate::types::AgentVisibility::Private,
+            crate::types::AgentOwnership::ParentSupervised,
+            crate::types::AgentProfilePreset::PrivateChild,
+            Some(parent.to_owned()),
+            None,
+        )
+    }
+
+    fn child_task(id: &str, owner: &str, status: &str, background: bool) -> TaskRecord {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "agent_id": owner, "kind": "command_task", "status": status,
+            "created_at": Utc::now(), "updated_at": Utc::now(),
+            "detail": if background {
+                serde_json::json!({"wait_policy": "background"})
+            } else {
+                serde_json::json!({"wait_policy": "blocking"})
+            },
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_parent_child_summary_does_not_decode_out_of_scope_task_payloads() {
+        let (_home, host, parent) = host_backed_test_runtime().await;
+        let parent_id = parent.agent_id().await.unwrap();
+        let identity = child_identity("payload-isolation-child", &parent_id);
+        host.append_agent_identity(&identity).unwrap();
+        let _child = host.get_or_create_agent(&identity.agent_id).await.unwrap();
+
+        // Corrupt only synthetic rows that the child's active-owner query must
+        // never decode. This fails through the parent projection on latest_all.
+        for (owner, status) in [
+            (identity.agent_id.as_str(), "completed"),
+            (identity.agent_id.as_str(), "failed"),
+            (identity.agent_id.as_str(), "cancelled"),
+            (identity.agent_id.as_str(), "interrupted"),
+            ("unrelated-owner", "running"),
+        ] {
+            let id = format!("{owner}-{status}");
+            host.runtime_db()
+                .tasks()
+                .upsert(&child_task(&id, owner, status, false))
+                .unwrap();
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE tasks SET payload_json = '{}' WHERE task_id = ?1",
+                    [&id],
+                )
+                .unwrap();
+        }
+        let projection = parent_projection(&host, &parent_id).await;
+        assert!(
+            projection.is_ok(),
+            "child summary decoded unrelated or terminal history: {:?}",
+            projection.err()
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_parent_child_summary_preserves_active_owner_and_nonblocking_task_semantics() {
+        let (_home, host, parent) = host_backed_test_runtime().await;
+        let parent_id = parent.agent_id().await.unwrap();
+        let mut children = Vec::new();
+        for (id, loaded) in [
+            ("active-loaded-child", true),
+            ("active-unloaded-child", false),
+        ] {
+            let identity = child_identity(id, &parent_id);
+            host.append_agent_identity(&identity).unwrap();
+            let mut state = AgentState::new(id);
+            state.status = AgentStatus::AwakeIdle;
+            state.turn_index = 1;
+            state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
+                turn_id: format!("{id}-completed-turn"),
+                turn_index: 1,
+                kind: crate::types::TurnTerminalKind::Completed,
+                reason: None,
+                last_assistant_message: None,
+                no_brief_reason: None,
+                checkpoint: None,
+                completed_at: Utc::now(),
+                duration_ms: 1,
+            });
+            host.runtime_db().agent_states().upsert(&state).unwrap();
+            if loaded {
+                let runtime = host.get_or_create_agent(id).await.unwrap();
+                runtime.inner.agent.lock().await.state = state;
+                runtime
+                    .inner
+                    .projection_cache
+                    .lock()
+                    .await
+                    .upsert_task(child_task("cache-only-child-task", id, "cancelling", false));
+            }
+            for index in 0..17 {
+                let brief: crate::types::BriefRecord = serde_json::from_value(serde_json::json!({
+                    "id": format!("{id}-brief-{index}"), "agent_id": id,
+                    "kind": if index % 2 == 0 { "ack" } else { "failure" },
+                    "text": format!("brief-{index}"),
+                    "created_at": Utc::now() + chrono::Duration::milliseconds(index),
+                }))
+                .unwrap();
+                host.runtime_db().evidence().append_brief(&brief).unwrap();
+            }
+            // Legacy blocking flags must not override current background-only
+            // semantics. This oldest task also guards against history limits.
+            host.runtime_db()
+                .tasks()
+                .upsert(&child_task(&format!("{id}-blocker"), id, "queued", false))
+                .unwrap();
+            for index in 0..128 {
+                host.runtime_db()
+                    .tasks()
+                    .upsert(&child_task(
+                        &format!("{id}-background-{index}"),
+                        id,
+                        ["queued", "running", "cancelling"][index % 3],
+                        true,
+                    ))
+                    .unwrap();
+            }
+            let mut foreign = child_task(
+                &format!("{id}-foreign-link"),
+                &parent_id,
+                "cancelling",
+                false,
+            );
+            foreign.detail = Some(serde_json::json!({"child_agent_id": id}));
+            host.runtime_db().tasks().upsert(&foreign).unwrap();
+            children.push(id);
+        }
+        for (status, active) in [
+            ("queued", true),
+            ("running", true),
+            ("cancelling", true),
+            ("completed", false),
+            ("failed", false),
+            ("cancelled", false),
+            ("interrupted", false),
+        ] {
+            for id in &children {
+                host.runtime_db()
+                    .tasks()
+                    .upsert(&child_task(
+                        &format!("{id}-status-{status}"),
+                        id,
+                        status,
+                        false,
+                    ))
+                    .unwrap();
+            }
+            let projection = parent_projection(&host, &parent_id).await.unwrap();
+            assert_eq!(projection.agent.active_children.len(), 2);
+            for child in &projection.agent.active_children {
+                assert_eq!(child.observability.blocked_reason, None, "{status}");
+                assert_eq!(
+                    child.observability.phase,
+                    crate::types::ChildAgentPhase::Waiting
+                );
+                assert_eq!(child.active_task_count, 129 + usize::from(active));
+                assert_eq!(
+                    child.observability.last_progress_brief.as_deref(),
+                    Some("brief-16")
+                );
+                assert_eq!(
+                    child.observability.last_result_brief.as_deref(),
+                    Some("brief-15")
+                );
+            }
+            let loaded = host.get_or_create_agent(children[0]).await.unwrap();
+            let ordinary = loaded.child_agent_observability().await.unwrap();
+            assert_eq!(projection.agent.active_children[0].observability, ordinary);
+            assert!(host.try_get_loaded_runtime(children[1]).await.is_none());
+            if active {
+                for id in &children {
+                    let mut task = host
+                        .runtime_db()
+                        .tasks()
+                        .latest(&format!("{id}-status-{status}"))
+                        .unwrap()
+                        .unwrap();
+                    task.status = child_task("status", id, "completed", false).status;
+                    host.runtime_db().tasks().upsert(&task).unwrap();
+                }
+            }
+        }
+        // One old active task behind 128 newer terminal records must still
+        // keep a completed child nonterminal; do not read latest N then filter.
+        for id in &children {
+            for index in 0..128 {
+                host.runtime_db()
+                    .tasks()
+                    .upsert(&child_task(
+                        &format!("{id}-background-{index}"),
+                        id,
+                        "completed",
+                        true,
+                    ))
+                    .unwrap();
+            }
+        }
+        for status in ["queued", "completed"] {
+            for id in &children {
+                let mut task = host
+                    .runtime_db()
+                    .tasks()
+                    .latest(&format!("{id}-blocker"))
+                    .unwrap()
+                    .unwrap();
+                task.status = child_task("status", id, status, false).status;
+                host.runtime_db().tasks().upsert(&task).unwrap();
+            }
+            let projection = parent_projection(&host, &parent_id).await.unwrap();
+            for child in projection.agent.active_children {
+                assert_eq!(child.active_task_count, usize::from(status == "queued"));
+                assert_eq!(
+                    child.observability.phase,
+                    if status == "queued" {
+                        crate::types::ChildAgentPhase::Waiting
+                    } else {
+                        crate::types::ChildAgentPhase::Terminal
+                    }
+                );
+            }
+        }
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

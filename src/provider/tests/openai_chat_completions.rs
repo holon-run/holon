@@ -150,6 +150,7 @@ fn chat_completion_request_builds_openai_function_tools() {
         ToolSchemaContract::Relaxed,
         false,
         None,
+        "max_tokens",
     )
     .expect("should build chat completion request");
 
@@ -194,6 +195,7 @@ fn chat_completion_request_includes_tool_choice_auto() {
         ToolSchemaContract::Relaxed,
         false,
         None,
+        "max_tokens",
     )
     .expect("should build chat completion request");
 
@@ -738,6 +740,7 @@ fn chat_completion_request_includes_stream_flag() {
         ToolSchemaContract::Relaxed,
         true,
         None,
+        "max_tokens",
     )
     .expect("should build streaming request");
 
@@ -751,6 +754,7 @@ fn chat_completion_request_includes_stream_flag() {
         ToolSchemaContract::Relaxed,
         false,
         None,
+        "max_tokens",
     )
     .expect("should build non-streaming request");
 
@@ -769,6 +773,7 @@ fn chat_completion_request_forwards_reasoning_effort_when_configured() {
         ToolSchemaContract::Relaxed,
         false,
         Some("none"),
+        "max_tokens",
     )
     .expect("should build chat completion request");
 
@@ -1206,6 +1211,7 @@ fn chat_completion_request_handles_empty_tools_list() {
         ToolSchemaContract::Relaxed,
         false,
         None,
+        "max_tokens",
     );
 
     assert!(chat_request.is_ok());

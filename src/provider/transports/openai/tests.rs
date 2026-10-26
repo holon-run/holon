@@ -79,6 +79,7 @@ fn inference_time_remains_after_input_for_chat_and_responses() {
             ToolSchemaContract::Strict,
             false,
             None,
+            "max_tokens",
         )
         .unwrap();
         assert_eq!(chat["messages"][0]["content"], "stable system");
@@ -294,6 +295,110 @@ fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
     .unwrap();
 
     assert_eq!(provider.max_output_tokens, 200_000);
+}
+
+#[tokio::test]
+async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget() {
+    use crate::provider::AgentProvider;
+    use axum::{routing::post, Json, Router};
+
+    let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let requests = captured.clone();
+    let server = Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push(body);
+                Json(json!({
+                    "id": "chat-output-budget",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let handle = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let home = tempfile::tempdir().unwrap();
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("input ".repeat(300))],
+        vec![],
+    );
+
+    for (provider, endpoint, model, field) in [
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k3",
+            "max_completion_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k3.1-pro",
+            "max_completion_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k3.1-pro-highspeed",
+            "max_completion_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k2.7-code",
+            "max_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k2.8-preview",
+            "max_tokens",
+        ),
+        ("tencent-tokenhub", "default", "kimi-k3-pro", "max_tokens"),
+        ("moonshot", "default", "kimi-k3", "max_tokens"),
+        ("tencent-tokenhub", "other", "kimi-k3", "max_tokens"),
+    ] {
+        for (configured, context) in [(131_072, None), (1_024, None), (131_072, Some(8_192))] {
+            let mut config = test_openai_codex_config(Some("local-test-only".into()));
+            config.route_provider = ProviderId::parse(provider).unwrap();
+            config.route_endpoint = ProviderEndpointId::parse(endpoint).unwrap();
+            config.base_url = base_url.clone();
+            let chat =
+                OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+                    &config,
+                    model,
+                    configured,
+                    context,
+                    home.path(),
+                )
+                .unwrap();
+            chat.complete_turn(request.clone()).await.unwrap();
+            let body = captured.lock().unwrap().pop().unwrap();
+            let expected = effective_output_tokens(context, configured, &body, &[field]);
+            assert_eq!(body[field], expected, "{provider}@{endpoint}/{model}");
+            let other = if field == "max_tokens" {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            assert!(body.get(other).is_none(), "{provider}@{endpoint}/{model}");
+            if context.is_some() {
+                assert!(expected < configured);
+            } else {
+                assert_eq!(expected, configured);
+            }
+        }
+    }
+    handle.abort();
+    handle.await.unwrap_err();
 }
 
 #[test]

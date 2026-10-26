@@ -37,6 +37,11 @@ fn local_dispatch_rejection_stops_without_fallback_or_autonomous_replay() {
 }
 
 #[test]
+fn local_dispatch_rejection_with_timeline_keeps_canonical_settlement_and_single_audit() {
+    run_local_dispatch_scenario(5);
+}
+
+#[test]
 fn cooling_dispatch_rejection_resumes_at_the_original_deadline_after_restart() {
     run_local_dispatch_scenario(1);
 }
@@ -66,11 +71,12 @@ fn run_local_dispatch_scenario(scenario: u8) {
                 .unwrap()
                 .block_on(async move {
                     match scenario {
-                        0 => local_dispatch_rejection_scenario().await,
+                        0 => local_dispatch_rejection_scenario(false).await,
                         1 => cooling_dispatch_rejection_scenario(None).await,
                         2 => storage_dispatch_rejection_scenario().await,
                         3 => cooling_dispatch_rejection_scenario(Some(false)).await,
                         4 => cooling_dispatch_rejection_scenario(Some(true)).await,
+                        5 => local_dispatch_rejection_scenario(true).await,
                         _ => unreachable!(),
                     }
                 });
@@ -351,7 +357,7 @@ async fn storage_dispatch_rejection_scenario() {
         }));
 }
 
-async fn local_dispatch_rejection_scenario() {
+async fn local_dispatch_rejection_scenario(with_timeline: bool) {
     let server = OutageServer::start(false).await;
     let home = tempfile::tempdir().unwrap();
     let config = config_with_urls(home.path(), [&server.url, &server.url]);
@@ -428,11 +434,34 @@ async fn local_dispatch_rejection_scenario() {
             &scheduled.scheduler_decision,
         )
         .await;
+    let expected = describe_runtime_error(result.as_ref().unwrap_err());
+    // Exercise timeline attachment after the real, audited local conversion.
+    let result = if with_timeline {
+        result.map_err(|error| {
+            crate::provider::provider_turn_error(
+                error.to_string(),
+                crate::provider::ProviderAttemptTimeline {
+                    attempts: Vec::new(),
+                    requested_model_ref: "test".into(),
+                    active_model_ref: None,
+                    winning_model_ref: None,
+                    pending_fallback_model_ref: None,
+                    pending_fallback_disposition: None,
+                    aggregated_token_usage: None,
+                },
+                error,
+            )
+        })
+    } else {
+        result
+    };
     let error = result.as_ref().err().expect("guard must reject the send");
     let failure = describe_runtime_error(error);
     assert_eq!(failure.domain, RuntimeErrorDomain::Conflict);
     assert_eq!(failure.code, "provider_dispatch_rejected");
     assert!(!failure.retryable);
+    assert_eq!(failure.safe_context, expected.safe_context);
+    assert_eq!(failure.recovery_hint, expected.recovery_hint);
     runtime
         .settle_processed_message(scheduled.message, result, processing_started)
         .await
@@ -479,9 +508,17 @@ async fn local_dispatch_rejection_scenario() {
     let turns = runtime.storage().read_recent_turns(20).unwrap();
     assert_eq!(turns.len(), 1);
     let events = runtime.storage().read_recent_events(256).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "provider_dispatch_rejected" && event.data["dispatch_occurred"] == false
-    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event.kind == "provider_dispatch_rejected"
+                    && event.data["dispatch_occurred"] == false
+            })
+            .count(),
+        1,
+        "timeline attachment must not repeat the audited local conversion"
+    );
     assert!(!events.iter().any(|event| {
         matches!(
             event.kind.as_str(),

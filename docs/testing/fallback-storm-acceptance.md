@@ -180,3 +180,75 @@ even if log collection fails. Resources carry
 removing any residue after a forced termination. Never use an unscoped
 `docker system prune`. Evidence remains in the requested output directory;
 review/redact it before publishing, and do not commit raw runtime databases.
+
+## Tool continuation and interjection cases (#3753 / #3754)
+
+`scripts/docker_e2e/continuation_interjection.py` reuses the same isolated
+topology, controller, and evidence helpers for two additional cases. It is
+separate from the W1 fault cases and does not treat C00/N01 as evidence here.
+
+| Case | Deterministic trigger | Required observation |
+| --- | --- | --- |
+| T3753 | A serves one tool call (`ExecCommand` gated on `/var/lib/holon/qa-3753-gate`); a second agent gets a fixture 503 from A, writing a durable transport cooling fence; the gate is released afterwards | A receives no continuation request carrying tool output; B receives exactly one; one `provider_candidate_reselected` with `dispatch_occurred=false` and `predicate=scope_cooling`; the gated tool executes once; one completed turn and one result brief |
+| I3754 | The real `QA_PARK` operator input is admitted on healthy A and returns provider-owned encrypted reasoning plus a gated tool (`/var/lib/holon/qa-3754-park-gate`); helper qa2 seeds only A's transport cooldown with `QA_COOL_CHAIN` 503 (`Retry-After: 120`), leaving B healthy. After reading the canonical A fence the gate is released: the nonportable continuation parks locally without crossing lineage. The original A/B chain is unchanged. A 300 ms timer independently admits on B, with its response held before the tool call; a fresh prompt is queued before release | The exact operator prompt message ID settles `interrupted` with `provider_dispatch_parked` (never substituted by internal lineage recovery or interjected); opaque reasoning and independent B timer evidence are required; the fresh input becomes `interjected`; exactly one `operator_interjection_admitted`; no timer aborted/runtime-error terminal; the timer turn completes with one result brief |
+
+T3753 exercises the local guard path: the cooling fence is read back from
+`provider_transport_incidents` before the gate is released, so the fixture does
+not rely on a sleep-only race. Incident refs are endpoint-qualified (for example
+`qa-a@default/gpt-5.4`), and the tool-call log includes its marker in the same
+record. I3754 exercises the interjection planner; the
+parked source must be retained rather than consumed as an interjection, while a
+later queued input must still make durable progress.
+
+The provider-owned reasoning must include
+`content: [{"type": "reasoning_text", "text": "QA_PROVIDER_OWNED_REASONING"}]`;
+`encrypted_content` alone is ignored by the Responses parser. The runner also
+requires the source turn's persisted `assistant_round` transcript `data.blocks`
+to contain the parsed `reasoning_text` block. These blocks are the serialized
+assistant blocks; terminal `turn_records` do not contain an `assistant_blocks`
+field. `original-reasoning.json` preserves the source-linked evidence.
+
+I3754 holds the timer's provider response **before returning its tool call**,
+queues the fresh prompt, and captures `before-tool.json` while the old source
+is `interrupted` and the fresh source is `queued`. The actual interjection
+audit must name the fresh message and `before_tool_execution`; a later
+provider-dispatch admission does not pass. `before-timer.json` and
+`after-timer.json` preserve the original canonical message, input-consumption
+owner, and parking deadline. Input consumption ownership is read from
+`conversation_input_assignments`, linked to the original source turn;
+`scheduler_activation_inputs` is retained for audit but no longer written, so it
+is not an ownership oracle. The completed timer turn's `input_message_ids`
+must include the fresh input and exclude the parked source. Source and timer
+turns must not abort, and the timer must finish before the original deadline.
+The runner then waits for the original deadline without modifying runtime
+state: one scheduler reclaim, one `interrupted_queue_claim_reentry` replay
+with the same turn owner, and exactly one `Processed` settlement are required.
+Recovery events are fetched before stopping the daemon's HTTP server; final
+database and provider-log evidence is captured after dispatch is stopped.
+Only the complete pre-deadline plus recovery sequence returns
+`verified-i3754-isolated`. These are canonical/audit observations; the runner
+does not expose a direct heap snapshot of the runtime's in-memory queue.
+
+Run only after the parent supplies a revision-bearing candidate built from the
+accepted revision. Do not use the dirty QA worktree or a locally built binary
+for the runner gate, and do not bypass the revision check.
+
+```bash
+python3 scripts/docker-continuation-interjection.py \
+  --image holon:qa-candidate \
+  --python-image holon-openai-responses-stub:local \
+  --expected-revision "$CANDIDATE_REVISION" \
+  --case T3753 --case I3754 \
+  --evidence-dir target/continuation-interjection
+```
+
+Per-case evidence contains `build.json`, `readiness.json`, `events.json`,
+`http.json`, `snapshot.json`, and `cleanup.json`; `summary.json` carries one
+status per case (`verified-t3753-isolated` or `verified-i3754-isolated` only on
+full pass). The snapshot includes queue, provider parking, incidents, tool
+executions, and messages so queue/turn terminal state and the single tool
+execution are reviewable. The runner does not read other agents' data or a live
+database, publishes no ports, and uses only the internal Docker networks and
+the task-local volume. Exit `1` means failed or blocked evidence, never a pass.
+`--http-timeout` defaults to 45 seconds; `--timeout` defaults to 180 seconds
+per bounded wait, including the original 120-second source cooldown.

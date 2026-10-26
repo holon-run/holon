@@ -2347,6 +2347,87 @@ mod tests {
     }
 
     #[test]
+    fn child_observability_preserves_set_semantics_without_terminal_history() {
+        let mut agent = AgentState::new("child");
+        agent
+            .working_memory
+            .current_working_memory
+            .current_work_item_id = Some("child-work".into());
+        agent.working_memory.current_working_memory.work_summary = Some("child summary".into());
+        let mut history = vec![];
+        for status in [
+            TaskStatus::Completed,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+            TaskStatus::Interrupted,
+        ] {
+            history.push(task("terminal", status));
+        }
+        let mut foreign = task("foreign", TaskStatus::Cancelling);
+        foreign.agent_id = "other-owner".into();
+        foreign.detail = Some(serde_json::json!({"child_agent_id": "child"}));
+        history.push(foreign);
+
+        for status in [
+            AgentStatus::AwakeIdle,
+            AgentStatus::AwaitingTask,
+            AgentStatus::AwakeRunning,
+        ] {
+            agent.status = status;
+            for tasks in [
+                vec![],
+                vec![task("queued", TaskStatus::Queued)],
+                vec![
+                    task("running", TaskStatus::Running),
+                    task("queued", TaskStatus::Queued),
+                ],
+                vec![
+                    task("cancelling", TaskStatus::Cancelling),
+                    task("running", TaskStatus::Running),
+                    task("queued", TaskStatus::Queued),
+                ],
+            ] {
+                let expected = build_child_agent_observability(&agent, None, &tasks, &[]);
+                assert_eq!(expected.current_work_item_id.as_deref(), Some("child-work"));
+                assert_eq!(expected.work_summary.as_deref(), Some("child summary"));
+                let mut all = history.clone();
+                all.extend(tasks);
+                all.reverse();
+                assert_eq!(
+                    build_child_agent_observability(&agent, None, &all, &[]),
+                    expected
+                );
+            }
+        }
+
+        agent.status = AgentStatus::AwakeIdle;
+        agent.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
+            turn_id: "completed-turn".into(),
+            turn_index: 1,
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: None,
+            no_brief_reason: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        });
+        let terminal = build_child_agent_observability(&agent, None, &history, &[]);
+        assert_eq!(terminal.phase, ChildAgentPhase::Terminal);
+        agent.pending = 1;
+        assert_eq!(
+            build_child_agent_observability(&agent, None, &history, &[]).phase,
+            ChildAgentPhase::Running
+        );
+        agent.pending = 0;
+        agent.current_run_id = Some("new-run".into());
+        assert_eq!(
+            build_child_agent_observability(&agent, None, &history, &[]).phase,
+            ChildAgentPhase::Running
+        );
+    }
+
+    #[test]
     fn background_only_tasks_do_not_mark_child_blocked() {
         let background = task_with_wait_policy(
             "background",

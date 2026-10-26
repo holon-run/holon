@@ -691,7 +691,8 @@ class DatabaseCaptureTests(unittest.TestCase):
             before = path.read_bytes()
             for complete in (False, True):
                 with self.subTest(task_result=complete), \
-                        patch.object(self.helper, "Path", return_value=Path(tmp)), \
+                        patch.object(self.helper, "Path", side_effect=lambda value:
+                                     Path(tmp) if value == "/evidence-home" else Path(value)), \
                         redirect_stdout(io.StringIO()) as output:
                     self.helper.database(task_result=complete)
                     captured = json.loads(output.getvalue())

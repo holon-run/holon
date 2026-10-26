@@ -11,6 +11,7 @@ pub(crate) fn build_chat_completion_request(
     tool_schema_contract: ToolSchemaContract,
     stream: bool,
     reasoning_effort: Option<&str>,
+    max_output_tokens_parameter: &str,
 ) -> Result<Value> {
     // Build messages array for Chat Completions API
     let messages =
@@ -43,7 +44,7 @@ pub(crate) fn build_chat_completion_request(
     let mut body = json!({
         "model": model,
         "messages": messages,
-        "max_tokens": max_output_tokens,
+        (max_output_tokens_parameter): max_output_tokens,
         "stream": stream,
     });
 
