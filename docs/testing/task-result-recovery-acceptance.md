@@ -145,7 +145,10 @@ Once the durable budget is fully charged, the fixture grants exactly one
 successful response, and only to a request that resolves to the last charged
 root: a replayed request from an earlier lineage that is still queued after a
 restart fails instead, and the fifth-root restart checkpoint likewise waits for
-that designated root's own provider barrier. The join records the request's
+that designated root's own provider barrier. An exhausted case cannot begin its
+quiet observation until its configured restart checkpoint has actually run;
+the budget diagnostic alone is not sufficient while that root is still cooling
+before its provider barrier. The join records the request's
 real root and its observed budget, and a successful settlement must match that
 released barrier's root. Pending provider requests are read before the snapshot
 that explains them, because the daemon charges the recovery root before it

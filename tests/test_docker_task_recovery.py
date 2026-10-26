@@ -1022,16 +1022,36 @@ class RecoveryRunnerTests(unittest.TestCase):
             # budget it observed; it is not relabeled as the fifth root request.
             run.joins = [{"root_attempt_id": "root-1", "action": "fail",
                           "budget_before_release": 5}]
-            self.assertTrue(run.provider_outcomes_complete(snapshot, record))
+            self.assertTrue(run.recovery_outcomes_complete(snapshot, record))
             run.joins.append({"root_attempt_id": "root-1", "action": "success",
                               "budget_before_release": 5})
-            self.assertFalse(run.provider_outcomes_complete(snapshot, record))
+            self.assertFalse(run.recovery_outcomes_complete(snapshot, record))
             uncharged, uncharged_record = self.owned_snapshot(
                 {"goal": 5, "outcome": "exhausted"})
             uncharged["task_result_recovery_admissions"].pop()
             uncharged_record["recovery_attempts"] = 4
             uncharged_record["last_recovery_root_attempt_id"] = "root-4"
-            self.assertFalse(run.provider_outcomes_complete(uncharged, uncharged_record))
+            self.assertFalse(run.recovery_outcomes_complete(uncharged, uncharged_record))
+
+    def test_exhausted_observation_waits_for_the_required_restart(self):
+        snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "exhausted"})
+        with tempfile.TemporaryDirectory() as directory:
+            for checkpoint in ("fifth", "backoff"):
+                with self.subTest(checkpoint=checkpoint):
+                    run = recovery.RecoveryRun(
+                        Namespace(evidence_dir=Path(directory)), "restart-fifth-exhausted",
+                        {"goal": 5, "outcome": "exhausted", "restart": checkpoint},
+                    )
+                    # The fifth root is charged but still cooling before its
+                    # barrier; only an older lineage has released a failure.
+                    run.joins = [{"root_attempt_id": "root-1", "action": "fail",
+                                  "budget_before_release": 5}]
+                    self.assertFalse(run.recovery_outcomes_complete(snapshot, record))
+                    run.restarted = True
+                    self.assertTrue(run.recovery_outcomes_complete(snapshot, record))
+                    run.joins.append({"root_attempt_id": "root-5", "action": "success",
+                                      "budget_before_release": 5})
+                    self.assertFalse(run.recovery_outcomes_complete(snapshot, record))
 
     def test_success_release_requires_the_fully_charged_budget(self):
         snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "success"})
@@ -1042,12 +1062,12 @@ class RecoveryRunnerTests(unittest.TestCase):
             )
             run.joins = [{"root_attempt_id": "root-1", "action": "fail",
                           "budget_before_release": 1}]
-            self.assertFalse(run.provider_outcomes_complete(snapshot, record))
+            self.assertFalse(run.recovery_outcomes_complete(snapshot, record))
             run.joins.append({"root_attempt_id": "root-1", "action": "success",
                               "budget_before_release": 4})
-            self.assertFalse(run.provider_outcomes_complete(snapshot, record))
+            self.assertFalse(run.recovery_outcomes_complete(snapshot, record))
             run.joins[-1] = {**run.joins[-1], "budget_before_release": 5}
-            self.assertTrue(run.provider_outcomes_complete(snapshot, record))
+            self.assertTrue(run.recovery_outcomes_complete(snapshot, record))
 
     def test_restart_replay_resolves_to_the_live_attempt_on_one_chain(self):
         snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "success"})
