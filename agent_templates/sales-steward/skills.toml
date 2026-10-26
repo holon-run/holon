@@ -1,0 +1,32 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/sales-enablement"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/revops"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "mbfinotti/revops-skills"
+path = "skills/sales-pipeline-hygiene"
+ref = "2dedb3934ca74a1572d70e2a3ce8b96d2cbde1ca"
