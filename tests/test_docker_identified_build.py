@@ -65,6 +65,26 @@ class IdentifiedBuildTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             prepare(self.source, destination)
 
+    def test_acceptance_feature_only_changes_generated_dockerfile_not_git_context(self):
+        original = "FROM scratch\nRUN cargo build --release --locked\n"
+        (self.source / "Dockerfile").write_text(original)
+        git(self.source, "commit", "-am", "standard cargo build")
+        result = prepare(self.source, self.root / "identified", recovery_acceptance=True)
+        self.assertTrue(result["recovery_acceptance"])
+        self.assertIn("--features recovery-acceptance", Path(result["dockerfile"]).read_text())
+        self.assertEqual((Path(result["context"]) / "Dockerfile").read_text(), original)
+        self.assertEqual(git(Path(result["context"]), "status", "--porcelain"), "")
+        self.assertEqual((self.source / "Dockerfile").read_text(), original)
+
+    def test_acceptance_build_rejects_missing_or_ambiguous_cargo_command(self):
+        for index, count in enumerate((0, 2)):
+            (self.source / "Dockerfile").write_text(
+                "FROM scratch\n" + "RUN cargo build --release --locked\n" * count)
+            git(self.source, "add", "Dockerfile")
+            git(self.source, "commit", "--allow-empty", "-m", "build fixture")
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, "exactly one"):
+                prepare(self.source, self.root / f"invalid-{index}", recovery_acceptance=True)
+
 
 if __name__ == "__main__":
     unittest.main()

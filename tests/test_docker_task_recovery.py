@@ -5,6 +5,7 @@ import copy
 import importlib
 import io
 import json
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -160,6 +161,8 @@ class RecoveryOracleTests(unittest.TestCase):
         record.update(state="deferred", disposition=None, settled_at=None,
                       recovery_paused_at="2026-10-25T13:15:00Z",
                       recovery_diagnostic_at="2026-10-25T13:15:01Z")
+        for turn in snapshot["turn_records"]:
+            turn["terminal_kind"] = "failed"
         snapshot["briefs"] = [{
             "evidence_id": "brief_task_result_recovery_result-identity-1_2",
             "kind": "failure", "agent_id": "parent", "message_id": "result-1",
@@ -517,6 +520,62 @@ class DatabaseCaptureTests(unittest.TestCase):
 
 
 class ProviderFixtureTests(unittest.TestCase):
+    def test_fairness_script_uses_new_real_task_and_parks_without_completing_owner(self):
+        scenario = fixture.RecoveryScenario()
+        scenario.fairness, scenario.phase = True, 6
+        scenario.work_ids = ["work_000000000000001"]
+        scenario.task_ids = ["task_000000000000001", "task_000000000000002"]
+        calls = []
+        for _ in range(4):
+            status, result = scenario.consume({})
+            self.assertEqual(status, 200)
+            calls.extend(item for item in result["output"] if item["type"] == "function_call")
+        self.assertEqual([call["name"] for call in calls],
+                         ["ExecCommand", "WaitFor", "WaitFor"])
+        self.assertIn(fixture.FAIRNESS_GATE, json.loads(calls[0]["arguments"])["cmd"])
+        self.assertEqual(json.loads(calls[1]["arguments"])["resource"], scenario.task_ids[-1])
+        self.assertEqual(json.loads(calls[2]["arguments"]), {
+            "wake": "operator_input", "delivery": "final",
+            "reason": "preserve the shared owner and its exhausted obligation",
+        })
+        self.assertEqual(scenario.phase, scenario.expected_phase())
+
+    def test_fairness_transition_requires_fixture_control_and_explicit_current_owner_prompt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            control = Path(directory) / "control.json"
+            control.write_text(json.dumps({"fairness_owner": "owner"}))
+            scenario = fixture.RecoveryScenario()
+            scenario.phase, scenario.work_ids = 4, ["owner"]
+            with patch.object(fixture, "CONTROL", control), patch.object(
+                scenario, "current_input_items",
+                return_value=[{
+                    "body": "SCHEDULER-TASK-FAIRNESS under owner",
+                    "provenance": {"kind": "operator"},
+                }],
+            ):
+                status, body = scenario.consume_gated({}, "a", Mock())
+            self.assertEqual(status, 200)
+            self.assertTrue(scenario.fairness)
+            self.assertEqual(body["output"][0]["name"], "ExecCommand")
+            for configured, body in (
+                (False, "SCHEDULER-TASK-FAIRNESS under owner"),
+                (True, "SCHEDULER-TASK-FAIRNESS under foreign"),
+                (True, "an unrelated prompt under owner"),
+            ):
+                if configured:
+                    control.write_text(json.dumps({"fairness_owner": "owner"}))
+                else:
+                    control.unlink()
+                scenario = fixture.RecoveryScenario()
+                scenario.phase = 4
+                with patch.object(fixture, "CONTROL", control), patch.object(
+                    scenario, "current_input_items",
+                    return_value=[{"body": body, "provenance": {"kind": "operator"}}],
+                ):
+                    status, _ = scenario.consume_gated({}, "a", Mock(), timeout=0)
+                self.assertEqual(status, 504)
+                self.assertFalse(scenario.fairness)
+
     def test_script_uses_create_promoted_command_exact_wait_and_original_owner_completion(self):
         scenario = fixture.RecoveryScenario()
         wid, tid = "work_000000000000001", "task_000000000000001"
@@ -598,6 +657,403 @@ class ProviderFixtureTests(unittest.TestCase):
 
 
 class RecoveryRunnerTests(unittest.TestCase):
+    def order_evidence(self, order):
+        scanner_first = order == "scanner-first"
+        after, record = self.owned_snapshot({"goal": int(scanner_first), "outcome": "success"})
+        before = copy.deepcopy(after)
+        current = before["task_result_settlements"][0]
+        current.update(state="caller_admitted", disposition=None, settled_at=None)
+        source_id = "scanner-source" if scanner_first else record["message_id"]
+        if scanner_first:
+            current["activation_id"] = "root-1"
+            source = {
+                "id": source_id, "kind": "internal_followup",
+                "agent_id": record["agent_id"], "work_item_id": record["work_item_id"],
+                "origin": {"kind": "system", "subsystem": "task_result_recovery"},
+                "authority_class": "runtime_instruction", "admission_context": "runtime_owned",
+                "delivery_surface": "runtime_system",
+                "source_refs": {
+                    "task_result_message_id": record["message_id"],
+                    "task_result_identity": record["result_identity"],
+                    "task_result_rejoin_generation": str(record["rejoin_generation"]),
+                    "task_result_parent_turn_id": record["parent_turn_id"],
+                },
+            }
+            for snapshot in (before, after):
+                snapshot["messages"].append({
+                    "message_id": source_id, "payload_json": json.dumps(source),
+                })
+            row = next(row for row in before["execution_protocol_attempts"]
+                       if row["attempt_id"] == "root-1")
+            value = oracle.payload(row)
+            value.update(source_message_id=source_id, source={"identity": {"kind": "triggered_wait"}},
+                         binding={"kind": "work_item", "work_item_id": record["work_item_id"]})
+            row["payload_json"] = json.dumps(value)
+            before["queue_entries"] = [{"message_id": record["message_id"], "status": "queued"}]
+        else:
+            source = None
+        next(row for row in before["execution_protocol_attempts"]
+             if row["attempt_id"] == current["activation_id"])["lifecycle_state"] = "open"
+        build = "holon 0.54.1 (1662676f) [recovery-acceptance-test]"
+        event = {
+            "protocol": 1, "request_id": "order", "build": build,
+            **{key: record[key] for key in ("agent_id", "task_id", "work_item_id")},
+            "fence": {
+                "result_message_id": record["message_id"],
+                **{key: record[key] for key in (
+                    "result_identity", "parent_turn_id", "rejoin_generation", "recovery_epoch",
+                )},
+            },
+            "recovery_attempts": 0, "last_recovery_root_attempt_id": None,
+            "observed_at": "2026-10-25T13:00:00Z",
+            "source_message_id": record["message_id"] if scanner_first else None,
+            "queue_entry": {"message_id": record["message_id"], "status": "queued"},
+        }
+        held = {**copy.deepcopy(event),
+                "event": "task-result-held" if scanner_first else "scanner-held"}
+        scanner = {**copy.deepcopy(event), "event": "scanner-enqueued",
+                   "source": source, "source_message_id": source_id,
+                   "queue_entry": {"message_id": source_id, "status": "queued"}}
+        released = {**copy.deepcopy(event),
+                    "event": "task-result-released" if scanner_first else "scanner-released",
+                    "observed_at": "2026-10-25T13:00:32Z"}
+        return before, after, record, held, scanner if scanner_first else None, released, build
+
+    def test_controlled_order_requires_canonical_claim_and_complete_private_fences(self):
+        for order in ("exact-first", "scanner-first"):
+            before, after, record, held, scanner, released, build = self.order_evidence(order)
+            captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
+
+            def check(left=before, right=after, gate=held, scan=scanner, release=released,
+                      candidate=build):
+                return oracle.require_first_admission(
+                    left, after=right, captured=captured, order=order,
+                    held=gate, scanner=scan, released=release,
+                    request_id="order", expected_build=candidate,
+                )
+
+            check()
+            for mutation in ("build", "gate", "fence", "winner", "charge", "release", "second-root"):
+                left, right, gate = copy.deepcopy((before, after, held))
+                release, candidate = released, build
+                if mutation == "build":
+                    candidate = "holon 0.54.1 (1662676f)"
+                elif mutation == "gate":
+                    gate["recovery_attempts"] = 1
+                elif mutation == "fence":
+                    gate["fence"]["rejoin_generation"] += 1
+                elif mutation == "winner":
+                    attempt = next(row for row in left["execution_protocol_attempts"]
+                                   if row["attempt_id"] == left["task_result_settlements"][0]["activation_id"])
+                    value = oracle.payload(attempt)
+                    value["source_message_id"] = "foreign"
+                    attempt["payload_json"] = json.dumps(value)
+                elif mutation == "charge":
+                    right["task_result_settlements"][0]["recovery_epoch"] += 1
+                elif mutation == "release":
+                    release = None
+                else:
+                    right["task_result_recovery_admissions"].append({
+                        "result_identity": record["result_identity"], "recovery_epoch": 2,
+                        "root_attempt_id": "extra-root", "admitted_at": "2026-10-25T13:20:00Z",
+                    })
+                with self.subTest(order=order, mutation=mutation), self.assertRaises(AssertionError):
+                    check(left, right, gate, release=release, candidate=candidate)
+
+    def test_order_controller_waits_for_claim_before_releasing_the_loser(self):
+        for order in ("exact-first", "scanner-first"):
+            before, _, record, held, scanner, released, build = self.order_evidence(order)
+            with self.subTest(order=order), tempfile.TemporaryDirectory() as directory:
+                run = recovery.RecoveryRun(
+                    Namespace(evidence_dir=Path(directory)), order,
+                    {"goal": int(order == "scanner-first"), "outcome": "success", "first_order": order},
+                )
+                run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
+                run.setup_identity = {key: record[key] for key in (
+                    "agent_id", "task_id", "work_item_id", "parent_turn_id", "rejoin_generation",
+                )}
+                run.acceptance_request = "order"
+                (run.evidence / "build.json").write_text(json.dumps({"binary_version": build}))
+                events = {event["event"]: event for event in (held, scanner) if event is not None}
+                run.acceptance_event = Mock(side_effect=events.get)
+                run.docker = Mock()
+                run.acceptance_control(
+                    run.setup_identity, prearm=True,
+                    hold_scanner=order == "exact-first", hold_task_result=order == "scanner-first",
+                )
+                armed = json.loads(run.docker.call_args.kwargs["data"])
+                self.assertIsNone(armed["fence"])
+                self.assertEqual(armed["hold_task_result"], order == "scanner-first")
+                self.assertEqual(armed["hold_scanner"], order == "exact-first")
+                run.docker.reset_mock()
+                self.assertFalse(run.observe_order(before, []))
+                run.docker.assert_not_called()
+                self.assertFalse(run.observe_order(before, [{"request_id": "barrier"}]))
+                self.assertTrue(run.order_captured)
+                self.assertFalse(run.order_verified)
+                control = json.loads(run.docker.call_args.kwargs["data"])
+                self.assertEqual(control["fence"], held["fence"])
+                self.assertFalse(control["hold_task_result"])
+                self.assertFalse(control["hold_scanner"])
+                events[released["event"]] = released
+                self.assertTrue(run.observe_order(before, [{"request_id": "barrier"}]))
+                self.assertTrue(run.order_verified)
+                run.docker.assert_called_once()
+
+    def test_scanner_first_rejects_false_queue_source_and_owner_proofs(self):
+        before, after, record, held, scanner, released, build = self.order_evidence("scanner-first")
+        for mutation in ("source-fence", "source-origin", "scanner-queue", "original-queue",
+                         "closed", "owner", "early-release", "held-build", "held-source"):
+            left, gate, scan, release = copy.deepcopy((before, held, scanner, released))
+            if mutation.startswith("source-"):
+                row = next(row for row in left["messages"]
+                           if row["message_id"] == scan["source_message_id"])
+                value = oracle.payload(row)
+                if mutation == "source-fence":
+                    value["source_refs"]["task_result_rejoin_generation"] = "999"
+                else:
+                    value["origin"]["subsystem"] = "ordinary_followup"
+                row["payload_json"] = json.dumps(value)
+                scan["source"] = value
+            elif mutation == "scanner-queue":
+                scan["queue_entry"]["status"] = "dropped"
+            elif mutation == "original-queue":
+                left["queue_entries"][0]["status"] = "processed"
+            elif mutation in ("closed", "owner"):
+                row = next(row for row in left["execution_protocol_attempts"]
+                           if row["attempt_id"] == "root-1")
+                if mutation == "closed":
+                    row["lifecycle_state"] = "interrupted"
+                else:
+                    value = oracle.payload(row)
+                    value["binding"]["work_item_id"] = "foreign"
+                    row["payload_json"] = json.dumps(value)
+            elif mutation == "early-release":
+                release["observed_at"] = "2026-10-25T12:00:00Z"
+            elif mutation == "held-build":
+                gate["build"] = "another test build [recovery-acceptance-test]"
+            else:
+                gate["source_message_id"] = "foreign"
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                oracle.require_first_admission(
+                    left, after=after, captured={key: record[key] for key in oracle.IDENTITY_FIELDS},
+                    order="scanner-first", held=gate, scanner=scan, released=release,
+                    request_id="order", expected_build=build,
+                )
+
+    def sixth_evidence(self):
+        before, record = self.owned_snapshot({"goal": 5, "outcome": "exhausted"})
+        after = copy.deepcopy(before)
+        source_id = "msg_task_result_recovery_acceptance_sixth"
+        source = {
+            "id": source_id, "agent_id": "qa", "work_item_id": "owner",
+            "kind": "internal_followup",
+            "origin": {"kind": "system", "subsystem": "task_result_recovery"},
+            "authority_class": "runtime_instruction", "admission_context": "runtime_owned",
+            "delivery_surface": "runtime_system",
+            "source_refs": {
+                "task_result_message_id": record["message_id"],
+                "task_result_identity": record["result_identity"],
+                "task_result_rejoin_generation": str(record["rejoin_generation"]),
+                "task_result_parent_turn_id": record["parent_turn_id"],
+                "recovery_acceptance_request_id": "sixth",
+            },
+        }
+        after["messages"].append({
+            "message_id": source_id, "payload_json": json.dumps(source),
+        })
+        after["queue_entries"] = [{"message_id": source_id, "status": "processed"}]
+        build = "holon 0.54.1 (1662676f) [recovery-acceptance-test]"
+        event = {
+            "protocol": 1, "request_id": "sixth", "build": build,
+            **{key: record[key] for key in (
+                "agent_id", "task_id", "work_item_id", "recovery_attempts",
+                "last_recovery_root_attempt_id", "recovery_paused_at",
+            )},
+            "fence": {
+                "result_message_id": record["message_id"],
+                **{key: record[key] for key in (
+                    "result_identity", "parent_turn_id", "rejoin_generation", "recovery_epoch",
+                )},
+            },
+            "source_message_id": source_id, "source": source,
+            "queue_entry": {"message_id": source_id, "status": "dequeued"},
+        }
+        enqueued = {**copy.deepcopy(event), "event": "sixth-enqueued"}
+        rejected = {
+            **copy.deepcopy(event), "event": "budget-rejected",
+            "rejection_stage": "scheduler_canonical_claim",
+            "reason": "recovery_budget_exhausted",
+        }
+        return before, after, record, enqueued, rejected, build
+
+    def test_sixth_rejection_requires_actual_correctly_fenced_queued_source(self):
+        evidence = self.sixth_evidence()
+
+        def check(values):
+            before, after, captured, enqueued, rejected, build = values
+            oracle.require_sixth_rejected(
+                before, after, captured=captured, enqueued=enqueued, rejected=rejected,
+                request_id="sixth", expected_build=build,
+            )
+
+        check(evidence)
+        for mutation in (
+            "no-marker", "wrong-build", "foreign-fence", "wrong-epoch", "stale-reason",
+            "no-enqueue", "fake-source", "queue-pending", "source-ref", "no-ack",
+            "new-attempt", "sixth-charge", "changed-pause",
+        ):
+            with self.subTest(mutation=mutation):
+                values = copy.deepcopy(evidence)
+                before, after, captured, enqueued, rejected, build = values
+                if mutation == "no-marker":
+                    values = (*values[:-1], "holon 0.54.1 (1662676f)")
+                elif mutation == "wrong-build":
+                    rejected["build"] = build.replace("1662676f", "deadbeef")
+                elif mutation == "foreign-fence":
+                    rejected["fence"]["result_identity"] = "foreign"
+                elif mutation == "wrong-epoch":
+                    rejected["fence"]["recovery_epoch"] += 1
+                elif mutation == "stale-reason":
+                    rejected["reason"] = "invalid_or_stale"
+                elif mutation == "no-enqueue":
+                    after["messages"].pop()
+                elif mutation == "fake-source":
+                    rejected["source"]["authority_class"] = "operator"
+                elif mutation == "queue-pending":
+                    after["queue_entries"][0]["status"] = "queued"
+                elif mutation == "source-ref":
+                    source = oracle.payload(after["messages"][-1])
+                    source["source_refs"]["task_result_rejoin_generation"] = "999"
+                    after["messages"][-1]["payload_json"] = json.dumps(source)
+                elif mutation == "no-ack":
+                    enqueued.clear()
+                elif mutation == "new-attempt":
+                    after["execution_protocol_attempts"].append({
+                        "agent_id": "qa", "attempt_id": "sixth-attempt",
+                        "payload_json": json.dumps({
+                            "attempt_id": "sixth-attempt", "recovery_of_attempt_id": None,
+                            "source_message_id": enqueued["source_message_id"],
+                        }),
+                    })
+                elif mutation == "sixth-charge":
+                    after["task_result_settlements"][0]["recovery_attempts"] = 6
+                else:
+                    after["task_result_settlements"][0]["recovery_paused_at"] = "changed"
+                with self.assertRaises(AssertionError):
+                    check(values)
+
+    def test_sixth_checkpoint_cannot_be_replaced_by_five_roots_and_silence(self):
+        before, after, record, enqueued, rejected, build = self.sixth_evidence()
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "sixth-rejected",
+                {"goal": 5, "outcome": "exhausted", "sixth": True},
+            )
+            run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
+            run.acceptance_request = "sixth"
+            run.joins = [{"root_attempt_id": f"root-{index}", "action": "fail",
+                          "recovery_attempts": index} for index in range(1, 6)]
+            (run.evidence / "database.json").write_text(json.dumps({
+                "rows": after, "truncated_tables": [],
+            }))
+            with self.assertRaisesRegex(AssertionError, "checkpoint was skipped"):
+                run.verify_frozen()
+            run.sixth_requested = True
+            for name, value in (
+                ("sixth-before", before), ("acceptance-sixth-enqueued", enqueued),
+                ("acceptance-budget-rejected", rejected),
+                ("build", {"binary_version": build}),
+            ):
+                (run.evidence / f"{name}.json").write_text(json.dumps(value))
+            self.assertTrue(run.verify_frozen()["sixth_source_rejected"])
+            run.docker = Mock(return_value=Namespace(stdout="null"))
+            self.assertFalse(run.observe_sixth(after))
+            self.assertTrue(run.sixth_requested)
+            self.assertEqual(run.docker.call_count, 2)
+
+    def coexisting_snapshot(self):
+        before, exhausted = self.owned_snapshot({"goal": 5, "outcome": "exhausted"})
+        fresh, _ = self.owned_snapshot({"goal": 0, "outcome": "success"})
+        encoded = json.dumps(fresh)
+        for identifier in (
+            "result-identity-1", "parent-turn", "reentry-turn", "attempt-1",
+            "outcome-1", "task-1", "result-1", "wait-1", "brief-1",
+        ):
+            encoded = encoded.replace(identifier, f"fresh-{identifier}")
+        fresh = json.loads(encoded)
+        after = copy.deepcopy(before)
+        for table, rows in fresh.items():
+            if table != "work_items":
+                after.setdefault(table, []).extend(rows)
+        return before, after, exhausted, fresh["task_result_settlements"][0]
+
+    def test_same_owner_fairness_requires_real_independent_consumption_without_revoking_a(self):
+        before, after, exhausted, fresh = self.coexisting_snapshot()
+
+        def check(snapshot):
+            oracle.require_coexisting_fairness(
+                before, snapshot, captured=exhausted, fresh=fresh,
+            )
+
+        check(after)
+        for mutation in ("owner", "complete-owner", "epoch", "roots", "consume-a",
+                         "consume-b", "brief", "same-task", "rearm-a"):
+            with self.subTest(mutation=mutation):
+                broken = copy.deepcopy(after)
+                a, b = broken["task_result_settlements"]
+                if mutation == "owner":
+                    b["work_item_id"] = "foreign"
+                elif mutation == "complete-owner":
+                    broken["work_items"][0]["state"] = "completed"
+                elif mutation == "epoch":
+                    a["recovery_epoch"] += 1
+                elif mutation == "roots":
+                    broken["task_result_recovery_admissions"].pop()
+                elif mutation == "consume-a":
+                    a.update(state="settled", disposition="model_delivered")
+                elif mutation == "consume-b":
+                    b["settled_at"] = None
+                elif mutation == "brief":
+                    broken["briefs"][-1]["message_id"] = exhausted["message_id"]
+                elif mutation == "same-task":
+                    b["task_id"] = exhausted["task_id"]
+                else:
+                    a["next_recheck_at"] = "2026-10-25T13:17:00Z"
+                with self.assertRaises(AssertionError):
+                    check(broken)
+
+    def test_fairness_observer_releases_only_the_new_owned_exact_wait_then_freezes_identity(self):
+        before, after, exhausted, fresh = self.coexisting_snapshot()
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "coexisting-owner",
+                {"goal": 5, "outcome": "exhausted", "fairness": True},
+            )
+            run.captured = {key: exhausted[key] for key in oracle.IDENTITY_FIELDS}
+            run.docker = Mock()
+            (run.evidence / "fairness-before.json").write_text(json.dumps(before))
+            pending = copy.deepcopy(after)
+            pending["task_result_settlements"].pop()
+            task = oracle.payload(pending["tasks"][-1])
+            task["status"] = "running"
+            pending["tasks"][-1]["payload_json"] = json.dumps(task)
+            pending["wait_conditions"][-1].update(status="active", kind="task")
+            broken = copy.deepcopy(pending)
+            broken["wait_conditions"][-1]["work_item_id"] = "foreign"
+            with self.assertRaisesRegex(AssertionError, "shared owner"):
+                run.observe_fairness(broken)
+            run.docker.assert_not_called()
+            self.assertFalse(run.observe_fairness(pending))
+            run.docker.assert_called_once_with(
+                "exec", run.daemon, "bash", "-c", f"touch {recovery.FAIRNESS_GATE}",
+            )
+            self.assertTrue(run.observe_fairness(after))
+            captured = json.loads((run.evidence / "fairness-captured.json").read_text())
+            self.assertEqual(captured, {
+                key: fresh[key] for key in oracle.IDENTITY_FIELDS
+            })
+
     def owned_snapshot(self, spec):
         snapshot, record = snapshot_with_roots(spec["goal"])
         if spec["outcome"] == "exhausted":
@@ -634,8 +1090,9 @@ class RecoveryRunnerTests(unittest.TestCase):
         snapshot["work_items"] = [{
             "agent_id": "qa", "work_item_id": "owner",
             "state": "completed" if spec["outcome"] == "success" else "open",
-            "completed_at": "2026-10-25T13:16:00Z",
-            "payload_json": json.dumps({"result_brief_id": "brief-1"}),
+            "completed_at": "2026-10-25T13:16:00Z" if spec["outcome"] == "success" else None,
+            "payload_json": json.dumps(
+                {"result_brief_id": "brief-1"} if spec["outcome"] == "success" else {}),
         }]
         return snapshot, record
 
@@ -722,6 +1179,37 @@ class RecoveryRunnerTests(unittest.TestCase):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
                 run = recovery.RecoveryRun(Namespace(evidence_dir=Path(directory)), case, spec)
                 snapshot, record = self.owned_snapshot(spec)
+                if spec.get("first_order"):
+                    before, snapshot, record, held, scanner, released, build = self.order_evidence(
+                        spec["first_order"])
+                    run.acceptance_request = "order"
+                    run.order_verified = True
+                    values = [("order-before", before), ("build", {"binary_version": build})]
+                    values += [(f"acceptance-{event['event']}", event)
+                               for event in (held, scanner, released) if event is not None]
+                    for name, value in values:
+                        (run.evidence / f"{name}.json").write_text(json.dumps(value))
+                if spec.get("sixth"):
+                    before, snapshot, record, enqueued, rejected, build = self.sixth_evidence()
+                    run.acceptance_request = "sixth"
+                    run.sixth_requested = True
+                    for name, value in (
+                        ("sixth-before", before), ("acceptance-sixth-enqueued", enqueued),
+                        ("acceptance-budget-rejected", rejected), ("build", {"binary_version": build}),
+                    ):
+                        (run.evidence / f"{name}.json").write_text(json.dumps(value))
+                if spec.get("fairness"):
+                    before, snapshot, record, fresh = self.coexisting_snapshot()
+                    for name, value in (
+                        ("fairness-before", before), ("fairness-captured", fresh),
+                        ("fairness-pre-terminal", {
+                            key: fresh[key] for key in (
+                                "agent_id", "task_id", "work_item_id",
+                                "parent_turn_id", "rejoin_generation",
+                            )
+                        }),
+                    ):
+                        (run.evidence / f"{name}.json").write_text(json.dumps(value))
                 run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
                 run.restarted = bool(spec.get("restart"))
                 run.joins = [{
@@ -751,6 +1239,37 @@ class RecoveryRunnerTests(unittest.TestCase):
                 result = run.verify_frozen()
                 self.assertEqual(result["status"], "verified-task-result-isolated")
                 self.assertEqual(result["recovery_roots"], spec["goal"])
+                if spec.get("first_order"):
+                    self.assertTrue(result["scanner_order_controlled"])
+                    run.order_verified = False
+                    with self.assertRaisesRegex(AssertionError, "checkpoint was skipped"):
+                        run.verify_frozen()
+                if spec.get("restart") and spec["outcome"] == "exhausted":
+                    for mutation in ("consumed", "sixth", "success", "fallback"):
+                        broken = copy.deepcopy(snapshot)
+                        joins = run.joins
+                        if mutation == "consumed":
+                            broken["task_result_settlements"][0].update(
+                                state="settled", disposition="model_delivered",
+                            )
+                        elif mutation == "sixth":
+                            broken["task_result_recovery_admissions"].append({
+                                **broken["task_result_recovery_admissions"][-1],
+                                "root_attempt_id": "sixth-root",
+                            })
+                        elif mutation == "success":
+                            run.joins = [{**row, "action": "success"} for row in joins]
+                        else:
+                            run.joins = [{**row, "side": "a"} for row in joins]
+                        (run.evidence / "database.json").write_text(json.dumps({
+                            "rows": broken, "truncated_tables": [],
+                        }))
+                        with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                            run.verify_frozen()
+                        run.joins = joins
+                    (run.evidence / "database.json").write_text(json.dumps({
+                        "rows": snapshot, "truncated_tables": [],
+                    }))
                 if spec.get("restart"):
                     run.restarted = False
                     with self.assertRaisesRegex(AssertionError, "checkpoint"):
@@ -800,11 +1319,20 @@ class RecoveryRunnerTests(unittest.TestCase):
 
     def test_manifest_preserves_policy_and_declares_uncontrolled_gaps(self):
         manifest = recovery.validate_manifest(json.loads(recovery.MANIFEST.read_text()))
-        self.assertEqual(len(manifest["suites"]["slow"]), 4)
+        self.assertEqual(len(manifest["suites"]["slow"]), 6)
         self.assertTrue(manifest["pending_coverage"])
         manifest["backoff_seconds"][0] = 1
         with self.assertRaises(AssertionError):
             recovery.validate_manifest(manifest)
+
+    def test_restart_exhaustion_is_a_required_fallback_case_not_two_separate_drills(self):
+        manifest = json.loads(recovery.MANIFEST.read_text())
+        case = "restart-fifth-exhausted"
+        self.assertIn(case, manifest["suites"]["slow"])
+        self.assertEqual(manifest["cases"][case], {
+            "goal": 5, "outcome": "exhausted", "restart": "fifth",
+            "fallback": True, "timeout_seconds": 1800,
+        })
 
     def test_release_slow_gate_cannot_be_softened_or_hidden_behind_120_seconds(self):
         workflow = (ROOT / ".github/workflows/release-e2e.yml").read_text()
@@ -814,10 +1342,26 @@ class RecoveryRunnerTests(unittest.TestCase):
         self.assertIn("--timeout 1800", gate)
         for name in json.loads(recovery.MANIFEST.read_text())["suites"]["slow"]:
             self.assertIn(name, gate)
-        self.assertIn("needs: [candidate, task-result-recovery-required]", workflow)
+        self.assertIn("needs: [candidate, task-result-recovery-required, task-result-controlled-required]",
+                      workflow)
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("--suite fast --timeout 180", ci)
         self.assertIn("target/docker-e2e/task-result-fast", ci)
+
+    def test_controlled_suite_is_a_separate_compile_time_hard_gate_in_ci_and_release(self):
+        manifest = recovery.validate_manifest(json.loads(recovery.MANIFEST.read_text()))
+        self.assertEqual(manifest["suites"]["controlled"], [
+            "controlled-exact-first", "controlled-scanner-first", "sixth-rejected",
+        ])
+        for path in ("ci.yml", "release-e2e.yml"):
+            workflow = (ROOT / ".github/workflows" / path).read_text()
+            # Inspect a complete job rather than accidentally accepting a soft sibling step.
+            gate = re.split(r"\n  [a-z][a-z0-9-]*:\n",
+                            workflow.split("  task-result-controlled-required:\n", 1)[1], 1)[0]
+            self.assertNotIn("continue-on-error", gate)
+            self.assertIn("--recovery-acceptance", gate)
+            self.assertIn("--suite controlled --timeout 1800", gate)
+            self.assertIn("holon:recovery-acceptance", gate)
 
     def test_cli_rejects_120_second_slow_gate_before_docker(self):
         with patch.object(recovery, "command") as command:

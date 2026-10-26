@@ -49,12 +49,19 @@ settlements, or scheduler state. A barrier timeout is a failed fixture.
 | slow | `exhausted` | Five distinct failed roots, one Failure diagnostic, pending unconsumed obligation, no automatic deadline, at least 65 seconds without a sixth admission |
 | slow | `restart-backoff` | SIGKILL in charged backoff, same image/volume, unchanged identity/epoch/count/ledger/deadline, then fifth-root success |
 | slow | `restart-fifth` | SIGKILL behind the fifth admission's provider barrier, no sixth charge on replay, then fifth-root success |
+| slow | `restart-fifth-exhausted` | Primary RST/backup failure, SIGKILL behind the fifth admission's provider barrier, same image/volume and original identity/owner/generation/epoch/five-root ledger on replay, then persistent exhaustion with one diagnostic, no consumption/deadline/sixth charge and 65 seconds of quiet observation |
+| slow | `coexisting-owner` | After A exhausts, a new real command B under the same agent/captured owner establishes its own exact wait and is independently consumed with a bound Result brief; the shared WorkItem remains open while A's epoch/five roots/pause/diagnostic and nonconsumption persist for 65 seconds |
+| controlled | `controlled-exact-first` | Prearmed scanner gate, actual original TaskResult canonical claim, zero recovery charges; release scanner only after freezing the winner, then exact Result completion |
+| controlled | `controlled-scanner-first` | Prearmed original-result gate before canonical planning/claim, real scanner enqueue and first canonical claim/one charged root while original result stays queued; release original only after freezing the winner, then consumption with no second charge |
+| controlled | `sixth-rejected` | Real five-root exhaustion, explicitly enqueue a correctly fenced runtime-owned sixth source, observe normal canonical budget rejection with no attempt/provider call/charge, retain one diagnostic and 65 seconds of quiet observation |
 
 Production backoff is **60/120/240/480 seconds**: at least 900 seconds between
 the first and fifth charged roots, plus setup, model and restart time. Each slow
 case has a CLI minimum of **1800 seconds**; `--timeout 120` is rejected before
-Docker is invoked. Release E2E runs four required matrix jobs, each with a
-40-minute workflow timeout. The core/attestation job depends on all four.
+Docker is invoked. Release E2E runs six required matrix jobs, each with a
+40-minute workflow timeout. The core/attestation job depends on all six and the
+separate controlled gate. CI and release both build a distinct compile-time
+`recovery-acceptance` image and run the three controlled cases as hard failures.
 PR scheduler-required runs all three fast cases as hard-failure steps; this does not
 claim that a PR ran the slow suite. Python asset validation runs in
 `make docker-e2e-validate` without Docker.
@@ -83,10 +90,28 @@ python3 scripts/docker-task-result-recovery.py \
   --evidence-dir target/docker-e2e/task-result-restart-fifth
 ```
 
-Omit `--case` to execute all four slow cases serially: budget up to two hours.
+Omit `--case` to execute all six slow cases serially: budget up to three hours.
 Fast cases each allow three minutes. These are timeout budgets, not measured
 performance or a verified SLA. `make docker-e2e-task-result-fast` and
 `make docker-e2e-task-result-slow` use the same commands with `DOCKER_IMAGE`.
+
+The controlled suite cannot use the ordinary candidate image. Prepare a second
+clean context with `scripts/prepare-identified-docker-context.py
+--recovery-acceptance --destination <new-directory>`, then build its returned
+Dockerfile/context. Only that generated Dockerfile enables the feature; the
+tracked Dockerfile and clean Git context are unchanged. Its binary must carry
+`[recovery-acceptance-test]` as well as the same real revision.
+`make docker-e2e-task-result-controlled DOCKER_IMAGE=<test-image>` runs all three
+cases (including real backoff); ordinary suites reject this test binary.
+The private file protocol is scoped to the isolated agent/task/owner and binds
+the first concrete result generation/identity/epoch. It is not operator ingress,
+does not edit the runtime database, and bypasses no admission or lifecycle fence.
+A prearmed gate acknowledges and pins its first canonical result; reusing the
+request cannot bind a later generation or epoch. The controller requires that
+full-identity ACK and freezes the winning claim before release, never inferring
+order from a sleep. Sixth-source injection additionally requires all pinned
+fences. Only the feature binary polls the control file during runtime idle
+awaits (25ms); the ordinary binary contains neither the protocol nor that branch.
 
 Per-case evidence includes pre-terminal/captured identity, atomic read-only DB
 snapshots, provider request-to-activation/root joins, policy, restart before/after
@@ -105,14 +130,20 @@ Exit 0 requires every selected case's frozen oracle to pass; interruption exits
 
 The runnable cases do **not** complete the full #3749 acceptance matrix:
 
-- A provider barrier is reached after canonical admission. It cannot select
-  the first exact-continuation versus `emit_due_task_result_recovery` scanner
-  admission. A narrowly scoped daemon test barrier still requires review;
-  no production scanner switch or database injection is introduced here.
-- Observing five charges followed by persistent pause proves no sixth
-  admission, not an explicitly attempted-and-rejected sixth root. The daemon
-  drills therefore add no coverage for an explicit sixth wake.
-- Coexisting-obligation fairness is not covered by these single-owner drills.
+- A provider barrier alone is reached after canonical admission and cannot
+  select the first exact-continuation versus scanner claim. The controlled
+  suite instead gates each losing source before enqueue/claim, joins its
+  complete private ACK to a frozen durable canonical winner, and rechecks the
+  final source/root/epoch/ledger after release. It remains unverified until
+  both daemon cases pass; ordinary fast/slow cases make no controlled-order claim.
+- Five charges followed by pause alone do not prove explicit sixth rejection.
+  The separate `sixth-rejected` gate requires the real queued runtime source,
+  complete fence, exact rejection-stage/reason ACK and frozen zero-new-attempt
+  evidence. This daemon case also remains unverified.
+- The `coexisting-owner` drill now exercises same-owner fairness without
+  completing the shared WorkItem (which would revoke A). It remains unverified
+  until that real daemon case passes; synthetic/frozen fixtures alone do not
+  count as runtime evidence.
 
 The first three gaps have deterministic in-process coverage that runs a real
 command task against the real runtime, in

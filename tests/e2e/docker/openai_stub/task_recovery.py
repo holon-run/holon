@@ -6,18 +6,45 @@ import secrets
 import time
 from pathlib import Path
 
-from server import Scenario
+from server import Scenario, response, text_item
 
 
 CONTROL = Path("/tmp/qa-recovery.json")
 COMMAND_GATE = "/var/lib/holon/recovery-command-release"
+FAIRNESS_GATE = "/var/lib/holon/recovery-fairness-command-release"
 
 
 class RecoveryScenario(Scenario):
     def __init__(self):
         super().__init__("scheduler-task-wait")
+        self.fairness = False
 
     def task_wait(self):
+        if self.fairness:
+            if self.phase == 6:
+                return self.call("ExecCommand", {
+                    "cmd": f"while [ ! -f {FAIRNESS_GATE} ]; do sleep 0.1; done; "
+                           "printf SCHEDULER-TASK-FAIRNESS-RESULT",
+                    "yield_time_ms": 50, "max_output_tokens": 100,
+                })
+            if self.phase == 7:
+                if len(self.task_ids) < 2 or self.task_ids[-1] == self.task_ids[0]:
+                    return 409, {"error": {"type": "missing_independent_fairness_task"}}
+                return self.call("WaitFor", {
+                    "wake": "task_result", "resource": self.task_ids[-1],
+                    "reason": "consume the new task without rearming the exhausted result",
+                    "delivery": "silent",
+                })
+            if self.phase == 8:
+                return self.call("WaitFor", {
+                    "wake": "operator_input", "delivery": "final",
+                    "reason": "preserve the shared owner and its exhausted obligation",
+                })
+            if self.phase == 9:
+                self.phase += 1
+                return 200, response(
+                    [text_item("SCHEDULER-TASK-FAIRNESS-COMPLETE")], "resp_task_fairness",
+                )
         if self.phase == 2:
             marker = self.markers.get("task_result", "SCHEDULER-TASK-RESULT")
             return self.call("ExecCommand", {
@@ -42,6 +69,11 @@ class RecoveryScenario(Scenario):
     def consume_gated(self, request, side, record, *, timeout=75):
         # Bootstrap and the real CreateWorkItem/ExecCommand/WaitFor setup stay healthy.
         items = self.current_input_items(request)
+        control = json.loads(CONTROL.read_text()) if CONTROL.exists() else {}
+        if (self.phase == 4 and not self.fairness and control.get("fairness_owner")
+                and any("SCHEDULER-TASK-FAIRNESS" in item["body"]
+                        and control["fairness_owner"] in item["body"] for item in items)):
+            self.fairness, self.phase = True, 6
         bootstrap = items and all(
             item["body"].startswith((
                 "This is the first run of Holon",
@@ -72,4 +104,4 @@ class RecoveryScenario(Scenario):
         return 504, {"error": {"type": "fixture_barrier_timeout"}}
 
     def expected_phase(self):
-        return 6
+        return 10 if self.fairness else 6

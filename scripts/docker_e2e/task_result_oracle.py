@@ -117,11 +117,12 @@ def task_identity(
 def require_result_brief(
     snapshot: dict[str, Any], *, agent_id: str, turn_id: str,
     message_id: str, work_item_id: str | None, brief_id: str | None = None,
+    require_completion: bool = True,
 ) -> dict[str, Any]:
     rows = [
         row for row in snapshot["briefs"]
         if (row["evidence_id"] == brief_id if brief_id else
-            row["agent_id"] == agent_id and row["turn_id"] == turn_id
+            row["agent_id"] == agent_id and row.get("turn_id") == turn_id
             and row["kind"] == "result")
     ]
     require(len(rows) == 1, f"expected exactly one terminal Result brief: {rows}")
@@ -135,7 +136,7 @@ def require_result_brief(
         and row["work_item_id"] == brief.get("work_item_id") == work_item_id,
         f"terminal Result brief kind/agent/owner/turn/message mismatch: {row}",
     )
-    if work_item_id is not None:
+    if work_item_id is not None and require_completion:
         items = [
             item for item in snapshot["work_items"]
             if item["work_item_id"] == work_item_id and item["agent_id"] == agent_id
@@ -198,6 +199,31 @@ def require_live_task_owner(
         due = datetime.fromisoformat(record["next_recheck_at"].replace("Z", "+00:00"))
         require(observed_at >= due, "live owner was not observed beyond its recheck deadline")
     return record["activation_id"]
+
+
+def task_result_consuming_turns(snapshot, record, *, admitted_turn_id=None):
+    carriers = {
+        row["message_id"] for row in snapshot["messages"]
+        if payload(row).get("source_refs", {}).get("task_result_identity")
+        == record["result_identity"]
+    }
+    carriers.add(record["message_id"])
+    turns = []
+    for row in snapshot["turn_records"]:
+        if row["agent_id"] != record["agent_id"] or row["terminal_kind"] != "completed":
+            continue
+        stored = payload(row) if "payload_json" in row else {}
+        inputs = list(stored.get("input_message_ids", []))
+        if stored.get("idle_input_batch"):
+            inputs += [item["message_id"] for item in stored["idle_input_batch"]["items"]]
+        inputs += [
+            item["message_id"]
+            for batch in stored.get("live_input_batches", []) for item in batch["items"]
+        ]
+        if (row["turn_id"] == admitted_turn_id
+                or row["trigger_message_id"] in carriers or carriers & set(inputs)):
+            turns.append(row)
+    return turns
 
 
 def require_task_reentry(
@@ -364,30 +390,9 @@ def require_task_reentry(
     require(direct or exact or scanner, f"activation lost task-result source causality: {attempt}")
     # A scanner wake is the only model-delivered carrier of this promise, so a
     # completed turn that consumed the wake consumed the same task result.
-    carriers = {
-        row["message_id"] for row in snapshot["messages"]
-        if payload(row).get("source_refs", {}).get("task_result_identity")
-        == record["result_identity"]
-    }
-    carriers.add(record["message_id"])
-    successful = []
-    for row in snapshot["turn_records"]:
-        if row["agent_id"] != agent_id or row["terminal_kind"] != "completed":
-            continue
-        stored = payload(row) if "payload_json" in row else {}
-        inputs = list(stored.get("input_message_ids", []))
-        if stored.get("idle_input_batch"):
-            inputs += [
-                item["message_id"] for item in stored["idle_input_batch"]["items"]
-            ]
-        inputs += [
-            item["message_id"]
-            for batch in stored.get("live_input_batches", []) for item in batch["items"]
-        ]
-        if (row["turn_id"] == turn["turn_id"]
-                or row["trigger_message_id"] in carriers
-                or carriers & set(inputs)):
-            successful.append(row)
+    successful = task_result_consuming_turns(
+        snapshot, record, admitted_turn_id=turn["turn_id"],
+    )
     require(
         len(successful) == 1,
         f"task result caused duplicate successful consumption: {successful}",
@@ -481,14 +486,246 @@ def require_recovery_exhausted(
         and diagnostics[0]["work_item_id"] == record["work_item_id"],
         f"exhaustion must publish exactly one bound Failure diagnostic: {diagnostics}",
     )
+    carriers = {
+        row["message_id"] for row in snapshot["messages"]
+        if payload(row).get("source_refs", {}).get("task_result_identity")
+        == record["result_identity"]
+    } | {record["message_id"]}
     false_success = [
         row for row in snapshot["briefs"]
         if row["agent_id"] == record["agent_id"] and row["kind"] == "result"
-        and (row["message_id"] == record["message_id"]
-             or row["work_item_id"] == record["work_item_id"])
+        and row["message_id"] in carriers
     ]
-    require(not false_success, f"unconsumed exhausted task produced a Result brief: {false_success}")
+    require(not false_success and not task_result_consuming_turns(snapshot, record),
+            f"unconsumed exhausted task produced successful consumption: {false_success}")
     return record
+
+
+def require_first_admission(before, *, captured, order, held, scanner, released,
+                            request_id, expected_build, after=None):
+    """The held loser and durable canonical winner, not HTTP order, prove the race."""
+    require(order in {"exact-first", "scanner-first"}, "unknown first-admission order")
+    require("[recovery-acceptance-test]" in expected_build,
+            "controlled order requires the separately identified test binary")
+    record, _ = task_identity(
+        before, agent_id=captured["agent_id"], task_id=captured["task_id"],
+        parent_turn_id=captured["parent_turn_id"], captured=captured,
+    )
+    fence = {
+        "result_message_id": record["message_id"],
+        **{key: record[key] for key in (
+            "result_identity", "rejoin_generation", "parent_turn_id", "recovery_epoch",
+        )},
+    }
+    scanner_first = order == "scanner-first"
+    events = [(held, "task-result-held" if scanner_first else "scanner-held")]
+    if scanner_first:
+        events.append((scanner, "scanner-enqueued"))
+    if released is not None:
+        events.append((released, "task-result-released" if scanner_first else "scanner-released"))
+    for event, name in events:
+        require(
+            isinstance(event, dict) and event.get("protocol") == 1
+            and event.get("event") == name and event.get("request_id") == request_id
+            and event.get("build") == expected_build and event.get("fence") == fence
+            and all(event.get(key) == record[key]
+                    for key in ("agent_id", "task_id", "work_item_id")),
+            f"missing or incorrectly fenced controlled-order ACK: {name}",
+        )
+    require(held.get("recovery_attempts") == 0
+            and not held.get("last_recovery_root_attempt_id"),
+            "gate was not armed before first recovery admission")
+    if released is not None:
+        require(datetime.fromisoformat(released["observed_at"].replace("Z", "+00:00"))
+                >= datetime.fromisoformat(held["observed_at"].replace("Z", "+00:00")),
+                "losing source released before it was held")
+    source_id = scanner["source_message_id"] if scanner_first else record["message_id"]
+    attempt_rows = [row for row in before["execution_protocol_attempts"]
+                    if row["agent_id"] == record["agent_id"]
+                    and row["attempt_id"] == record["activation_id"]]
+    require(record["state"] == "caller_admitted" and not record.get("settled_at")
+            and len(attempt_rows) == 1 and attempt_rows[0].get("lifecycle_state") == "open",
+            "selected first canonical attempt is not actually open and admitted")
+    attempts = [payload(row) for row in attempt_rows]
+    winners = [attempt for attempt in attempts if attempt["attempt_id"] == record["activation_id"]]
+    require(len(winners) == 1 and winners[0].get("source_message_id") == source_id
+            and not winners[0].get("recovery_of_attempt_id")
+            and winners[0].get("binding") == {
+                "kind": "work_item", "work_item_id": captured["work_item_id"],
+            }
+            and recovery_root(before, record["agent_id"], record["activation_id"])
+            == record["activation_id"],
+            "first canonical claim was not won by the selected immutable source")
+    expected_count = int(scanner_first)
+    ledger = recovery_ledger(before, record, expected_count=expected_count)
+    if scanner_first:
+        sources = [payload(row) for row in before["messages"] if row["message_id"] == source_id]
+        require(len(sources) == 1 and scanner.get("source") == sources[0],
+                "scanner ACK is not backed by its durable runtime source")
+        source = sources[0]
+        require(
+            source.get("kind") == "internal_followup"
+            and source.get("origin") == {"kind": "system", "subsystem": "task_result_recovery"}
+            and source.get("authority_class") == "runtime_instruction"
+            and source.get("admission_context") == "runtime_owned"
+            and source.get("agent_id") == record["agent_id"]
+            and source.get("work_item_id") == record["work_item_id"]
+            and source.get("delivery_surface") == "runtime_system"
+            and all(source.get("source_refs", {}).get(key) == value for key, value in {
+                "task_result_message_id": record["message_id"],
+                "task_result_identity": record["result_identity"],
+                "task_result_rejoin_generation": str(record["rejoin_generation"]),
+                "task_result_parent_turn_id": record["parent_turn_id"],
+            }.items()),
+            "first scanner source has invalid provenance or result fence",
+        )
+        queues = [row for row in before["queue_entries"]
+                  if row["message_id"] == record["message_id"]]
+        require(len(queues) == 1 and queues[0]["status"] == "queued"
+                and held.get("source_message_id") == record["message_id"]
+                and held.get("queue_entry", {}).get("status") == "queued"
+                and ledger[0]["root_attempt_id"] == record["activation_id"]
+                and scanner.get("queue_entry", {}).get("message_id") == source_id
+                and scanner.get("queue_entry", {}).get("status") == "queued",
+                "original result was not held while the scanner root was charged")
+    else:
+        require(winners[0].get("source", {}).get("identity", {}).get("kind") == "task_result",
+                "exact-first winner was not the actual TaskResult")
+    if after is not None:
+        require(released is not None, "controlled-order release checkpoint was skipped")
+        final, _ = task_identity(
+            after, agent_id=record["agent_id"], task_id=record["task_id"],
+            parent_turn_id=record["parent_turn_id"], captured=captured,
+        )
+        require(final["recovery_epoch"] == record["recovery_epoch"]
+                and recovery_ledger(after, final, expected_count=expected_count) == ledger
+                and recovery_root(after, final["agent_id"], final["activation_id"])
+                == record["activation_id"],
+                "losing source created a second root or changed the charged identity")
+    return source_id
+
+
+def require_sixth_rejected(before, after, *, captured, enqueued, rejected,
+                          request_id, expected_build):
+    """Attest a runtime-owned, correctly fenced source reached budget rejection."""
+    left = require_recovery_exhausted(before, captured=captured)
+    right = require_recovery_exhausted(after, captured=captured)
+    require("[recovery-acceptance-test]" in expected_build,
+            "sixth-source evidence requires the separately identified test binary")
+    require(
+        all(left[key] == right[key] for key in (
+            *IDENTITY_FIELDS, "recovery_epoch", "recovery_paused_at",
+            "recovery_diagnostic_at", "last_recovery_root_attempt_id",
+        ))
+        and recovery_ledger(before, left) == recovery_ledger(after, right),
+        "sixth-source rejection changed the exhausted obligation or ledger",
+    )
+    fence = {
+        "result_message_id": right["message_id"],
+        **{key: right[key] for key in (
+            "result_identity", "rejoin_generation", "parent_turn_id", "recovery_epoch",
+        )},
+    }
+    source_id = f"msg_task_result_recovery_acceptance_{request_id}"
+    for event, name in ((enqueued, "sixth-enqueued"), (rejected, "budget-rejected")):
+        require(
+            event.get("protocol") == 1 and event.get("event") == name
+            and event.get("request_id") == request_id
+            and event.get("build") == expected_build and event.get("fence") == fence
+            and all(event.get(key) == right[key]
+                    for key in ("agent_id", "task_id", "work_item_id"))
+            and event.get("source_message_id") == source_id
+            and event.get("recovery_attempts") == 5
+            and event.get("last_recovery_root_attempt_id")
+            == right["last_recovery_root_attempt_id"]
+            and event.get("recovery_paused_at") == right["recovery_paused_at"],
+            f"missing or incorrectly fenced private acceptance event: {name}",
+        )
+    require(
+        rejected.get("rejection_stage") == "scheduler_canonical_claim"
+        and rejected.get("reason") == "recovery_budget_exhausted",
+        "sixth source did not reach canonical budget rejection",
+    )
+    messages = [payload(row) for row in after["messages"]
+                if row["message_id"] == source_id]
+    require(len(messages) == 1, "sixth source is missing from durable runtime messages")
+    source = messages[0]
+    require(
+        source.get("id") == source_id and source.get("agent_id") == right["agent_id"]
+        and source.get("work_item_id") == right["work_item_id"]
+        and source.get("kind") == "internal_followup"
+        and source.get("origin") == {"kind": "system", "subsystem": "task_result_recovery"}
+        and source.get("authority_class") == "runtime_instruction"
+        and source.get("admission_context") == "runtime_owned"
+        and source.get("delivery_surface") == "runtime_system"
+        and all(source.get("source_refs", {}).get(key) == value for key, value in {
+            "task_result_message_id": right["message_id"],
+            "task_result_identity": right["result_identity"],
+            "task_result_rejoin_generation": str(right["rejoin_generation"]),
+            "task_result_parent_turn_id": right["parent_turn_id"],
+            "recovery_acceptance_request_id": request_id,
+        }.items()),
+        "sixth source is not the correctly fenced runtime-owned recovery envelope",
+    )
+    for event in (enqueued, rejected):
+        require(event.get("source") == source
+                and event.get("queue_entry", {}).get("message_id") == source_id,
+                "private acceptance ACK is not backed by the durable queued envelope")
+    queues = [row for row in after["queue_entries"] if row["message_id"] == source_id]
+    require(len(queues) == 1 and queues[0]["status"] in {"processed", "dropped"},
+            "sixth source never completed normal queue processing")
+    require(not any(
+        payload(row).get("source_message_id") == source_id
+        or payload(row).get("source", {}).get("source_message_id") == source_id
+        for row in after["execution_protocol_attempts"]
+    ), "rejected sixth source opened an execution attempt")
+
+
+def require_coexisting_fairness(before, after, *, captured, fresh):
+    left = require_recovery_exhausted(before, captured=captured)
+    right = require_recovery_exhausted(after, captured=captured)
+    fields = (
+        "state", "disposition", "settled_at", "recovery_epoch", "recovery_attempts",
+        "last_recovery_root_attempt_id", "next_recheck_at",
+        "recovery_paused_at", "recovery_diagnostic_at",
+    )
+    require(all(left.get(key) == right.get(key) for key in fields)
+            and recovery_ledger(before, left) == recovery_ledger(after, right),
+            "fairness drill changed or rearmed the exhausted obligation")
+    require(
+        fresh["agent_id"] == captured["agent_id"]
+        and fresh["work_item_id"] == captured["work_item_id"]
+        and fresh["work_item_id"] is not None
+        and all(fresh[key] != captured[key]
+                for key in ("task_id", "result_identity", "message_id", "parent_turn_id"))
+        and not any(row["task_id"] == fresh["task_id"] for row in before["tasks"]),
+        "fairness requires a new real task under the same captured owner",
+    )
+    owners = [
+        row for row in after["work_items"]
+        if row["agent_id"] == captured["agent_id"]
+        and row["work_item_id"] == captured["work_item_id"]
+    ]
+    require(len(owners) == 1 and owners[0]["state"] == "open"
+            and not owners[0].get("completed_at"),
+            "fairness must not complete the shared owner and revoke the exhausted result")
+    require_task_reentry(
+        after, agent_id=fresh["agent_id"], task_id=fresh["task_id"],
+        parent_turn_id=fresh["parent_turn_id"], captured=fresh, require_completion=False,
+    )
+    record, _ = task_identity(
+        after, agent_id=fresh["agent_id"], task_id=fresh["task_id"],
+        parent_turn_id=fresh["parent_turn_id"], captured=fresh,
+    )
+    recovery_ledger(after, record, expected_count=0)
+    activation = next(payload(row) for row in after["execution_protocol_attempts"]
+                      if row["agent_id"] == fresh["agent_id"]
+                      and row["attempt_id"] == record["activation_id"])
+    require_result_brief(
+        after, agent_id=fresh["agent_id"], turn_id=activation["turn_id"],
+        message_id=activation["source_message_id"], work_item_id=fresh["work_item_id"],
+        require_completion=False,
+    )
 
 
 def require_restart_preserved(

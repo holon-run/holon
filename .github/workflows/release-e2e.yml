@@ -90,7 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [fifth-success, exhausted, restart-backoff, restart-fifth]
+        case: [fifth-success, exhausted, restart-backoff, restart-fifth, restart-fifth-exhausted, coexisting-owner]
     env:
       CANDIDATE_IMAGE: ${{ needs.candidate.outputs.image }}@${{ needs.candidate.outputs.digest }}
     steps:
@@ -122,9 +122,50 @@ jobs:
           name: task-result-recovery-${{ matrix.case }}
           path: target/docker-e2e/task-result-${{ matrix.case }}
 
+  task-result-controlled-required:
+    name: Controlled recovery hard gates
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.candidate.outputs.sha }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Prepare separately identified recovery test build
+        run: python3 scripts/prepare-identified-docker-context.py --recovery-acceptance --destination "$RUNNER_TEMP/holon-recovery-test"
+      - name: Build isolated recovery test image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/holon-recovery-test/context
+          file: ${{ runner.temp }}/holon-recovery-test/Dockerfile
+          load: true
+          push: false
+          tags: holon:recovery-acceptance
+          cache-from: type=gha,scope=holon-recovery-acceptance
+          cache-to: type=gha,mode=max,scope=holon-recovery-acceptance
+      - name: Build isolated provider fixture
+        run: docker build -t holon-openai-responses-stub:local tests/e2e/docker/openai_stub
+      - name: Run controlled canonical-order and sixth-source hard gates
+        run: |
+          python3 scripts/docker-task-result-recovery.py \
+            --image holon:recovery-acceptance \
+            --python-image holon-openai-responses-stub:local \
+            --expected-revision "${{ needs.candidate.outputs.sha }}" \
+            --suite controlled --timeout 1800 \
+            --evidence-dir target/docker-e2e/task-result-controlled
+      - name: Upload controlled recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-result-controlled
+          path: target/docker-e2e/task-result-controlled
+
   core:
     name: Real LLM core suite
-    needs: [candidate, task-result-recovery-required]
+    needs: [candidate, task-result-recovery-required, task-result-controlled-required]
     runs-on: ubuntu-latest
     environment: release-e2e
     permissions:

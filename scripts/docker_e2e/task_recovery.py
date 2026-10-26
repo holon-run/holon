@@ -12,8 +12,9 @@ from .fallback_storm import FaultRun, SCRIPT, command, require_build
 from .runner import redact_evidence, require, write_json
 from .task_result_oracle import (
     IDENTITY_FIELDS, payload, recovery_ledger, recovery_root,
+    require_coexisting_fairness, require_first_admission,
     require_live_task_owner, require_recovery_exhausted, require_restart_preserved,
-    require_task_reentry,
+    require_sixth_rejected, require_task_reentry,
 )
 
 MANIFEST = Path(__file__).resolve().parents[2] / "tests/e2e/docker/task-result-recovery.json"
@@ -23,6 +24,8 @@ TABLES = {
     "execution_protocol_attempts", "execution_protocol_outcomes",
 }
 COMMAND_GATE = "/var/lib/holon/recovery-command-release"
+FAIRNESS_GATE = "/var/lib/holon/recovery-fairness-command-release"
+ACCEPTANCE_DIRECTORY = "/var/lib/holon/agents/qa/recovery-acceptance"
 
 
 def validate_manifest(manifest):
@@ -33,9 +36,20 @@ def validate_manifest(manifest):
     require(set().union(*map(set, manifest["suites"].values())) == set(cases),
             "recovery suite omitted a case")
     for name, case in cases.items():
-        require(case["goal"] in (0, 5) and case["outcome"] in ("success", "exhausted"),
+        require(case["goal"] in (0, 1, 5) and case["outcome"] in ("success", "exhausted"),
                 f"invalid recovery case: {name}")
-        minimum = 1800 if case["goal"] else 180
+        require(case["goal"] != 1 or (
+            case.get("first_order") == "scanner-first" and case["outcome"] == "success"
+        ), "single-root drill must be the controlled scanner-first case")
+        if case.get("first_order"):
+            require(case["first_order"] in {"exact-first", "scanner-first"}
+                    and case["goal"] == int(case["first_order"] == "scanner-first")
+                    and case["outcome"] == "success" and not case.get("sixth"),
+                    "controlled order must retain its designated first canonical root")
+        if case.get("sixth"):
+            require(case["goal"] == 5 and case["outcome"] == "exhausted",
+                    "explicit sixth source requires real five-root exhaustion")
+        minimum = 1800 if case["goal"] == 5 else 180
         require(case["timeout_seconds"] >= minimum, f"insufficient case timeout: {name}")
     return manifest
 
@@ -62,6 +76,104 @@ class RecoveryRun(FaultRun):
         self.setup_identity = None
         self.alive_activation = None
         self.alive_owner_verified = False
+        self.fairness_started = False
+        self.fairness_setup = None
+        self.fairness_captured = None
+        self.acceptance_request = self.prefix.rsplit("-", 1)[-1]
+        self.sixth_requested = False
+        self.order_captured = False
+        self.order_verified = False
+
+    def acceptance_event(self, name):
+        path = f"/evidence-home/agents/qa/recovery-acceptance/{self.acceptance_request}.{name}.json"
+        result = self.docker(
+            "exec", self.controller, "python", "-c",
+            "import json,pathlib,sys; p=pathlib.Path(sys.argv[1]);"
+            "print(p.read_text() if p.exists() else 'null')", path,
+        )
+        value = json.loads(result.stdout)
+        if value is not None:
+            write_json(self.evidence / f"acceptance-{name}.json", value)
+        return value
+
+    def acceptance_control(self, record, *, inject_sixth=False,
+                           hold_scanner=False, hold_task_result=False, prearm=False):
+        value = {
+            "protocol": 1, "request_id": self.acceptance_request,
+            "agent_id": record["agent_id"], "task_id": record["task_id"],
+            "work_item_id": record["work_item_id"], "hold_scanner": hold_scanner,
+            "hold_task_result": hold_task_result,
+            "inject_sixth": inject_sixth,
+            "fence": None if prearm else {
+                "result_message_id": record["message_id"],
+                **{key: record[key] for key in (
+                    "result_identity", "rejoin_generation", "parent_turn_id", "recovery_epoch",
+                )},
+            },
+        }
+        self.docker(
+            "exec", "-i", self.daemon, "bash", "-c",
+            'umask 077; mkdir -p "$1"; cat > "$1/control.pending"; '
+            'mv "$1/control.pending" "$1/control.json"', "recovery-acceptance",
+            ACCEPTANCE_DIRECTORY, data=json.dumps(value),
+        )
+
+    def observe_order(self, snapshot, barriers):
+        order = self.spec.get("first_order")
+        if not order or self.order_verified:
+            return True
+        held_name = "task-result-held" if order == "scanner-first" else "scanner-held"
+        held = self.acceptance_event(held_name)
+        scanner = self.acceptance_event("scanner-enqueued") if order == "scanner-first" else None
+        if not self.order_captured:
+            if held is None or not barriers or (order == "scanner-first" and scanner is None):
+                return False
+            if self.record(snapshot)["state"] != "caller_admitted":
+                return False
+            require_first_admission(
+                snapshot, captured=self.captured, order=order, held=held, scanner=scanner,
+                released=None, request_id=self.acceptance_request,
+                expected_build=json.loads((self.evidence / "build.json").read_text())["binary_version"],
+            )
+            write_json(self.evidence / "order-before.json", redact_evidence(snapshot))
+            self.acceptance_control(self.record(snapshot))
+            self.order_captured = True
+        released = self.acceptance_event(
+            "task-result-released" if order == "scanner-first" else "scanner-released",
+        )
+        if released is None:
+            return False
+        require_first_admission(
+            json.loads((self.evidence / "order-before.json").read_text()),
+            captured=self.captured, order=order, held=held, scanner=scanner,
+            released=released, request_id=self.acceptance_request,
+            expected_build=json.loads((self.evidence / "build.json").read_text())["binary_version"],
+        )
+        self.order_verified = True
+        return True
+
+    def observe_sixth(self, snapshot):
+        record = require_recovery_exhausted(snapshot, captured=self.captured)
+        if not self.sixth_requested:
+            write_json(self.evidence / "sixth-before.json", redact_evidence(snapshot))
+            self.acceptance_control(record, inject_sixth=True)
+            self.sixth_requested = True
+        enqueued = self.acceptance_event("sixth-enqueued")
+        rejected = self.acceptance_event("budget-rejected")
+        if enqueued is None or rejected is None:
+            return False
+        if not any(row["message_id"] == enqueued.get("source_message_id")
+                   and row["status"] in {"processed", "dropped"}
+                   for row in snapshot["queue_entries"]):
+            # The read-only snapshot can precede the ACK's final queue commit.
+            return False
+        require_sixth_rejected(
+            json.loads((self.evidence / "sixth-before.json").read_text()), snapshot,
+            captured=self.captured, enqueued=enqueued, rejected=rejected,
+            request_id=self.acceptance_request,
+            expected_build=json.loads((self.evidence / "build.json").read_text())["binary_version"],
+        )
+        return True
 
     def configure(self, container, path, value):
         # Atomic replacement affects only provider fixture control, never the DB.
@@ -95,6 +207,9 @@ class RecoveryRun(FaultRun):
         records = [
             row for row in snapshot["task_result_settlements"] if row["agent_id"] == "qa"
         ]
+        if self.spec.get("fairness") and self.captured is not None:
+            records = [row for row in records
+                       if row["result_identity"] == self.captured["result_identity"]]
         require(len(records) <= 1, f"fixture created more than one obligation: {records}")
         if not records:
             return None
@@ -112,6 +227,78 @@ class RecoveryRun(FaultRun):
                 "task identity/owner/generation drifted during recovery")
         recovery_ledger(snapshot, record)
         return record
+
+    def start_fairness(self, snapshot):
+        require_recovery_exhausted(snapshot, captured=self.captured)
+        write_json(self.evidence / "fairness-before.json", redact_evidence(snapshot))
+        self.configure(self.mock, "/tmp/qa-recovery.json", {
+            "releases": self.releases, "fairness_owner": self.captured["work_item_id"],
+        })
+        self.api("POST", "/api/control/agents/qa/prompt", {
+            "work_item_id": self.captured["work_item_id"],
+            "text": (
+                f"SCHEDULER-TASK-FAIRNESS under {self.captured['work_item_id']}: "
+                "run one new promoted command, WaitFor its exact result with delivery=silent, "
+                "then WaitFor operator_input with delivery=final and report "
+                "SCHEDULER-TASK-FAIRNESS-COMPLETE. Keep this shared WorkItem open; "
+                "do not rearm or consume the exhausted task."
+            ),
+        })
+        self.fairness_started = True
+
+    def observe_fairness(self, snapshot):
+        if self.fairness_setup is None:
+            waits = [
+                row for row in snapshot["wait_conditions"]
+                if row["agent_id"] == "qa" and row["status"] == "active"
+                and row["kind"] == "task" and row["subject_ref"] != self.captured["task_id"]
+            ]
+            if not waits:
+                return False
+            require(len(waits) == 1
+                    and waits[0]["work_item_id"] == self.captured["work_item_id"],
+                    "fresh fairness task migrated away from the shared owner")
+            tasks = [payload(row) for row in snapshot["tasks"]
+                     if row["task_id"] == waits[0]["subject_ref"]]
+            require(len(tasks) == 1
+                    and tasks[0].get("work_item_id") == self.captured["work_item_id"]
+                    and tasks[0].get("status") in {"queued", "running"}
+                    and tasks[0]["detail"]["parent_turn_id"] == waits[0]["last_turn_id"],
+                    "fresh fairness waiter is not bound to a real owned task")
+            self.fairness_setup = {
+                "agent_id": "qa", "task_id": tasks[0]["id"],
+                "work_item_id": waits[0]["work_item_id"],
+                "parent_turn_id": waits[0]["last_turn_id"],
+                "rejoin_generation": tasks[0]["detail"]["rejoin_generation"],
+            }
+            write_json(self.evidence / "fairness-pre-terminal.json", self.fairness_setup)
+            self.docker("exec", self.daemon, "bash", "-c", f"touch {FAIRNESS_GATE}")
+        records = [
+            row for row in snapshot["task_result_settlements"]
+            if row["agent_id"] == "qa" and row["task_id"] == self.fairness_setup["task_id"]
+        ]
+        require(len(records) <= 1, "duplicate fresh fairness obligation")
+        if not records:
+            return False
+        record = records[0]
+        require(all(record[key] == value for key, value in self.fairness_setup.items()),
+                "fresh fairness result changed its pre-terminal owner or generation")
+        self.fairness_captured = {key: record[key] for key in IDENTITY_FIELDS}
+        write_json(self.evidence / "fairness-captured.json", self.fairness_captured)
+        attempts = [payload(row) for row in snapshot["execution_protocol_attempts"]
+                    if row["agent_id"] == "qa"
+                    and row["attempt_id"] == record.get("activation_id")]
+        if (len(attempts) != 1 or not any(
+            row["agent_id"] == "qa" and row["kind"] == "result"
+            and row.get("turn_id") == attempts[0].get("turn_id")
+            for row in snapshot["briefs"]
+        )):
+            return False
+        require_coexisting_fairness(
+            json.loads((self.evidence / "fairness-before.json").read_text()), snapshot,
+            captured=self.captured, fresh=self.fairness_captured,
+        )
+        return True
 
     def restart(self, before, *, backoff):
         write_json(self.evidence / "restart-before.json", redact_evidence(before))
@@ -150,12 +337,17 @@ class RecoveryRun(FaultRun):
 
     def run(self):
         self.start()
+        version = json.loads((self.evidence / "build.json").read_text())["binary_version"]
+        controlled = bool(self.spec.get("sixth") or self.spec.get("first_order"))
+        require(("[recovery-acceptance-test]" in version) == controlled,
+                "ordinary and compile-time acceptance binaries must not be substituted")
         write_json(self.evidence / "policy.json", {
             "workload": "W2", "recovery_limit": 5,
             "backoff_seconds": [60, 120, 240, 480],
             "production_deadlines_unchanged": True, "case": self.case,
             "case_spec": self.spec, "timeout_seconds": self.args.timeout,
-            "barrier": "provider-only", "scanner_order_controlled": False,
+            "barrier": "canonical-source" if self.spec.get("first_order") else "provider-only",
+            "scanner_order_controlled": bool(self.spec.get("first_order")),
         })
         self.api("POST", "/api/control/agents/qa/create", {})
         deadline = time.monotonic() + self.args.timeout
@@ -206,6 +398,12 @@ class RecoveryRun(FaultRun):
             raise TimeoutError("real owned task wait was not established")
         if self.spec.get("fallback"):
             self.configure(self.proxy, "/tmp/qa-fault.json", {"FAULT_A": "rst"})
+        if self.spec.get("first_order"):
+            self.acceptance_control(
+                self.setup_identity, prearm=True,
+                hold_scanner=self.spec["first_order"] == "exact-first",
+                hold_task_result=self.spec["first_order"] == "scanner-first",
+            )
         self.docker("exec", self.daemon, "bash", "-c", f"touch {COMMAND_GATE}")
         quiet_since = None
         while time.monotonic() < deadline:
@@ -215,6 +413,9 @@ class RecoveryRun(FaultRun):
                 time.sleep(.5)
                 continue
             barriers = self.barriers()
+            if not self.observe_order(snapshot, barriers):
+                time.sleep(.5)
+                continue
             if self.spec.get("alive_owner") and not self.alive_owner_verified and barriers:
                 first = self.alive_activation is None
                 self.alive_activation = require_live_task_owner(
@@ -284,6 +485,15 @@ class RecoveryRun(FaultRun):
             if (self.spec["outcome"] == "exhausted"
                     and record.get("recovery_diagnostic_at") and not barriers):
                 require_recovery_exhausted(snapshot, captured=self.captured)
+                if self.spec.get("sixth") and not self.observe_sixth(snapshot):
+                    time.sleep(.5)
+                    continue
+                if self.spec.get("fairness"):
+                    if not self.fairness_started:
+                        self.start_fairness(snapshot)
+                    if not self.observe_fairness(snapshot):
+                        time.sleep(.5)
+                        continue
                 quiet_since = quiet_since or time.monotonic()
                 if time.monotonic() - quiet_since >= self.args.quiet_seconds:
                     break
@@ -314,6 +524,25 @@ class RecoveryRun(FaultRun):
         )
         if self.spec["outcome"] == "exhausted":
             require_recovery_exhausted(snapshot, captured=self.captured)
+            if self.spec.get("sixth"):
+                require(self.sixth_requested, "explicit sixth-source checkpoint was skipped")
+                require_sixth_rejected(
+                    json.loads((self.evidence / "sixth-before.json").read_text()), snapshot,
+                    captured=self.captured,
+                    enqueued=json.loads((self.evidence / "acceptance-sixth-enqueued.json").read_text()),
+                    rejected=json.loads((self.evidence / "acceptance-budget-rejected.json").read_text()),
+                    request_id=self.acceptance_request,
+                    expected_build=json.loads((self.evidence / "build.json").read_text())["binary_version"],
+                )
+            if self.spec.get("fairness"):
+                fresh = json.loads((self.evidence / "fairness-captured.json").read_text())
+                setup = json.loads((self.evidence / "fairness-pre-terminal.json").read_text())
+                require(all(fresh[key] == value for key, value in setup.items()),
+                        "frozen fairness result lost its pre-terminal identity")
+                require_coexisting_fairness(
+                    json.loads((self.evidence / "fairness-before.json").read_text()),
+                    snapshot, captured=self.captured, fresh=fresh,
+                )
         else:
             require_task_reentry(
                 snapshot, agent_id="qa", task_id=record["task_id"],
@@ -331,6 +560,24 @@ class RecoveryRun(FaultRun):
                 require(len(attempts) == 1
                         and attempts[0]["source"]["identity"]["kind"] == "task_result",
                         "fast exact baseline was not admitted from its actual TaskResult")
+        order = self.spec.get("first_order")
+        if order:
+            require(self.order_verified, "controlled first-admission checkpoint was skipped")
+            require_first_admission(
+                json.loads((self.evidence / "order-before.json").read_text()),
+                captured=self.captured, order=order,
+                held=json.loads((self.evidence / (
+                    "acceptance-task-result-held.json" if order == "scanner-first"
+                    else "acceptance-scanner-held.json")).read_text()),
+                scanner=json.loads((self.evidence / "acceptance-scanner-enqueued.json").read_text())
+                if order == "scanner-first" else None,
+                released=json.loads((self.evidence / (
+                    "acceptance-task-result-released.json" if order == "scanner-first"
+                    else "acceptance-scanner-released.json")).read_text()),
+                request_id=self.acceptance_request,
+                expected_build=json.loads((self.evidence / "build.json").read_text())["binary_version"],
+                after=snapshot,
+            )
         require(not self.spec.get("restart") or self.restarted, "restart checkpoint was skipped")
         if self.spec.get("alive_owner"):
             observed = json.loads((self.evidence / "alive-owner-observed.json").read_text())
@@ -347,7 +594,8 @@ class RecoveryRun(FaultRun):
                     "fallback route was not actually exercised")
         return {"case": self.case, "status": "verified-task-result-isolated",
                 "recovery_roots": len(rows), "evidence": str(self.evidence),
-                "scanner_order_controlled": False}
+                "scanner_order_controlled": bool(order),
+                "sixth_source_rejected": bool(self.spec.get("sixth"))}
 
 
 def main(argv=None):

@@ -1045,6 +1045,44 @@ jobs:
           HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: rm -f "${HOLON_E2E_PROVIDER_ENV_FILE}" "${HOLON_E2E_PROVIDER_CONFIG_FILE}"
 
+  task-result-controlled-required:
+    name: Task-result controlled recovery required
+    needs: changes
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Prepare separately identified recovery test build
+        run: python3 scripts/prepare-identified-docker-context.py --recovery-acceptance --destination "$RUNNER_TEMP/holon-recovery-test"
+      - name: Build isolated recovery test image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/holon-recovery-test/context
+          file: ${{ runner.temp }}/holon-recovery-test/Dockerfile
+          load: true
+          push: false
+          tags: holon:recovery-acceptance
+          cache-from: type=gha,scope=holon-recovery-acceptance
+          cache-to: type=gha,mode=max,scope=holon-recovery-acceptance
+      - name: Build isolated provider fixture
+        run: docker build -t holon-openai-responses-stub:local tests/e2e/docker/openai_stub
+      - name: Run controlled canonical-order and sixth-source hard gates
+        run: |
+          python3 scripts/docker-task-result-recovery.py \
+            --image holon:recovery-acceptance \
+            --python-image holon-openai-responses-stub:local \
+            --expected-revision "$(git rev-parse HEAD)" \
+            --suite controlled --timeout 1800 \
+            --evidence-dir target/docker-e2e/task-result-controlled
+      - name: Upload controlled recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-result-controlled
+          path: target/docker-e2e/task-result-controlled
+
   scheduler-e2e-required:
     name: Scheduler E2E Required
     needs:
