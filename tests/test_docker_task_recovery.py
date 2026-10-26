@@ -1336,13 +1336,18 @@ class RecoveryRunnerTests(unittest.TestCase):
                 run.docker.reset_mock()
                 self.assertFalse(run.observe_order(before, []))
                 run.docker.assert_not_called()
-                self.assertFalse(run.observe_order(before, [{"request_id": "barrier"}]))
+                self.assertTrue(run.observe_order(before, [{"request_id": "barrier"}]))
                 self.assertTrue(run.order_captured)
                 self.assertFalse(run.order_verified)
                 control = json.loads(run.docker.call_args.kwargs["data"])
                 self.assertEqual(control["fence"], held["fence"])
                 self.assertFalse(control["hold_task_result"])
                 self.assertFalse(control["hold_scanner"])
+                # The run loop publishes the loser release acknowledgement only
+                # after this winner's held provider request can finish.
+                self.assertTrue(run.observe_order(before, [{"request_id": "barrier"}]))
+                self.assertFalse(run.observe_order(before, []))
+                self.assertFalse(run.order_verified)
                 events[released["event"]] = released
                 self.assertTrue(run.observe_order(before, [{"request_id": "barrier"}]))
                 self.assertTrue(run.order_verified)
