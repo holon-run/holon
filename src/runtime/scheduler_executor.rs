@@ -259,8 +259,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(selected);
         }
+        let provider_recovery = selected.0.filter(|message| {
+            super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message)
+        });
         if let Some(message) = selected.0 {
             if !crate::wake_contract::is_agent_message(message)
+                && provider_recovery.is_none()
                 && self
                     .runtime
                     .inner
@@ -280,7 +284,35 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         // This is selection only; canonical admission still validates its source.
         if let Some(id) = self.runtime.idle_batch_recovery_message(queue)? {
             if !parked.contains(&id) {
-                return Ok((queue.peek_next_matching(|message| message.id == id), true));
+                let replay = queue.peek_next_matching(|message| message.id == id);
+                if let Some(retry) = provider_recovery {
+                    let Some(replay) = replay else {
+                        return Ok(selected);
+                    };
+                    let result_id = replay
+                        .source_refs
+                        .get("task_result_message_id")
+                        .unwrap_or(&replay.id);
+                    // Older provider lineages must not starve an attached result
+                    // snapshot for this owner, including its final charged root.
+                    if retry.work_item_id != replay.work_item_id
+                        || self
+                            .runtime
+                            .inner
+                            .runtime_db
+                            .task_result_settlements()
+                            .interrupted_admitted_result_anchor(
+                                &replay.agent_id,
+                                result_id,
+                                self.runtime.now(),
+                            )?
+                            .as_deref()
+                            != Some(id.as_str())
+                    {
+                        return Ok(selected);
+                    }
+                }
+                return Ok((replay, true));
             }
         }
         Ok(selected)

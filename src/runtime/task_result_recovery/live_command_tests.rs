@@ -737,6 +737,15 @@ impl AgentProvider for FifthRootBarrierProvider {
 
 #[tokio::test(start_paused = true)]
 async fn real_command_fifth_charged_root_survives_daemon_startup_without_new_budget() {
+    assert_fifth_root_startup_replay(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn real_command_fifth_charged_root_replays_before_older_provider_handoff() {
+    assert_fifth_root_startup_replay(true).await;
+}
+
+async fn assert_fifth_root_startup_replay(retain_provider_handoff: bool) {
     let provider = Arc::new(FifthRootBarrierProvider::default());
     provider.failure.failures.store(4, Ordering::SeqCst);
     let mut harness = LifecycleHarness::with_provider(provider.clone());
@@ -764,7 +773,24 @@ async fn real_command_fifth_charged_root_survives_daemon_startup_without_new_bud
         assert_recovery_snapshot(runtime, &record);
         assert_eq!(record.recovery_attempts, attempt);
         assert!(roots.insert(record.last_recovery_root_attempt_id.unwrap()));
-        discard_provider_handoffs(runtime).await;
+        if retain_provider_handoff && attempt == 4 {
+            let handoff = runtime
+                .inner
+                .agent
+                .lock()
+                .await
+                .queue
+                .input_snapshot(64)
+                .into_iter()
+                .find(crate::runtime::turn::TurnModelSelection::message_has_provider_recovery_provenance)
+                .expect("fourth root left a real provider handoff");
+            assert_eq!(handoff.priority, Priority::Next);
+            // Retain the durable handoff for startup to restore alongside the
+            // interrupted fifth root, without letting it run before the crash.
+            remove_source(runtime, &handoff, QueueEntryStatus::Queued).await;
+        } else {
+            discard_provider_handoffs(runtime).await;
+        }
     }
     harness.advance(Duration::from_secs(600)).await;
     assert!(runtime.emit_due_task_result_recovery().await.unwrap());

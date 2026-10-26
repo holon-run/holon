@@ -150,6 +150,8 @@ real root and its observed budget, and a successful settlement must match that
 released barrier's root. Pending provider requests are read before the snapshot
 that explains them, because the daemon charges the recovery root before it
 issues the request. Truncated/missing tables and cleanup errors cannot pass.
+The fifth-root startup regression retains an older durable provider retry to
+prove that replay is selected without first deleting competing lineage work.
 When a case is delivered through a scanner wake, the oracle requires that wake
 message to be the activation's model input and joins it to the frozen task
 result through its typed source refs; the raw task result stays a promise
