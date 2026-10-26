@@ -22803,6 +22803,242 @@ mod tests {
         assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
     }
 
+    struct QueuedStartupProvider(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait]
+    impl AgentProvider for QueuedStartupProvider {
+        async fn complete_turn(
+            &self,
+            request: ProviderTurnRequest,
+        ) -> anyhow::Result<ProviderTurnResponse> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            StubProvider::new("queued input completed")
+                .complete_turn(request)
+                .await
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_discovers_queued_only_owner_without_new_ingress() {
+        let (_home, host) = canonical_test_host();
+        let config = host.config().as_ref().clone();
+        let agent_id = "startup-queued-only-owner";
+        assert_ne!(agent_id, config.default_agent_id);
+        host.create_named_agent(agent_id, None).await.unwrap();
+        if let Some(runtime) = host.try_get_loaded_runtime(agent_id).await {
+            runtime.wait_for_bootstrap().await.unwrap();
+            wait_for_agent_inputs_settled(&runtime).await;
+        }
+        host.unload_runtime(agent_id).await;
+
+        // Persist real admissions without starting a runtime loop, as if the
+        // process exited between enqueue commit and the first queue claim.
+        let runtime = host.construct_runtime(agent_id, None).unwrap();
+        let mut message_ids = Vec::new();
+        for text in ["first durable input", "second durable input"] {
+            let message = MessageEnvelope::new(
+                agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text { text: text.into() },
+            );
+            message_ids.push(message.id.clone());
+            runtime.enqueue(message).await.unwrap();
+        }
+        let storage = runtime.storage();
+        let initial_briefs = storage.read_recent_briefs(16).unwrap().len();
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 2);
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert!(storage.latest_active_task_records(10).unwrap().is_empty());
+        assert!(storage
+            .active_wait_conditions_for_agent(agent_id)
+            .unwrap()
+            .is_empty());
+        assert!(host
+            .runtime_db()
+            .timers()
+            .active_owner_agent_ids()
+            .unwrap()
+            .is_empty());
+        let execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)
+            .unwrap();
+        assert!(execution.is_none_or(|state| state.open_attempt().is_none()));
+        for message_id in &message_ids {
+            assert_eq!(
+                host.runtime_db()
+                    .queue_entries()
+                    .latest(message_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Queued
+            );
+            assert!(host
+                .runtime_db()
+                .provider_queue_parking(agent_id, message_id)
+                .unwrap()
+                .is_none());
+        }
+        drop(runtime);
+        drop(host);
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(QueuedStartupProvider(calls.clone())))
+                .unwrap();
+        restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        let runtime = restarted
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("startup must discover durable queued inputs without new ingress");
+        wait_for_agent_inputs_settled(&runtime).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            runtime.storage().read_recent_briefs(16).unwrap().len(),
+            initial_briefs + 2
+        );
+        for message_id in &message_ids {
+            assert_eq!(
+                restarted
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(message_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                QueueEntryStatus::Processed
+            );
+        }
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+        restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_queued_only_preserves_lifecycle_and_business_blockers() {
+        for boundary in ["stopped", "deleted", "blocked"] {
+            let (_home, host) = canonical_test_host();
+            let config = host.config().as_ref().clone();
+            let agent_id = format!("startup-queued-{boundary}");
+            host.create_named_agent(&agent_id, None).await.unwrap();
+            if let Some(runtime) = host.try_get_loaded_runtime(&agent_id).await {
+                runtime.wait_for_bootstrap().await.unwrap();
+                wait_for_agent_inputs_settled(&runtime).await;
+            }
+            host.unload_runtime(&agent_id).await;
+            let runtime = host.construct_runtime(&agent_id, None).unwrap();
+            let storage = host.agent_storage(&agent_id).unwrap();
+            let message = MessageEnvelope::new(
+                &agent_id,
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "durable input before lifecycle change".into(),
+                },
+            );
+            let message_id = message.id.clone();
+            runtime.enqueue(message).await.unwrap();
+            let mut blocked = WorkItemRecord::new(
+                &agent_id,
+                "independent business responsibility",
+                WorkItemState::Open,
+            );
+            blocked.blocked_by = Some("independent business gate".into());
+            match boundary {
+                "stopped" => {
+                    let mut state = storage.read_agent().unwrap().unwrap();
+                    state.status = AgentStatus::Stopped;
+                    storage.write_agent(&state).unwrap();
+                }
+                "deleted" => {
+                    let mut identity = host.agent_identity_record(&agent_id).unwrap().unwrap();
+                    identity.status = AgentRegistryStatus::Deleted;
+                    identity.deleted_at = Some(Utc::now());
+                    host.runtime_db()
+                        .agent_identities()
+                        .upsert(&identity)
+                        .unwrap();
+                }
+                "blocked" => storage.append_work_item(&blocked).unwrap(),
+                _ => unreachable!(),
+            }
+            drop(runtime);
+            drop(host);
+
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let restarted = RuntimeHost::new_with_provider(
+                config,
+                Arc::new(QueuedStartupProvider(calls.clone())),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                restarted
+                    .recover_orphaned_queue_claims_at_startup()
+                    .await
+                    .unwrap();
+                let loaded = restarted.try_get_loaded_runtime(&agent_id).await;
+                if boundary == "blocked" {
+                    let runtime = loaded.expect("queued input must load its active owner");
+                    wait_for_agent_inputs_settled(&runtime).await;
+                    let preserved = restarted
+                        .runtime_db()
+                        .work_items()
+                        .latest(&blocked.id)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(preserved.state, WorkItemState::Open);
+                    assert_eq!(preserved.blocked_by, blocked.blocked_by);
+                    assert_eq!(preserved.revision, blocked.revision);
+                    assert_eq!(calls.load(Ordering::SeqCst), 1);
+                } else {
+                    assert_eq!(calls.load(Ordering::SeqCst), 0, "{boundary}");
+                    assert!(loaded.is_none(), "{boundary}");
+                    if boundary == "stopped" {
+                        let state = storage.read_agent().unwrap().unwrap();
+                        assert_eq!(state.status, AgentStatus::Stopped);
+                        assert_eq!(state.pending, 0);
+                    }
+                    assert_eq!(
+                        restarted
+                            .runtime_db()
+                            .queue_entries()
+                            .latest(&message_id)
+                            .unwrap()
+                            .unwrap()
+                            .status,
+                        if boundary == "stopped" {
+                            QueueEntryStatus::Aborted
+                        } else {
+                            QueueEntryStatus::Queued
+                        },
+                        "{boundary}"
+                    );
+                }
+            }
+            restarted.shutdown().await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn startup_recovery_replays_interrupted_operator_prompt_while_work_item_waits_external() {
         let (_home, host) = canonical_test_host();
