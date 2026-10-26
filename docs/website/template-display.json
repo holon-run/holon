@@ -51,6 +51,13 @@
         "summary": "持续分诊已授权邮件，分流待办与阅读材料，准备待确认的回复，并跟进沟通直至事项结束。"
       }
     },
+    "finance-ops-steward": {
+      "category": "operations",
+      "zh-CN": {
+        "name": "财务运营管家",
+        "summary": "持续维护发票到期队列、报销合规台账与订阅续费日历；不自动发起支付或转账，不擅自退订，不替代会计审计。"
+      }
+    },
     "github-solver": {
       "category": "engineering",
       "zh-CN": {

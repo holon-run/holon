@@ -1,0 +1,36 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/xlsx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/pdf"
+
+[[skills]]
+kind = "github"
+repo = "anthropics/knowledge-work-plugins"
+path = "small-business/skills/invoice-chase"
+ref = "84d8efdb6e80e2b26898e5c3109d13eddde97761"
+
+[[skills]]
+kind = "github"
+repo = "affaan-m/ecc"
+path = "skills/finance-billing-ops"
+ref = "db7f2a6fd5b013d56ec0ba0cfc547ba77baddbce"
