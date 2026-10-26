@@ -142,10 +142,14 @@ inside this result's owner binding and ancestry: an interrupted attempt is
 replaced by its live replay, candidates on disjoint chains fail closed, and a
 join can never be relabeled onto another activation/root.
 Once the durable budget is fully charged, the fixture grants exactly one
-successful response; the join records the request's real root and its observed
-budget instead of claiming the last charged root served it, and a successful
-settlement must match that released barrier's root. Truncated/missing
-tables and cleanup errors cannot pass.
+successful response, and only to a request that resolves to the last charged
+root: a replayed request from an earlier lineage that is still queued after a
+restart fails instead, and the fifth-root restart checkpoint likewise waits for
+that designated root's own provider barrier. The join records the request's
+real root and its observed budget, and a successful settlement must match that
+released barrier's root. Pending provider requests are read before the snapshot
+that explains them, because the daemon charges the recovery root before it
+issues the request. Truncated/missing tables and cleanup errors cannot pass.
 When a case is delivered through a scanner wake, the oracle requires that wake
 message to be the activation's model input and joins it to the frozen task
 result through its typed source refs; the raw task result stays a promise

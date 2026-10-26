@@ -152,7 +152,8 @@ def provider_barrier_identity(snapshot, record, source_message_ids):
         )
         require(original.get("source_message_id") == record["message_id"]
                 and (direct or exact),
-                "provider barrier is not descended from this result or a charged root")
+                "provider barrier is not descended from this result or a charged root: "
+                f"{source_message_ids}")
         count = 0
     return {
         "activation_id": attempt["attempt_id"], "root_attempt_id": root,
@@ -288,6 +289,17 @@ class RecoveryRun(FaultRun):
         write_json(self.evidence / f"{label}-db.json", redact_evidence(database))
         return unwrap_database(database)
 
+    def observe_provider_request(self):
+        """Read pending provider requests, then the snapshot that explains them.
+
+        The daemon charges a recovery root before it issues the provider
+        request, so a snapshot taken after the barrier was observed always
+        contains that admission. Taking the snapshot first races a newly
+        arrived request against its own durable charge.
+        """
+        barriers = self.barriers()
+        return barriers, self.snapshot("observation")
+
     def barriers(self):
         records = [
             json.loads(line) for line in self.docker("logs", self.mock).stdout.splitlines()
@@ -303,6 +315,36 @@ class RecoveryRun(FaultRun):
         return [row for row in rows if row["state"] == "waiting"
                 and row["request_id"] not in finished | self.ignored_requests | self.releases.keys()]
 
+    def release_action(self, barrier, record):
+        """Grant the success only to the designated (last charged) root.
+
+        A replayed request from an earlier lineage can still be queued after a
+        restart; releasing it as the success would hand the response to a
+        superseded attempt and leave the designated root undelivered.
+        """
+        success = (
+            self.spec["outcome"] == "success"
+            and record["recovery_attempts"] == self.spec["goal"]
+            and barrier["root_attempt_id"] == record.get("last_recovery_root_attempt_id")
+            and "success" not in self.releases.values()
+        )
+        return "success" if success else "fail"
+
+    def restart_due(self, record, barriers):
+        restart = self.spec.get("restart")
+        if not restart or self.restarted:
+            return False
+        if restart == "backoff":
+            due = record.get("next_recheck_at")
+            return bool(
+                record["recovery_attempts"] == 1 and not barriers and due
+                and datetime.fromisoformat(due.replace("Z", "+00:00"))
+                > datetime.now(timezone.utc)
+            )
+        designated = record.get("last_recovery_root_attempt_id")
+        return (record["recovery_attempts"] == 5
+                and any(barrier["root_attempt_id"] == designated for barrier in barriers))
+
     def provider_outcomes_complete(self, snapshot, record):
         rows = recovery_ledger(snapshot, record)
         if len(rows) != self.spec["goal"]:
@@ -310,8 +352,8 @@ class RecoveryRun(FaultRun):
         released = [join for join in self.joins if join["action"] == "success"]
         if self.spec["outcome"] == "success":
             # The successful response is only granted once the recovery budget
-            # is fully charged; whichever lineage request carries it is recorded
-            # with its real root instead of being relabeled as the last root.
+            # is fully charged, and only to the designated root's request; the
+            # join keeps that request's real root instead of relabeling it.
             return (len(released) == 1
                     and released[0]["budget_before_release"] == self.spec["goal"])
         return not released
@@ -535,12 +577,11 @@ class RecoveryRun(FaultRun):
         self.docker("exec", self.daemon, "bash", "-c", f"touch {COMMAND_GATE}")
         quiet_since = None
         while time.monotonic() < deadline:
-            snapshot = self.snapshot("observation")
+            pending_barriers, snapshot = self.observe_provider_request()
             record = self.record(snapshot)
             if record is None:
                 time.sleep(.5)
                 continue
-            pending_barriers = self.barriers()
             identities = [
                 provider_barrier_identity(snapshot, record, barrier.get("source_message_ids"))
                 for barrier in pending_barriers
@@ -576,28 +617,18 @@ class RecoveryRun(FaultRun):
                     "provider_request_id": barriers[0]["request_id"],
                 })
                 self.alive_owner_verified = True
-            restart = self.spec.get("restart")
-            if restart and not self.restarted:
-                due = record.get("next_recheck_at")
-                in_backoff = (
-                    restart == "backoff" and record["recovery_attempts"] == 1
-                    and not barriers and due
-                    and datetime.fromisoformat(due.replace("Z", "+00:00"))
-                    > datetime.now(timezone.utc)
-                )
-                if in_backoff or (restart == "fifth"
-                                  and record["recovery_attempts"] == 5
-                                  and barriers):
-                    self.restart(snapshot, backoff=restart == "backoff")
-                    continue
+            if self.restart_due(record, barriers):
+                self.restart(snapshot, backoff=self.spec.get("restart") == "backoff")
+                continue
             for barrier in barriers:
                 request_id = barrier["request_id"]
                 if request_id in self.releases:
                     continue
-                success = (self.spec["outcome"] == "success"
-                           and record["recovery_attempts"] == self.spec["goal"]
-                           and "success" not in self.releases.values())
-                self.releases[request_id] = "success" if success else "fail"
+                # Only the designated (last charged) root may be granted the
+                # success. A replayed request from an earlier lineage that is
+                # still queued after a restart must fail instead of consuming
+                # the release the fifth root is waiting for.
+                self.releases[request_id] = self.release_action(barrier, record)
                 self.joins.append({
                     **barrier, "action": self.releases[request_id],
                     "budget_before_release": record["recovery_attempts"],

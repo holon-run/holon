@@ -1087,6 +1087,59 @@ class RecoveryRunnerTests(unittest.TestCase):
             run.releases["old"] = "fail"
             self.assertEqual(run.barriers(), [])
 
+    def test_pending_provider_request_is_observed_before_its_snapshot(self):
+        # The daemon charges the recovery root before issuing the provider
+        # request, so the snapshot that explains a pending barrier must be
+        # taken after the barrier was read, never before it.
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "restart-fifth-exhausted",
+                {"goal": 5, "outcome": "exhausted"},
+            )
+            calls = []
+            run.barriers = Mock(side_effect=lambda: calls.append("barriers") or ["barrier"])
+            run.snapshot = Mock(side_effect=lambda label: calls.append(label) or "rows")
+            barriers, snapshot = run.observe_provider_request()
+            self.assertEqual(calls, ["barriers", "observation"])
+            self.assertEqual((barriers, snapshot), (["barrier"], "rows"))
+
+    def test_only_the_designated_root_may_be_released_as_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "restart-fifth",
+                {"goal": 5, "outcome": "success", "restart": "fifth"},
+            )
+            record = {"recovery_attempts": 5,
+                      "last_recovery_root_attempt_id": "root-5"}
+            self.assertEqual(
+                run.release_action({"root_attempt_id": "root-5"}, record), "success")
+            # A retry from an earlier lineage that is still queued after the
+            # restart must not consume the designated root's success.
+            self.assertEqual(
+                run.release_action({"root_attempt_id": "root-3"}, record), "fail")
+            uncharged = {**record, "recovery_attempts": 4}
+            self.assertEqual(
+                run.release_action({"root_attempt_id": "root-5"}, uncharged), "fail")
+            exhausted = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "restart-fifth-exhausted",
+                {"goal": 5, "outcome": "exhausted", "restart": "fifth"},
+            )
+            self.assertEqual(
+                exhausted.release_action({"root_attempt_id": "root-5"}, record), "fail")
+
+    def test_fifth_restart_requires_the_designated_root_barrier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "restart-fifth",
+                {"goal": 5, "outcome": "success", "restart": "fifth"},
+            )
+            record = {"recovery_attempts": 5,
+                      "last_recovery_root_attempt_id": "root-5"}
+            self.assertFalse(run.restart_due(record, [{"root_attempt_id": "root-3"}]))
+            self.assertFalse(run.restart_due({**record, "recovery_attempts": 4},
+                                            [{"root_attempt_id": "root-5"}]))
+            self.assertTrue(run.restart_due(record, [{"root_attempt_id": "root-5"}]))
+
     def order_evidence(self, order):
         scanner_first = order == "scanner-first"
         after, record = self.owned_snapshot({"goal": int(scanner_first), "outcome": "success"})
