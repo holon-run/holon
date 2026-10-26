@@ -265,7 +265,8 @@ docker-e2e-scheduler-live-canary: docker-build ## Run the real-model scheduler c
 
 docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 scripts/docker-e2e.py --validate-manifest
-	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill tests.test_fallback_storm
+	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill \
+		tests.test_fallback_storm tests.test_continuation_interjection
 
 docker-e2e-bootstrap: docker-build ## Run the opt-in browser-first setup + first-task E2E (needs a real API key)
 	python3 scripts/docker-e2e.py --image "$(DOCKER_IMAGE)" --skip-build --case runtime-bootstrap-first-task

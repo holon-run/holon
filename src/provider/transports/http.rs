@@ -14,12 +14,6 @@ pub(super) struct DispatchGuardRejected(String);
 
 pub(crate) fn is_dispatch_guard_rejected(error: &anyhow::Error) -> bool {
     error.is::<DispatchGuardRejected>()
-        || error.chain().any(|source| {
-            // Timeline sources retain anyhow contexts that std::error::Error cannot downcast.
-            source
-                .downcast_ref::<crate::provider::ProviderTurnError>()
-                .is_some_and(|error| is_dispatch_guard_rejected(&error.source))
-        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

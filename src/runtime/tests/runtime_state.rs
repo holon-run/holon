@@ -18950,6 +18950,188 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     );
 }
 
+/// Model a retained source whose canonical status is no longer queued.
+async fn interjection_with_diverged_canonical_status(
+    status: QueueEntryStatus,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    RuntimeHandle,
+    MessageEnvelope,
+) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime
+        .enqueue(trusted_operator_prompt(None, "start divergence turn"))
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("operator prompt should be claimed");
+    };
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+    let mut interjection = trusted_operator_prompt(None, "queued interjection");
+    interjection.priority = Priority::Interject;
+    let interjection = runtime.enqueue(interjection).await.unwrap();
+    let mut record = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest(&interjection.id)
+        .unwrap()
+        .expect("queued interjection row");
+    assert_eq!(record.status, QueueEntryStatus::Queued);
+    record.status = status;
+    record.updated_at = Utc::now();
+    runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .upsert(&record)
+        .unwrap();
+    (dir, workspace, runtime, interjection)
+}
+
+#[tokio::test]
+async fn operator_interjection_defers_interrupted_source_without_starving_fresh_input() {
+    let (_dir, _workspace, runtime, interjection) =
+        interjection_with_diverged_canonical_status(QueueEntryStatus::Interrupted).await;
+    let execution_before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap();
+    let follow_ups = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .expect("an interrupted source must wait for its original replay");
+    assert!(follow_ups.is_empty());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap(),
+        execution_before
+    );
+    let mut fresh = trusted_operator_prompt(None, "fresh interjection after parked source");
+    fresh.priority = Priority::Interject;
+    let fresh = runtime.enqueue(fresh).await.unwrap();
+    let follow_ups = runtime
+        .drain_operator_interjections(
+            "default",
+            2,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .expect("an interrupted source must not starve fresh queued input");
+    assert_eq!(follow_ups.len(), 1);
+    assert!(follow_ups[0].contains("fresh interjection after parked source"));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fresh.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interjected
+    );
+    assert!(runtime
+        .inner
+        .agent
+        .lock()
+        .await
+        .queue
+        .peek_next_matching(|queued| queued.id == interjection.id)
+        .is_some());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&interjection.id)
+            .unwrap()
+            .map(|record| record.status),
+        Some(QueueEntryStatus::Interrupted)
+    );
+    let events = runtime.storage().read_recent_events(200).unwrap();
+    // Deferring the retained source must not fabricate consumption in this turn.
+    assert!(!events.iter().any(|event| {
+        event.kind == "operator_interjection_admitted"
+            && event.data["message_id"].as_str() == Some(interjection.id.as_str())
+    }));
+    assert!(runtime
+        .inner
+        .runtime_db
+        .conversation()
+        .summary_page("default", 10, None, None)
+        .unwrap()
+        .pending_inputs
+        .iter()
+        .all(|input| input.message_id != interjection.id));
+}
+
+#[tokio::test]
+async fn operator_interjection_keeps_fail_closed_on_unexpected_canonical_status() {
+    let (_dir, _workspace, runtime, interjection) =
+        interjection_with_diverged_canonical_status(QueueEntryStatus::Processed).await;
+    let error = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .expect_err("an unexpected canonical state stays a hard conflict");
+    assert!(error
+        .to_string()
+        .contains("interjection settlement made no durable progress"));
+    // Fail-closed must preserve both the canonical row and the in-memory entry.
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&interjection.id)
+            .unwrap()
+            .map(|record| record.status),
+        Some(QueueEntryStatus::Processed)
+    );
+    assert!(runtime
+        .inner
+        .agent
+        .lock()
+        .await
+        .queue
+        .peek_next_matching(|queued| queued.id == interjection.id)
+        .is_some());
+}
+
 #[tokio::test]
 async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch() {
     let closed_dir = tempdir().unwrap();
