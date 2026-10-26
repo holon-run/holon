@@ -38,7 +38,8 @@ def prepare(source: Path, destination: Path, *, recovery_acceptance=False) -> di
         dockerfile.write_text(text.replace(needle, needle + " --features recovery-acceptance"))
     # Dockerfile-specific rules override the stock .dockerignore. All tracked
     # files and .git must be present: omitting tracked files makes Git dirty.
-    (destination / "Dockerfile.dockerignore").write_text("")
+    # A zero-byte override makes Docker fall back to the context's ignore file.
+    (destination / "Dockerfile.dockerignore").write_text("# Include the complete clean Git context.\n")
     result = {"revision": revision, "context": str(context), "dockerfile": str(dockerfile)}
     result["recovery_acceptance"] = recovery_acceptance
     (destination / "source.json").write_text(json.dumps(result, indent=2) + "\n")

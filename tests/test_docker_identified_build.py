@@ -35,7 +35,10 @@ class IdentifiedBuildTests(unittest.TestCase):
         self.assertTrue((context / ".github" / "tracked").is_file())
         self.assertFalse((context / ".git/objects/info/alternates").exists())
         self.assertEqual(dockerfile.read_bytes(), (source / "Dockerfile").read_bytes())
-        self.assertEqual(dockerfile.with_name("Dockerfile.dockerignore").read_text(), "")
+        ignore = dockerfile.with_name("Dockerfile.dockerignore").read_text()
+        # Docker falls back to the context's .dockerignore for a zero-byte file.
+        self.assertTrue(ignore.strip())
+        self.assertTrue(all(line.startswith("#") for line in ignore.splitlines()))
         self.assertNotIn("extraheader", git(context, "config", "--list").lower())
 
     def test_clean_checkout_uses_real_self_contained_git_metadata(self):
