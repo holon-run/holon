@@ -3514,8 +3514,9 @@ impl RuntimeHandle {
         &self,
         commit: TransitionCommit,
     ) -> TransitionApplyResult {
-        self.apply_transition_commit_with_agent_guard(commit, None)
-            .await
+        // Callers await this inline across the runtime, so the guarded
+        // implementation must not add its future state to every caller.
+        Box::pin(self.apply_transition_commit_with_agent_guard(commit, None)).await
     }
 
     async fn apply_transition_commit_with_agent_guard(
@@ -5882,10 +5883,11 @@ impl RuntimeHandle {
             };
             match commit {
                 Ok(commit) => {
-                    return Ok(self
-                        .apply_transition_commit_with_agent_guard(commit, agent_guard)
-                        .await
-                        .applied);
+                    return Ok(Box::pin(
+                        self.apply_transition_commit_with_agent_guard(commit, agent_guard),
+                    )
+                    .await
+                    .applied);
                 }
                 Err(error) => {
                     drop(agent_guard);
