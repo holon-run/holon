@@ -337,6 +337,15 @@ Its policy override can skip local cooldown only, never a server not-before or
 an existing probe lease. Budget settlement does not itself clear availability
 incidents or authorize execution; canonical source and owner checks still apply.
 
+An automatic episode's candidate cursor also preserves an unfinished probe
+frontier across epochs and restart. If a later, untried candidate is unavailable,
+selection must not wrap to a failed prefix merely because its probe deadline
+elapsed: repeated prefix failures can otherwise renew the episode floor and
+starve that later candidate under shared cooldowns. A prefix confirmed healthy
+by another request remains usable. Once the forward candidates have been tried,
+the next sweep may wrap normally. This changes no server deadline, probe lease,
+dispatch budget, or canonical execution fence.
+
 An epoch with no dispatched requests is an availability pause, not a failed
 epoch: it neither increments the episode's failure count nor restarts its
 failure floor. Its next recheck follows the earliest future candidate deadline,
