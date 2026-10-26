@@ -68,7 +68,8 @@ class Mock(BaseHTTPRequestHandler):
         scenario = setting("SCENARIO", "")
         markers = re.findall(r"QA_[A-Z0-9_]+", body)
         marker = next((value for value in (
-            "QA_TIMER", "QA_TOOL_CONTINUE", "QA_COOL_A", "QA_PARK", "QA_FRESH"
+            "QA_TIMER", "QA_TOOL_CONTINUE", "QA_COOL_A", "QA_COOL_CHAIN",
+            "QA_PARK", "QA_FRESH"
         ) if value in markers), next(iter(markers), None))
         tool_output = "function_call_output" in body or "tool_result" in body
         if scenario == "tool-continuation" and side == "a" and "QA_COOL_A" in body:
@@ -77,7 +78,7 @@ class Mock(BaseHTTPRequestHandler):
             self.reply(503, {"error": {"message": "fixture cooling", "type": "fixture"}},
                        {"Retry-After": "60"})
             return
-        if scenario == "interjection" and "QA_PARK" in body and side in ("a", "b"):
+        if scenario == "interjection" and "QA_COOL_CHAIN" in body and side == "a":
             record(layer="mock_http", side=side, status=503, scenario=scenario,
                    marker=marker, tool_output=tool_output, response="park")
             self.reply(503, {"error": {"message": "fixture parked", "type": "fixture"}},
@@ -96,7 +97,7 @@ class Mock(BaseHTTPRequestHandler):
                 self.reply(200, response([text_item("QA_TOOL_CONTINUED")],
                                          f"resp_{side}_{len(RECORDS)}"))
             elif marker == "QA_TOOL_CONTINUE" and side == "a":
-                record(layer="mock_http", side=side, response="tool_call")
+                record(layer="mock_http", side=side, marker=marker, response="tool_call")
                 self.reply(200, response(
                     [call_item("call-tool", "ExecCommand", {
                         "cmd": "while [ ! -f /var/lib/holon/qa-3753-gate ]; "
@@ -126,6 +127,22 @@ class Mock(BaseHTTPRequestHandler):
                     [call_item("call-timer", "ExecCommand", {
                         "cmd": "while [ ! -f /var/lib/holon/qa-3754-gate ]; "
                                "do sleep 0.2; done; printf QA_TIMER_TOOL_DONE",
+                        "yield_time_ms": 20000,
+                    })], f"resp_{side}_{len(RECORDS)}"))
+            elif "QA_PARK" in body and not tool_output and side == "a":
+                # Nonportable provider state keeps this continuation on A even
+                # though a later independent timer can admit on healthy B.
+                reasoning = {"type": "reasoning", "id": "rs_non_persisted",
+                             "content": [{"type": "reasoning_text",
+                                          "text": "QA_PROVIDER_OWNED_REASONING"}],
+                             "encrypted_content": "opaque-reasoning"}
+                record(layer="mock_http", side=side, marker="QA_PARK",
+                       response="tool_call", tool_output=tool_output,
+                       provider_owned_reasoning=reasoning)
+                self.reply(200, response(
+                    [reasoning, call_item("call-park-tool", "ExecCommand", {
+                        "cmd": "while [ ! -f /var/lib/holon/qa-3754-park-gate ]; "
+                               "do sleep 0.2; done; printf QA_PARK_TOOL_DONE",
                         "yield_time_ms": 20000,
                     })], f"resp_{side}_{len(RECORDS)}"))
             elif tool_output:
@@ -232,7 +249,8 @@ def database():
     for table in tables:
         if any(word in table for word in ("turn", "work_item", "queue", "recovery",
                                           "settlement", "provider_admission",
-                                          "incident", "tool", "message", "activation_input")):
+                                          "incident", "tool", "message", "activation_input",
+                                          "transcript", "input_assignment")):
             rows[table] = [dict(r) for r in db.execute(f'SELECT * FROM "{table}" LIMIT 500')]
             if counts[table] > len(rows[table]):
                 truncated.append(table)
