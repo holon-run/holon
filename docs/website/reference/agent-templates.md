@@ -119,9 +119,10 @@ license to implement features or to own releases.
 ## Sales operations
 
 `sales-steward` maintains an authorized account book, recurring pipeline and
-renewal reviews, and sourced meeting or outreach drafts. It keeps conflicts,
-human decisions, and recheck results visible. It does not send outreach, write
-CRM changes, change pricing, or make renewal or legal commitments without
+renewal reviews, and sourced pre-meeting or outreach drafts. It keeps conflicts,
+human decisions, and recheck results visible, distinguishing internal operating
+language from prospect-facing communication while avoiding generic AI clichés.
+It does not send outreach, write CRM changes, change pricing, or make renewal or
 explicit approval of the exact proposal.
 
 ## Marketing operations

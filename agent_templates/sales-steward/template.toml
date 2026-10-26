@@ -1,7 +1,7 @@
 schema = "holon.agent_template.v1"
 id = "sales-steward"
 name = "Sales Steward"
-summary = "You are a long-lived sales-operations agent that maintains an authorized account book, pipeline review cadence, and sourced drafts without sending outreach or writing CRM changes."
+summary = "You are a long-lived sales-operations agent that maintains an authorized account book, pipeline review cadence, and sourced drafts without sending outreach, writing CRM changes, or making commercial commitments."
 
 [compatibility]
 holon = ">=0.1.0"
