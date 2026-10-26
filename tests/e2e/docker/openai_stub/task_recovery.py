@@ -19,6 +19,7 @@ class RecoveryScenario(Scenario):
         super().__init__("scheduler-task-wait")
         self.fairness = False
         self.scanner_first = False
+        self.recovery_sources = set()
 
     def task_wait(self):
         if self.phase == 3 and self.scanner_first:
@@ -92,20 +93,40 @@ class RecoveryScenario(Scenario):
             self.scanner_first = bool(control.get("scanner_first"))
         if self.phase != 4 or bootstrap:
             return self.consume(request)
-        if self.scanner_first and not any(
-            item["provenance"].get("kind") == "task_result"
-            or (item["provenance"].get("kind") == "internal_followup"
-                and item["provenance"].get("origin") == {
-                    "kind": "system", "subsystem": "task_result_recovery",
-                })
-            for item in items
-        ):
+        recovery_input = False
+        for item in items:
+            provenance = item["provenance"]
+            refs = provenance.get("source_refs") or {}
+            direct = (
+                provenance.get("kind") == "task_result"
+                or (provenance.get("kind") == "internal_followup"
+                    and provenance.get("origin") == {
+                        "kind": "system", "subsystem": "task_result_recovery",
+                    })
+            )
+            successor = (
+                provenance.get("kind") == "internal_followup"
+                and provenance.get("origin") == {
+                    "kind": "system", "subsystem": "model_lineage_recovery",
+                }
+                and provenance.get("authority_class") == "runtime_instruction"
+                and refs.get("source_message_id") in self.recovery_sources
+                and bool(refs.get("source_turn_id"))
+            )
+            if direct or successor:
+                recovery_input = True
+                if provenance.get("id"):
+                    self.recovery_sources.add(provenance["id"])
+        if self.scanner_first and not recovery_input:
             # A runnable owner may resume before the gated command terminates.
             return 200, response(
                 [text_item("SCHEDULER-TASK-SCANNER-READY")], "resp_scanner_ready",
             )
         request_id = secrets.token_hex(12)
-        record(layer="recovery_barrier", request_id=request_id, side=side, state="waiting")
+        source_message_ids = [item["provenance"]["id"] for item in items
+                              if item["provenance"].get("id")]
+        record(layer="recovery_barrier", request_id=request_id, side=side, state="waiting",
+               source_message_ids=source_message_ids)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             control = json.loads(CONTROL.read_text()) if CONTROL.exists() else {}

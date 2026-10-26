@@ -226,13 +226,16 @@ def task_result_consuming_turns(snapshot, record, *, admitted_turn_id=None):
             continue
         stored = payload(row) if "payload_json" in row else {}
         terminal = stored.get("terminal") or {}
-        # The losing original notification can finish without any model re-entry.
+        # A suppressed source can finish without any model re-entry.
+        no_brief = terminal.get("no_brief_reason")
+        reducer_reason = no_brief.get("reason") if isinstance(no_brief, dict) else None
         if (
             row["turn_id"] != admitted_turn_id
             and terminal.get("kind") == "completed"
-            and terminal.get("reason") == "reducer_only/parent_turn_already_delivered"
+            and reducer_reason in {"parent_turn_already_delivered", "model_reentry_suppressed"}
+            and terminal.get("reason") == f"reducer_only/{reducer_reason}"
             and terminal.get("no_brief_reason") == {
-                "kind": "reducer_only", "reason": "parent_turn_already_delivered",
+                "kind": "reducer_only", "reason": reducer_reason,
             }
             and stored.get("external_side_effect_possible") is False
             and not any(stored.get(key) for key in (

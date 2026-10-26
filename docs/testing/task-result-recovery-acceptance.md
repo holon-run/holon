@@ -43,7 +43,13 @@ prevents scanner takeover; a real-command negative regression preserves that
 fence. This case strictly requires no task wait, while all other cases retain
 the exact-wait oracle. Each subsequent provider request is held at a uniquely
 identified provider barrier. The controller reads the real admission ledger
-before releasing failure or success. It never edits deadlines, generations,
+and joins the request's actual current-input message IDs to its canonical
+attempt and same-owner recovery ancestry before releasing failure or success.
+The latest settlement activation is not a request identity: a delayed fallback
+from an earlier root must still fail, and only the designated root may succeed
+or trigger the fifth-root restart checkpoint. Scanner-first barriers recognize
+provider-recovery successors only from already observed recovery sources with
+runtime provenance and a source turn. It never edits deadlines, generations,
 settlements, or scheduler state. A barrier timeout is a failed fixture.
 Failure release returns transient HTTP 503, not contract-error HTTP 400: the
 latter can continue through provider routing rather than terminate the charged
@@ -130,12 +136,18 @@ Per-case evidence includes pre-terminal/captured identity, atomic read-only DB
 snapshots, provider request-to-activation/root joins, policy, restart before/after
 snapshots and mounted-volume identity, pinned build/isolation evidence, logs,
 and cleanup status. Final evaluation uses the frozen database collected after
-dispatch stops. Truncated/missing tables and cleanup errors cannot pass.
+dispatch stops and recomputes each provider join from its recorded input IDs;
+relabeling an old request as the fifth root fails closed. Truncated/missing
+tables and cleanup errors cannot pass.
 When a case is delivered through a scanner wake, the oracle requires that wake
 message to be the activation's model input and joins it to the frozen task
 result through its typed source refs; the raw task result stays a promise
 source and is never expected in model input. A different or missing wake input,
 a foreign result identity, and a second completed consuming turn all fail.
+Only exact structured reducer-only `parent_turn_already_delivered` or
+`model_reentry_suppressed` terminals may be excluded as non-consumption, with
+no model input, side effect, brief, or WorkItem completion; the admitted turn
+itself is never excluded.
 Exit 0 requires every selected case's frozen oracle to pass; interruption exits
 130 after cleanup. A killed controller process cannot guarantee cleanup.
 

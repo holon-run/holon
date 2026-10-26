@@ -85,6 +85,62 @@ def unwrap_database(database):
     return database["rows"]
 
 
+def provider_barrier_identity(snapshot, record, source_message_ids):
+    require(isinstance(source_message_ids, list) and bool(source_message_ids)
+            and all(isinstance(value, str) and value for value in source_message_ids),
+            "provider barrier lacks actual input source IDs")
+    candidates = [
+        row for row in snapshot["execution_protocol_attempts"]
+        if row["agent_id"] == record["agent_id"]
+        and payload(row).get("source_message_id") in source_message_ids
+    ]
+    if not candidates:
+        # The provider log may become visible after this observation's DB snapshot.
+        return None
+    require(len(candidates) == 1, "provider barrier has ambiguous canonical input sources")
+    attempt = candidates[0]
+    root = recovery_root(snapshot, record["agent_id"], attempt["attempt_id"])
+    ancestors = {
+        row["attempt_id"]: payload(row) for row in snapshot["execution_protocol_attempts"]
+        if row["agent_id"] == record["agent_id"]
+    }
+    ancestor = attempt["attempt_id"]
+    while True:
+        require(ancestors[ancestor].get("binding") == {
+            "kind": "work_item", "work_item_id": record["work_item_id"],
+        }, "provider barrier belongs to another owner")
+        if ancestor == root:
+            break
+        ancestor = ancestors[ancestor]["recovery_of_attempt_id"]
+    roots = [row["root_attempt_id"] for row in recovery_ledger(snapshot, record)]
+    if root in roots:
+        count = roots.index(root) + 1
+    else:
+        original = ancestors[root]
+        source = original.get("source", {}).get("identity", {})
+        direct = source == {
+            "kind": "task_result", "task_id": record["task_id"],
+            "result_message_id": record["message_id"],
+        }
+        exact = (
+            source.get("kind") == "triggered_wait"
+            and source.get("trigger_message_id") == record["message_id"]
+            and any(row["wait_condition_id"] == source.get("wait_id")
+                    and row["agent_id"] == record["agent_id"]
+                    and row["subject_ref"] == record["task_id"]
+                    and row.get("work_item_id") == record["work_item_id"]
+                    for row in snapshot["wait_conditions"])
+        )
+        require(original.get("source_message_id") == record["message_id"]
+                and (direct or exact),
+                "provider barrier is not descended from this result or a charged root")
+        count = 0
+    return {
+        "activation_id": attempt["attempt_id"], "root_attempt_id": root,
+        "recovery_attempts": count,
+    }
+
+
 class RecoveryRun(FaultRun):
     database_mode = "task-result-database"
 
@@ -463,7 +519,16 @@ class RecoveryRun(FaultRun):
             if record is None:
                 time.sleep(.5)
                 continue
-            barriers = self.barriers()
+            pending_barriers = self.barriers()
+            identities = [
+                provider_barrier_identity(snapshot, record, barrier.get("source_message_ids"))
+                for barrier in pending_barriers
+            ]
+            if any(identity is None for identity in identities):
+                time.sleep(.5)
+                continue
+            barriers = [{**barrier, **identity}
+                        for barrier, identity in zip(pending_barriers, identities)]
             if not self.observe_order(snapshot, barriers):
                 time.sleep(.5)
                 continue
@@ -500,7 +565,8 @@ class RecoveryRun(FaultRun):
                     > datetime.now(timezone.utc)
                 )
                 if in_backoff or (restart == "fifth"
-                                  and record["recovery_attempts"] == 5 and barriers):
+                                  and any(barrier["recovery_attempts"] == 5
+                                          for barrier in barriers)):
                     self.restart(snapshot, backoff=restart == "backoff")
                     continue
             for barrier in barriers:
@@ -508,14 +574,10 @@ class RecoveryRun(FaultRun):
                 if request_id in self.releases:
                     continue
                 success = (self.spec["outcome"] == "success"
-                           and record["recovery_attempts"] == self.spec["goal"])
+                           and barrier["recovery_attempts"] == self.spec["goal"])
                 self.releases[request_id] = "success" if success else "fail"
                 self.joins.append({
                     **barrier, "action": self.releases[request_id],
-                    "activation_id": record["activation_id"],
-                    "recovery_attempts": record["recovery_attempts"],
-                    "root_attempt_id": recovery_root(
-                        snapshot, "qa", record["activation_id"]),
                     "result_identity": record["result_identity"],
                     "recovery_epoch": record["recovery_epoch"],
                 })
@@ -568,6 +630,13 @@ class RecoveryRun(FaultRun):
             snapshot, record, expected_count=self.spec["goal"],
             real_backoff=self.spec["goal"] == 5,
         )
+        for join in self.joins:
+            identity = provider_barrier_identity(
+                snapshot, record, join.get("source_message_ids"),
+            )
+            require(identity is not None
+                    and all(join[key] == value for key, value in identity.items()),
+                    "provider barrier was relabeled as another activation/root")
         for index, row in enumerate(rows):
             expected = ("success" if self.spec["outcome"] == "success"
                         and index == len(rows) - 1 else "fail")

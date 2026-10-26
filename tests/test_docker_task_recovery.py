@@ -46,6 +46,9 @@ def snapshot_with_roots(count=5):
     snapshot["execution_protocol_attempts"] += [{
         "agent_id": "parent", "attempt_id": f"root-{index + 1}",
         "payload_json": json.dumps({"attempt_id": f"root-{index + 1}",
+                                   "source_message_id": f"message-root-{index + 1}",
+                                   "binding": {"kind": "work_item",
+                                               "work_item_id": record["work_item_id"]},
                                    "recovery_of_attempt_id": None}),
     } for index in range(count)]
     return snapshot, record
@@ -254,6 +257,54 @@ class RecoveryOracleTests(unittest.TestCase):
         snapshot["briefs"] *= 2
         with self.assertRaises(AssertionError):
             oracle.require_recovery_exhausted(snapshot, captured=record)
+
+    def test_exhaustion_rejects_consumption_but_not_structured_model_suppression(self):
+        snapshot, captured = self.exhausted()
+        snapshot["turn_records"].append({
+            "agent_id": "parent", "turn_id": "suppressed-source",
+            "terminal_kind": "completed", "trigger_message_id": "result-1",
+            "payload_json": json.dumps({
+                "input_message_ids": ["result-1"], "external_side_effect_possible": False,
+                "terminal": {
+                    "kind": "completed", "reason": "reducer_only/model_reentry_suppressed",
+                    "no_brief_reason": {
+                        "kind": "reducer_only", "reason": "model_reentry_suppressed",
+                    },
+                },
+            }),
+        })
+        oracle.require_recovery_exhausted(snapshot, captured=captured)
+        for mutation in ("reason-only", "mismatched-reason", "unknown-reason", "side-effect",
+                         "model-input", "live-input", "brief", "completion", "stored-brief"):
+            broken = copy.deepcopy(snapshot)
+            stored = oracle.payload(broken["turn_records"][-1])
+            if mutation == "reason-only":
+                del stored["terminal"]["no_brief_reason"]
+            elif mutation == "mismatched-reason":
+                stored["terminal"]["no_brief_reason"]["reason"] = "parent_turn_already_delivered"
+            elif mutation == "unknown-reason":
+                stored["terminal"]["reason"] = "reducer_only/unknown"
+                stored["terminal"]["no_brief_reason"]["reason"] = "unknown"
+            elif mutation == "side-effect":
+                stored["external_side_effect_possible"] = True
+            elif mutation == "model-input":
+                stored["idle_input_batch"] = {"items": [{"message_id": "result-1"}]}
+            elif mutation == "live-input":
+                stored["live_input_batches"] = [{"items": [{"message_id": "result-1"}]}]
+            elif mutation == "brief":
+                stored["produced_brief_ids"] = ["real-brief"]
+            elif mutation == "completion":
+                stored["completed_work_item_ids"] = ["owner"]
+            else:
+                broken["briefs"].append({
+                    "agent_id": "parent", "turn_id": "suppressed-source", "kind": "result",
+                    "evidence_id": "unlisted-brief", "message_id": "foreign",
+                })
+            broken["turn_records"][-1]["payload_json"] = json.dumps(stored)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                AssertionError, "successful consumption",
+            ):
+                oracle.require_recovery_exhausted(broken, captured=captured)
 
     def test_restart_preserves_epoch_owner_ledger_and_deadline(self):
         before, captured = snapshot_with_roots(1)
@@ -700,6 +751,47 @@ class ScannerSetupTests(unittest.TestCase):
 
 
 class ProviderFixtureTests(unittest.TestCase):
+    def test_scanner_first_barrier_recognizes_only_observed_lineage_successors(self):
+        source = {
+            "id": "scanner-source", "kind": "internal_followup",
+            "origin": {"kind": "system", "subsystem": "task_result_recovery"},
+        }
+        successor = {
+            "id": "fallback-source", "kind": "internal_followup",
+            "origin": {"kind": "system", "subsystem": "model_lineage_recovery"},
+            "authority_class": "runtime_instruction",
+            "source_refs": {"source_message_id": "scanner-source", "source_turn_id": "failed-turn"},
+        }
+        for mutation in (None, "foreign-source", "missing-turn", "wrong-origin", "wrong-authority"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                scenario = fixture.RecoveryScenario()
+                scenario.phase, scenario.scanner_first = 4, True
+                replay = copy.deepcopy(successor)
+                if mutation == "foreign-source":
+                    replay["source_refs"]["source_message_id"] = "foreign"
+                elif mutation == "missing-turn":
+                    del replay["source_refs"]["source_turn_id"]
+                elif mutation == "wrong-origin":
+                    replay["origin"]["subsystem"] = "other"
+                elif mutation == "wrong-authority":
+                    replay["authority_class"] = "external"
+                with patch.object(fixture, "CONTROL", Path(directory) / "missing.json"), patch.object(
+                    scenario, "current_input_items",
+                    side_effect=[[{"body": "pending result", "provenance": source}],
+                                 [{"body": "recover failed turn", "provenance": replay}]],
+                ):
+                    scenario.consume_gated({}, "a", Mock(), timeout=0)
+                    record = Mock()
+                    status, _ = scenario.consume_gated({}, "b", record, timeout=0)
+                self.assertEqual(status, 504 if mutation is None else 200)
+                self.assertEqual(record.called, mutation is None)
+                self.assertEqual(scenario.phase, 4)
+                if mutation is None:
+                    self.assertEqual(
+                        record.call_args_list[0].kwargs["source_message_ids"],
+                        ["fallback-source"],
+                    )
+
     def test_scanner_first_owner_resume_does_not_open_recovery_barrier(self):
         for provenance, recovery_input in (
             ({"kind": "work_item_resume"}, False),
@@ -875,6 +967,49 @@ class ProviderFixtureTests(unittest.TestCase):
 
 
 class RecoveryRunnerTests(unittest.TestCase):
+    def test_provider_barrier_uses_actual_source_and_ancestry_not_latest_settlement(self):
+        snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "success"})
+        snapshot["execution_protocol_attempts"].append({
+            "agent_id": "qa", "attempt_id": "late-fallback",
+            "payload_json": json.dumps({
+                "source_message_id": "late-source", "recovery_of_attempt_id": "root-3",
+                "binding": {"kind": "work_item", "work_item_id": "owner"},
+            }),
+        })
+        check = lambda value, ids: recovery.provider_barrier_identity(value, record, ids)
+        self.assertEqual(check(snapshot, ["late-source"]), {
+            "activation_id": "late-fallback", "root_attempt_id": "root-3",
+            "recovery_attempts": 3,
+        })
+        self.assertEqual(check(snapshot, ["message-root-5"])["recovery_attempts"], 5)
+        self.assertIsNone(check(snapshot, ["not-captured-yet"]))
+        for mutation in ("missing", "ambiguous", "owner", "ancestor-owner", "foreign-root"):
+            broken = copy.deepcopy(snapshot)
+            ids = ["late-source"]
+            if mutation == "missing":
+                ids = []
+            elif mutation == "ambiguous":
+                ids.append("message-root-5")
+            else:
+                row = (broken["execution_protocol_attempts"][-1] if mutation != "ancestor-owner"
+                       else next(row for row in broken["execution_protocol_attempts"]
+                                 if row["attempt_id"] == "root-3"))
+                value = oracle.payload(row)
+                if mutation == "foreign-root":
+                    value["recovery_of_attempt_id"] = "attempt-1"
+                    root = broken["execution_protocol_attempts"][0]
+                    stored = oracle.payload(root)
+                    stored["source"]["identity"]["task_id"] = "foreign-task"
+                    stored["recovery_of_attempt_id"] = None
+                    root["payload_json"] = json.dumps(stored)
+                else:
+                    value["binding"]["work_item_id"] = "foreign-owner"
+                row["payload_json"] = json.dumps(value)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                AssertionError, "provider barrier",
+            ):
+                check(broken, ids)
+
     def test_exhaustion_checkpoint_waits_for_every_charged_provider_outcome(self):
         snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "exhausted"})
         with tempfile.TemporaryDirectory() as directory:
@@ -1251,6 +1386,8 @@ class RecoveryRunnerTests(unittest.TestCase):
             run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
             run.acceptance_request = "sixth"
             run.joins = [{"root_attempt_id": f"root-{index}", "action": "fail",
+                          "activation_id": f"root-{index}",
+                          "source_message_ids": [f"message-root-{index}"],
                           "recovery_attempts": index} for index in range(1, 6)]
             (run.evidence / "database.json").write_text(json.dumps({
                 "rows": after, "truncated_tables": [],
@@ -1446,17 +1583,31 @@ class RecoveryRunnerTests(unittest.TestCase):
         original = oracle.payload(row)
         snapshot["execution_protocol_attempts"].append({
             **row, "attempt_id": "task-root",
-            "payload_json": json.dumps({**original, "attempt_id": "task-root"}),
+            "payload_json": json.dumps({
+                **original, "attempt_id": "task-root", "turn_id": "original-turn",
+            }),
         })
         row["payload_json"] = json.dumps({
             **original, "recovery_of_attempt_id": "task-root",
+            "source_message_id": "fallback-source",
             "source": {"identity": {"kind": "runtime_recovery"}, "generation": 2},
         })
+        original_turn = copy.deepcopy(snapshot["turn_records"][0])
+        original_turn.update(turn_id="original-turn", terminal_kind="interrupted")
+        snapshot["turn_records"][0]["trigger_message_id"] = "fallback-source"
+        snapshot["turn_records"].append(original_turn)
+        snapshot["briefs"][0].update(message_id="fallback-source", payload_json=json.dumps({
+            **oracle.payload(snapshot["briefs"][0]), "related_message_id": "fallback-source",
+        }))
         with tempfile.TemporaryDirectory() as directory:
             run = recovery.RecoveryRun(Namespace(evidence_dir=Path(directory)),
                                        "fallback-success", spec)
             run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
-            run.joins = [{"side": "b", "action": "success", "recovery_attempts": 0}]
+            run.joins = [{
+                "side": "b", "action": "success", "recovery_attempts": 0,
+                "source_message_ids": ["fallback-source"],
+                "activation_id": row["attempt_id"], "root_attempt_id": "task-root",
+            }]
             (run.evidence / "database.json").write_text(json.dumps({
                 "rows": snapshot, "truncated_tables": [],
             }))
@@ -1469,6 +1620,34 @@ class RecoveryRunnerTests(unittest.TestCase):
                 "rows": snapshot, "truncated_tables": [],
             }))
             with self.assertRaises(AssertionError):
+                run.verify_frozen()
+
+    def test_frozen_provider_join_cannot_relabel_a_previous_root_as_the_fifth(self):
+        spec = {"goal": 5, "outcome": "success"}
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(Namespace(evidence_dir=Path(directory)), "fifth-success", spec)
+            snapshot, record = self.owned_snapshot(spec)
+            for row in snapshot["execution_protocol_attempts"]:
+                if row["attempt_id"].startswith("root-"):
+                    value = oracle.payload(row)
+                    value.update(
+                        source_message_id=f"message-{row['attempt_id']}",
+                        binding={"kind": "work_item", "work_item_id": "owner"},
+                    )
+                    row["payload_json"] = json.dumps(value)
+            run.captured = {key: record[key] for key in oracle.IDENTITY_FIELDS}
+            run.joins = [{
+                "activation_id": f"root-{index}", "root_attempt_id": f"root-{index}",
+                "source_message_ids": [f"message-root-{index}"],
+                "recovery_attempts": index, "side": "a",
+                "action": "success" if index == 5 else "fail",
+            } for index in range(1, 6)]
+            (run.evidence / "database.json").write_text(json.dumps({
+                "rows": snapshot, "truncated_tables": [],
+            }))
+            run.verify_frozen()
+            run.joins[-1]["source_message_ids"] = ["message-root-3"]
+            with self.assertRaisesRegex(AssertionError, "provider barrier"):
                 run.verify_frozen()
 
     def test_each_manifest_case_runs_its_frozen_oracle(self):
@@ -1512,6 +1691,11 @@ class RecoveryRunnerTests(unittest.TestCase):
                 run.restarted = bool(spec.get("restart"))
                 run.joins = [{
                     "root_attempt_id": row["root_attempt_id"], "recovery_attempts": index + 1,
+                    "activation_id": row["root_attempt_id"],
+                    "source_message_ids": [oracle.payload(next(
+                        attempt for attempt in snapshot["execution_protocol_attempts"]
+                        if attempt["attempt_id"] == row["root_attempt_id"]
+                    ))["source_message_id"]],
                     "side": "b" if spec.get("fallback") else "a",
                     "action": "success" if spec["outcome"] == "success"
                     and index + 1 == spec["goal"] else "fail",
@@ -1519,6 +1703,8 @@ class RecoveryRunnerTests(unittest.TestCase):
                 if not spec["goal"]:
                     run.joins.append({
                         "root_attempt_id": "attempt-1", "recovery_attempts": 0,
+                        "activation_id": "attempt-1",
+                        "source_message_ids": [record["message_id"]],
                         "action": "success", "side": "b" if spec.get("fallback") else "a",
                     })
                 (run.evidence / "database.json").write_text(json.dumps({
