@@ -6,6 +6,7 @@ use super::parse::{
     ChatCompletionSseEvent,
 };
 
+#[cfg(test)]
 pub(crate) async fn send_chat_completion_request(
     client: &Client,
     url: String,
@@ -15,10 +16,33 @@ pub(crate) async fn send_chat_completion_request(
     agent_id: Option<&str>,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
+    send_chat_completion_request_with_material(
+        client,
+        url,
+        body,
+        headers,
+        trace,
+        agent_id,
+        dispatch_guard,
+        &Default::default(),
+    )
+    .await
+}
+
+pub(crate) async fn send_chat_completion_request_with_material(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
         let model_ref = provider_model_ref("openai", &body);
-        let request_trace = trace.and_then(|trace| {
-            trace.begin_request(
+        let request_trace = trace.map(|trace| {
+            trace.begin_request_with_material(
                 agent_id,
                 "openai",
                 Some(&model_ref),
@@ -26,8 +50,9 @@ pub(crate) async fn send_chat_completion_request(
                 "chat_completions",
                 &headers,
                 &body,
+                material,
             )
-        });
+        }).transpose()?.flatten();
         let mut request = client.post(&url).header("content-type", "application/json");
         for (name, value) in headers {
             request = request.header(name, value);
@@ -35,7 +60,7 @@ pub(crate) async fn send_chat_completion_request(
 
         let request_started_at = chrono::Utc::now();
         let response = send_openai_request(
-            request.json(&body),
+            request.body(material.json_bytes(&body)?),
             "OpenAI Chat Completions request failed",
             "request_send",
             "openai",
@@ -57,7 +82,7 @@ pub(crate) async fn send_chat_completion_request(
         if !response.status().is_success() {
             let status = response.status();
             let retry_after = parse_retry_after(response.headers());
-            let body = read_error_response_body(response, request_trace.as_ref()).await;
+            let body = read_error_response_body(response, request_trace.as_ref(), material).await?;
             return Err(classify_chat_completion_status_error(
                 "OpenAI Chat Completions request failed",
                 status,
@@ -70,9 +95,13 @@ pub(crate) async fn send_chat_completion_request(
             ));
         }
 
-        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        let body = match tokio::time::timeout(response_body_timeout(), material.response_text(response)).await {
             Ok(Ok(text)) => text,
             Ok(Err(error)) => {
+                let error = match error.downcast::<reqwest::Error>() {
+                    Ok(error) => error,
+                    Err(error) => return Err(material.hold_error(error)),
+                };
                 return Err(classify_reqwest_transport_error_with_trace(
                     "OpenAI Chat Completions response body failed",
                     "response_body",
@@ -98,6 +127,7 @@ pub(crate) async fn send_chat_completion_request(
         let response_body_completed_at = chrono::Utc::now();
         trace_response_body(request_trace.as_ref(), &body);
 
+        material.read(|| crate::diagnostics::resource_io::admit_json_payload(&body))?;
         let parsed: Value = serde_json::from_str(&body).map_err(|error| {
             invalid_response_error("invalid OpenAI Chat Completions JSON", error)
         })?;

@@ -841,7 +841,8 @@ impl RuntimeHandle {
                 "resolved_base_commit": base_commit,
                 "activated": activate && activation_error.is_none(),
             }),
-        )?;
+        )
+        .await?;
         Ok(CreateWorktreeResult {
             disposition: "created".into(),
             created: true,
@@ -1099,7 +1100,8 @@ impl RuntimeHandle {
                     "execution_root_id": &resolved_execution_root_id,
                     "changed_files": changed_files,
                 }),
-            )?;
+            )
+            .await?;
             return Ok(RemoveWorktreeResult {
                 execution_root_id: resolved_execution_root_id.clone(),
                 disposition: "retained_dirty".into(),
@@ -1247,7 +1249,8 @@ impl RuntimeHandle {
                 "branch_deleted": branch_deleted,
                 "branch_retained_reason": branch_retained_reason,
             }),
-        )?;
+        )
+        .await?;
         let branch_retained = branch_retained_reason.is_some();
         Ok(RemoveWorktreeResult {
             execution_root_id: resolved_execution_root_id,

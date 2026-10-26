@@ -2636,6 +2636,92 @@ fn provider_id_accepts_custom_values() {
 }
 
 #[test]
+fn provider_chain_refs_match_independent_owned_selection_matrix() {
+    let fixture = test_app_config("openai@default/gpt-5.4", &[]);
+    let mut catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let routes = [
+        catalog.default_model.clone(),
+        ModelRouteRef::parse("openai@alternate/gpt-5.4").unwrap(),
+        ModelRouteRef::parse("anthropic@default/fallback-汉字🦀").unwrap(),
+        ModelRouteRef::parse("openai@default/override").unwrap(),
+    ];
+    for length in 0..=5 {
+        for mut code in 0..4usize.pow(length) {
+            catalog.fallback_models = (0..length)
+                .map(|_| {
+                    let route = routes[code % 4].clone();
+                    code /= 4;
+                    route
+                })
+                .collect();
+            for model_override in [None, Some(&routes[0]), Some(&routes[3])] {
+                for disabled in [false, true] {
+                    catalog.disable_provider_fallback = disabled;
+                    let primary = model_override.unwrap_or(&catalog.default_model);
+                    // Original owning algorithm, independent of the iterator.
+                    let mut expected = vec![primary.clone()];
+                    if !disabled {
+                        for route in &catalog.fallback_models {
+                            if !expected.contains(route) {
+                                expected.push(route.clone());
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        catalog
+                            .provider_chain_refs(model_override)
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                    assert_eq!(catalog.provider_chain(model_override), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn provider_chain_refs_borrow_primary_and_first_fallback_without_copying() {
+    let fixture = test_app_config("openai@default/gpt-5.4", &[]);
+    let mut catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let primary = catalog.default_model.clone();
+    let fallback = ModelRouteRef::parse("openai@alternate/gpt-5.4").unwrap();
+    let other = ModelRouteRef::parse("anthropic@default/other").unwrap();
+    catalog.fallback_models = vec![
+        primary.clone(),
+        fallback.clone(),
+        fallback,
+        primary.clone(),
+        other,
+    ];
+    {
+        let mut chain = catalog.provider_chain_refs(None);
+        assert!(std::ptr::eq(chain.next().unwrap(), &catalog.default_model));
+        assert!(std::ptr::eq(
+            chain.next().unwrap(),
+            &catalog.fallback_models[1]
+        ));
+        // Dropping a partially consumed iterator owns no route material.
+    }
+    let mut chain = catalog.provider_chain_refs(Some(&primary));
+    assert!(std::ptr::eq(chain.next().unwrap(), &primary));
+    for index in [1, 4] {
+        assert!(std::ptr::eq(
+            chain.next().unwrap(),
+            &catalog.fallback_models[index]
+        ));
+    }
+    assert!(chain.next().is_none());
+    assert!(chain.next().is_none());
+    drop(chain);
+    catalog.disable_provider_fallback = true;
+    let mut chain = catalog.provider_chain_refs(None);
+    assert!(std::ptr::eq(chain.next().unwrap(), &catalog.default_model));
+    assert!(chain.next().is_none());
+}
+
+#[test]
 fn provider_chain_preserves_effective_order_and_deduplicates() {
     let fixture = test_app_config(
         "openai/gpt-5.4",
@@ -5294,4 +5380,48 @@ fn reclamation_reminders_default_to_enabled_in_schema() {
         .find(|entry| entry.key == "runtime.reclamation.idle_retirement_enabled")
         .expect("idle_retirement_enabled schema entry");
     assert_eq!(retirement.default, serde_json::json!(false));
+}
+
+#[test]
+fn state_memory_limits_have_explicit_defaults_and_positive_config_keys() {
+    let mut config = HolonConfigFile::default();
+    let defaults = super::StateMemoryLimits::default();
+    assert_eq!(config.runtime.state_memory.resolve().unwrap(), defaults);
+    assert!(config.runtime.is_empty());
+    for (key, expected) in [
+        ("runtime.state_memory.history_per_agent_bytes", 33554432u64),
+        ("runtime.state_memory.history_host_bytes", 536870912u64),
+        ("runtime.state_memory.pending_per_agent_count", 1024u64),
+        ("runtime.state_memory.pending_per_agent_bytes", 33554432u64),
+        ("runtime.state_memory.pending_host_bytes", 268435456u64),
+        ("runtime.state_memory.record_limit", 65536u64),
+    ] {
+        let entry = config_schema()
+            .into_iter()
+            .find(|entry| entry.key == key)
+            .unwrap();
+        assert_eq!(entry.default, serde_json::json!(expected));
+        set_config_key(&mut config, key, "17").unwrap();
+        assert_eq!(get_config_key(&config, key).unwrap(), serde_json::json!(17));
+        assert!(!config.runtime.is_empty());
+        let roundtrip: HolonConfigFile =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            get_config_key(&roundtrip, key).unwrap(),
+            serde_json::json!(17)
+        );
+        assert!(set_config_key(&mut config, key, "0").is_err());
+        assert!(set_config_key(&mut config, key, "-1").is_err());
+        unset_config_key(&mut config, key).unwrap();
+        assert_eq!(
+            get_config_key(&config, key).unwrap(),
+            serde_json::Value::Null
+        );
+        let field = key.rsplit('.').next().unwrap();
+        let raw = serde_json::json!({"runtime":{"state_memory":{(field):0}}});
+        assert!(serde_json::from_value::<HolonConfigFile>(raw).is_err());
+    }
+    assert!(config.runtime.is_empty());
+    config.runtime.state_memory.pending_host_bytes = Some(0);
+    assert!(config.runtime.state_memory.resolve().is_err());
 }

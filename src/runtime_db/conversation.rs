@@ -273,7 +273,7 @@ pub(crate) fn ensure_turn_revision_tx(
         "INSERT INTO conversation_turn_revisions (
            agent_id, turn_id, summary_revision, detail_revision, result_settled, updated_at
          ) VALUES (?1, ?2, 1, 1, 0, ?3)",
-        params![agent_id, turn_id, timestamp(updated_at)],
+        params![agent_id, turn_id, revision_sql_timestamp(updated_at)?],
     )?;
     Ok(ConversationTurnRevision {
         summary: 1,
@@ -310,7 +310,7 @@ pub(crate) fn bump_turn_revision_tx(
             turn_id,
             i64::from(summary_changed),
             i64::from(detail_changed),
-            timestamp(updated_at),
+            revision_sql_timestamp(updated_at)?,
         ],
     )?;
     turn_revision_tx(tx, agent_id, turn_id)?
@@ -336,7 +336,7 @@ pub(crate) fn settle_turn_result_tx(
              summary_revision = summary_revision + 1,
              updated_at = ?3
          WHERE agent_id = ?1 AND turn_id = ?2",
-        params![agent_id, turn_id, timestamp(updated_at)],
+        params![agent_id, turn_id, revision_sql_timestamp(updated_at)?],
     )?;
     turn_revision_tx(tx, agent_id, turn_id)?
         .ok_or_else(|| anyhow::anyhow!("conversation turn revision disappeared after settlement"))
@@ -361,14 +361,16 @@ pub(crate) fn bump_source_revision_tx(
             params![source_kind, source_id],
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
+                    row.get_ref(0)?.as_str()? == agent_id,
+                    row.get_ref(1)?
+                        .as_str_or_null()?
+                        .is_none_or(|existing| turn_id.is_none_or(|incoming| existing == incoming)),
                     row.get::<_, i64>(2)?,
                 ))
             },
         )
         .optional()?;
-    let Some((existing_agent_id, existing_turn_id, revision)) = existing else {
+    let Some((agent_matches, turn_matches, revision)) = existing else {
         tx.execute(
             "INSERT INTO conversation_source_revisions (
                source_kind, source_id, agent_id, turn_id, activity_seq, revision, updated_at
@@ -383,15 +385,15 @@ pub(crate) fn bump_source_revision_tx(
                 source_id,
                 agent_id,
                 turn_id,
-                timestamp(updated_at),
+                revision_sql_timestamp(updated_at)?,
             ],
         )?;
         return Ok(1);
     };
-    if existing_agent_id != agent_id {
+    if !agent_matches {
         bail!("conversation source identity changed agent: kind={source_kind} id={source_id}");
     }
-    if existing_turn_id.is_some() && turn_id.is_some() && existing_turn_id.as_deref() != turn_id {
+    if !turn_matches {
         bail!("conversation source identity changed turn: kind={source_kind} id={source_id}");
     }
     let next = u64::try_from(revision)?.saturating_add(1);
@@ -411,7 +413,7 @@ pub(crate) fn bump_source_revision_tx(
             source_id,
             turn_id,
             i64::try_from(next)?,
-            timestamp(updated_at),
+            revision_sql_timestamp(updated_at)?,
         ],
     )?;
     Ok(next)
@@ -433,11 +435,16 @@ pub(crate) fn assign_input_to_turn_tx(
              FROM conversation_input_assignments
              WHERE message_id = ?1",
             [message_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get_ref(0)?.as_str()? == agent_id,
+                    row.get_ref(1)?.as_str()? == turn_id,
+                ))
+            },
         )
         .optional()?;
-    if let Some((existing_agent_id, existing_turn_id)) = existing {
-        if existing_agent_id != agent_id || existing_turn_id != turn_id {
+    if let Some((agent_matches, turn_matches)) = existing {
+        if !agent_matches || !turn_matches {
             bail!("conversation input assignment identity conflict for {message_id}");
         }
         return Ok(false);
@@ -446,7 +453,12 @@ pub(crate) fn assign_input_to_turn_tx(
         "INSERT INTO conversation_input_assignments (
            message_id, agent_id, turn_id, revision, assigned_at
          ) VALUES (?1, ?2, ?3, 1, ?4)",
-        params![message_id, agent_id, turn_id, timestamp(assigned_at)],
+        params![
+            message_id,
+            agent_id,
+            turn_id,
+            revision_sql_timestamp(assigned_at)?,
+        ],
     )?;
     let _ = bump_source_revision_tx(
         tx,
@@ -2514,9 +2526,20 @@ fn unavailable_turn_revision(result_settled: bool) -> ConversationTurnRevision {
     }
 }
 
+fn revision_sql_timestamp(value: DateTime<Utc>) -> Result<String> {
+    crate::diagnostics::resource_io::admit_serialized_value(&value)?;
+    Ok(timestamp(value))
+}
+
 fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod revision_budget_tests;
+
+#[cfg(test)]
+mod assignment_budget_tests;

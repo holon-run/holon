@@ -3,7 +3,7 @@ use super::*;
 pub(crate) const TASK_RESULT_RECOVERY_LIMIT: u32 = 5;
 
 // Filter before LIMIT; final admission still checks the exact timestamp.
-pub(super) fn candidates_for_owner_tx(
+pub(crate) fn candidates_for_owner_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     work_item_id: Option<&str>,
@@ -74,7 +74,7 @@ fn by_identity_tx(
     .transpose()
 }
 
-pub(super) fn recovery_admission_eligible_tx(
+pub(crate) fn recovery_admission_eligible_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
     root_attempt_id: &str,
@@ -201,27 +201,6 @@ impl TaskResultSettlementRepository<'_> {
             })?;
             rows.map(|row| serde_json::from_str(&row?).map_err(Into::into))
                 .collect()
-        })
-    }
-
-    pub(crate) fn mark_recovery_diagnostic(
-        &self,
-        result_identity: &str,
-        epoch: u64,
-        now: DateTime<Utc>,
-    ) -> Result<()> {
-        self.db.transaction(|tx| {
-            if let Some(mut record) = by_identity_tx(tx, result_identity)? {
-                if record.recovery_epoch == epoch
-                    && record.recovery_paused_at.is_some()
-                    && record.recovery_diagnostic_at.is_none()
-                {
-                    record.recovery_diagnostic_at = Some(now);
-                    record.updated_at = now;
-                    update_tx(tx, &record)?;
-                }
-            }
-            Ok(())
         })
     }
 

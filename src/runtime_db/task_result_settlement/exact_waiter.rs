@@ -164,7 +164,7 @@ fn wait_matches_result(wait: &WaitConditionRecord, record: &TaskResultSettlement
             }]
 }
 
-pub(super) fn candidate_tx(
+pub(crate) fn candidate_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     waiter_work_item_id: Option<&str>,

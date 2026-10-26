@@ -8,25 +8,35 @@
 //! is advertised only after its durable verification
 //! succeeds, so route registration alone never serves a snapshot contract.
 
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+use super::serialize_json;
 use crate::diagnostics;
 use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
 // The projection-effect classification lives with the runtime event registry
 // (its source of truth); re-exported here to keep the S0 contract surface.
 use super::{
     authentication_error_response, authorize_remote_access, error_response, http_error,
-    projection_gate_error_response, serialize_json, traced_json_bytes,
-    traced_json_bytes_with_stale_marker, AppState, AxumResponse, HttpErrorEnvelope, IntoResponse,
-    ProjectionFailure, ProjectionGateError, ProjectionKey,
+    projection_gate_error_response, traced_json_bytes, traced_json_bytes_with_stale_marker,
+    AppState, AxumResponse, HttpErrorEnvelope, IntoResponse, ProjectionFailure,
+    ProjectionGateError, ProjectionKey,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use crate::runtime_event::ProjectionEffect;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+
+#[cfg(test)]
+#[path = "observer_sync/projection_decode_tests.rs"]
+mod projection_decode_tests;
+#[cfg(test)]
+#[path = "observer_sync/roster_material_tests.rs"]
+mod roster_material_tests;
 
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
 pub(crate) const PROJECTION_SNAPSHOT_CAPABILITY: &str = "agents.projection-snapshot.v1";
@@ -375,37 +385,63 @@ pub async fn agent_roster_snapshot(
                             .extension("max_agents", limits.max_agents),
                         )));
                     }
-                    let visibility_scope_id = observer_visibility_scope_for(
-                        &snapshot.runtime_id,
-                        &principal,
-                        entitlement,
-                        snapshot.visibility_policy_generation,
-                    );
-                    let snapshot = AgentRosterSnapshot {
-                        contract_version: AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION,
-                        runtime_id: snapshot.runtime_id,
-                        event_log_epoch: snapshot.event_log_epoch,
-                        visibility_scope_id,
-                        agents: snapshot
-                            .agents
-                            .into_iter()
-                            .map(|entry| AgentRosterEntry {
-                                agent: entry.agent,
-                                event_window: AgentEventWindow {
-                                    event_head_seq: entry.event_head_seq,
-                                    oldest_retained_seq: entry.oldest_retained_seq,
-                                },
-                                latest_brief: entry.latest_brief.map(|brief| AgentLatestBrief {
-                                    brief_id: brief.brief_id,
-                                    created_event_seq: brief.created_event_seq,
-                                    created_at: brief.created_at,
-                                    preview: brief.preview,
-                                }),
-                            })
-                            .collect(),
-                    };
+                    // Keep the original synchronous read phase through wire assembly
+                    // and serialization. Before this move, rejection drops the holder
+                    // last as part of the original snapshot.
+                    let _material = snapshot._material;
+                    let acquisition = snapshot.acquisition;
+                    let snapshot = acquisition
+                        .read(|| {
+                            crate::diagnostics::resource_io::charge_owned_metadata(
+                                u64::try_from(
+                                    snapshot
+                                        .agents
+                                        .len()
+                                        .checked_mul(std::mem::size_of::<AgentRosterEntry>())
+                                        .context("observer roster slots overflow")?
+                                        .checked_add(256)
+                                        .context("observer roster framing overflow")?,
+                                )?,
+                                snapshot.agents.len() + 1,
+                            )?;
+                            let visibility_scope_id = observer_visibility_scope_for(
+                                &snapshot.runtime_id,
+                                &principal,
+                                entitlement,
+                                snapshot.visibility_policy_generation,
+                            );
+                            let snapshot = AgentRosterSnapshot {
+                                contract_version: AGENT_ROSTER_SNAPSHOT_CONTRACT_VERSION,
+                                runtime_id: snapshot.runtime_id,
+                                event_log_epoch: snapshot.event_log_epoch,
+                                visibility_scope_id,
+                                agents: snapshot
+                                    .agents
+                                    .into_iter()
+                                    .map(|entry| AgentRosterEntry {
+                                        agent: entry.agent,
+                                        event_window: AgentEventWindow {
+                                            event_head_seq: entry.event_head_seq,
+                                            oldest_retained_seq: entry.oldest_retained_seq,
+                                        },
+                                        latest_brief: entry.latest_brief.map(|brief| {
+                                            AgentLatestBrief {
+                                                brief_id: brief.brief_id,
+                                                created_event_seq: brief.created_event_seq,
+                                                created_at: brief.created_at,
+                                                preview: brief.preview,
+                                            }
+                                        }),
+                                    })
+                                    .collect(),
+                            };
+                            Ok(snapshot)
+                        })
+                        .map_err(error_response)
+                        .map_err(ProjectionFailure::from)?;
                     let agent_count = snapshot.agents.len();
-                    let bytes = serialize_json("/agents/snapshot", &snapshot)
+                    let bytes = crate::host::observer_json_bytes(&snapshot, acquisition)
+                        .map_err(error_response)
                         .map_err(ProjectionFailure::from)?;
                     if bytes.len() > limits.max_serialized_bytes {
                         return Err(ProjectionFailure::from(http_error(
@@ -571,51 +607,72 @@ pub async fn agent_projection_snapshot(
                                 ),
                             )));
                         };
-                        let visibility_scope_id = observer_visibility_scope_for(
-                            &snapshot.runtime_id,
-                            &principal,
-                            entitlement,
-                            snapshot.visibility_policy_generation,
-                        );
-                        let snapshot = AgentProjectionSnapshot {
-                            contract_version: AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION,
-                            runtime_id: snapshot.runtime_id,
-                            event_log_epoch: snapshot.event_log_epoch,
-                            visibility_scope_id,
-                            agent_id: snapshot.agent_id,
-                            snapshot_through_seq: snapshot.snapshot_through_seq,
-                            event_head_seq: snapshot.event_head_seq,
-                            oldest_retained_seq: snapshot.oldest_retained_seq,
-                            projection: AgentCanonicalProjection {
-                                agent: snapshot.agent,
-                                relations: snapshot.canonical_relations,
-                                current_work_item: snapshot.current_work_item.map(|work_item| {
-                                    AgentWorkItemAnchor {
-                                        work_item_id: work_item.work_item_id,
-                                        state: work_item.state,
-                                        plan_status: work_item.plan_status,
-                                        revision: work_item.revision,
-                                        updated_at: work_item.updated_at,
-                                    }
-                                }),
-                                conversation: ConversationRevisionAnchors {
-                                    latest_message_id: snapshot.conversation.latest_message_id,
-                                    latest_transcript_entry_id: snapshot
-                                        .conversation
-                                        .latest_transcript_entry_id,
-                                },
-                                latest_brief: snapshot.latest_brief.map(|brief| AgentLatestBrief {
-                                    brief_id: brief.brief_id,
-                                    created_event_seq: brief.created_event_seq,
-                                    created_at: brief.created_at,
-                                    preview: brief.preview,
-                                }),
-                                hydration_tombstones: Vec::new(),
-                                hydration_references: snapshot
-                                    .hydration_references
-                                    .into_iter()
-                                    .map(|reference| {
-                                        AgentHydrationKey {
+                        // Keep the original synchronous read phase through wire assembly
+                        // and serialization, including either failure path.
+                        let _material = snapshot._material;
+                        let acquisition = snapshot.acquisition;
+                        let snapshot = acquisition
+                            .read(|| {
+                                crate::diagnostics::resource_io::charge_owned_metadata(
+                                    u64::try_from(
+                                        snapshot
+                                            .hydration_references
+                                            .len()
+                                            .checked_mul(std::mem::size_of::<AgentHydrationKey>())
+                                            .and_then(|size| size.checked_add(256))
+                                            .context("observer projection framing overflow")?,
+                                    )?,
+                                    snapshot.hydration_references.len() + 1,
+                                )?;
+                                let visibility_scope_id = observer_visibility_scope_for(
+                                    &snapshot.runtime_id,
+                                    &principal,
+                                    entitlement,
+                                    snapshot.visibility_policy_generation,
+                                );
+                                let snapshot = AgentProjectionSnapshot {
+                                    contract_version: AGENT_PROJECTION_SNAPSHOT_CONTRACT_VERSION,
+                                    runtime_id: snapshot.runtime_id,
+                                    event_log_epoch: snapshot.event_log_epoch,
+                                    visibility_scope_id,
+                                    agent_id: snapshot.agent_id,
+                                    snapshot_through_seq: snapshot.snapshot_through_seq,
+                                    event_head_seq: snapshot.event_head_seq,
+                                    oldest_retained_seq: snapshot.oldest_retained_seq,
+                                    projection: AgentCanonicalProjection {
+                                        agent: snapshot.agent,
+                                        relations: snapshot.canonical_relations,
+                                        current_work_item: snapshot.current_work_item.map(
+                                            |work_item| AgentWorkItemAnchor {
+                                                work_item_id: work_item.work_item_id,
+                                                state: work_item.state,
+                                                plan_status: work_item.plan_status,
+                                                revision: work_item.revision,
+                                                updated_at: work_item.updated_at,
+                                            },
+                                        ),
+                                        conversation: ConversationRevisionAnchors {
+                                            latest_message_id: snapshot
+                                                .conversation
+                                                .latest_message_id,
+                                            latest_transcript_entry_id: snapshot
+                                                .conversation
+                                                .latest_transcript_entry_id,
+                                        },
+                                        latest_brief: snapshot.latest_brief.map(|brief| {
+                                            AgentLatestBrief {
+                                                brief_id: brief.brief_id,
+                                                created_event_seq: brief.created_event_seq,
+                                                created_at: brief.created_at,
+                                                preview: brief.preview,
+                                            }
+                                        }),
+                                        hydration_tombstones: Vec::new(),
+                                        hydration_references: snapshot
+                                            .hydration_references
+                                            .into_iter()
+                                            .map(|reference| {
+                                                AgentHydrationKey {
                                 record_kind: match reference.record_kind {
                                     crate::host::ObserverSyncRecordKindData::Message => {
                                         ObserverSyncRecordKind::Message
@@ -629,13 +686,17 @@ pub async fn agent_projection_snapshot(
                                 },
                                 record_id: reference.record_id,
                             }
-                                    })
-                                    .collect(),
-                            },
-                        };
-                        let bytes =
-                            serialize_json("/agents/{agent_id}/projection-snapshot", &snapshot)
-                                .map_err(ProjectionFailure::from)?;
+                                            })
+                                            .collect(),
+                                    },
+                                };
+                                Ok(snapshot)
+                            })
+                            .map_err(error_response)
+                            .map_err(ProjectionFailure::from)?;
+                        let bytes = crate::host::observer_json_bytes(&snapshot, acquisition)
+                            .map_err(error_response)
+                            .map_err(ProjectionFailure::from)?;
                         if bytes.len() > limits.max_serialized_bytes {
                             return Err(ProjectionFailure::from(http_error(
                         StatusCode::PAYLOAD_TOO_LARGE,
@@ -1257,6 +1318,89 @@ mod tests {
             (home, host)
         }
 
+        #[tokio::test]
+        async fn lineage_children_snapshot_survives_host_clone_and_detail_http(
+        ) -> anyhow::Result<()> {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+                types::AgentDetail,
+            };
+            let (_home, host) = projection_test_host().await;
+            let empty = host.operator_agent_detail("web").unwrap();
+            let empty_wire = serde_json::to_value(&empty)?;
+            assert!(empty_wire.get("lineage_children").is_none());
+            assert_eq!(serde_json::from_value::<AgentDetail>(empty_wire)?, empty);
+            let child = AgentIdentityRecord::new(
+                "lineage-detail-child",
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                Some("web".into()),
+                None,
+            );
+            host.runtime_db().agent_identities().upsert(&child)?;
+            let baseline = host.operator_agent_detail("web").unwrap();
+            assert_eq!(baseline.lineage_children.len(), 1);
+            assert!(baseline.lineage_children._material.is_none());
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+            let scope = InputEvidenceScope {
+                agent_id: "lineage-detail-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let holder = phase.guard()?;
+            let detail = {
+                let _entry = phase.enter();
+                host.operator_agent_detail("web").unwrap()
+            };
+            assert_eq!(detail, baseline);
+            assert!(Arc::ptr_eq(
+                detail.lineage_children._material.as_ref().unwrap(),
+                &holder
+            ));
+            let used = phase.finish()?.0;
+            let cloned = detail.clone();
+            assert_eq!(cloned, detail);
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            drop((phase, holder, detail));
+            assert_eq!(ledger.report()?.observed_bytes, used);
+            // Axum Json borrows the typed snapshot while serializing, then drops it.
+            let response = axum::response::IntoResponse::into_response(axum::Json(cloned));
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            let body = to_bytes(response.into_body(), usize::MAX).await?;
+            let decoded: AgentDetail = serde_json::from_slice(&body)?;
+            assert_eq!(decoded, baseline);
+            assert!(decoded.lineage_children._material.is_none());
+            let value: serde_json::Value = serde_json::from_slice(&body)?;
+            assert!(value["lineage_children"].is_array());
+            assert!(!String::from_utf8(body.to_vec())?.contains("_material"));
+
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let app = crate::http::router(AppState::for_tcp(host));
+            let response = {
+                let _entry = phase.enter();
+                app.oneshot(
+                    Request::builder()
+                        .uri("/api/control/agents/web/detail")
+                        .body(Body::empty())?,
+                )
+                .await?
+            };
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await?;
+            assert_eq!(serde_json::from_slice::<AgentDetail>(&body)?, baseline);
+            assert!(phase.finish()?.0 > (scope.agent_id.len() as u64 + 256) * 8);
+            drop(phase);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            Ok(())
+        }
+
         async fn get_projection_snapshot(
             state: AppState,
             agent_id: &str,
@@ -1276,6 +1420,531 @@ mod tests {
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
             (status, value)
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_host_retains_original_phase_and_releases_failed_assembly() {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+            };
+
+            let (_home, host) = projection_test_host().await;
+            let baseline = host.agent_projection_snapshot("web").unwrap().unwrap();
+            assert!(baseline._material.is_some());
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default()).unwrap();
+            let scope = InputEvidenceScope {
+                agent_id: "projection-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope).unwrap();
+            let holder = phase.guard().unwrap();
+            let snapshot = {
+                let _entry = phase.enter();
+                host.agent_projection_snapshot("web").unwrap().unwrap()
+            };
+            assert_eq!(snapshot, baseline);
+            assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+            assert!(ResourceReadMaterial::active_guard().unwrap().is_none());
+            let used = phase.finish().unwrap().0;
+            let cloned = snapshot.clone();
+            assert_eq!(cloned, snapshot);
+            assert!(!Arc::ptr_eq(cloned._material.as_ref().unwrap(), &holder));
+            assert_eq!(ledger.report().unwrap().observed_bytes, used * 2);
+
+            host.runtime_db()
+                .connection()
+                .unwrap()
+                .execute(
+                    "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES ('web', 'idle', '2026-01-01T00:00:00Z', 'null')
+                 ON CONFLICT(agent_id) DO UPDATE SET payload_json = 'null'",
+                    [],
+                )
+                .unwrap();
+            {
+                let _entry = phase.enter();
+                let error = host.agent_projection_snapshot("web").unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("unreadable projection agent state payload"),
+                    "{error:#}",
+                );
+                assert!(Arc::ptr_eq(
+                    &ResourceReadMaterial::active_guard().unwrap().unwrap(),
+                    &holder,
+                ));
+            }
+            assert!(phase.finish().unwrap().0 > used);
+            // Host failure releases its temporary raw holder, not successful
+            // prior ownership or the original phase's cumulative charges.
+            drop((phase, holder, snapshot));
+            assert_eq!(ledger.report().unwrap().observed_bytes, used);
+            assert_eq!(cloned.runtime_id, baseline.runtime_id);
+            drop(cloned);
+            assert_eq!(ledger.report().unwrap().observed_bytes, 0);
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_typed_relation_material_survives_host_and_serialization(
+        ) -> anyhow::Result<()> {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+                types::{
+                    AgentMessagePolicyRecord, AgentMessagePolicyRule, AgentMessagePrincipalKind,
+                    AgentPolicyEffect,
+                },
+            };
+            let (_home, host) = projection_test_host().await;
+            let policy = AgentMessagePolicyRecord {
+                agent_id: "web".into(),
+                revision: 901,
+                default_effect: AgentPolicyEffect::Deny,
+                rules: vec![
+                    AgentMessagePolicyRule {
+                        principal_kind: AgentMessagePrincipalKind::SupervisingParent,
+                        principal_id: Some("parent-汉字\0\"\\\n".into()),
+                        route: Some("route-汉字\0\"\\\n".into()),
+                        effect: AgentPolicyEffect::Allow,
+                    },
+                    AgentMessagePolicyRule {
+                        principal_kind: AgentMessagePrincipalKind::SupervisingParent,
+                        principal_id: None,
+                        route: None,
+                        effect: AgentPolicyEffect::Deny,
+                    },
+                ],
+                // Typed SQL relation timestamps have millisecond precision.
+                created_at: chrono::DateTime::from_timestamp_millis(1_760_000_000_123).unwrap(),
+            };
+            host.runtime_db()
+                .agent_canonical_relations()
+                .upsert_message_policy(&policy)?;
+            let baseline = host.agent_projection_snapshot("web")?.unwrap();
+            assert_eq!(
+                baseline.canonical_relations.message_policy.as_ref(),
+                Some(&policy)
+            );
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+            let scope = InputEvidenceScope {
+                agent_id: "relation-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let holder = phase.guard()?;
+            let snapshot = {
+                let _entry = phase.enter();
+                host.agent_projection_snapshot("web")?.unwrap()
+            };
+            assert_eq!(snapshot, baseline);
+            assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            let used = phase.finish()?.0;
+            let cloned = snapshot.clone();
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            // This is the relation value moved into AgentCanonicalProjection.
+            let wire = serde_json::to_vec(&snapshot.canonical_relations)?;
+            let decoded: crate::types::AgentCanonicalRelationsProjection =
+                serde_json::from_slice(&wire)?;
+            assert_eq!(decoded.message_policy.as_ref(), Some(&policy));
+            host.runtime_db().connection()?.execute(
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES ('web', 'idle', '2026-01-01T00:00:00Z', 'null')
+                 ON CONFLICT(agent_id) DO UPDATE SET payload_json = 'null'",
+                [],
+            )?;
+            {
+                let _entry = phase.enter();
+                let error = host.agent_projection_snapshot("web").unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("unreadable projection agent state payload"),
+                    "{error:#}"
+                );
+                assert!(Arc::ptr_eq(
+                    &ResourceReadMaterial::active_guard()?.unwrap(),
+                    &holder
+                ));
+            }
+            assert!(phase.finish()?.0 > used);
+            drop((phase, holder, snapshot));
+            assert_eq!(ledger.report()?.observed_bytes, used);
+            assert_eq!(cloned.canonical_relations, decoded);
+            drop(cloned);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_identity_task_material_retains_original_holder(
+        ) -> anyhow::Result<()> {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+                types::{TaskKind, TaskRecord, TaskStatus},
+            };
+            let (_home, host) = projection_test_host().await;
+            let db = host.runtime_db();
+            let now = chrono::DateTime::from_timestamp_millis(1_760_000_000_123).unwrap();
+            let task = TaskRecord {
+                id: "projection-task-汉字".into(),
+                agent_id: "web".into(),
+                kind: TaskKind::ActorInvocation,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("escaped-汉字\0\"\\\n{}[]:,".into()),
+                detail: Some(serde_json::json!({"work_item_id": "work-fallback-汉字"})),
+                recovery: None,
+            };
+            db.tasks().upsert(&task)?;
+            let mut identity = db.agent_identities().latest("web")?.unwrap();
+            identity.delegated_from_task_id = Some(task.id.clone());
+            db.agent_identities().upsert(&identity)?;
+            let baseline = host.agent_projection_snapshot("web")?.unwrap();
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+            let scope = InputEvidenceScope {
+                agent_id: "identity-task-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let holder = phase.guard()?;
+            let snapshot = {
+                let _entry = phase.enter();
+                host.agent_projection_snapshot("web")?.unwrap()
+            };
+            assert_eq!(snapshot, baseline);
+            assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            let used = phase.finish()?.0;
+            let cloned = snapshot.clone();
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            let wire = serde_json::to_vec(&snapshot.canonical_relations)?;
+            let decoded: crate::types::AgentCanonicalRelationsProjection =
+                serde_json::from_slice(&wire)?;
+            assert_eq!(decoded, baseline.canonical_relations);
+            let payload = serde_json::to_string(&task)?;
+            db.connection()?.execute(
+                "UPDATE tasks SET payload_json = 'null' WHERE task_id = ?1",
+                [&task.id],
+            )?;
+            {
+                let _entry = phase.enter();
+                let error = host.agent_projection_snapshot("web").unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("decoding legacy supervision task"),
+                    "{error:#}"
+                );
+                assert!(Arc::ptr_eq(
+                    &ResourceReadMaterial::active_guard()?.unwrap(),
+                    &holder
+                ));
+                db.connection()?.execute(
+                    "UPDATE tasks SET payload_json = ?1 WHERE task_id = ?2",
+                    rusqlite::params![payload, task.id],
+                )?;
+                assert_eq!(host.agent_projection_snapshot("web")?, Some(baseline));
+            }
+            assert!(phase.finish()?.0 > used);
+            drop((phase, holder, snapshot));
+            assert_eq!(ledger.report()?.observed_bytes, used);
+            assert_eq!(cloned.canonical_relations, decoded);
+            drop(cloned);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn projection_snapshot_legacy_relation_ids_keep_original_holder() -> anyhow::Result<()>
+        {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+                types::{
+                    AgentCanonicalRelationsProjection, AgentCanonicalValueSource, AgentOwnership,
+                    AgentSupervisionState, TaskKind, TaskRecord, TaskStatus,
+                },
+            };
+            let (_home, host) = projection_test_host().await;
+            host.create_named_agent("parent", None).await?;
+            let db = host.runtime_db();
+            let mut identity = db.agent_identities().latest("web")?.unwrap();
+            identity.parent_agent_id = Some("parent".into());
+            identity.lineage_parent_agent_id = Some("parent".into());
+            identity.ownership = Some(AgentOwnership::ParentSupervised);
+            identity.delegated_from_task_id = Some("legacy-task-汉字".into());
+            db.agent_identities().upsert(&identity)?;
+            db.tasks().upsert(&TaskRecord {
+                id: "legacy-task-汉字".into(),
+                agent_id: "parent".into(),
+                kind: TaskKind::ChildAgentTask,
+                status: TaskStatus::Running,
+                created_at: identity.created_at,
+                updated_at: identity.updated_at,
+                parent_message_id: None,
+                work_item_id: Some("legacy-work-汉字\0\"\\\n".into()),
+                summary: None,
+                detail: Some(serde_json::json!({"child_agent_id": "web"})),
+                recovery: None,
+            })?;
+            db.connection()?.execute_batch(
+                "DELETE FROM agent_lineages WHERE child_agent_id = 'web';
+                 DELETE FROM agent_supervisions WHERE child_agent_id = 'web';",
+            )?;
+            let baseline = host.agent_projection_snapshot("web")?.unwrap();
+            assert!(baseline._material.is_some());
+            let expected = &baseline.canonical_relations;
+            assert_eq!(
+                expected.sources.lineage,
+                Some(AgentCanonicalValueSource::Legacy)
+            );
+            assert_eq!(
+                expected.sources.supervision,
+                Some(AgentCanonicalValueSource::Legacy)
+            );
+            assert_eq!(expected.lineage.as_ref().unwrap().parent_agent_id, "parent");
+            let supervision = expected.supervision.as_ref().unwrap();
+            assert_eq!(supervision.supervision_id, "legacy:legacy-task-汉字");
+            assert_eq!(supervision.supervisor_agent_id, "parent");
+            assert_eq!(supervision.child_agent_id, "web");
+            assert_eq!(
+                supervision.delegated_from_task_id.as_deref(),
+                Some("legacy-task-汉字")
+            );
+            assert_eq!(
+                supervision.delegated_from_work_item_id.as_deref(),
+                Some("legacy-work-汉字\0\"\\\n")
+            );
+            assert_eq!(supervision.state, AgentSupervisionState::Active);
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+            let scope = InputEvidenceScope {
+                agent_id: "legacy-relation-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let holder = phase.guard()?;
+            let snapshot = {
+                let _entry = phase.enter();
+                host.agent_projection_snapshot("web")?.unwrap()
+            };
+            assert_eq!(snapshot, baseline);
+            assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            let used = phase.finish()?.0;
+            let cloned = snapshot.clone();
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            drop((phase, holder));
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            let wire = serialize_json(
+                "/agents/{agent_id}/projection-snapshot",
+                &snapshot.canonical_relations,
+            )
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            let decoded: AgentCanonicalRelationsProjection = serde_json::from_slice(&wire)?;
+            assert_eq!(decoded, *expected);
+            drop(snapshot);
+            assert_eq!(ledger.report()?.observed_bytes, used);
+            assert_eq!(cloned.canonical_relations, decoded);
+            drop(cloned);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn legacy_policy_material_moves_through_host_and_http_with_original_holder(
+        ) -> anyhow::Result<()> {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+                types::{
+                    AgentCanonicalDurability, AgentCanonicalRelationsProjection,
+                    AgentCanonicalValueSource, AgentLifecycleAttachment,
+                },
+            };
+            let (_home, host) = projection_test_host().await;
+            host.runtime_db().connection()?.execute_batch(
+                "DELETE FROM agent_durability_records WHERE agent_id = 'web';
+                 DELETE FROM agent_lifecycle_attachment_records WHERE agent_id = 'web';
+                 DELETE FROM agent_capability_policy_rules WHERE agent_id = 'web';
+                 DELETE FROM agent_capability_policy_records WHERE agent_id = 'web';
+                 DELETE FROM agent_message_policy_rules WHERE agent_id = 'web';
+                 DELETE FROM agent_message_policy_records WHERE agent_id = 'web';",
+            )?;
+            let baseline = host.agent_projection_snapshot("web")?.unwrap();
+            assert!(baseline._material.is_some());
+            let expected = &baseline.canonical_relations;
+            assert_eq!(expected.agent_id, "web");
+            for source in [
+                expected.sources.durability,
+                expected.sources.lifecycle_attachment,
+                expected.sources.capability_policy,
+                expected.sources.message_policy,
+            ] {
+                assert_eq!(source, Some(AgentCanonicalValueSource::Legacy));
+            }
+            assert_eq!(
+                expected.durability.as_ref().unwrap().durability,
+                AgentCanonicalDurability::Persistent
+            );
+            assert_eq!(
+                expected.lifecycle_attachment.as_ref().unwrap().attachment,
+                AgentLifecycleAttachment::Independent
+            );
+            assert_eq!(expected.capability_policy.as_ref().unwrap().rules.len(), 6);
+            assert_eq!(expected.message_policy.as_ref().unwrap().rules.len(), 2);
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+            let scope = InputEvidenceScope {
+                agent_id: "legacy-policy-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let holder = phase.guard()?;
+            let snapshot = {
+                let _entry = phase.enter();
+                host.agent_projection_snapshot("web")?.unwrap()
+            };
+            assert_eq!(snapshot, baseline);
+            assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            let used = phase.finish()?.0;
+            let cloned = snapshot.clone();
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            drop((phase, holder));
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            let wire = serialize_json(
+                "/agents/{agent_id}/projection-snapshot",
+                &snapshot.canonical_relations,
+            )
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            let decoded: AgentCanonicalRelationsProjection = serde_json::from_slice(&wire)?;
+            assert_eq!(decoded, *expected);
+            drop(snapshot);
+            assert_eq!(ledger.report()?.observed_bytes, used);
+            assert_eq!(cloned.canonical_relations, decoded);
+            drop(cloned);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let served: AgentCanonicalRelationsProjection =
+                serde_json::from_value(body["projection"]["relations"].clone())?;
+            assert_eq!(served, decoded);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn relation_diagnostics_keep_original_holder_through_host_http_and_failure(
+        ) -> anyhow::Result<()> {
+            use crate::{
+                config::StateMemoryLimits,
+                diagnostics::resource_io::ResourceReadMaterial,
+                runtime::{
+                    input_evidence_budget::InputEvidenceBudgetLedger,
+                    resident_input_evidence::InputEvidenceScope,
+                },
+                types::{AgentCanonicalRelationsProjection, AgentCanonicalResolution},
+            };
+            let (_home, host) = projection_test_host().await;
+            host.runtime_db().connection()?.execute(
+                "UPDATE agent_identities SET payload_json = json_set(
+                   payload_json, '$.profile_preset', 'private_child',
+                   '$.durability', 'ephemeral') WHERE agent_id = 'web'",
+                [],
+            )?;
+            let baseline = host.agent_projection_snapshot("web")?.unwrap();
+            assert!(baseline._material.is_some());
+            assert_eq!(
+                baseline.canonical_relations.resolution,
+                AgentCanonicalResolution::Contradictory
+            );
+            let details: Vec<_> = baseline
+                .canonical_relations
+                .issues
+                .iter()
+                .map(|issue| issue.detail.as_str())
+                .collect();
+            assert_eq!(
+                details,
+                [
+                    "private_child legacy preset has no lifecycle ownership evidence",
+                    "canonical durability differs from explicit legacy durability",
+                ]
+            );
+            let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+            let scope = InputEvidenceScope {
+                agent_id: "diagnostic-host".into(),
+                identity_incarnation: 1,
+            };
+            let phase = ResourceReadMaterial::new(&ledger, &scope)?;
+            let holder = phase.guard()?;
+            let snapshot = {
+                let _entry = phase.enter();
+                host.agent_projection_snapshot("web")?.unwrap()
+            };
+            assert_eq!(snapshot, baseline);
+            assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+            assert!(ResourceReadMaterial::active_guard()?.is_none());
+            let used = phase.finish()?.0;
+            let cloned = snapshot.clone();
+            assert_eq!(ledger.report()?.observed_bytes, used * 2);
+            let wire = serialize_json(
+                "/agents/{agent_id}/projection-snapshot",
+                &snapshot.canonical_relations,
+            )
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+            let decoded: AgentCanonicalRelationsProjection = serde_json::from_slice(&wire)?;
+            assert_eq!(decoded, baseline.canonical_relations);
+            // A failure after diagnostic assembly must not leak the raw holder.
+            host.runtime_db().connection()?.execute(
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES ('web', 'idle', '2026-01-01T00:00:00Z', 'null')
+                 ON CONFLICT(agent_id) DO UPDATE SET payload_json = 'null'",
+                [],
+            )?;
+            {
+                let _entry = phase.enter();
+                let error = host.agent_projection_snapshot("web").unwrap_err();
+                assert!(format!("{error:#}").contains("unreadable projection agent state payload"));
+                assert!(Arc::ptr_eq(
+                    &ResourceReadMaterial::active_guard()?.unwrap(),
+                    &holder,
+                ));
+            }
+            assert!(phase.finish()?.0 > used);
+            drop((phase, holder, snapshot));
+            assert_eq!(ledger.report()?.observed_bytes, used);
+            assert_eq!(cloned.canonical_relations, decoded);
+            drop(cloned);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+            host.runtime_db()
+                .connection()?
+                .execute("DELETE FROM agent_states WHERE agent_id = 'web'", [])?;
+            let (status, body) = get_projection_snapshot(AppState::for_tcp(host), "web").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let served: AgentCanonicalRelationsProjection =
+                serde_json::from_value(body["projection"]["relations"].clone())?;
+            assert_eq!(served, decoded);
+            Ok(())
         }
 
         #[tokio::test]

@@ -189,7 +189,7 @@ fn run_worker() -> Result<WorkerResult> {
         database_root.join("runtime.lock"),
     )?;
     let storage = AppStorage::new_for_agent(root.path(), AGENT_ID, runtime_db)?;
-    storage.write_agent(&AgentState::new(AGENT_ID))?;
+    storage.write_agent_for_fixture(&AgentState::new(AGENT_ID))?;
     let baseline_rss_kb = current_rss_kb()?;
 
     let event_payload = "e".repeat(EVENT_PAYLOAD_BYTES);

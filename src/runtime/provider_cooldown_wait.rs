@@ -5,6 +5,11 @@
 //! `agent_state_changed` events, but it is not a terminal state, creates no
 //! scheduling wake, never calls the model, and is never persisted, so a
 //! restart cannot surface a stale wait.
+//!
+//! Writers serialize through the runtime mutation owner, but keep the wait
+//! in `RuntimeInner.provider_cooldown_wait`, outside the durable State/source
+//! root. Query and event payloads project the slot without mutating acknowledged
+//! State. The slot's standard mutex is released before awaiting audit I/O.
 
 use super::RuntimeHandle;
 use crate::runtime_event::RuntimeEventKind;
@@ -51,15 +56,27 @@ impl RuntimeHandle {
     /// provider cooldown deadline. Emits one `agent_state_changed` event when
     /// the visible state changes; identical repeats emit nothing.
     pub async fn begin_provider_cooldown_wait(&self, wait: ProviderCooldownWait) -> Result<()> {
+        let mut guard = self.begin_mutation().await?;
         let event = {
-            let mut guard = self.inner.agent.lock().await;
-            if guard.state.provider_cooldown_wait.as_ref() == Some(&wait) {
+            let mut current = self
+                .inner
+                .provider_cooldown_wait
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if current.as_ref() == Some(&wait) {
                 return Ok(());
             }
-            guard.state.provider_cooldown_wait = Some(wait);
-            AgentStateChangedEvent::from_state(&guard.state)
+            *current = Some(wait);
+            let mut event = AgentStateChangedEvent::from_state(&guard.state);
+            event.provider_cooldown_wait = current.clone();
+            event
         };
-        self.emit_provider_cooldown_state_changed(event).await
+        guard
+            .append_original_audit_event(AuditEvent::typed(
+                RuntimeEventKind::AgentStateChanged,
+                &event,
+            )?)
+            .await
     }
 
     /// Update the authoritative deadline of the active wait (cooldown
@@ -70,9 +87,14 @@ impl RuntimeHandle {
         not_before: DateTime<Utc>,
         cause: Option<ProviderCooldownCauseSummary>,
     ) -> Result<bool> {
+        let mut guard = self.begin_mutation().await?;
         let event = {
-            let mut guard = self.inner.agent.lock().await;
-            let Some(wait) = guard.state.provider_cooldown_wait.as_mut() else {
+            let mut current = self
+                .inner
+                .provider_cooldown_wait
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(wait) = current.as_mut() else {
                 return Ok(false);
             };
             if wait.not_before == not_before
@@ -84,9 +106,16 @@ impl RuntimeHandle {
             if let Some(cause) = cause {
                 wait.cause = cause;
             }
-            AgentStateChangedEvent::from_state(&guard.state)
+            let mut event = AgentStateChangedEvent::from_state(&guard.state);
+            event.provider_cooldown_wait = current.clone();
+            event
         };
-        self.emit_provider_cooldown_state_changed(event).await?;
+        guard
+            .append_original_audit_event(AuditEvent::typed(
+                RuntimeEventKind::AgentStateChanged,
+                &event,
+            )?)
+            .await?;
         Ok(true)
     }
 
@@ -96,12 +125,18 @@ impl RuntimeHandle {
         &self,
         outcome: ProviderCooldownWaitEndOutcome,
     ) -> Result<bool> {
+        let mut guard = self.begin_mutation().await?;
         let event = {
-            let mut guard = self.inner.agent.lock().await;
-            let Some(wait) = guard.state.provider_cooldown_wait.take() else {
+            let mut current = self
+                .inner
+                .provider_cooldown_wait
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(wait) = current.take() else {
                 return Ok(false);
             };
             let mut event = AgentStateChangedEvent::from_state(&guard.state);
+            event.provider_cooldown_wait = None;
             event.provider_cooldown_wait_ended = Some(ProviderCooldownWaitEnded {
                 outcome,
                 turn_id: wait.turn_id,
@@ -109,18 +144,13 @@ impl RuntimeHandle {
             });
             event
         };
-        self.emit_provider_cooldown_state_changed(event).await?;
+        guard
+            .append_original_audit_event(AuditEvent::typed(
+                RuntimeEventKind::AgentStateChanged,
+                &event,
+            )?)
+            .await?;
         Ok(true)
-    }
-
-    async fn emit_provider_cooldown_state_changed(
-        &self,
-        event: AgentStateChangedEvent,
-    ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::typed(
-            RuntimeEventKind::AgentStateChanged,
-            &event,
-        )?)
     }
 }
 
@@ -129,7 +159,6 @@ mod tests {
     use super::*;
     use crate::config::ModelRouteRef;
     use crate::runtime::tests::support::LifecycleHarness;
-    use crate::types::AgentStatus;
 
     fn sample_wait(not_before: DateTime<Utc>) -> ProviderCooldownWait {
         ProviderCooldownWait {
@@ -171,6 +200,8 @@ mod tests {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         let deadline = Utc::now() + chrono::Duration::seconds(11);
+        let source_before = runtime.capture_committed_state().await.unwrap();
+        assert!(source_before.provider_cooldown_wait.is_none());
 
         runtime
             .begin_provider_cooldown_wait(sample_wait(deadline))
@@ -180,6 +211,11 @@ mod tests {
         let wait = state.provider_cooldown_wait.expect("wait visible in state");
         assert_eq!(wait.not_before, deadline);
         assert_eq!(wait.cause.failure_kind.as_deref(), Some("rate_limited"));
+        assert_eq!(
+            runtime.capture_committed_state().await.unwrap().as_ref(),
+            source_before.as_ref(),
+            "begin must not project the wait into source State"
+        );
 
         let extended_deadline = deadline + chrono::Duration::seconds(600);
         assert!(runtime
@@ -194,6 +230,11 @@ mod tests {
                 .not_before,
             extended_deadline
         );
+        assert_eq!(
+            runtime.capture_committed_state().await.unwrap().as_ref(),
+            source_before.as_ref(),
+            "extend must not mutate source State"
+        );
 
         assert!(runtime
             .end_provider_cooldown_wait(ProviderCooldownWaitEndOutcome::Resumed)
@@ -201,6 +242,11 @@ mod tests {
             .unwrap());
         let state = runtime.agent_state().await.unwrap();
         assert!(state.provider_cooldown_wait.is_none());
+        assert_eq!(
+            runtime.capture_committed_state().await.unwrap().as_ref(),
+            source_before.as_ref(),
+            "end must not mutate source State"
+        );
 
         let events = agent_state_changed_payloads(&harness);
         assert_eq!(events.len(), 3, "begin, extend, end each emit one event");
@@ -269,24 +315,31 @@ mod tests {
     #[tokio::test]
     async fn wait_is_not_persisted_across_runtime_restart() {
         let mut harness = LifecycleHarness::new();
-        let deadline = Utc::now() + chrono::Duration::seconds(600);
-        harness
-            .runtime()
-            .begin_provider_cooldown_wait(sample_wait(deadline))
-            .await
-            .unwrap();
-        // Force a state persist while waiting; the wait must not leak into
-        // the persisted payload.
-        {
-            let mut guard = harness.runtime().inner.agent.lock().await;
-            guard.state.status = AgentStatus::AwakeRunning;
-            guard
-                .persist_state(&harness.runtime().inner.storage)
+        let durable_before = {
+            let runtime = harness.runtime();
+            let before = runtime.agent_state().await.unwrap().total_model_rounds;
+            let deadline = Utc::now() + chrono::Duration::seconds(600);
+            runtime
+                .begin_provider_cooldown_wait(sample_wait(deadline))
+                .await
                 .unwrap();
-        }
+            // Force a durable state persist while waiting; the wait must not
+            // leak into the persisted payload.
+            {
+                let mut guard = runtime.begin_mutation().await.unwrap();
+                assert!(guard.state.provider_cooldown_wait.is_none());
+                assert!(guard.last_persisted_state.provider_cooldown_wait.is_none());
+                guard.state.total_model_rounds = before + 1;
+                guard.persist_state(&runtime.inner.storage).await.unwrap();
+            }
+            before
+        };
         harness.restart();
         let state = harness.runtime().agent_state().await.unwrap();
         assert!(state.provider_cooldown_wait.is_none());
+        // The durable delta reached storage, proving the persist really ran
+        // while the wait stayed out of the persisted payload.
+        assert_eq!(state.total_model_rounds, durable_before + 1);
     }
 
     #[tokio::test]
@@ -304,7 +357,7 @@ mod tests {
                 .unwrap();
             let summary = runtime.agent_summary().await.unwrap();
             assert!(summary.provider_cooldown_wait.is_some());
-            let slim = crate::http_dto::SlimAgentDto::from(&summary);
+            let slim = crate::http_dto::SlimAgentDto::from(&*summary);
             assert!(slim.agent.provider_cooldown_wait.is_some());
             assert!(slim.into_agent_summary().provider_cooldown_wait.is_some());
 

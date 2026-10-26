@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     provider::{provider_attempt_timeline, provider_transport_diagnostics, ProviderTransportError},
     runtime_db::{
+        PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
         RuntimeDbProtectionError, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
     },
     tool::ToolError,
@@ -207,6 +208,39 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         };
     }
     let source_chain = collect_runtime_error_source_chain(error);
+
+    // Transaction certainty wins over retryable domain errors retained underneath it.
+    if let Some(failure) = error
+        .downcast_ref::<PersistenceFailure>()
+        .filter(|failure| failure.certainty() == PersistenceCertainty::Indeterminate)
+    {
+        let phase = match failure.phase() {
+            PersistenceFailurePhase::BeforeBegin => "before_begin",
+            PersistenceFailurePhase::Begin => "begin",
+            PersistenceFailurePhase::Callback => "callback",
+            PersistenceFailurePhase::Rollback => "rollback",
+            PersistenceFailurePhase::Commit => "commit",
+        };
+        let mut safe_context = BTreeMap::from([
+            ("certainty".into(), "indeterminate".into()),
+            ("phase".into(), phase.into()),
+        ]);
+        if let Some(db_error) = error.downcast_ref::<RuntimeDbRetryableError>() {
+            safe_context.insert("operation".into(), db_error.operation().to_string());
+        }
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Storage,
+            code: "runtime_db_outcome_unknown".into(),
+            retryable: false,
+            operator_message: "runtime database operation outcome is unknown".into(),
+            recovery_hint: Some(
+                "reconcile the original operation's durable outcome before submitting it again"
+                    .into(),
+            ),
+            safe_context,
+            source_chain,
+        };
+    }
 
     if let Some(runtime_error) = error.downcast_ref::<RuntimeError>().or_else(|| {
         error
@@ -804,6 +838,108 @@ mod tests {
             .source_chain
             .iter()
             .any(|message| message == "failed to read task status"));
+    }
+
+    #[test]
+    fn indeterminate_persistence_overrides_retryable_errors_and_outer_runtime_context() {
+        use crate::runtime_db::persistence::mark_persistence_failure;
+        use std::path::Path;
+
+        let cases = [
+            (
+                AnyhowError::new(RuntimeDbRetryableError::new(
+                    "committing transaction",
+                    Path::new("/private/agent/runtime.sqlite"),
+                    "database is locked",
+                )),
+                PersistenceFailurePhase::Commit,
+                "commit",
+            ),
+            (
+                AnyhowError::new(RuntimeStateTransitionConflict::revision(
+                    "agent-1",
+                    "agent_state_revision_conflict",
+                    Some(1),
+                    Some(2),
+                    true,
+                )),
+                PersistenceFailurePhase::Rollback,
+                "rollback",
+            ),
+        ];
+        for (cause, phase, expected_phase) in cases {
+            let error =
+                mark_persistence_failure(cause, PersistenceCertainty::Indeterminate, phase, None)
+                    .context(RuntimeError::new(
+                        RuntimeErrorDomain::Runtime,
+                        "outer_command_failed",
+                        "outer command failed",
+                    ));
+
+            let descriptor = describe_runtime_error(&error);
+
+            assert_eq!(descriptor.domain, RuntimeErrorDomain::Storage);
+            assert_eq!(descriptor.code, "runtime_db_outcome_unknown");
+            assert!(!descriptor.retryable);
+            assert_eq!(descriptor.safe_context["certainty"], "indeterminate");
+            assert_eq!(descriptor.safe_context["phase"], expected_phase);
+            assert!(descriptor
+                .recovery_hint
+                .unwrap()
+                .contains("original operation"));
+            assert!(error.downcast_ref::<PersistenceFailure>().is_some());
+            if phase == PersistenceFailurePhase::Commit {
+                assert!(error.downcast_ref::<RuntimeDbRetryableError>().is_some());
+                assert_eq!(
+                    descriptor.safe_context["operation"],
+                    "committing transaction"
+                );
+                assert!(!descriptor.source_chain.join(" ").contains("/private/agent"));
+            } else {
+                assert!(error
+                    .downcast_ref::<RuntimeStateTransitionConflict>()
+                    .is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn definitely_uncommitted_persistence_keeps_existing_retry_classification() {
+        use crate::runtime_db::persistence::mark_persistence_failure;
+        use std::path::Path;
+
+        let cases = [
+            (
+                AnyhowError::new(RuntimeDbRetryableError::new(
+                    "beginning transaction",
+                    Path::new("runtime.sqlite"),
+                    "database is locked",
+                )),
+                "runtime_db_busy",
+            ),
+            (
+                AnyhowError::new(RuntimeStateTransitionConflict::revision(
+                    "agent-1",
+                    "agent_state_revision_conflict",
+                    Some(1),
+                    Some(2),
+                    true,
+                )),
+                "agent_state_revision_conflict",
+            ),
+        ];
+        for (cause, expected_code) in cases {
+            let error = mark_persistence_failure(
+                cause,
+                PersistenceCertainty::DefinitelyNotCommitted,
+                PersistenceFailurePhase::Callback,
+                None,
+            );
+            let descriptor = describe_runtime_error(&error);
+
+            assert_eq!(descriptor.code, expected_code);
+            assert!(descriptor.retryable);
+        }
     }
 
     #[test]

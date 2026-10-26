@@ -167,168 +167,174 @@ impl AgentProvider for GeminiProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        let model_ref = format!("gemini/{}", self.model);
-        let url = format!(
-            "{}/models/{}:generateContent",
-            self.base_url,
-            utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
-        );
-        if request.conversation.iter().any(|message| {
-            matches!(
-                message,
-                ConversationMessage::UserImage {
-                    optional_history: false,
-                    ..
+        let material = request.material.clone();
+        material.validate_images(&request.conversation)?;
+        material
+            .complete_turn(async {
+                let request_body = GenerateContentRequest {
+                    system_instruction: build_system_instruction(&request),
+                    contents: build_gemini_contents(&request),
+                    tools: build_gemini_tools(&request),
+                    generation_config: GeminiGenerationConfig {
+                        max_output_tokens: self.max_output_tokens,
+                    },
+                };
+                let model_ref = format!("gemini/{}", self.model);
+                let url = format!(
+                    "{}/models/{}:generateContent",
+                    self.base_url,
+                    utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
+                );
+                if request.conversation.iter().any(|message| {
+                    matches!(
+                        message,
+                        ConversationMessage::UserImage {
+                            optional_history: false,
+                            ..
+                        }
+                    )
+                }) {
+                    return Err(gemini_preflight_error(
+                        &model_ref,
+                        &url,
+                        "image_input_unsupported",
+                        "Gemini image lowering is unavailable; required image input cannot be omitted",
+                        None,
+                    ));
                 }
-            )
-        }) {
-            return Err(gemini_preflight_error(
-                &model_ref,
-                &url,
-                "image_input_unsupported",
-                "Gemini image lowering is unavailable; required image input cannot be omitted",
-                None,
-            ));
-        }
-        let request_body = GenerateContentRequest {
-            system_instruction: build_system_instruction(&request),
-            contents: build_gemini_contents(&request),
-            tools: build_gemini_tools(&request),
-            generation_config: GeminiGenerationConfig {
-                max_output_tokens: self.max_output_tokens,
-            },
-        };
-        let mut request_payload = serde_json::to_value(&request_body)?;
-        let output_fields = &["generationConfig.maxOutputTokens"];
-        let effective_output = effective_output_tokens(
-            self.context_window_tokens,
-            self.max_output_tokens,
-            &request_payload,
-            output_fields,
-        );
-        request_payload["generationConfig"]["maxOutputTokens"] = Value::from(effective_output);
-        if let Some(budget) = estimate_context_budget(
-            self.context_window_tokens,
-            effective_output,
-            &request_payload,
-            output_fields,
-        )
-        .filter(|budget| budget.overflow_tokens() > 0)
-        {
-            return Err(gemini_preflight_error(
-                &model_ref,
-                &url,
-                "context_length_exceeded",
-                "Gemini request exceeds the estimated context budget; reduce prompt/context or requested output tokens, or increase the provider context window",
-                Some(budget),
-            ));
-        }
-        let headers = vec![
-            ("content-type", "application/json".to_string()),
-            ("x-goog-api-key", "[redacted]".to_string()),
-        ];
-        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        let request_trace = trace.and_then(|trace| {
-            trace.begin_request(
-                request
-                    .prompt_frame
-                    .cache
-                    .as_ref()
-                    .map(|cache| cache.agent_id.as_str()),
-                "gemini",
-                Some(&model_ref),
-                url.as_str(),
-                "generate_content",
-                &headers,
-                &request_payload,
-            )
-        });
-        let request_started_at = chrono::Utc::now();
-        let request_builder = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .header("x-goog-api-key", &self.api_key)
-            .json(&request_payload);
-        let response = send_provider_request(
-            request_builder,
-            "Gemini request failed",
-            "request_send",
-            "gemini",
-            Some(&model_ref),
-            Some(url.as_str()),
-            RequestDeadline::FullRequest,
-            request_trace.as_ref(),
-            request.dispatch_guard.as_deref(),
-        )
-        .await?;
-        let response_headers_at = chrono::Utc::now();
-        if let Some(trace) = request_trace.as_ref() {
-            trace.write_response_headers(response.status(), response.headers());
-        }
-        if !response.status().is_success() {
-            let status = response.status();
-            let retry_after = parse_retry_after(response.headers());
-            let body = super::read_error_response_body(response, request_trace.as_ref()).await;
-            return Err(classify_status_error_with_trace(
-                "Gemini request failed",
-                "response_status",
-                Some("gemini"),
-                Some(&model_ref),
-                Some(url.as_str()),
-                status,
-                body,
-                request_trace.as_ref(),
-                retry_after,
-            ));
-        }
+                let mut request_payload = serde_json::to_value(&request_body)?;
+                let output_fields = &["generationConfig.maxOutputTokens"];
+                let effective_output = effective_output_tokens(
+                    self.context_window_tokens,
+                    self.max_output_tokens,
+                    &request_payload,
+                    output_fields,
+                );
+                request_payload["generationConfig"]["maxOutputTokens"] = Value::from(effective_output);
+                if let Some(budget) = estimate_context_budget(
+                    self.context_window_tokens,
+                    effective_output,
+                    &request_payload,
+                    output_fields,
+                )
+                .filter(|budget| budget.overflow_tokens() > 0)
+                {
+                    return Err(gemini_preflight_error(
+                        &model_ref,
+                        &url,
+                        "context_length_exceeded",
+                        "Gemini request exceeds the estimated context budget; reduce prompt/context or requested output tokens, or increase the provider context window",
+                        Some(budget),
+                    ));
+                }
+                let headers = vec![
+                    ("content-type", "application/json".to_string()),
+                    ("x-goog-api-key", "[redacted]".to_string()),
+                ];
+                let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+                let request_trace = trace.and_then(|trace| {
+                    trace.begin_request(
+                        request
+                            .prompt_frame
+                            .cache
+                            .as_ref()
+                            .map(|cache| cache.agent_id.as_str()),
+                        "gemini",
+                        Some(&model_ref),
+                        url.as_str(),
+                        "generate_content",
+                        &headers,
+                        &request_payload,
+                    )
+                });
+                let request_started_at = chrono::Utc::now();
+                let request_builder = self
+                    .client
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .header("x-goog-api-key", &self.api_key)
+                    .json(&request_payload);
+                let response = send_provider_request(
+                    request_builder,
+                    "Gemini request failed",
+                    "request_send",
+                    "gemini",
+                    Some(&model_ref),
+                    Some(url.as_str()),
+                    RequestDeadline::FullRequest,
+                    request_trace.as_ref(),
+                    request.dispatch_guard.as_deref(),
+                )
+                .await?;
+                let response_headers_at = chrono::Utc::now();
+                if let Some(trace) = request_trace.as_ref() {
+                    trace.write_response_headers(response.status(), response.headers());
+                }
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let retry_after = parse_retry_after(response.headers());
+                    let body = super::read_error_response_body(response, request_trace.as_ref(), &material).await?;
+                    return Err(classify_status_error_with_trace(
+                        "Gemini request failed",
+                        "response_status",
+                        Some("gemini"),
+                        Some(&model_ref),
+                        Some(url.as_str()),
+                        status,
+                        body,
+                        request_trace.as_ref(),
+                        retry_after,
+                    ));
+                }
 
-        let response_body =
-            match tokio::time::timeout(response_body_timeout(), response.text()).await {
-                Ok(Ok(text)) => text,
-                Ok(Err(error)) => {
-                    return Err(classify_reqwest_transport_error_with_trace(
-                        "Gemini response body failed",
-                        "response_body",
-                        "gemini",
-                        Some(&model_ref),
-                        Some(url.as_str()),
-                        error,
-                        request_trace.as_ref(),
-                    ));
+                let response_body =
+                    match tokio::time::timeout(response_body_timeout(), response.text()).await {
+                        Ok(Ok(text)) => text,
+                        Ok(Err(error)) => {
+                            return Err(classify_reqwest_transport_error_with_trace(
+                                "Gemini response body failed",
+                                "response_body",
+                                "gemini",
+                                Some(&model_ref),
+                                Some(url.as_str()),
+                                error,
+                                request_trace.as_ref(),
+                            ));
+                        }
+                        Err(_elapsed) => {
+                            return Err(timeout_transport_error_with_trace(
+                                "Gemini response body read timed out",
+                                "response_body",
+                                "gemini",
+                                Some(&model_ref),
+                                Some(url.as_str()),
+                                format!("timed out after {:?}", response_body_timeout()),
+                                request_trace.as_ref(),
+                            ));
+                        }
+                    };
+                let response_body_completed_at = chrono::Utc::now();
+                if let Some(trace) = request_trace.as_ref() {
+                    trace.write_response_body(&response_body);
                 }
-                Err(_elapsed) => {
-                    return Err(timeout_transport_error_with_trace(
-                        "Gemini response body read timed out",
-                        "response_body",
-                        "gemini",
-                        Some(&model_ref),
-                        Some(url.as_str()),
-                        format!("timed out after {:?}", response_body_timeout()),
-                        request_trace.as_ref(),
-                    ));
-                }
-            };
-        let response_body_completed_at = chrono::Utc::now();
-        if let Some(trace) = request_trace.as_ref() {
-            trace.write_response_body(&response_body);
-        }
-        let parsed: GenerateContentResponse = serde_json::from_str(&response_body)
-            .map_err(|error| invalid_response_error("invalid Gemini JSON", error))?;
-        let mut response = gemini_response_to_provider_turn_response(parsed)?;
-        let parse_completed_at = chrono::Utc::now();
-        response
-            .request_diagnostics
-            .as_mut()
-            .expect("Gemini responses include request diagnostics")
-            .transport_timeline = Some(ProviderTransportTimeline {
-            request_started_at,
-            response_headers_at,
-            response_body_completed_at: Some(response_body_completed_at),
-            parse_completed_at,
-            streaming: false,
-        });
-        Ok(response)
+                let parsed: GenerateContentResponse = serde_json::from_str(&response_body)
+                    .map_err(|error| invalid_response_error("invalid Gemini JSON", error))?;
+                let mut response = gemini_response_to_provider_turn_response(parsed)?;
+                let parse_completed_at = chrono::Utc::now();
+                response
+                    .request_diagnostics
+                    .as_mut()
+                    .expect("Gemini responses include request diagnostics")
+                    .transport_timeline = Some(ProviderTransportTimeline {
+                    request_started_at,
+                    response_headers_at,
+                    response_body_completed_at: Some(response_body_completed_at),
+                    parse_completed_at,
+                    streaming: false,
+                });
+                Ok(response)
+            })
+            .await
     }
 
     #[cfg(test)]
@@ -557,6 +563,7 @@ fn gemini_response_to_provider_turn_response(
         .unwrap_or_default();
     let usage = parsed.usage_metadata;
     Ok(ProviderTurnResponse {
+        material: Default::default(),
         blocks,
         stop_reason: candidate.finish_reason,
         input_tokens: usage

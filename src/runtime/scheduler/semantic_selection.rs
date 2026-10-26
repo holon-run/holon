@@ -156,9 +156,9 @@ impl AutonomousContinuationSelection {
     }
 }
 
-fn legal_autonomous_continuation_candidates(
+fn legal_autonomous_continuation_work_items(
     projection: &SchedulerProjection,
-) -> Vec<AutonomousContinuationCandidate> {
+) -> impl Iterator<Item = (&WorkItemRecord, WorkReactivationMode, Option<u64>)> {
     let current = projection
         .current_work_item
         .as_ref()
@@ -167,27 +167,40 @@ fn legal_autonomous_continuation_candidates(
         })
         .filter(|work_item| projection.execution_authorizes_autonomous(work_item))
         .map(|work_item| {
-            AutonomousContinuationCandidate::from_work_item(
+            (
                 work_item,
-                projection.autonomous_execution_generation(work_item),
                 WorkReactivationMode::ContinueActive,
+                projection.autonomous_execution_generation(work_item),
             )
         });
-    current
-        .into_iter()
-        .chain(
-            projection
-                .queued_runnable_work_items
-                .iter()
-                .filter(|work_item| projection.execution_authorizes_autonomous(work_item))
-                .map(|work_item| {
-                    AutonomousContinuationCandidate::from_work_item(
-                        work_item,
-                        projection.autonomous_execution_generation(work_item),
-                        WorkReactivationMode::ActivateQueued,
-                    )
-                }),
-        )
+    current.into_iter().chain(
+        projection
+            .queued_runnable_work_items
+            .iter()
+            .filter(|work_item| projection.execution_authorizes_autonomous(work_item))
+            .map(|work_item| {
+                (
+                    work_item,
+                    WorkReactivationMode::ActivateQueued,
+                    projection.autonomous_execution_generation(work_item),
+                )
+            }),
+    )
+}
+
+pub(super) fn baseline_autonomous_continuation_work_item(
+    projection: &SchedulerProjection,
+) -> Option<(&WorkItemRecord, WorkReactivationMode, Option<u64>)> {
+    legal_autonomous_continuation_work_items(projection).next()
+}
+
+fn legal_autonomous_continuation_candidates(
+    projection: &SchedulerProjection,
+) -> Vec<AutonomousContinuationCandidate> {
+    legal_autonomous_continuation_work_items(projection)
+        .map(|(work_item, mode, generation)| {
+            AutonomousContinuationCandidate::from_work_item(work_item, generation, mode)
+        })
         .collect()
 }
 
@@ -209,6 +222,7 @@ fn autonomous_continuation_context(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn select_autonomous_continuation(
     projection: &SchedulerProjection,
 ) -> Option<AutonomousContinuationSelection> {

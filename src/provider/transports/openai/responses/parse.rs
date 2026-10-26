@@ -1,23 +1,48 @@
 use super::super::*;
 use super::continuation::{canonicalize_openai_provider_item, normalize_openai_function_arguments};
+use crate::diagnostics::resource_io;
+use crate::provider::ProviderRequestMaterial;
 use crate::types::Citation;
 use std::collections::HashSet;
 use url::Url;
 
+#[cfg(test)]
 pub(super) async fn read_openai_streaming_response(
     response: Response,
     trace: Option<&ProviderHttpTraceRequest>,
     max_bytes: Option<usize>,
 ) -> Result<Value> {
-    let idle_timeout = stream_idle_timeout();
-    read_openai_streaming_response_with_timeout(response, idle_timeout, trace, max_bytes).await
+    read_openai_streaming_response_with_material(
+        response,
+        trace,
+        max_bytes,
+        &Default::default(),
+    )
+    .await
 }
 
-async fn read_openai_streaming_response_with_timeout(
+pub(super) async fn read_openai_streaming_response_with_material(
+    response: Response,
+    trace: Option<&ProviderHttpTraceRequest>,
+    max_bytes: Option<usize>,
+    material: &ProviderRequestMaterial,
+) -> Result<Value> {
+    read_openai_streaming_response_scoped(
+        response,
+        stream_idle_timeout(),
+        trace,
+        max_bytes,
+        material,
+    )
+    .await
+}
+
+async fn read_openai_streaming_response_scoped(
     response: Response,
     idle_timeout: Duration,
     trace: Option<&ProviderHttpTraceRequest>,
     max_bytes: Option<usize>,
+    material: &ProviderRequestMaterial,
 ) -> Result<Value> {
     const MAX_STREAMED_OUTPUT_ITEMS: usize = 128;
 
@@ -63,28 +88,48 @@ async fn read_openai_streaming_response_with_timeout(
             ));
         }
         trace_stream_chunk(trace, &chunk);
-        pending.push_str(&text_decoder.push(&chunk));
+        material.read(|| {
+            let decoded_max = u64::try_from(chunk.len())?
+                .checked_mul(3)
+                .and_then(|bytes| bytes.checked_add(12))
+                .ok_or_else(|| anyhow::anyhow!("provider stream size overflow"))?;
+            resource_io::charge_owned_payload(decoded_max)?;
+            resource_io::charge_owned_metadata(128, 1)?;
+            let text = text_decoder.push(&chunk);
+            resource_io::charge_owned_payload(u64::try_from(text.len())?)?;
+            pending.push_str(&text);
+            Ok(())
+        })?;
         while let Some(newline_idx) = pending.find('\n') {
-            let mut line = pending[..newline_idx].to_string();
+            let mut line = material.read(|| {
+                resource_io::charge_owned_payload(u64::try_from(newline_idx)?)?;
+                resource_io::charge_owned_metadata(128, 1)?;
+                Ok(pending[..newline_idx].to_string())
+            })?;
             pending.drain(..=newline_idx);
             if line.ends_with('\r') {
                 line.pop();
             }
             if line.is_empty() {
-                match consume_openai_sse_event(&mut data_lines)? {
+                match material.read(|| consume_openai_sse_event(&mut data_lines))? {
                     StreamingSseEvent::Continue => {}
-                    StreamingSseEvent::OutputItem(item) => push_streamed_output_item(
-                        &mut streamed_output_items,
-                        item,
-                        MAX_STREAMED_OUTPUT_ITEMS,
-                    )?,
+                    StreamingSseEvent::OutputItem(item) => material.read(|| {
+                        push_streamed_output_item(
+                            &mut streamed_output_items,
+                            item,
+                            MAX_STREAMED_OUTPUT_ITEMS,
+                        )
+                    })?,
                     StreamingSseEvent::Incomplete(response) => {
-                        return recover_openai_incomplete_response(response, &streamed_output_items)
+                        return material.read(|| {
+                            recover_openai_incomplete_response(response, &streamed_output_items)
+                        })
                     }
                     StreamingSseEvent::Done => return Err(early_done_protocol_violation_error()),
                     StreamingSseEvent::Terminal(response) => {
-                        let response =
-                            finalize_openai_terminal_response(response, &streamed_output_items);
+                        let response = material.read(|| {
+                            finalize_openai_terminal_response(response, &streamed_output_items)
+                        })?;
                         trace_stream_terminal(trace, &response);
                         return Ok(response);
                     }
@@ -92,29 +137,46 @@ async fn read_openai_streaming_response_with_timeout(
                 continue;
             }
             if let Some(data) = line.strip_prefix("data:") {
-                data_lines.push(data.trim_start().to_string());
+                material.read(|| {
+                    resource_io::charge_owned_payload(u64::try_from(data.len())?)?;
+                    resource_io::charge_owned_metadata(128, 1)?;
+                    data_lines.push(data.trim_start().to_string());
+                    Ok(())
+                })?;
             }
         }
     }
 
-    pending.push_str(&text_decoder.finish());
+    material.read(|| {
+        resource_io::charge_owned_payload(24)?;
+        resource_io::charge_owned_metadata(128, 1)?;
+        pending.push_str(&text_decoder.finish());
+        Ok(())
+    })?;
     if !pending.is_empty() {
         let line = pending.trim_end_matches('\r');
         if let Some(data) = line.strip_prefix("data:") {
-            data_lines.push(data.trim_start().to_string());
+            material.read(|| {
+                resource_io::charge_owned_payload(u64::try_from(data.len())?)?;
+                resource_io::charge_owned_metadata(128, 1)?;
+                data_lines.push(data.trim_start().to_string());
+                Ok(())
+            })?;
         }
     }
-    match consume_openai_sse_event(&mut data_lines)? {
+    match material.read(|| consume_openai_sse_event(&mut data_lines))? {
         StreamingSseEvent::Continue => {}
-        StreamingSseEvent::OutputItem(item) => {
-            push_streamed_output_item(&mut streamed_output_items, item, MAX_STREAMED_OUTPUT_ITEMS)?
-        }
+        StreamingSseEvent::OutputItem(item) => material.read(|| {
+            push_streamed_output_item(&mut streamed_output_items, item, MAX_STREAMED_OUTPUT_ITEMS)
+        })?,
         StreamingSseEvent::Incomplete(response) => {
-            return recover_openai_incomplete_response(response, &streamed_output_items)
+            return material
+                .read(|| recover_openai_incomplete_response(response, &streamed_output_items))
         }
         StreamingSseEvent::Done => return Err(early_done_protocol_violation_error()),
         StreamingSseEvent::Terminal(response) => {
-            let response = finalize_openai_terminal_response(response, &streamed_output_items);
+            let response = material
+                .read(|| finalize_openai_terminal_response(response, &streamed_output_items))?;
             trace_stream_terminal(trace, &response);
             return Ok(response);
         }
@@ -152,6 +214,7 @@ fn push_streamed_output_item(
             format!("received more than {max_items} streamed output items"),
         ));
     }
+    resource_io::charge_owned_metadata(128, 1)?;
     streamed_output_items.push(item);
     Ok(())
 }
@@ -163,6 +226,15 @@ pub(in super::super) fn consume_openai_sse_event(
         return Ok(StreamingSseEvent::Continue);
     }
 
+    let length = data_lines
+        .iter()
+        .try_fold(data_lines.len(), |length, line| {
+            length
+                .checked_add(line.len())
+                .ok_or_else(|| anyhow::anyhow!("provider SSE size overflow"))
+        })?;
+    resource_io::charge_owned_payload(u64::try_from(length)?)?;
+    resource_io::charge_owned_metadata(128, 1)?;
     let payload = data_lines.join("\n");
     data_lines.clear();
     let trimmed = payload.trim();
@@ -173,6 +245,7 @@ pub(in super::super) fn consume_openai_sse_event(
         return Ok(StreamingSseEvent::Done);
     }
 
+    resource_io::admit_json_payload(trimmed)?;
     let event: Value = serde_json::from_str(trimmed)
         .map_err(|error| invalid_response_error("invalid OpenAI-style streaming JSON", error))?;
 
@@ -190,6 +263,7 @@ pub(in super::super) fn consume_openai_sse_event(
         .unwrap_or_default();
     if event_type == "response.output_item.done" {
         if let Some(item) = event.get("item") {
+            resource_io::admit_cloned_value(item)?;
             return Ok(StreamingSseEvent::OutputItem(item.clone()));
         }
         return Err(invalid_response_error(
@@ -200,6 +274,7 @@ pub(in super::super) fn consume_openai_sse_event(
     if let Some(response) = event.get("response") {
         let status = response.get("status").and_then(Value::as_str);
         if event_type == "response.completed" || status == Some("completed") {
+            resource_io::admit_cloned_value(response)?;
             return Ok(StreamingSseEvent::Terminal(response.clone()));
         }
         if event_type == "response.failed" || status == Some("failed") {
@@ -211,6 +286,7 @@ pub(in super::super) fn consume_openai_sse_event(
         }
         if event_type == "response.incomplete" || status == Some("incomplete") {
             if openai_incomplete_reason(response) == Some("max_output_tokens") {
+                resource_io::admit_cloned_value(response)?;
                 return Ok(StreamingSseEvent::Incomplete(response.clone()));
             }
             return Err(classify_openai_incomplete_response(response));
@@ -227,7 +303,7 @@ fn recover_openai_incomplete_response(
     response: Value,
     streamed_output_items: &[Value],
 ) -> Result<Value> {
-    let response = finalize_openai_terminal_response(response, streamed_output_items);
+    let response = finalize_openai_terminal_response(response, streamed_output_items)?;
     let has_output = response
         .get("output")
         .and_then(Value::as_array)
@@ -242,22 +318,23 @@ fn recover_openai_incomplete_response(
 fn finalize_openai_terminal_response(
     mut response: Value,
     streamed_output_items: &[Value],
-) -> Value {
+) -> Result<Value> {
     let has_output = response
         .get("output")
         .and_then(Value::as_array)
         .is_some_and(|output| !output.is_empty());
     if has_output || streamed_output_items.is_empty() {
-        return response;
+        return Ok(response);
     }
 
     if let Some(object) = response.as_object_mut() {
+        resource_io::admit_cloned_value(&streamed_output_items)?;
         object.insert(
             "output".to_string(),
             Value::Array(streamed_output_items.to_vec()),
         );
     }
-    response
+    Ok(response)
 }
 
 fn classify_openai_streaming_error(
@@ -513,6 +590,7 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
             .and_then(Value::as_str)
             .map(str::to_string),
         response: ProviderTurnResponse {
+            material: Default::default(),
             blocks,
             stop_reason: response
                 .get("incomplete_details")

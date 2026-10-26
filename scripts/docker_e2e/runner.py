@@ -129,12 +129,18 @@ BEARER_SECRET_PATTERN = re.compile(
 )
 
 
-def redact_evidence(value: Any) -> Any:
+def redact_evidence(value: Any, secrets_to_redact: list[str] | None = None) -> Any:
     if isinstance(value, dict):
-        return {key: redact_evidence(item) for key, item in value.items()}
+        return {
+            key: redact_evidence(item, secrets_to_redact)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [redact_evidence(item) for item in value]
+        return [redact_evidence(item, secrets_to_redact) for item in value]
     if isinstance(value, str):
+        for secret in secrets_to_redact or []:
+            if len(secret) >= 8:
+                value = value.replace(secret, "<redacted>")
         return CALLBACK_CAPABILITY_PATTERN.sub(r"\1<redacted>", value)
     return value
 
@@ -7449,7 +7455,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PASS {case_id}")
         except Exception as error:
             status = "fail"
-            error_text = f"{type(error).__name__}: {error}"
+            error_text = redact_evidence(
+                f"{type(error).__name__}: {error}", secret_values + control_tokens
+            )
             if isinstance(error, TimeoutError):
                 failure_kind = "case_timeout"
             (harness.evidence / "failure.txt").write_text(error_text + "\n")
@@ -7460,8 +7468,9 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 harness.runtime_db_snapshot("failure-final")
             except Exception as snapshot_error:
-                evidence_collection_error = (
-                    f"{type(snapshot_error).__name__}: {snapshot_error}"
+                evidence_collection_error = redact_evidence(
+                    f"{type(snapshot_error).__name__}: {snapshot_error}",
+                    secret_values + control_tokens,
                 )
                 write_json(
                     harness.evidence / "failure-evidence-collection.json",
@@ -7474,10 +7483,12 @@ def main(argv: list[str] | None = None) -> int:
                 harness.capture_logs()
             except Exception:
                 pass
-            print(f"FAIL {case_id}: {error}", file=sys.stderr)
+            print(f"FAIL {case_id}: {error_text}", file=sys.stderr)
         finally:
             harness.keep = keep_on_failure and status == "fail"
-            cleanup_result = harness.cleanup()
+            cleanup_result = redact_evidence(
+                harness.cleanup(), secret_values + control_tokens
+            )
             if cleanup_result["status"] == "fail":
                 status = "fail"
                 cleanup_error = "; ".join(cleanup_result["errors"])

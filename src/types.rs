@@ -643,6 +643,28 @@ impl AgentBootstrapRecord {
     }
 
     pub fn summary(&self) -> AgentBootstrapSummary {
+        AgentBootstrapSummary {
+            status: self.summary_status(),
+            template: self.template.clone(),
+            runtime: self.runtime.clone(),
+            workspace: self.workspace.clone(),
+            model: self.model.clone(),
+            initial_message: self.initial_message.clone(),
+        }
+    }
+
+    pub fn into_summary(self) -> AgentBootstrapSummary {
+        AgentBootstrapSummary {
+            status: self.summary_status(),
+            template: self.template,
+            runtime: self.runtime,
+            workspace: self.workspace,
+            model: self.model,
+            initial_message: self.initial_message,
+        }
+    }
+
+    fn summary_status(&self) -> AgentBootstrapStatus {
         let steps = [
             &self.template,
             &self.runtime,
@@ -650,20 +672,13 @@ impl AgentBootstrapRecord {
             &self.model,
             &self.initial_message,
         ];
-        AgentBootstrapSummary {
-            status: if steps
-                .iter()
-                .all(|step| step.status == AgentBootstrapStepStatus::Succeeded)
-            {
-                AgentBootstrapStatus::Ready
-            } else {
-                AgentBootstrapStatus::Degraded
-            },
-            template: self.template.clone(),
-            runtime: self.runtime.clone(),
-            workspace: self.workspace.clone(),
-            model: self.model.clone(),
-            initial_message: self.initial_message.clone(),
+        if steps
+            .iter()
+            .all(|step| step.status == AgentBootstrapStepStatus::Succeeded)
+        {
+            AgentBootstrapStatus::Ready
+        } else {
+            AgentBootstrapStatus::Degraded
         }
     }
 
@@ -784,6 +799,54 @@ pub struct AgentInvocationReceipt {
     pub task_handle: TaskHandle,
 }
 
+/// An array on the wire, retaining the original read phase until consumption.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct AgentLineageChildrenSnapshot {
+    pub(crate) records: Vec<AgentLineageRecord>,
+    #[serde(skip)]
+    pub(crate) _material:
+        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+}
+
+impl AgentLineageChildrenSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+impl std::ops::Deref for AgentLineageChildrenSnapshot {
+    type Target = [AgentLineageRecord];
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl Clone for AgentLineageChildrenSnapshot {
+    fn clone(&self) -> Self {
+        let material = self._material.as_ref().map(|guard| guard.fork_owned());
+        Self {
+            records: self.records.clone(),
+            _material: material,
+        }
+    }
+}
+
+impl PartialEq for AgentLineageChildrenSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.records == other.records
+    }
+}
+
+impl Eq for AgentLineageChildrenSnapshot {}
+
+impl PartialEq<Vec<AgentLineageRecord>> for AgentLineageChildrenSnapshot {
+    fn eq(&self, other: &Vec<AgentLineageRecord>) -> bool {
+        self.records == *other
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentDetail {
     pub identity: AgentIdentityView,
@@ -793,8 +856,11 @@ pub struct AgentDetail {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub canonical_relations: AgentCanonicalRelationsProjection,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lineage_children: Vec<AgentLineageRecord>,
+    #[serde(
+        default,
+        skip_serializing_if = "AgentLineageChildrenSnapshot::is_empty"
+    )]
+    pub lineage_children: AgentLineageChildrenSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<AgentBootstrapSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1059,6 +1125,29 @@ fn default_agent_profile_preset() -> AgentProfilePreset {
 }
 
 impl AgentIdentityView {
+    /// Consume an already-owned identity without duplicating its text fields.
+    pub(crate) fn from_owned_record(record: AgentIdentityRecord, default_agent_id: &str) -> Self {
+        let ownership = record.ownership();
+        let profile_preset = record.profile_preset();
+        let is_default_agent = record.agent_id == default_agent_id;
+        Self {
+            agent_id: record.agent_id,
+            name: record.name,
+            kind: record.kind,
+            visibility: record.visibility,
+            ownership,
+            profile_preset,
+            can_rename: record.visibility == AgentVisibility::Public
+                && ownership == AgentOwnership::SelfOwned,
+            status: record.status,
+            is_default_agent,
+            incarnation: record.incarnation,
+            parent_agent_id: record.parent_agent_id,
+            lineage_parent_agent_id: record.lineage_parent_agent_id,
+            delegated_from_task_id: record.delegated_from_task_id,
+        }
+    }
+
     pub fn from_record(record: &AgentIdentityRecord, default_agent_id: &str) -> Self {
         Self {
             agent_id: record.agent_id.clone(),
@@ -1650,9 +1739,9 @@ pub struct SkillsRuntimeView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discovered_roots: Vec<SkillRootView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub discoverable_skills: Vec<SkillCatalogEntry>,
+    pub discoverable_skills: std::sync::Arc<Vec<SkillCatalogEntry>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attached_skills: Vec<SkillCatalogEntry>,
+    pub attached_skills: std::sync::Arc<Vec<SkillCatalogEntry>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_skills: Vec<ActiveSkillRecord>,
 }
@@ -2381,7 +2470,12 @@ impl TurnTriggerSummary {
             origin: message.origin.clone(),
             authority_class: message.authority_class,
             priority: message.priority.clone(),
-            trigger_kind: message.trigger_kind,
+            // Dispatch fills this default without rewriting the persisted source.
+            trigger_kind: Some(
+                message
+                    .trigger_kind
+                    .unwrap_or_else(|| admission_trigger_kind_for_message_kind(&message.kind)),
+            ),
             task_id: message.task_id.clone(),
         }
     }
@@ -3333,7 +3427,11 @@ impl WaitConditionRecord {
     }
 
     pub fn no_fallback_reason(&self) -> Option<String> {
-        explicit_no_fallback_reason(self.continuation.as_ref()).map(ToString::to_string)
+        self.no_fallback_reason_ref().map(ToString::to_string)
+    }
+
+    pub(crate) fn no_fallback_reason_ref(&self) -> Option<&str> {
+        explicit_no_fallback_reason(self.continuation.as_ref())
     }
 }
 
@@ -3497,6 +3595,26 @@ impl From<WaitConditionRecord> for WaitConditionSummary {
             external_recoverability,
             no_fallback_reason,
             continuation: record.continuation,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
+}
+
+impl From<&WaitConditionRecord> for WaitConditionSummary {
+    fn from(record: &WaitConditionRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            work_item_id: record.work_item_id.clone(),
+            status: record.status.clone(),
+            kind: record.kind.clone(),
+            source: record.source.clone(),
+            subject_ref: record.subject_ref.clone(),
+            waiting_for: record.waiting_for.clone(),
+            wake_sources: record.wake_sources.clone(),
+            external_recoverability: record.external_recoverability(),
+            no_fallback_reason: record.no_fallback_reason(),
+            continuation: record.continuation.clone(),
             created_at: record.created_at,
             updated_at: record.updated_at,
         }
@@ -3736,7 +3854,7 @@ pub enum ChildAgentBlockedReason {
     AwaitingManagedTask,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct ChildAgentObservabilitySnapshot {
     pub phase: ChildAgentPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3751,6 +3869,60 @@ pub struct ChildAgentObservabilitySnapshot {
     pub last_progress_brief: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_result_brief: Option<String>,
+    #[serde(skip)]
+    pub(crate) _read_material:
+        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    #[serde(skip)]
+    pub(crate) _source_material:
+        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+}
+
+impl std::fmt::Debug for ChildAgentObservabilitySnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChildAgentObservabilitySnapshot")
+            .field("phase", &self.phase)
+            .field("blocked_reason", &self.blocked_reason)
+            .field("waiting_reason", &self.waiting_reason)
+            .field("current_work_item_id", &self.current_work_item_id)
+            .field("work_summary", &self.work_summary)
+            .field("last_progress_brief", &self.last_progress_brief)
+            .field("last_result_brief", &self.last_result_brief)
+            .finish()
+    }
+}
+
+impl Clone for ChildAgentObservabilitySnapshot {
+    fn clone(&self) -> Self {
+        let material = self._read_material.as_ref().map(|guard| guard.fork_owned());
+        let source = self
+            ._source_material
+            .as_ref()
+            .map(|guard| guard.fork_owned());
+        Self {
+            phase: self.phase.clone(),
+            blocked_reason: self.blocked_reason.clone(),
+            waiting_reason: self.waiting_reason.clone(),
+            current_work_item_id: self.current_work_item_id.clone(),
+            work_summary: self.work_summary.clone(),
+            last_progress_brief: self.last_progress_brief.clone(),
+            last_result_brief: self.last_result_brief.clone(),
+            _read_material: material,
+            _source_material: source,
+        }
+    }
+}
+
+impl PartialEq for ChildAgentObservabilitySnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.phase == other.phase
+            && self.blocked_reason == other.blocked_reason
+            && self.waiting_reason == other.waiting_reason
+            && self.current_work_item_id == other.current_work_item_id
+            && self.work_summary == other.work_summary
+            && self.last_progress_brief == other.last_progress_brief
+            && self.last_result_brief == other.last_result_brief
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -6183,14 +6355,25 @@ impl Default for AgentLifecycleHint {
 }
 
 impl AgentLifecycleHint {
+    const STOPPED_OPERATOR_HINT: &str =
+        "agent is administratively stopped; start before new prompts or wakes";
+
+    pub(crate) fn try_from_status(agent_id: &str, status: AgentStatus) -> std::io::Result<Self> {
+        if status == AgentStatus::Stopped {
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                (Self::STOPPED_OPERATOR_HINT.len() + std::mem::size_of::<String>()) as u64,
+                1,
+            )?;
+        }
+        Ok(Self::from_status(agent_id, status))
+    }
+
     #[allow(unused_variables)]
     pub fn from_status(agent_id: &str, status: AgentStatus) -> Self {
         if status == AgentStatus::Stopped {
             return Self {
                 accepts_external_messages: false,
-                operator_hint: Some(
-                    "agent is administratively stopped; start before new prompts or wakes".into(),
-                ),
+                operator_hint: Some(Self::STOPPED_OPERATOR_HINT.into()),
             };
         }
         Self::default()
@@ -6271,6 +6454,24 @@ impl From<&AgentModelState> for AgentListModelSummary {
             effective_fallback_models: value.effective_fallback_models.clone(),
             override_model: value.override_model.clone(),
             override_reasoning_effort: value.override_reasoning_effort.clone(),
+            override_service_tier: value.override_service_tier,
+            effective_service_tier: value.effective_service_tier,
+        }
+    }
+}
+
+impl From<AgentModelState> for AgentListModelSummary {
+    fn from(value: AgentModelState) -> Self {
+        Self {
+            source: value.source,
+            runtime_default_model: value.runtime_default_model,
+            effective_model: value.effective_model,
+            requested_model: value.requested_model,
+            active_model: value.active_model,
+            fallback_active: value.fallback_active,
+            effective_fallback_models: value.effective_fallback_models,
+            override_model: value.override_model,
+            override_reasoning_effort: value.override_reasoning_effort,
             override_service_tier: value.override_service_tier,
             effective_service_tier: value.effective_service_tier,
         }
@@ -6422,6 +6623,76 @@ impl AgentListEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_trigger_summary_matches_dispatch_defaults_without_changing_source() {
+        for kind in [
+            MessageKind::OperatorPrompt,
+            MessageKind::ChannelEvent,
+            MessageKind::WebhookEvent,
+            MessageKind::CallbackEvent,
+            MessageKind::TimerTick,
+            MessageKind::SystemTick,
+            MessageKind::TaskResult,
+            MessageKind::TaskStatus,
+            MessageKind::InternalFollowup,
+            MessageKind::Control,
+            MessageKind::BriefAck,
+            MessageKind::BriefResult,
+        ] {
+            let source = MessageEnvelope::new(
+                "agent",
+                kind,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "source".into(),
+                },
+            );
+            let mut admitted = source.clone();
+            admitted.normalize_admission_fields();
+            let summary = TurnTriggerSummary::from_message(&source);
+            assert_eq!(summary, TurnTriggerSummary::from_message(&admitted));
+            assert_eq!(
+                summary.trigger_kind,
+                Some(admission_trigger_kind_for_message_kind(&source.kind))
+            );
+            assert!(source.trigger_kind.is_none());
+            assert_eq!(summary.origin, source.origin);
+            assert_eq!(summary.authority_class, source.authority_class);
+        }
+    }
+
+    #[test]
+    fn turn_trigger_summary_preserves_explicit_trigger_kind() {
+        let mut source = MessageEnvelope::new(
+            "agent",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "source".into(),
+            },
+        );
+        let default_summary = TurnTriggerSummary::from_message(&source);
+        source.trigger_kind = Some(ContinuationTriggerKind::ExternalEvent);
+        let explicit_summary = TurnTriggerSummary::from_message(&source);
+        assert_eq!(
+            explicit_summary.trigger_kind,
+            Some(ContinuationTriggerKind::ExternalEvent)
+        );
+        assert_ne!(explicit_summary, default_summary);
+        source.normalize_admission_fields();
+        assert_eq!(explicit_summary, TurnTriggerSummary::from_message(&source));
+    }
 
     #[test]
     #[allow(deprecated)]

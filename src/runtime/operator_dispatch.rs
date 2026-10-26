@@ -79,8 +79,15 @@ impl RuntimeHandle {
         }
         let _provider_admission =
             self.activate_provider_admission(scheduled.dispatch_plan.provider_admission.clone())?;
-        let terminal_transition = self
-            .process_interactive_message_deferred_with_cleanup(
+        let original_run_id = scheduled
+            .running_state
+            .current_run_id
+            .as_deref()
+            .context("test dispatch has no original run")?;
+        let started = std::time::Instant::now();
+        let completion = scheduled.run_completion.lease();
+        let result = Box::pin(
+            self.process_interactive_dispatch_with_cleanup(
                 &scheduled.message,
                 scheduled.dispatch_plan.continuation_resolution.as_ref(),
                 scheduled
@@ -93,13 +100,24 @@ impl RuntimeHandle {
                     .trace_context
                     .as_ref()
                     .map(crate::observability::TraceContext::child),
+                Some(&scheduled.dispatch_plan.prior_closure),
+            ),
+        )
+        .await;
+        let settled = self
+            .finish_scheduled_message_processing(
+                &scheduled.message,
+                original_run_id,
+                started,
+                result,
             )
-            .await?;
-        self.persist_terminal_transition(&terminal_transition)
-            .await?;
-        Ok(())
+            .await;
+        drop(scheduled);
+        self.finish_original_stopped_dispatch(completion).await?;
+        settled
     }
 
+    #[cfg(test)]
     pub(super) async fn process_interactive_message_deferred_with_cleanup(
         &self,
         message: &MessageEnvelope,
@@ -108,12 +126,33 @@ impl RuntimeHandle {
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<TurnTerminalTransition> {
+        Box::pin(self.process_interactive_dispatch_with_cleanup(
+            message,
+            continuation_resolution,
+            execution_admission_provenance,
+            loop_control,
+            trace_context,
+            None,
+        ))
+        .await
+    }
+
+    pub(super) async fn process_interactive_dispatch_with_cleanup(
+        &self,
+        message: &MessageEnvelope,
+        continuation_resolution: Option<&ContinuationResolution>,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+        loop_control: LoopControlOptions,
+        trace_context: Option<crate::observability::TraceContext>,
+        dispatch_prior_closure: Option<&ClosureDecision>,
+    ) -> Result<TurnTerminalTransition> {
         let result = Box::pin(self.process_interactive_message_deferred(
             message,
             continuation_resolution,
             execution_admission_provenance,
             loop_control,
             trace_context,
+            dispatch_prior_closure,
         ))
         .await;
         let cleanup = self.reconfigure_provider_for_turn(None).await;
@@ -134,6 +173,7 @@ impl RuntimeHandle {
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
+        dispatch_prior_closure: Option<&ClosureDecision>,
     ) -> Result<TurnTerminalTransition> {
         if !matches!(
             execution_admission_provenance.as_ref(),
@@ -145,13 +185,24 @@ impl RuntimeHandle {
         }
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
-        self.begin_interactive_turn_with_provenance(
-            Some(message),
-            operator_binding_id.as_deref(),
-            operator_reply_route_id.as_deref(),
-            execution_admission_provenance,
-        )
-        .await?;
+        if let Some(prior_closure) = dispatch_prior_closure {
+            self.begin_dispatch_turn(
+                message,
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                execution_admission_provenance,
+                prior_closure,
+            )
+            .await?;
+        } else {
+            self.begin_interactive_turn_with_provenance(
+                Some(message),
+                operator_binding_id.as_deref(),
+                operator_reply_route_id.as_deref(),
+                execution_admission_provenance,
+            )
+            .await?;
+        }
         let mut model_selection = TurnModelSelection::from_message(message)?;
         let provider_admission = self.active_provider_admission()?;
         model_selection.admitted_model = provider_admission
@@ -165,19 +216,35 @@ impl RuntimeHandle {
             false
         };
         if let Some(recovery) = model_selection.recovery.as_ref() {
-            let source = crate::runtime::provider_recovery::resolve_for_context(
-                &self.inner.storage,
-                message,
-            )?
-            .ok_or_else(|| anyhow!("provider recovery source resolution missing"))?;
-            let (turn_id, run_id) = {
-                let guard = self.inner.agent.lock().await;
-                (
-                    guard.state.current_turn_id.clone(),
-                    guard.state.current_run_id.clone(),
-                )
-            };
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            let mut mutation = self.begin_mutation().await?;
+            let roots = crate::runtime::provider_recovery::continuity_sources(message)?
+                .map(|(turn, source, _)| {
+                    std::collections::BTreeSet::from([
+                        super::resident_input_evidence::InputEvidenceKey::new(
+                            super::resident_input_evidence::InputEvidenceFamily::Turn,
+                            turn,
+                        ),
+                        super::resident_input_evidence::InputEvidenceKey::new(
+                            super::resident_input_evidence::InputEvidenceFamily::Message,
+                            source,
+                        ),
+                    ])
+                })
+                .unwrap_or_default();
+            mutation
+                .prepare_owner_inputs(roots, Default::default())
+                .await?;
+            let captured = mutation.capture_input_evidence()?;
+            let protocol = captured.protocol_state()?;
+            let source = crate::runtime::provider_recovery::resolve_from_captured(
+                &captured, message, &protocol,
+            )?;
+            let (turn_id, run_id) = (
+                mutation.state.current_turn_id.clone(),
+                mutation.state.current_run_id.clone(),
+            );
+            drop(mutation);
+            self.append_original_audit_event(AuditEvent::legacy(
                 "recovery_turn_started",
                 serde_json::json!({
                     "agent_id": message.agent_id,
@@ -198,89 +265,41 @@ impl RuntimeHandle {
                     "source_terminal_kind": recovery.source_terminal_kind,
                     "source_round": recovery.source_round,
                 }),
-            ))?;
-        }
-        self.record_incoming_transcript_entry(message)?;
-        self.inner
-            .storage
-            .append_event(&brief::make_acknowledgement_event(message))?;
-        let context_build_started = std::time::Instant::now();
-        let context_build_started_at = chrono::Utc::now();
-        let identity = self.agent_identity_view().await?;
-        let default_external_ingress = self
-            .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+            ))
             .await?;
-        let default_external_ingress = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .latest(&default_external_ingress.external_trigger_id)?;
-        let context_config = self.current_context_config().await;
-
+        }
+        self.record_incoming_transcript_entry(message).await?;
+        self.append_original_audit_event(brief::make_acknowledgement_event(message))
+            .await?;
+        let context_build_started = std::time::Instant::now();
+        let _context_preparation =
+            crate::diagnostics::io_probe::context_preparation(&message.agent_id);
+        let context_build_started_at = chrono::Utc::now();
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+            .await?;
         let live_recovered = provider_inputs_recovered
             || Box::pin(self.recover_interrupted_live_inputs(message)).await?;
-        // Recovery restores the admitted snapshot; it must not select a new
-        // idle batch or reapply the per-batch limit to cumulative live evidence.
         let mut idle_results_checked = live_recovered;
         let mut idle_batch_checked = live_recovered;
         let built = loop {
-            let mut guard = self.inner.agent.lock().await;
-            let agent_changed = sync_agent_message_count(&self.inner.storage, &mut guard.state)?;
-            if agent_changed {
-                guard.persist_state(&self.inner.storage)?;
-            }
-            let state = guard.state.clone();
-            drop(guard);
-            let (provider, available_tools, apply_patch_surface, _, _) = self
-                .provider_tool_selection_for_turn(model_selection.fallback_model())
-                .await?;
-            let prompt_tools = provider.prompt_tool_specs(&available_tools);
-            let workspace = self.workspace_view_from_state(&state)?;
-            let execution = self.execution_snapshot_for_view(
-                state.execution_profile.clone(),
-                &workspace,
-                &state.attached_workspaces,
-            );
-            let loaded_agents_md = self.loaded_agents_md_for_state(&state)?;
-            let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
-            let skills = self
-                .skills_runtime_view_for_state(&state, &identity)
-                .await?;
-            let built =
-                build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
-                    &self.inner.storage,
-                    &state,
-                    &execution,
+            // Idle ACKs can replace Work's publication. Re-enter the explicit
+            // preparation barrier before capturing another pure Context view.
+            let built = self
+                .prepare_loaded_context_prompt(
                     message,
-                    &context_config,
-                    &execution.execution_root,
-                    self.agent_home().as_path(),
-                    &identity,
-                    loaded_agents_md,
-                    loaded_agent_memory,
-                    &skills,
-                    &prompt_tools,
-                    apply_patch_surface,
                     continuation_resolution,
-                    default_external_ingress.as_ref(),
-                )?
-                .with_media_tool_defaults(
-                    &self
-                        .media_tool_defaults(model_selection.fallback_model())
-                        .await?,
-                    &prompt_tools,
-                );
-            if !idle_results_checked || !idle_batch_checked {
-                // Reserve the already planned non-input context before claiming
-                // followers. Rebuild once from the durable input evidence.
-                let available_bytes = idle_input_budget(&built);
-                // Keep admission state off the already large turn future's stack.
-                if !idle_results_checked {
-                    idle_results_checked = true;
-                    if Box::pin(self.admit_idle_task_results(message, available_bytes)).await? {
-                        continue;
-                    }
+                    model_selection.fallback_model(),
+                    true,
+                )
+                .await?;
+            let available_bytes = idle_input_available_bytes(&built);
+            if !idle_results_checked {
+                idle_results_checked = true;
+                if Box::pin(self.admit_idle_task_results(message, available_bytes)).await? {
+                    continue;
                 }
+            }
+            if !idle_batch_checked {
                 idle_batch_checked = true;
                 if Box::pin(self.attach_idle_sender_inputs(message, available_bytes)).await? {
                     continue;
@@ -293,7 +312,7 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             (guard.state.turn_index, guard.state.current_run_id.clone())
         };
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "turn_context_built",
             serde_json::json!({
                 "agent_id": message.agent_id.clone(),
@@ -305,7 +324,8 @@ impl RuntimeHandle {
                 "rendered_context_chars": built.rendered_context_attachment.chars().count(),
                 "rendered_system_chars": built.rendered_system_prompt.chars().count(),
             }),
-        ))?;
+        ))
+        .await?;
         record_operator_span(
             trace_context.as_ref(),
             "holon.turn.context_build",
@@ -417,50 +437,22 @@ impl RuntimeHandle {
         }
         let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
         if let Some(prepared) = outcome.prepared_work_item_completion.as_ref() {
-            if !turn_record.produced_brief_ids.contains(&prepared.brief.id) {
-                turn_record
-                    .produced_brief_ids
-                    .push(prepared.brief.id.clone());
-            }
-            if !turn_record
-                .completed_work_item_ids
-                .contains(&prepared.record.id)
-            {
-                turn_record
-                    .completed_work_item_ids
-                    .push(prepared.record.id.clone());
-            }
+            turn_record.include_brief(&prepared.brief.id)?;
+            turn_record.include_completed_work_item(&prepared.record.id)?;
             if let Some(tool_execution) = prepared.tool_execution.as_ref() {
-                if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
-                    turn_record
-                        .tool_execution_ids
-                        .push(tool_execution.id.clone());
-                }
+                turn_record.include_tool_execution(&tool_execution.id)?;
             }
         }
         if let Some(prepared) = outcome.prepared_wait_for.as_mut() {
             prepared.brief_publication_scope = Some(crate::runtime::WaitForBriefPublicationScope {
-                existing_brief_ids: turn_record.produced_brief_ids.clone(),
+                existing_brief_ids: turn_record.clone_brief_ids()?,
             });
             if let Some(brief) = prepared.brief.as_ref() {
-                if !turn_record.produced_brief_ids.contains(&brief.id) {
-                    turn_record.produced_brief_ids.push(brief.id.clone());
-                }
+                turn_record.include_brief(&brief.id)?;
             }
-            if !turn_record
-                .waiting_condition_ids
-                .contains(&prepared.registration.condition.id)
-            {
-                turn_record
-                    .waiting_condition_ids
-                    .push(prepared.registration.condition.id.clone());
-            }
+            turn_record.include_wait_condition(&prepared.registration.condition.id)?;
             if let Some(tool_execution) = prepared.tool_execution.as_ref() {
-                if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
-                    turn_record
-                        .tool_execution_ids
-                        .push(tool_execution.id.clone());
-                }
+                turn_record.include_tool_execution(&tool_execution.id)?;
             }
         }
         self.promote_turn_active_skills().await?;
@@ -491,7 +483,7 @@ impl RuntimeHandle {
             prepared_wait_for: outcome.prepared_wait_for,
             terminal_tool_executions: outcome.terminal_tool_executions,
         };
-        transition.normalize_brief_settlement();
+        transition.normalize_brief_settlement()?;
         Ok(transition)
     }
 
@@ -547,49 +539,13 @@ impl RuntimeHandle {
             MessageDeliverySurface::CliPrompt,
             AdmissionContext::LocalProcess,
         );
-        let mut agent = self.agent_state().await?;
-        let _ = sync_agent_message_count(&self.inner.storage, &mut agent)?;
         let prior_closure = self.current_closure_decision().await?;
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger));
-        let identity = self.agent_identity_view().await?;
-        let default_external_ingress = self
-            .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
-        let default_external_ingress = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .latest(&default_external_ingress.external_trigger_id)?;
-        let (provider, available_tools, apply_patch_surface, _, _) =
-            self.provider_tool_selection().await?;
-        let prompt_tools = provider.prompt_tool_specs(&available_tools);
-        let execution = self.execution_snapshot().await?;
-        let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
-        let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
-        let skills = self
-            .skills_runtime_view_for_state(&agent, &identity)
-            .await?;
-        let context_config = self.current_context_config().await;
-        let media_defaults = self.media_tool_defaults(None).await?;
-        build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
-            &self.inner.storage,
-            &agent,
-            &execution,
-            &message,
-            &context_config,
-            &execution.execution_root,
-            self.agent_home().as_path(),
-            &identity,
-            loaded_agents_md,
-            loaded_agent_memory,
-            &skills,
-            &prompt_tools,
-            apply_patch_surface,
-            continuation.as_ref(),
-            default_external_ingress.as_ref(),
-        )
-        .map(|prompt| prompt.with_media_tool_defaults(&media_defaults, &prompt_tools))
+        self.prepare_loaded_context_prompt(&message, continuation.as_ref(), None, false)
+            .await
     }
 
     pub(super) async fn build_subagent_prompt_for_workspace(
@@ -685,6 +641,7 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
     pub(super) async fn provider_tool_selection(
         &self,
     ) -> Result<(

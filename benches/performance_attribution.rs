@@ -38,9 +38,9 @@ impl Fixture {
             root.path().join("runtime.lock"),
         )?;
         let storage = AppStorage::new_for_agent(root.path(), AGENT, db.clone())?;
-        storage.write_agent(&AgentState::new(AGENT))?;
+        storage.write_agent_for_fixture(&AgentState::new(AGENT))?;
         let other = AppStorage::new_for_agent(root.path(), OTHER, db.clone())?;
-        other.write_agent(&AgentState::new(OTHER))?;
+        other.write_agent_for_fixture(&AgentState::new(OTHER))?;
         for (store, agent, count) in [
             (&storage, AGENT, own_completed),
             (&other, OTHER, other_completed),

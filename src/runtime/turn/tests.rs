@@ -198,25 +198,32 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
     );
     owned_message.turn_id = Some(turn_id.into());
     owned_message.message_seq = Some(99);
-    runtime.storage().append_message(&owned_message).unwrap();
+    let owned_message = runtime.enqueue(owned_message).await.unwrap();
 
     let mut colliding_message = owned_message.clone();
     colliding_message.id = "message-collision".into();
     colliding_message.turn_id = Some("turn-other".into());
     colliding_message.message_seq = Some(turn_index);
-    runtime
-        .storage()
-        .append_message(&colliding_message)
-        .unwrap();
 
     let mut missing_turn_message = owned_message.clone();
     missing_turn_message.id = "message-missing-turn".into();
     missing_turn_message.turn_id = None;
     missing_turn_message.message_seq = Some(turn_index);
-    runtime
-        .storage()
-        .append_message(&missing_turn_message)
+    for message in [colliding_message, missing_turn_message] {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let prepared = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            message.created_at,
+            message,
+            Vec::new(),
+        )
         .unwrap();
+        mutation
+            .commit_prepared_evidence(prepared, None)
+            .await
+            .unwrap();
+    }
 
     let owned_tool = crate::types::ToolExecutionRecord {
         id: "tool-owned".into(),
@@ -236,18 +243,26 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
         invocation_surface: None,
     };
     runtime
-        .storage()
-        .append_tool_execution(&owned_tool)
+        .persist_tool_execution_evidence(&owned_tool)
+        .await
         .unwrap();
     let mut colliding_tool = owned_tool.clone();
     colliding_tool.id = "tool-collision".into();
     colliding_tool.turn_index = turn_index;
     colliding_tool.turn_id = Some("turn-other".into());
     runtime
-        .storage()
-        .append_tool_execution(&colliding_tool)
+        .persist_tool_execution_evidence(&colliding_tool)
+        .await
         .unwrap();
 
+    let owned_work = runtime
+        .create_work_item("owned completion".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let other_work = runtime
+        .create_work_item("colliding completion".into(), None, None, Vec::new())
+        .await
+        .unwrap();
     let mut owned_brief = crate::types::BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -258,14 +273,25 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
     owned_brief.id = "brief-owned".into();
     owned_brief.turn_index = Some(99);
     owned_brief.turn_id = Some(turn_id.into());
-    owned_brief.work_item_id = Some("work-owned".into());
-    runtime.storage().append_brief(&owned_brief).unwrap();
+    owned_brief.work_item_id = Some(owned_work.id.clone());
+    runtime.persist_brief(&owned_brief).await.unwrap();
     let mut colliding_brief = owned_brief.clone();
     colliding_brief.id = "brief-collision".into();
     colliding_brief.turn_index = Some(turn_index);
     colliding_brief.turn_id = Some("turn-other".into());
-    colliding_brief.work_item_id = Some("work-other".into());
-    runtime.storage().append_brief(&colliding_brief).unwrap();
+    colliding_brief.work_item_id = Some(other_work.id.clone());
+    runtime.persist_brief(&colliding_brief).await.unwrap();
+
+    // This assembler fixture has no scheduler dispatch. Acquire the exact
+    // Turn's Wait relation through the named owner preparation seam.
+    {
+        let mut request = crate::runtime::resident_work::WorkCaptureRequest::current();
+        request.include_live = false;
+        request.nonopen_limit = 0;
+        request.required_turn_ids.insert(turn_id.into());
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        mutation.prepare_owner_work_request(&request).await.unwrap();
+    }
 
     runtime
         .persist_turn_record(&TurnTerminalRecord {
@@ -295,7 +321,7 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
     );
     assert_eq!(record.tool_execution_ids, vec![owned_tool.id]);
     assert_eq!(record.produced_brief_ids, vec![owned_brief.id]);
-    assert_eq!(record.completed_work_item_ids, vec!["work-owned"]);
+    assert_eq!(record.completed_work_item_ids, vec![owned_work.id]);
 }
 
 #[test]
@@ -358,6 +384,105 @@ fn turn_record_identity_is_immutable_after_first_persist() {
     );
 }
 
+// Keep the source's first write, actual assignment and owner publication on
+// the production seams; this lower-level assembler test does not claim a run.
+fn prepare_replay_assembler_source<'a>(
+    runtime: &'a RuntimeHandle,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = (
+                    crate::types::WorkItemRecord,
+                    MessageEnvelope,
+                    crate::types::TurnRecord,
+                ),
+            > + Send
+            + 'a,
+    >,
+> {
+    Box::pin(async move {
+        use crate::runtime_db::prepared_input_evidence::PreparedInputEvidence;
+        let work = runtime
+            .create_work_item("replay source ownership".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let mut source_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "resume after interrupted claim".into(),
+            },
+        );
+        source_message.id = "message-replay-source".into();
+        source_message.turn_id = Some("turn-replay-source".into());
+        {
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            let prepared = PreparedInputEvidence::message(
+                mutation.input_evidence_scope(),
+                crate::ids::audit_event_id(),
+                source_message.created_at,
+                source_message.clone(),
+                Vec::new(),
+            )
+            .unwrap();
+            mutation
+                .commit_prepared_evidence(prepared, None)
+                .await
+                .unwrap();
+        }
+        let source_message = runtime
+            .storage()
+            .read_message_by_id(&source_message.id)
+            .unwrap()
+            .unwrap();
+        assert!(source_message.message_seq.is_some_and(|seq| seq > 0));
+        let mut source_turn = crate::types::TurnRecord::new("default", "turn-replay-source", 4);
+        source_turn.current_work_item_id = Some(work.id.clone());
+        source_turn
+            .input_message_ids
+            .push(source_message.id.clone());
+        source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &source_message,
+        ));
+        source_turn.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: TurnTerminalKind::Aborted,
+            reason: Some("runtime_restart".into()),
+            no_brief_reason: None,
+            completed_at: Utc::now(),
+            duration_ms: 10,
+        });
+        {
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            let prepared = PreparedInputEvidence::turn(
+                mutation.input_evidence_scope(),
+                crate::ids::audit_event_id(),
+                source_turn.created_at,
+                source_turn,
+            )
+            .unwrap();
+            mutation
+                .commit_prepared_evidence(prepared, None)
+                .await
+                .unwrap();
+            mutation.state.current_work_item_id = Some(work.id.clone());
+            mutation.state.turn_index = 4;
+            mutation.persist_state(runtime.storage()).await.unwrap();
+        }
+        let source_turn = runtime
+            .storage()
+            .read_turn_by_id("turn-replay-source")
+            .unwrap()
+            .unwrap();
+        (work, source_message, source_turn)
+    })
+}
+
 #[tokio::test]
 async fn replay_persists_a_new_turn_with_source_provenance() {
     let dir = tempfile::tempdir().unwrap();
@@ -372,55 +497,27 @@ async fn replay_persists_a_new_turn_with_source_provenance() {
         crate::runtime::tests::support::context_config(),
     )
     .unwrap();
-    let mut source_message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "resume after interrupted claim".into(),
-        },
+    let (work, source_message, source_turn) = prepare_replay_assembler_source(&runtime).await;
+    runtime
+        .begin_interactive_turn(Some(&source_message), None, None)
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    let replay_turn_id = state.current_turn_id.clone().unwrap();
+    assert_ne!(replay_turn_id, source_turn.turn_id);
+    assert_eq!(state.turn_index, 5);
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .unwrap()
+            .source_message_id,
+        source_message.id
     );
-    source_message.id = "message-replay-source".into();
-    source_message.turn_id = Some("turn-replay-source".into());
-    runtime.storage().append_message(&source_message).unwrap();
-
-    let mut source_turn = crate::types::TurnRecord::new("default", "turn-replay-source", 4);
-    source_turn.current_work_item_id = Some("work-source".into());
-    source_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
-        &source_message,
-    ));
-    source_turn.terminal = Some(crate::types::TurnTerminalSummary {
-        kind: TurnTerminalKind::Aborted,
-        reason: Some("runtime_restart".into()),
-        no_brief_reason: None,
-        completed_at: Utc::now(),
-        duration_ms: 10,
-    });
-    runtime.storage().append_turn(&source_turn).unwrap();
-
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.current_turn_id = Some("turn-replay-attempt".into());
-        guard.state.current_turn_work_item_id = Some("work-source".into());
-        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
-            activation_id: Some("activation-replay".into()),
-            admission_provenance: None,
-            source_message_id: source_message.id.clone(),
-            turn_id: "turn-replay-attempt".into(),
-            owner: None,
-            work_item_id: Some("work-source".into()),
-            claimed_work_revision: Some(1),
-        });
-    }
 
     runtime
         .persist_turn_record(&TurnTerminalRecord {
-            turn_id: "turn-replay-attempt".into(),
+            turn_id: replay_turn_id.clone(),
             turn_index: 5,
             kind: TurnTerminalKind::Completed,
             reason: None,
@@ -443,11 +540,14 @@ async fn replay_persists_a_new_turn_with_source_provenance() {
     );
     let replay = runtime
         .storage()
-        .read_turn_by_id("turn-replay-attempt")
+        .read_turn_by_id(&replay_turn_id)
         .unwrap()
         .expect("replay attempt turn");
-    assert_eq!(replay.turn_id, "turn-replay-attempt");
-    assert_eq!(replay.current_work_item_id.as_deref(), Some("work-source"));
+    assert_eq!(replay.turn_id, replay_turn_id);
+    assert_eq!(
+        replay.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
     assert_eq!(
         replay
             .trigger

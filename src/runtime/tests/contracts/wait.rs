@@ -84,17 +84,30 @@ async fn persist_unqueued_terminal_result(
         .await
         .unwrap();
     // Model the durable result before queue admission, including its obligation.
+    let message = harness
+        .runtime()
+        .storage()
+        .read_message_by_id(&message.id)
+        .unwrap()
+        .expect("Task writer committed the canonical result Message");
     harness
         .runtime()
-        .inner
-        .runtime_db
-        .task_result_settlements()
-        .ensure_pending(task, message, harness.now())
+        .apply_task_result_operation((&message.id, harness.now()), || {
+            crate::runtime_db::transitions::TaskResultOperation::EnsurePending {
+                task_id: task.id.clone(),
+                message: Box::new(message.clone()),
+                at: harness.now(),
+            }
+        })
+        .await
         .unwrap()
+        .record()
+        .unwrap()
+        .as_ref()
         .expect("terminal fixture has a result obligation");
 }
 
-fn persist_open_work_execution(
+async fn persist_open_work_execution(
     harness: &LifecycleHarness,
     work_item: &WorkItemRecord,
     attempt_id: &str,
@@ -157,12 +170,7 @@ fn persist_open_work_execution(
             terminal_at: None,
         },
     );
-    harness
-        .runtime()
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_contract_execution(harness, execution, true).await;
 }
 
 async fn persist_waiting_work_execution(
@@ -194,12 +202,219 @@ async fn persist_waiting_work_execution(
             },
         },
     );
-    harness
-        .runtime()
-        .inner
-        .runtime_db
-        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
-        .unwrap();
+    publish_contract_execution(harness, execution, false).await;
+}
+
+// Current-schema protocol fixtures are actual original-owner writes. Open
+// attempts also need a real source/started Turn, not fabricated preallocation.
+fn publish_contract_execution(
+    harness: &LifecycleHarness,
+    execution: crate::domain::execution_protocol::ExecutionProtocolState,
+    with_started_sources: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    Box::pin(async move {
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::{
+                execution_protocol_repository, AgentStateMutation, PostCommitEffects,
+                TransitionCommit,
+            },
+        };
+        let runtime = harness.runtime();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let before = mutation.state.clone();
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let previous =
+                        execution_protocol_repository::load_state_unchecked_tx(tx, "default")?;
+                    let mut final_execution = previous.clone();
+                    let mut state = before.clone();
+                    let mut messages = Vec::new();
+                    let mut turns = Vec::new();
+                    if with_started_sources {
+                        for attempt in execution.attempts.values() {
+                            let mut source = MessageEnvelope::new(
+                                "default",
+                                MessageKind::InternalFollowup,
+                                MessageOrigin::System {
+                                    subsystem: "contract_work_continuation".into(),
+                                },
+                                AuthorityClass::RuntimeInstruction,
+                                Priority::Normal,
+                                MessageBody::Text {
+                                    text: "already-started contract work".into(),
+                                },
+                            )
+                            .with_admission(
+                                MessageDeliverySurface::RuntimeSystem,
+                                AdmissionContext::RuntimeOwned,
+                            );
+                            source.id = attempt.source_message_id.clone().expect("fixture source");
+                            source.work_item_id = match &attempt.binding {
+                                crate::domain::execution_protocol::ExecutionBinding::WorkItem {
+                                    work_item_id,
+                                } => Some(work_item_id.clone()),
+                                _ => None,
+                            };
+                            source.turn_id = attempt.turn_id.clone();
+                            source.created_at = harness.now();
+                            let source = append_message_tx(tx, &source)?.0;
+                            state.turn_index += 1;
+                            let mut turn = crate::types::TurnRecord::new(
+                                "default",
+                                attempt.turn_id.clone().expect("fixture Turn"),
+                                state.turn_index,
+                            );
+                            turn.owner = source.work_item_id.as_ref().map(|id| {
+                                crate::types::TurnOwner::WorkItem {
+                                    work_item_id: id.clone(),
+                                }
+                            });
+                            turn.current_work_item_id = source.work_item_id.clone();
+                            turn.trigger =
+                                Some(crate::types::TurnTriggerSummary::from_message(&source));
+                            turn.input_message_ids = vec![source.id.clone()];
+                            upsert_turn_record_tx(tx, &turn)?;
+                            turns.push(
+                                committed_turn_record_tx(tx, "default", &turn.turn_id)?.record,
+                            );
+                            messages.push(source);
+                        }
+                    }
+                    final_execution
+                        .work_items
+                        .extend(execution.work_items.clone());
+                    final_execution.attempts.extend(execution.attempts.clone());
+                    final_execution.outcomes.extend(execution.outcomes.clone());
+                    execution_protocol_repository::persist_repaired_state_tx(
+                        tx,
+                        &previous,
+                        &final_execution,
+                    )?;
+                    let final_execution =
+                        execution_protocol_repository::load_state_tx(tx, "default")?;
+                    let mut facts = messages
+                        .iter()
+                        .cloned()
+                        .map(Fact::Message)
+                        .chain(turns.iter().cloned().map(Fact::Turn))
+                        .collect::<Vec<_>>();
+                    facts.extend(
+                        execution
+                            .attempts
+                            .keys()
+                            .map(|id| Fact::Attempt(final_execution.attempts[id].clone())),
+                    );
+                    facts.extend(execution.work_items.keys().map(|id| Fact::WorkExecution {
+                        work_item_id: id.clone(),
+                        record: final_execution.work_items[id].clone(),
+                    }));
+                    let count: i64 = tx.query_row(
+                        "SELECT COUNT(*) FROM messages WHERE agent_id='default'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    state.total_message_count = usize::try_from(count)?;
+                    upsert_agent_state_tx(tx, &state)?;
+                    let input_evidence_delta =
+                        register_committed_input_evidence_tx(tx, scope, &facts)?;
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: Box::new(PostCommitEffects {
+                            agent_state: Some(AgentStateMutation {
+                                expected: Some(Box::new(before.clone())),
+                                record: Box::new(state),
+                            }),
+                            messages,
+                            turns,
+                            execution_protocol: Some(final_execution),
+                            input_evidence_delta,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+    })
+}
+
+fn publish_original_reply<'a>(
+    harness: &'a LifecycleHarness,
+    reply: &'a MessageEnvelope,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = MessageEnvelope> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::{AgentStateMutation, PostCommitEffects, TransitionCommit},
+        };
+        let runtime = harness.runtime();
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let before = mutation.state.clone();
+        let mut stored = None;
+        mutation
+            .commit_transition(crate::ids::audit_event_id(), |scope| {
+                runtime.inner.runtime_db.transaction(|tx| {
+                    let reply = append_message_tx(tx, reply)?.0;
+                    let mut state = before.clone();
+                    state.turn_index += 1;
+                    state.total_message_count += 1;
+                    let mut turn = crate::types::TurnRecord::new(
+                        "default",
+                        reply.turn_id.clone().expect("original reply Turn"),
+                        state.turn_index,
+                    );
+                    turn.owner = Some(crate::types::TurnOwner::AgentLifecycle {
+                        agent_id: "default".into(),
+                    });
+                    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&reply));
+                    turn.input_message_ids = vec![reply.id.clone()];
+                    turn.terminal = Some(crate::types::TurnTerminalSummary {
+                        kind: crate::types::TurnTerminalKind::Completed,
+                        reason: None,
+                        no_brief_reason: None,
+                        completed_at: harness.now(),
+                        duration_ms: 1,
+                    });
+                    upsert_turn_record_tx(tx, &turn)?;
+                    let turn = committed_turn_record_tx(tx, "default", &turn.turn_id)?.record;
+                    upsert_agent_state_tx(tx, &state)?;
+                    let input_evidence_delta = register_committed_input_evidence_tx(
+                        tx,
+                        scope,
+                        &[Fact::Message(reply.clone()), Fact::Turn(turn.clone())],
+                    )?;
+                    stored = Some(reply.clone());
+                    Ok(TransitionCommit {
+                        applied: true,
+                        effects: Box::new(PostCommitEffects {
+                            agent_state: Some(AgentStateMutation {
+                                expected: Some(Box::new(before.clone())),
+                                record: Box::new(state),
+                            }),
+                            messages: vec![reply],
+                            turns: vec![turn],
+                            input_evidence_delta,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    })
+                })
+            })
+            .await
+            .unwrap();
+        stored.expect("original reply committed")
+    })
 }
 
 #[tokio::test]
@@ -270,7 +485,7 @@ async fn wait_post_commit_fault_recovers_active_wait_after_restart() {
             .unwrap();
         harness.arm_fault(fault);
 
-        let registered = harness
+        let result = harness
             .runtime()
             .register_wait_for(
                 "default",
@@ -280,17 +495,25 @@ async fn wait_post_commit_fault_recovers_active_wait_after_restart() {
                 "waiting for lifecycle recovery".into(),
                 None,
             )
-            .await
-            .unwrap();
-
-        harness.assert_post_commit_warning(expected_effect);
+            .await;
+        let condition = harness
+            .assert_post_commit_result(result, fault, expected_effect)
+            .map(|registered| registered.condition)
+            .unwrap_or_else(|| {
+                harness
+                    .snapshot()
+                    .wait_conditions
+                    .into_iter()
+                    .find(|wait| wait.work_item_id.as_deref() == Some(work_item.id.as_str()))
+                    .unwrap()
+            });
         assert_eq!(
             harness
                 .runtime()
                 .storage()
                 .active_wait_conditions_for_work_item("default", &work_item.id)
                 .unwrap(),
-            vec![registered.condition.clone()]
+            vec![condition.clone()]
         );
         let committed = harness.snapshot();
 
@@ -303,7 +526,7 @@ async fn wait_post_commit_fault_recovers_active_wait_after_restart() {
                 .storage()
                 .active_wait_conditions_for_work_item("default", &work_item.id)
                 .unwrap(),
-            vec![registered.condition]
+            vec![condition]
         );
         assert_eq!(
             harness
@@ -402,7 +625,7 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
         let result_message = late_task_result_message("task-late-atomic", &work_item.id);
         let terminal = terminal_task_with_result(&running, &result_message, harness.now());
         persist_unqueued_terminal_result(&harness, &terminal, &result_message).await;
-        persist_open_work_execution(&harness, &work_item, "attempt-late-atomic");
+        persist_open_work_execution(&harness, &work_item, "attempt-late-atomic").await;
         let before = harness.snapshot();
         let execution_before = harness
             .runtime()
@@ -1400,7 +1623,7 @@ async fn wait_resolution_and_execution_admission_are_atomic_across_pre_commit_fa
             .unwrap();
         assert_eq!(triggered.status, WaitConditionStatus::Triggered);
         let before_claim = harness.snapshot();
-        harness.arm_fault(fault);
+        harness.runtime().inject_next_claim_transition_fault(fault);
 
         let error = match super::super::super::scheduler_executor::SchedulerDecisionExecutor::new(
             harness.runtime(),
@@ -1408,12 +1631,21 @@ async fn wait_resolution_and_execution_admission_are_atomic_across_pre_commit_fa
         .poll()
         .await
         {
-            Ok(_) => panic!("faulted claim should fail before commit"),
+            Ok(_) => panic!(
+                "faulted claim should fail before commit: {:?}",
+                harness
+                    .runtime()
+                    .runtime_db()
+                    .audit_events()
+                    .recent(Some("default"), 6)
+                    .unwrap()
+            ),
             Err(error) => error,
         };
 
         assert_injected_transition_fault(&error);
         let after_fault = harness.snapshot();
+        assert!(format!("{error:#}").contains(&format!("at {fault:?}")));
         assert_eq!(after_fault.agent_state, before_claim.agent_state);
         assert_eq!(after_fault.work_items, before_claim.work_items);
         assert_eq!(
@@ -1499,7 +1731,11 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .await
         .unwrap();
     let running = running_task("task-replay", &work.id, harness.now());
-    harness.runtime().storage().append_task(&running).unwrap();
+    harness
+        .runtime()
+        .persist_task_transition(&running, "replay_running_fixture")
+        .await
+        .unwrap();
     let registration = harness
         .runtime()
         .register_wait_for(
@@ -1519,8 +1755,19 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
     );
     message.task_id = Some("task-replay".into());
     message.work_item_id = Some(work.id.clone());
+    persist_completed_task_parent_fixture(
+        harness.runtime(),
+        "turn-late-task-parent",
+        Some(&work.id),
+    )
+    .await
+    .unwrap();
     let terminal = terminal_task_with_result(&running, &message, harness.now());
-    harness.runtime().storage().append_task(&terminal).unwrap();
+    harness
+        .runtime()
+        .persist_task_transition(&terminal, "replay_already_terminal_fixture")
+        .await
+        .unwrap();
     let before = harness
         .runtime()
         .inner
@@ -1563,9 +1810,14 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         replayed.queue_entries[0].status,
         repaired.queue_entries[0].status
     );
+    let observed_work = harness
+        .runtime()
+        .capture_work_read(&crate::runtime::work_reads::live_work_request())
+        .await
+        .unwrap();
     let wait_transition = harness
         .runtime()
-        .wait_resolution_transition_for_message(&message)
+        .wait_resolution_transition_for_message(&message, &observed_work.work)
         .unwrap()
         .expect("replayed TaskResult should plan exact wait settlement");
     assert_eq!(wait_transition.record.status, WaitConditionStatus::Resolved);
@@ -1657,7 +1909,7 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
         });
         reply.metadata =
             Some(serde_json::json!({"agent_message_delivery": {"delivery_id":"reply-delivery"}}));
-        harness.runtime().storage().append_message(&reply).unwrap();
+        let reply = publish_original_reply(&harness, &reply).await;
         let task_owner = if different_owner {
             harness
                 .runtime()
@@ -1687,15 +1939,29 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
             .persist_task_transition_with_message(&terminal, "task_status_updated", &signal)
             .await
             .unwrap();
+        let signal = harness
+            .snapshot()
+            .messages
+            .into_iter()
+            .find(|message| message.id == signal.id)
+            .expect("Task writer committed the canonical result Message");
+        assert!(signal.message_seq.is_some());
         harness
             .runtime()
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .ensure_pending(&terminal, &signal, harness.now())
+            .apply_task_result_operation((&signal.id, harness.now()), || {
+                crate::runtime_db::transitions::TaskResultOperation::EnsurePending {
+                    task_id: terminal.id.clone(),
+                    message: Box::new(signal.clone()),
+                    at: harness.now(),
+                }
+            })
+            .await
             .unwrap()
+            .record()
+            .unwrap()
+            .as_ref()
             .expect("reply settlement exists");
-        persist_open_work_execution(&harness, &work, "attempt-before-reply-wait");
+        persist_open_work_execution(&harness, &work, "attempt-before-reply-wait").await;
         let outcome = harness
             .runtime()
             .register_wait_for_outcome(

@@ -1,6 +1,8 @@
 use super::super::*;
 use super::compaction::error_status;
-use super::parse::{parse_openai_response_with_transport_state, read_openai_streaming_response};
+use super::parse::{
+    parse_openai_response_with_transport_state, read_openai_streaming_response_with_material,
+};
 
 pub(in super::super) async fn send_openai_responses_request(
     client: &Client,
@@ -13,9 +15,26 @@ pub(in super::super) async fn send_openai_responses_request(
     model_ref: &str,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
+    send_openai_responses_request_with_material(
+        client, url, body, headers, trace, agent_id, provider, model_ref, dispatch_guard, &Default::default(),
+    ).await
+}
+
+pub(in super::super) async fn send_openai_responses_request_with_material(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
-        let request_trace = trace.and_then(|trace| {
-            trace.begin_request(
+        let request_trace = trace.map(|trace| {
+            trace.begin_request_with_material(
                 agent_id,
                 provider,
                 Some(model_ref),
@@ -23,8 +42,9 @@ pub(in super::super) async fn send_openai_responses_request(
                 "responses",
                 &headers,
                 &body,
+                material,
             )
-        });
+        }).transpose()?.flatten();
         let mut request = client.post(&url).header("content-type", "application/json");
         for (name, value) in headers {
             request = request.header(name, value);
@@ -32,7 +52,7 @@ pub(in super::super) async fn send_openai_responses_request(
 
         let request_started_at = chrono::Utc::now();
         let response = send_openai_request(
-            request.json(&body),
+            request.body(material.json_bytes(&body)?),
             "OpenAI-style request failed",
             "request_send",
             provider,
@@ -54,7 +74,7 @@ pub(in super::super) async fn send_openai_responses_request(
         if !response.status().is_success() {
             let status = response.status();
             let retry_after = parse_retry_after(response.headers());
-            let body = read_error_response_body(response, request_trace.as_ref()).await;
+            let body = read_error_response_body(response, request_trace.as_ref(), material).await?;
             return Err(crate::provider::retry::set_provider_transport_streaming(
                 classify_status_error_with_trace(
                     "OpenAI-style request failed",
@@ -71,9 +91,13 @@ pub(in super::super) async fn send_openai_responses_request(
             ));
         }
 
-        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        let body = match tokio::time::timeout(response_body_timeout(), material.response_text(response)).await {
             Ok(Ok(text)) => text,
             Ok(Err(error)) => {
+                let error = match error.downcast::<reqwest::Error>() {
+                    Ok(error) => error,
+                    Err(error) => return Err(material.hold_error(error)),
+                };
                 return Err(classify_reqwest_transport_error_with_trace(
                     "OpenAI-style response body failed",
                     "response_body",
@@ -98,6 +122,7 @@ pub(in super::super) async fn send_openai_responses_request(
         };
         let response_body_completed_at = chrono::Utc::now();
         trace_response_body(request_trace.as_ref(), &body);
+        material.read(|| crate::diagnostics::resource_io::admit_json_payload(&body))?;
         let parsed: Value = serde_json::from_str(&body)
             .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
         let parsed = parse_openai_response_with_transport_state(parsed)?;
@@ -139,7 +164,9 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
     {
         return Err(error);
     }
-    let Some((fallback_body, fallback_provider_input)) = plan.fallback_replay.clone() else {
+    let Some((fallback_body, fallback_provider_input)) =
+        plan.material.cloned(&plan.fallback_replay)?
+    else {
         return Err(error).with_context(|| {
             format!(
                 "OpenAI Responses continuation failed and Holon refused provider-window replay because it would lose {}",
@@ -157,7 +184,7 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
         continuation.fallback_reason = Some("previous_response_id_rejected".into());
         continuation.server_side_context_may_be_lost = None;
     }
-    let mut stable_shape = fallback_body.clone();
+    let mut stable_shape = plan.material.cloned(&fallback_body)?;
     if let Some(object) = stable_shape.as_object_mut() {
         object.remove("input");
         object.remove("previous_response_id");
@@ -168,7 +195,7 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
         final_provider_input,
         diagnostics,
     ));
-    send_openai_responses_request(
+    send_openai_responses_request_with_material(
         client,
         url,
         fallback_body,
@@ -178,6 +205,7 @@ pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
         provider,
         model_ref,
         dispatch_guard,
+        &plan.material,
     )
     .await
 }
@@ -193,9 +221,26 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
     model_ref: &str,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
 ) -> Result<ParsedOpenAiResponse> {
+    send_openai_responses_streaming_request_with_material(
+        client, url, &body, headers, trace, agent_id, provider, model_ref, dispatch_guard, &Default::default(),
+    ).await
+}
+
+pub(in super::super) async fn send_openai_responses_streaming_request_with_material(
+    client: &Client,
+    url: String,
+    body: &Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
-        let request_trace = trace.and_then(|trace| {
-            trace.begin_request(
+        let request_trace = trace.map(|trace| {
+            trace.begin_request_with_material(
                 agent_id,
                 provider,
                 Some(model_ref),
@@ -203,8 +248,9 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
                 "responses_streaming",
                 &headers,
                 &body,
+                material,
             )
-        });
+        }).transpose()?.flatten();
         let mut request = client
             .post(&url)
             .header("content-type", "application/json")
@@ -224,7 +270,7 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
             RequestDeadline::TextStream
         };
         let response = send_openai_request(
-            request.json(&body),
+            request.body(material.json_bytes(body)?),
             "OpenAI-style streaming request failed",
             "streaming_request_send",
             provider,
@@ -246,7 +292,7 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         if !response.status().is_success() {
             let status = response.status();
             let retry_after = parse_retry_after(response.headers());
-            let body = read_error_response_body(response, request_trace.as_ref()).await;
+            let body = read_error_response_body(response, request_trace.as_ref(), material).await?;
             return Err(crate::provider::retry::set_provider_transport_streaming(
                 classify_status_error_with_trace(
                     if provider == "openai-codex" {
@@ -270,10 +316,13 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         // Allow the bounded image payload in both output-item and terminal events.
         let image_stream_limit = generates_image.then_some(96 * 1024 * 1024);
         let terminal_response =
-            read_openai_streaming_response(response, request_trace.as_ref(), image_stream_limit)
+            read_openai_streaming_response_with_material(response, request_trace.as_ref(), image_stream_limit, material)
                 .await?;
         let response_body_completed_at = chrono::Utc::now();
-        let parsed = parse_openai_response_with_transport_state(terminal_response)?;
+        let parsed = material.read(|| {
+            crate::diagnostics::resource_io::admit_serialized_value(&terminal_response)?;
+            parse_openai_response_with_transport_state(terminal_response)
+        })?;
         let parse_completed_at = chrono::Utc::now();
         Ok(parsed
             .with_provider_request_id(provider_request_id)

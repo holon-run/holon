@@ -17,6 +17,9 @@ use crate::runtime_db::connection::{
     ensure_runtime_db_sidecars_are_consistent, is_retryable_transaction_error,
     next_runtime_db_retry_delay, open_connection, run_transaction_on_connection,
 };
+use crate::runtime_db::persistence::{
+    mark_persistence_failure, PersistenceCertainty, PersistenceFailurePhase,
+};
 use crate::runtime_db::{
     RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbProtectionStatus,
     RUNTIME_DB_APPEND_RETRY_MAX_DELAY, RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY,
@@ -272,6 +275,50 @@ impl RuntimeDbWriter {
         self.state.open_connection()
     }
 
+    /// A short canonical read outside a transaction. The callback must neither
+    /// control transactions nor reenter the writer.
+    pub(crate) fn read_committed<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let _turn = self.state.queue.wait_turn()?;
+        let connection = self
+            .state
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        self.state.ensure_protected()?;
+        anyhow::ensure!(
+            connection.is_autocommit(),
+            "runtime db committed read requires an idle writer connection"
+        );
+        f(&connection)
+    }
+
+    /// A short read in its own deferred transaction. The callback must neither
+    /// write, control transactions, nor reenter this writer.
+    pub(crate) fn read_deferred<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let _turn = self.state.queue.wait_turn()?;
+        let connection = self
+            .state
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        self.state.ensure_protected()?;
+        anyhow::ensure!(
+            connection.is_autocommit(),
+            "runtime db deferred read requires an idle writer connection"
+        );
+        let result = (|| {
+            let tx =
+                Transaction::new_unchecked(&connection, rusqlite::TransactionBehavior::Deferred)?;
+            let value = f(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })();
+        self.state.finish_transaction_attempt(&connection, result)
+    }
+
     pub(crate) fn protection_status(&self) -> RuntimeDbProtectionStatus {
         self.state.protection_status()
     }
@@ -461,28 +508,29 @@ impl RuntimeDbWriterState {
         mut f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let queue_wait_started_at = Instant::now();
-        let _turn = self.queue.wait_turn()?;
+        let _turn = self.queue.wait_turn().map_err(before_begin_failure)?;
         let queue_wait = queue_wait_started_at.elapsed();
         let mutex_wait_started_at = Instant::now();
         let connection = self
             .connection
             .lock()
-            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+            .map_err(|_| before_begin_failure(anyhow!("runtime db writer mutex poisoned")))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
         let started_at = Instant::now();
         let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
         let mut retry_count = 0u32;
         let mut next_warn_at = RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
         loop {
-            self.ensure_protected()?;
-            match run_transaction_on_connection(
+            self.ensure_protected().map_err(before_begin_failure)?;
+            let result = run_transaction_on_connection(
                 &connection,
                 &self.path,
                 context,
                 queue_wait,
                 mutex_wait,
                 |tx| f(tx),
-            ) {
+            );
+            match self.finish_transaction_attempt(&connection, result) {
                 Ok(value) => return Ok(value),
                 Err(error) if is_retryable_transaction_error(&error) => {
                     retry_count += 1;
@@ -524,24 +572,57 @@ impl RuntimeDbWriterState {
 
     fn append_wait_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         let queue_wait_started_at = Instant::now();
-        let _turn = self.queue.wait_turn()?;
+        let _turn = self.queue.wait_turn().map_err(before_begin_failure)?;
         let queue_wait = queue_wait_started_at.elapsed();
         let mutex_wait_started_at = Instant::now();
         let connection = self
             .connection
             .lock()
-            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+            .map_err(|_| before_begin_failure(anyhow!("runtime db writer mutex poisoned")))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
-        self.ensure_protected()?;
-        run_transaction_on_connection(
+        self.ensure_protected().map_err(before_begin_failure)?;
+        let result = run_transaction_on_connection(
             &connection,
             &self.path,
             RuntimeDbWriteContext::sync("runtime_db.transaction_once", "unknown"),
             queue_wait,
             mutex_wait,
             f,
-        )
+        );
+        self.finish_transaction_attempt(&connection, result)
     }
+
+    fn finish_transaction_attempt<T>(
+        &self,
+        connection: &Connection,
+        result: Result<T>,
+    ) -> Result<T> {
+        if connection.is_autocommit() {
+            return result;
+        }
+        let incident = self.quarantine(anyhow!(
+            "runtime db writer still has an active transaction after transaction cleanup"
+        ));
+        // Preserve the attempt's original error and certainty while fencing this connection.
+        match result {
+            Err(error) => Err(error),
+            Ok(_) => Err(mark_persistence_failure(
+                incident,
+                PersistenceCertainty::Indeterminate,
+                PersistenceFailurePhase::Commit,
+                None,
+            )),
+        }
+    }
+}
+
+fn before_begin_failure(error: anyhow::Error) -> anyhow::Error {
+    mark_persistence_failure(
+        error,
+        PersistenceCertainty::DefinitelyNotCommitted,
+        PersistenceFailurePhase::BeforeBegin,
+        None,
+    )
 }
 
 impl RuntimeDbWriteQueue {
@@ -611,6 +692,274 @@ fn runtime_db_write_queue_key(path: &Path) -> PathBuf {
     }
 }
 
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::runtime_db::{persistence_certainty, PersistenceFailure};
+
+    #[test]
+    fn committed_read_reuses_writer_connection_and_releases_it_on_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("runtime.sqlite");
+        let connection = open_connection(&path)?;
+        connection.execute_batch(
+            "CREATE TEMP TABLE connection_marker (value INTEGER);
+             INSERT INTO connection_marker VALUES (7);",
+        )?;
+        let writer = RuntimeDbWriter::open_starting(path, connection)?;
+        let clone = writer.clone();
+        for reader in [&writer, &clone] {
+            let value: i64 = reader.read_committed(|connection| {
+                assert!(connection.is_autocommit());
+                Ok(connection
+                    .query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
+            })?;
+            assert_eq!(value, 7);
+        }
+        assert!(writer
+            .read_committed::<()>(|_| anyhow::bail!("read failed"))
+            .is_err());
+        let value: i64 = writer.append_wait(|tx| {
+            Ok(tx.query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
+        })?;
+        assert_eq!(value, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_read_reuses_writer_connection_and_cleans_up_on_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("runtime.sqlite");
+        let connection = open_connection(&path)?;
+        connection.execute_batch(
+            "CREATE TEMP TABLE connection_marker (value INTEGER);
+             INSERT INTO connection_marker VALUES (7);",
+        )?;
+        let writer = RuntimeDbWriter::open_starting(path, connection)?;
+        let clone = writer.clone();
+        for reader in [&writer, &clone] {
+            let value: i64 = reader.read_deferred(|tx| {
+                assert!(!tx.is_autocommit());
+                Ok(tx.query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
+            })?;
+            assert_eq!(value, 7);
+        }
+        let error = writer
+            .read_deferred::<()>(|_| anyhow::bail!("deferred read failed"))
+            .expect_err("callback error must propagate");
+        assert_eq!(error.to_string(), "deferred read failed");
+        writer.read_committed(|connection| {
+            assert!(connection.is_autocommit());
+            Ok(())
+        })?;
+        let value: i64 = writer.append_wait(|tx| {
+            Ok(tx.query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
+        })?;
+        assert_eq!(value, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_read_keeps_its_snapshot_without_blocking_an_independent_writer() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("runtime.sqlite");
+        let connection = open_connection(&path)?;
+        crate::runtime_db::connection::configure_persistent_database(&connection)?;
+        connection.execute_batch(
+            "CREATE TABLE values_seen (value INTEGER);
+             INSERT INTO values_seen VALUES (1);",
+        )?;
+        let writer = RuntimeDbWriter::open(path, connection)?;
+        let other = writer.open_connection()?;
+        other.busy_timeout(Duration::from_millis(100))?;
+        writer.read_deferred(|tx| {
+            let before: i64 =
+                tx.query_row("SELECT COUNT(*) FROM values_seen", [], |row| row.get(0))?;
+            assert_eq!(before, 1);
+            other.execute("INSERT INTO values_seen VALUES (2)", [])?;
+            let after: i64 =
+                tx.query_row("SELECT COUNT(*) FROM values_seen", [], |row| row.get(0))?;
+            assert_eq!(after, before);
+            Ok(())
+        })?;
+        let count: i64 = writer.read_deferred(|tx| {
+            Ok(tx.query_row("SELECT COUNT(*) FROM values_seen", [], |row| row.get(0))?)
+        })?;
+        assert_eq!(count, 2);
+        Ok(())
+    }
+
+    fn writer_with_locked_commit() -> Result<(tempfile::TempDir, RuntimeDbWriter, Connection)> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("runtime.sqlite");
+        let connection = Connection::open(&path)?;
+        connection.busy_timeout(Duration::from_millis(1))?;
+        // A rollback-journal reader allows BEGIN IMMEDIATE and blocks COMMIT.
+        connection.execute_batch("CREATE TABLE test_rows (value INTEGER);")?;
+        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let reader = Connection::open(path)?;
+        reader.execute_batch("BEGIN;")?;
+        let _: u64 = reader.query_row("SELECT count(*) FROM test_rows", [], |row| row.get(0))?;
+        Ok((temp, writer, reader))
+    }
+
+    #[test]
+    fn persistence_sync_commit_busy_is_not_retried() -> Result<()> {
+        let (_temp, writer, reader) = writer_with_locked_commit()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let worker_attempts = Arc::clone(&attempts);
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = writer.append_wait(|tx| {
+                worker_attempts.fetch_add(1, Ordering::SeqCst);
+                tx.execute("INSERT INTO test_rows VALUES (1)", [])?;
+                Ok(())
+            });
+            let _ = completion_tx.send(result);
+        });
+        let completed = completion_rx.recv_timeout(Duration::from_secs(2));
+        // Release the lock even when a regression times out, so the worker can finish.
+        reader.execute_batch("ROLLBACK;")?;
+        worker
+            .join()
+            .map_err(|_| anyhow!("transaction worker panicked"))?;
+        let error = completed
+            .context("an indeterminate COMMIT must return without retrying")?
+            .expect_err("the reader must make COMMIT busy");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            persistence_certainty(&error),
+            Some(PersistenceCertainty::Indeterminate)
+        );
+        assert_eq!(
+            error.downcast_ref::<PersistenceFailure>().unwrap().phase(),
+            PersistenceFailurePhase::Commit
+        );
+        assert!(!is_retryable_transaction_error(&error));
+        Ok(())
+    }
+
+    #[test]
+    fn persistence_background_commit_busy_is_not_retried() -> Result<()> {
+        let (_temp, writer, reader) = writer_with_locked_commit()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let job_attempts = Arc::clone(&attempts);
+        let (completion_tx, completion_rx) = mpsc::channel();
+        writer
+            .append_tx
+            .send(RuntimeDbWriteRequest {
+                context: RuntimeDbWriteContext::background("persistence_test", "test_rows"),
+                job: Box::new(move |tx| {
+                    job_attempts.fetch_add(1, Ordering::SeqCst);
+                    tx.execute("INSERT INTO test_rows VALUES (1)", [])?;
+                    Ok(())
+                }),
+                completion: Some(completion_tx),
+            })
+            .map_err(|_| anyhow!("test writer queue disconnected"))?;
+        let completed = completion_rx.recv_timeout(Duration::from_secs(2));
+        reader.execute_batch("ROLLBACK;")?;
+        writer.flush_background_writes_for_tests()?;
+
+        assert!(completed
+            .context("an indeterminate queued COMMIT must not replay its callback")?
+            .is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn persistence_active_transaction_quarantines_writer_and_preserves_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let writer = RuntimeDbWriter::open_starting(
+            temp.path().join("runtime.sqlite"),
+            Connection::open_in_memory()?,
+        )?;
+        let connection = writer.state.connection.lock().unwrap();
+        connection.execute_batch("BEGIN IMMEDIATE;")?;
+        let original = crate::runtime_db::RuntimeDbRetryableError::new(
+            "test transaction",
+            &writer.state.path,
+            "database is busy",
+        );
+        let error = mark_persistence_failure(
+            original.into(),
+            PersistenceCertainty::Indeterminate,
+            PersistenceFailurePhase::Rollback,
+            Some("injected cleanup failure".into()),
+        );
+        let error = writer
+            .state
+            .finish_transaction_attempt(&connection, Err::<(), _>(error))
+            .expect_err("cleanup failure must remain an error");
+
+        assert_eq!(
+            persistence_certainty(&error),
+            Some(PersistenceCertainty::Indeterminate)
+        );
+        assert!(error
+            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+            .is_some());
+        assert_eq!(
+            writer.protection_status().state,
+            RuntimeDbProtectionState::Quarantined
+        );
+        connection.execute_batch("ROLLBACK;")?;
+        drop(connection);
+
+        let called = Cell::new(false);
+        let error = writer
+            .append_wait_once(|_| {
+                called.set(true);
+                Ok(())
+            })
+            .expect_err("quarantined writer must reject the next transaction");
+        assert!(!called.get());
+        assert_eq!(
+            persistence_certainty(&error),
+            Some(PersistenceCertainty::DefinitelyNotCommitted)
+        );
+        assert_eq!(
+            error.downcast_ref::<PersistenceFailure>().unwrap().phase(),
+            PersistenceFailurePhase::BeforeBegin
+        );
+        assert!(error.downcast_ref::<RuntimeDbProtectionError>().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn persistence_queue_rejection_happens_before_callback() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let writer = RuntimeDbWriter::open_starting(
+            temp.path().join("runtime.sqlite"),
+            Connection::open_in_memory()?,
+        )?;
+        writer.state.queue.state.lock().unwrap().next_ticket = u64::MAX;
+        let called = Cell::new(false);
+        let error = writer
+            .append_wait(|_| {
+                called.set(true);
+                Ok(())
+            })
+            .expect_err("ticket overflow must reject this transaction");
+
+        assert!(!called.get());
+        assert_eq!(
+            persistence_certainty(&error),
+            Some(PersistenceCertainty::DefinitelyNotCommitted)
+        );
+        assert_eq!(
+            error.downcast_ref::<PersistenceFailure>().unwrap().phase(),
+            PersistenceFailurePhase::BeforeBegin
+        );
+        Ok(())
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::fs;
@@ -640,6 +989,18 @@ mod tests {
         let wal_path = sidecar_path(&db_path, "-wal");
 
         fs::remove_file(&wal_path)?;
+        let read_error = writer
+            .read_committed::<()>(|_| panic!("quarantined writer must not read"))
+            .expect_err("deleted-open WAL must quarantine committed reads");
+        assert!(read_error
+            .chain()
+            .any(|source| source.is::<RuntimeDbProtectionError>()));
+        let deferred_error = writer
+            .read_deferred::<()>(|_| panic!("quarantined writer must not begin a read"))
+            .expect_err("deleted-open WAL must quarantine deferred reads");
+        assert!(deferred_error
+            .chain()
+            .any(|source| source.is::<RuntimeDbProtectionError>()));
         let first_error = writer
             .append_wait_once::<()>(|_| panic!("quarantined writer must not begin a transaction"))
             .expect_err("deleted-open WAL must quarantine the writer");

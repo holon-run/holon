@@ -192,7 +192,14 @@ pub async fn install_template(
 
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let url = github_url.clone();
+    let writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     let template_id = tokio::task::spawn_blocking(move || {
+        writer.enter_physical();
+        let _writer = writer;
         crate::agent_template::install_template_from_github(&user_home, &url)
     })
     .await
@@ -223,7 +230,14 @@ pub async fn remove_template(
 
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
     let id = template_id.clone();
+    let writer = state
+        .host
+        .context_resources()
+        .begin_write()
+        .map_err(error_response)?;
     tokio::task::spawn_blocking(move || {
+        writer.enter_physical();
+        let _writer = writer;
         crate::agent_template::remove_user_template(&user_home, &id)
     })
     .await

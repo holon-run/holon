@@ -4,11 +4,38 @@ use super::continuation::*;
 use crate::provider::classify_provider_error;
 use crate::provider::transports::http::DispatchGuardRejected;
 
-#[derive(Debug, Clone)]
-pub(in super::super) struct OpenAiCompactionCandidate {
-    pub(in super::super) items: Vec<Value>,
-    pub(in super::super) retained_tail: Vec<Value>,
+#[cfg(test)]
+#[path = "compaction_material_tests.rs"]
+mod material_tests;
+
+#[derive(Debug)]
+pub(in super::super) struct OpenAiCompactionCandidate<'a> {
+    pub(in super::super) items: &'a [Value],
+    pub(in super::super) retained_tail: &'a [Value],
     pub(in super::super) latest_compaction_index: Option<usize>,
+}
+
+fn admit_tool_call_sets(items: &[Value]) -> Result<()> {
+    // Both boundary and pairing scans own only set entries, never call-id text.
+    let entries = items
+        .iter()
+        .filter(|item| item.get("call_id").and_then(Value::as_str).is_some())
+        .count();
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        u64::try_from(entries)?
+            .checked_mul(256)
+            .ok_or_else(|| anyhow::anyhow!("tool-call set size overflow"))?,
+        entries
+            .checked_mul(2)
+            .ok_or_else(|| anyhow::anyhow!("tool-call set count overflow"))?,
+    )?;
+    Ok(())
+}
+
+fn is_compact_material_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::provider::ProviderTransportError>()
+        .is_none()
 }
 
 pub(in super::super) async fn maybe_compact_openai_provider_window(
@@ -44,7 +71,14 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
     else {
         return Ok(None);
     };
-    let candidate = match openai_provider_window_compaction_candidate(&window) {
+    let source_material = window.material.clone();
+    let material = &source_material;
+    let result = async {
+    material.admit_value(request_shape)?;
+    let candidate = match material.read(|| {
+        admit_tool_call_sets(&window.items)?;
+        Ok(openai_provider_window_compaction_candidate(&window))
+    })? {
         Ok(candidate) => candidate,
         Err(skip_reason) => {
             return Ok(Some(ProviderOpenAiRemoteCompactionDiagnostics {
@@ -83,7 +117,9 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
             None,
         )));
     }
-    let compact_body = build_openai_compact_request_body(request_shape, &candidate.items);
+    material.admit_value(request_shape)?;
+    material.read(|| crate::diagnostics::resource_io::admit_cloned_value(&candidate.items))?;
+    let compact_body = build_openai_compact_request_body(request_shape, candidate.items);
     let compacted = match send_openai_compact_request(
         client,
         compact_url.clone(),
@@ -94,12 +130,16 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
         provider,
         model_ref,
         dispatch_guard,
+        material,
     )
     .await
     {
         Ok(compacted) => compacted,
         Err(error) if error.is::<DispatchGuardRejected>() => return Err(error),
         Err(error) => {
+            if is_compact_material_error(&error) {
+                return Err(material.hold_error(error));
+            }
             if is_non_persisted_compact_item_id_error(&error) {
                 return Ok(Some(ProviderOpenAiRemoteCompactionDiagnostics {
                     status: "invalid_non_persisted_item_id".into(),
@@ -223,23 +263,27 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
                 )),
             }));
         }
+        let mut items = material.cloned_slice(openai_compacted_replay_items(&compacted))?;
+        items.extend(material.cloned_slice(candidate.retained_tail)?);
+        let latest_compaction_index = latest_openai_compaction_index(&items);
+        let request_shape = material.cloned(request_shape)?;
+        let append_match_items = material.cloned(&window.append_match_items)?;
+        admit_openai_window_header(material)?;
         state.next_generation = state.next_generation.saturating_add(1);
         let generation = state.next_generation;
-        let mut items = openai_compacted_replay_items(&compacted);
-        items.extend(candidate.retained_tail.clone());
-        let latest_compaction_index = latest_openai_compaction_index(&items);
         state.windows.insert(
             scope.clone(),
-            OpenAiProviderWindow {
+            Arc::new(OpenAiProviderWindow {
+                material: material.clone(),
                 response_id: None,
-                request_shape: request_shape.clone(),
+                request_shape,
                 items,
-                append_match_items: window.append_match_items,
+                append_match_items,
                 replay_loss_reason: None,
                 latest_compaction_index,
                 latest_input_tokens: 0,
                 generation,
-            },
+            }),
         );
         generation
     };
@@ -261,6 +305,8 @@ pub(in super::super) async fn maybe_compact_openai_provider_window(
         continuation_generation: Some(generation),
         error: None,
     }))
+    }.await;
+    result.map_err(|error| material.hold_error(error))
 }
 
 pub(in super::super) async fn maybe_compact_openai_request_plan(
@@ -296,25 +342,28 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
     if previous.response_id.is_none() {
         return Ok(None);
     }
-
-    let mut compactable_items = previous.items.clone();
-    compactable_items.extend(plan.provider_input.clone());
-    let compactable_window = OpenAiProviderWindow {
-        response_id: None,
-        request_shape: plan.request_shape.clone(),
-        latest_compaction_index: latest_openai_compaction_index(&compactable_items),
-        items: compactable_items,
-        append_match_items: plan.append_match_input.clone(),
-        replay_loss_reason: previous.replay_loss_reason.clone(),
-        latest_input_tokens: previous.latest_input_tokens,
-        generation: previous.generation,
-    };
     let Some(trigger) =
         openai_compaction_trigger_for_request_plan(&previous, plan, compaction_policy)
     else {
         return Ok(None);
     };
-    let candidate = match openai_provider_window_compaction_candidate(&compactable_window) {
+    plan.material
+        .read(|| {
+            crate::diagnostics::resource_io::admit_cloned_value(&scope.as_str())?;
+            Ok(())
+        })
+        .map_err(|error| plan.material.hold_error(error))?;
+    let scope = scope.clone();
+    let source_material = plan.material.clone();
+    let material = &source_material;
+    let result = async {
+    material.admit_value(&plan.request_shape)?;
+    let mut compactable_items = material.cloned(&previous.items)?;
+    compactable_items.extend(material.cloned(&plan.provider_input)?);
+    let candidate = match material.read(|| {
+        admit_tool_call_sets(&compactable_items)?;
+        Ok(openai_compaction_candidate(&compactable_items))
+    })? {
         Ok(candidate) => candidate,
         Err(skip_reason) => {
             return Ok(Some(ProviderOpenAiRemoteCompactionDiagnostics {
@@ -322,10 +371,10 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
                 trigger_reason: Some(trigger.reason.into()),
                 endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                 http_status: None,
-                input_items: Some(compactable_window.items.len()),
+                input_items: Some(compactable_items.len()),
                 output_items: None,
                 compaction_items: None,
-                latest_compaction_index: compactable_window.latest_compaction_index,
+                latest_compaction_index: latest_openai_compaction_index(&compactable_items),
                 estimated_input_tokens: trigger.estimated_input_tokens,
                 trigger_input_tokens: Some(trigger.trigger_input_tokens),
                 encrypted_content_hashes: None,
@@ -353,7 +402,9 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
             None,
         )));
     }
-    let compact_body = build_openai_compact_request_body(&plan.request_shape, &candidate.items);
+    material.admit_value(&plan.request_shape)?;
+    material.read(|| crate::diagnostics::resource_io::admit_cloned_value(&candidate.items))?;
+    let compact_body = build_openai_compact_request_body(&plan.request_shape, candidate.items);
     let compacted = match send_openai_compact_request(
         client,
         compact_url.clone(),
@@ -364,6 +415,7 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
         provider,
         model_ref,
         dispatch_guard,
+        material,
     )
     .await
     {
@@ -382,6 +434,9 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
             return Err(error)
         }
         Err(error) => {
+            if is_compact_material_error(&error) {
+                return Err(material.hold_error(error));
+            }
             if is_non_persisted_compact_item_id_error(&error) {
                 return Ok(Some(ProviderOpenAiRemoteCompactionDiagnostics {
                     status: "invalid_non_persisted_item_id".into(),
@@ -481,7 +536,7 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
 
     let current_generation = {
         let state = lock_openai_continuation(continuation);
-        state.windows.get(scope).map(|current| current.generation)
+        state.windows.get(&scope).map(|current| current.generation)
     };
     if current_generation != Some(previous.generation) {
         return Ok(Some(ProviderOpenAiRemoteCompactionDiagnostics {
@@ -507,9 +562,9 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
     }
 
     let output_items = compacted.len();
-    let mut provider_input = openai_compacted_replay_items(&compacted);
-    provider_input.extend(candidate.retained_tail.clone());
-    plan.body["input"] = Value::Array(provider_input.clone());
+    let mut provider_input = material.cloned_slice(openai_compacted_replay_items(&compacted))?;
+    provider_input.extend(material.cloned_slice(candidate.retained_tail)?);
+    plan.body["input"] = Value::Array(material.cloned(&provider_input)?);
     if let Some(object) = plan.body.as_object_mut() {
         object.remove("previous_response_id");
     }
@@ -533,6 +588,8 @@ pub(in super::super) async fn maybe_compact_openai_request_plan(
         continuation_generation: Some(previous.generation),
         error: None,
     }))
+    }.await;
+    result.map_err(|error| material.hold_error(error))
 }
 
 fn compact_endpoint_unsupported_status(
@@ -648,17 +705,23 @@ pub(in super::super) fn openai_compaction_trigger_for_request_plan(
     plan: &OpenAiRequestPlan,
     policy: OpenAiCompactionPolicy,
 ) -> Option<OpenAiCompactionTrigger> {
-    let mut compactable_items = previous.items.clone();
-    compactable_items.extend(plan.provider_input.clone());
-    if previous.latest_input_tokens == 0
-        && latest_openai_compaction_index(&compactable_items).is_some()
-    {
+    let latest = latest_openai_compaction_index(&plan.provider_input)
+        .map(|index| previous.items.len() + index)
+        .or_else(|| latest_openai_compaction_index(&previous.items));
+    if previous.latest_input_tokens == 0 && latest.is_some() {
         return None;
     }
-    let estimated = estimate_openai_provider_payload_tokens(
-        &plan.request_shape,
-        openai_items_after_latest_compaction(&compactable_items),
-    );
+    let estimated = previous
+        .items
+        .iter()
+        .chain(&plan.provider_input)
+        .skip(latest.map_or(0, |index| index + 1))
+        .map(estimate_compaction_json_tokens)
+        .fold(
+            estimate_compaction_json_tokens(&plan.request_shape.wire_shape),
+            usize::saturating_add,
+        )
+        .saturating_add(1) as u64;
     (estimated >= policy.trigger_input_tokens).then_some(OpenAiCompactionTrigger {
         reason: "estimated_window_pressure",
         estimated_input_tokens: Some(estimated),
@@ -666,14 +729,32 @@ pub(in super::super) fn openai_compaction_trigger_for_request_plan(
     })
 }
 
+fn estimate_compaction_json_tokens(value: &Value) -> usize {
+    struct Length(usize);
+    impl std::io::Write for Length {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut length = Length(0);
+    match serde_json::to_writer(&mut length, value) {
+        Ok(()) => length.0.saturating_add(3) / 4,
+        Err(_) => 1,
+    }
+}
+
 fn estimate_openai_provider_payload_tokens(
     request_shape: &OpenAiRequestShape,
     input_items: &[Value],
 ) -> u64 {
-    let shape_tokens = estimate_json_tokens(&request_shape.wire_shape);
+    let shape_tokens = estimate_compaction_json_tokens(&request_shape.wire_shape);
     let input_tokens = input_items
         .iter()
-        .map(estimate_json_tokens)
+        .map(estimate_compaction_json_tokens)
         .fold(0usize, usize::saturating_add);
     shape_tokens.saturating_add(input_tokens).saturating_add(1) as u64
 }
@@ -686,12 +767,17 @@ fn openai_items_after_latest_compaction(items: &[Value]) -> &[Value] {
 
 pub(in super::super) fn openai_provider_window_compaction_candidate(
     window: &OpenAiProviderWindow,
-) -> std::result::Result<OpenAiCompactionCandidate, &'static str> {
-    let boundary =
-        latest_complete_openai_tool_call_boundary(&window.items).ok_or("no_safe_boundary")?;
+) -> std::result::Result<OpenAiCompactionCandidate<'_>, &'static str> {
+    openai_compaction_candidate(&window.items)
+}
+
+fn openai_compaction_candidate(
+    items: &[Value],
+) -> std::result::Result<OpenAiCompactionCandidate<'_>, &'static str> {
+    let boundary = latest_complete_openai_tool_call_boundary(items).ok_or("no_safe_boundary")?;
     debug_assert!(boundary > 0);
 
-    let compact_items = window.items[..boundary].to_vec();
+    let compact_items = &items[..boundary];
     if has_unpaired_openai_tool_call(&compact_items) {
         return Err("unpaired_tool_call");
     }
@@ -699,14 +785,14 @@ pub(in super::super) fn openai_provider_window_compaction_candidate(
     Ok(OpenAiCompactionCandidate {
         latest_compaction_index: latest_openai_compaction_index(&compact_items),
         items: compact_items,
-        retained_tail: window.items[boundary..].to_vec(),
+        retained_tail: &items[boundary..],
     })
 }
 
-fn openai_compacted_replay_items(compacted: &[Value]) -> Vec<Value> {
+fn openai_compacted_replay_items(compacted: &[Value]) -> &[Value] {
     latest_openai_compaction_index(compacted)
-        .map(|index| compacted[index..].to_vec())
-        .unwrap_or_else(|| compacted.to_vec())
+        .map(|index| &compacted[index..])
+        .unwrap_or(compacted)
 }
 
 fn latest_complete_openai_tool_call_boundary(items: &[Value]) -> Option<usize> {
@@ -730,16 +816,16 @@ fn latest_complete_openai_tool_call_boundary(items: &[Value]) -> Option<usize> {
         };
         match item.get("type").and_then(Value::as_str) {
             Some("function_call") => {
-                function_calls.insert(call_id.to_string());
+                function_calls.insert(call_id);
             }
             Some("custom_tool_call") => {
-                custom_tool_calls.insert(call_id.to_string());
+                custom_tool_calls.insert(call_id);
             }
             Some("function_call_output") => {
-                function_outputs.insert(call_id.to_string());
+                function_outputs.insert(call_id);
             }
             Some("custom_tool_call_output") => {
-                custom_tool_outputs.insert(call_id.to_string());
+                custom_tool_outputs.insert(call_id);
             }
             _ => {}
         }
@@ -757,10 +843,10 @@ fn latest_complete_openai_tool_call_boundary(items: &[Value]) -> Option<usize> {
 }
 
 fn openai_tool_call_sets_are_complete(
-    function_calls: &HashSet<String>,
-    function_outputs: &HashSet<String>,
-    custom_tool_calls: &HashSet<String>,
-    custom_tool_outputs: &HashSet<String>,
+    function_calls: &HashSet<&str>,
+    function_outputs: &HashSet<&str>,
+    custom_tool_calls: &HashSet<&str>,
+    custom_tool_outputs: &HashSet<&str>,
 ) -> bool {
     function_calls.is_subset(function_outputs) && custom_tool_calls.is_subset(custom_tool_outputs)
 }
@@ -777,16 +863,16 @@ fn has_unpaired_openai_tool_call(items: &[Value]) -> bool {
         };
         match item.get("type").and_then(Value::as_str) {
             Some("function_call") => {
-                function_calls.insert(call_id.to_string());
+                function_calls.insert(call_id);
             }
             Some("custom_tool_call") => {
-                custom_tool_calls.insert(call_id.to_string());
+                custom_tool_calls.insert(call_id);
             }
             Some("function_call_output") => {
-                function_outputs.insert(call_id.to_string());
+                function_outputs.insert(call_id);
             }
             Some("custom_tool_call_output") => {
-                custom_tool_outputs.insert(call_id.to_string());
+                custom_tool_outputs.insert(call_id);
             }
             _ => {}
         }
@@ -839,7 +925,19 @@ fn sanitize_openai_store_false_compact_items(items: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-pub(in super::super) async fn send_openai_compact_request(
+struct OpenAiCompactedItems {
+    items: Vec<Value>,
+    _material: crate::provider::ProviderRequestMaterial,
+}
+
+impl std::ops::Deref for OpenAiCompactedItems {
+    type Target = [Value];
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
+async fn send_openai_compact_request(
     client: &Client,
     url: String,
     body: Value,
@@ -849,26 +947,30 @@ pub(in super::super) async fn send_openai_compact_request(
     provider: &str,
     model_ref: &str,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
-) -> Result<Vec<Value>> {
-    let result: Result<Vec<Value>> = async {
-        let request_trace = trace.and_then(|trace| {
-            trace.begin_request(
-                agent_id,
-                provider,
-                Some(model_ref),
-                url.as_str(),
-                OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND,
-                &headers,
-                &body,
-            )
-        });
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<OpenAiCompactedItems> {
+    let result = async {
+        let request_trace = trace
+            .map(|trace| {
+                trace.begin_request_with_material(
+                    agent_id,
+                    provider,
+                    Some(model_ref),
+                    url.as_str(),
+                    OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND,
+                    &headers,
+                    &body,
+                    material,
+                )
+            })
+            .transpose()?
+            .flatten();
         let mut request = client.post(&url).header("content-type", "application/json");
         for (name, value) in headers {
             request = request.header(name, value);
         }
-
         let response = send_openai_request(
-            request.json(&body),
+            request.body(material.json_bytes(&body)?),
             "OpenAI compact request failed",
             "request_send",
             provider,
@@ -888,7 +990,7 @@ pub(in super::super) async fn send_openai_compact_request(
         if !response.status().is_success() {
             let status = response.status();
             let retry_after = parse_retry_after(response.headers());
-            let body = read_error_response_body(response, request_trace.as_ref()).await;
+            let body = read_error_response_body(response, request_trace.as_ref(), material).await?;
             return Err(classify_status_error_with_trace(
                 "OpenAI compact request failed",
                 "response_status",
@@ -901,11 +1003,16 @@ pub(in super::super) async fn send_openai_compact_request(
                 retry_after,
             ));
         }
-
         let response_body =
-            match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            match tokio::time::timeout(response_body_timeout(), material.response_text(response))
+                .await
+            {
                 Ok(Ok(text)) => text,
                 Ok(Err(error)) => {
+                    let error = match error.downcast::<reqwest::Error>() {
+                        Ok(error) => error,
+                        Err(error) => return Err(error),
+                    };
                     return Err(classify_reqwest_transport_error_with_trace(
                         "OpenAI compact response body failed",
                         "response_body",
@@ -916,7 +1023,7 @@ pub(in super::super) async fn send_openai_compact_request(
                         request_trace.as_ref(),
                     ));
                 }
-                Err(_elapsed) => {
+                Err(_) => {
                     return Err(timeout_transport_error_with_trace(
                         "OpenAI compact response body read timed out",
                         "response_body",
@@ -925,30 +1032,34 @@ pub(in super::super) async fn send_openai_compact_request(
                         Some(url.as_str()),
                         format!("timed out after {:?}", response_body_timeout()),
                         request_trace.as_ref(),
-                    ));
+                    ))
                 }
             };
         trace_response_body(request_trace.as_ref(), &response_body);
+        material.read(|| crate::diagnostics::resource_io::admit_json_payload(&response_body))?;
         let parsed: Value = serde_json::from_str(&response_body)
             .map_err(|error| invalid_response_error("invalid OpenAI compact JSON", error))?;
         let output = parsed
             .get("output")
             .and_then(Value::as_array)
-            .cloned()
             .ok_or_else(|| {
                 invalid_response_error(
                     "OpenAI compact response did not contain output array",
                     "missing output array",
                 )
             })?;
-        Ok(output
-            .into_iter()
-            .map(|item| canonicalize_openai_provider_item(&item))
-            .collect())
+        material.read(|| crate::diagnostics::resource_io::admit_cloned_value(output))?;
+        Ok(OpenAiCompactedItems {
+            items: output
+                .iter()
+                .map(canonicalize_openai_provider_item)
+                .collect(),
+            _material: material.clone(),
+        })
     }
     .await;
     if let Some(guard) = dispatch_guard {
         guard.after_request(result.as_ref().map(|_| None))?;
     }
-    result
+    result.map_err(|error| material.hold_error(error))
 }

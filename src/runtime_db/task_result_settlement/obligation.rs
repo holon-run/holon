@@ -228,7 +228,7 @@ pub(crate) fn exact_waiter_recovery_wait_tx(
     super::exact_waiter::exact_wait_for_source_tx(tx, source, None)
 }
 
-fn exact_waiter_recovery_source_tx(
+pub(super) fn exact_waiter_recovery_source_tx(
     tx: &Transaction<'_>,
     source: &MessageEnvelope,
     current_activation_id: Option<&str>,
@@ -341,6 +341,39 @@ pub(crate) fn classify_obligation_tx(
     expected: &TaskResultSettlementRecord,
     current_activation_id: Option<&str>,
     waiter_work_item_id: Option<&str>,
+) -> Result<TaskResultObligation> {
+    classify_obligation_inner_tx(
+        tx,
+        expected,
+        current_activation_id,
+        waiter_work_item_id,
+        None,
+    )
+}
+
+/// The caller validates completeness and the Work revision in this transaction.
+pub(crate) fn classify_obligation_with_waits_tx(
+    tx: &Transaction<'_>,
+    expected: &TaskResultSettlementRecord,
+    current_activation_id: Option<&str>,
+    waiter_work_item_id: Option<&str>,
+    waits: &[&WaitConditionRecord],
+) -> Result<TaskResultObligation> {
+    classify_obligation_inner_tx(
+        tx,
+        expected,
+        current_activation_id,
+        waiter_work_item_id,
+        Some(waits),
+    )
+}
+
+fn classify_obligation_inner_tx(
+    tx: &Transaction<'_>,
+    expected: &TaskResultSettlementRecord,
+    current_activation_id: Option<&str>,
+    waiter_work_item_id: Option<&str>,
+    observed_waits: Option<&[&WaitConditionRecord]>,
 ) -> Result<TaskResultObligation> {
     let payload: Option<String> = tx
         .query_row(
@@ -467,16 +500,7 @@ pub(crate) fn classify_obligation_tx(
             return Ok(TaskResultObligation::InvalidOrStale);
         }
     }
-    let mut statement = tx.prepare(
-        "SELECT payload_json FROM wait_conditions
-         WHERE agent_id = ?1 AND status IN ('active', 'triggered', 'resolved')
-         ORDER BY created_at ASC, wait_condition_id ASC",
-    )?;
-    let waits = statement
-        .query_map([&record.agent_id], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for payload in waits {
-        let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
+    let classify_wait = |wait: &WaitConditionRecord| -> Result<Option<TaskResultObligation>> {
         if wait.kind != WaitConditionKind::Task
             || wait.work_item_id.as_deref() == waiter_work_item_id
             || !wait.wake_sources.iter().any(
@@ -486,7 +510,7 @@ pub(crate) fn classify_obligation_tx(
                 && wait.trigger_message_id() != Some(record.message_id.as_str())
                 && !super::exact_waiter::wait_claims_result_tx(tx, &wait, &record)?)
         {
-            continue;
+            return Ok(None);
         }
         if let Some(owner_id) = wait.work_item_id.as_deref() {
             let owner: Option<String> = tx
@@ -510,15 +534,37 @@ pub(crate) fn classify_obligation_tx(
                     && (super::exact_waiter::direct_wait_claims_result(&message, &wait, &record)
                         || super::exact_waiter::wait_claims_result_tx(tx, &wait, &record)?)
                 {
-                    return Ok(TaskResultObligation::InvalidOrStale);
+                    return Ok(Some(TaskResultObligation::InvalidOrStale));
                 }
-                continue;
+                return Ok(None);
             }
         }
-        return Ok(TaskResultObligation::ClaimedByOtherWaiter {
-            wait_condition_id: wait.id,
-            work_item_id: wait.work_item_id,
-        });
+        Ok(Some(TaskResultObligation::ClaimedByOtherWaiter {
+            wait_condition_id: wait.id.clone(),
+            work_item_id: wait.work_item_id.clone(),
+        }))
+    };
+    if let Some(waits) = observed_waits {
+        for wait in waits {
+            if let Some(obligation) = classify_wait(wait)? {
+                return Ok(obligation);
+            }
+        }
+    } else {
+        let mut statement = tx.prepare(
+            "SELECT payload_json FROM wait_conditions
+             WHERE agent_id = ?1 AND status IN ('active', 'triggered', 'resolved')
+             ORDER BY created_at ASC, wait_condition_id ASC",
+        )?;
+        let waits = statement
+            .query_map([&record.agent_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for payload in waits {
+            let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
+            if let Some(obligation) = classify_wait(&wait)? {
+                return Ok(obligation);
+            }
+        }
     }
     if record.recovery_paused_at.is_some() {
         return Ok(TaskResultObligation::Paused);

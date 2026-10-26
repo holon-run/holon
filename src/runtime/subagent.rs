@@ -12,6 +12,31 @@ impl RuntimeHandle {
         &self,
         task_id: &str,
     ) -> Result<ManagedWorktreeSeed> {
+        self.prepare_managed_worktree_for_task_inner(task_id, None)
+            .await
+    }
+
+    pub(crate) async fn prepare_managed_worktree_for_original_child_spawn(
+        &self,
+        task_id: &str,
+        source: &super::OriginalChildTaskProducer,
+    ) -> Result<ManagedWorktreeSeed> {
+        anyhow::ensure!(
+            source.address().scope.agent_id == self.instance_agent_id()
+                && source.address().scope.identity_incarnation == self.instance_incarnation()
+                && source.address().admitted.key.id == task_id
+                && source.original_child_spawn_registered(),
+            "original worktree spawn differs from its admitted source"
+        );
+        self.prepare_managed_worktree_for_task_inner(task_id, Some(source))
+            .await
+    }
+
+    async fn prepare_managed_worktree_for_task_inner(
+        &self,
+        task_id: &str,
+        original_spawn: Option<&super::OriginalChildTaskProducer>,
+    ) -> Result<ManagedWorktreeSeed> {
         let state = self.agent_state().await?;
         if !state.execution_profile.supports_managed_worktrees {
             return Err(anyhow!(
@@ -85,6 +110,14 @@ impl RuntimeHandle {
             ));
         }
 
+        if let Some(source) = original_spawn {
+            source.original_spawn_worktree_planned(
+                &original_cwd,
+                &original_branch,
+                &worktree_path,
+                &worktree_branch,
+            )?;
+        }
         let worktree_output = system
             .run(
                 &execution,
@@ -117,7 +150,11 @@ impl RuntimeHandle {
             return Err(anyhow!("git worktree add failed: {stderr}"));
         }
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        // The actual Git ACK is saved before the original fallible audit.
+        if let Some(source) = original_spawn {
+            source.original_spawn_worktree_created(&worktree_path, &worktree_branch)?;
+        }
+        self.append_original_audit_event(AuditEvent::legacy(
             "worktree_created_for_task",
             serde_json::json!({
                 "task_id": task_id,
@@ -126,7 +163,8 @@ impl RuntimeHandle {
                 "original_cwd": original_cwd,
                 "original_branch": original_branch,
             }),
-        ))?;
+        ))
+        .await?;
 
         let seed = ManagedWorktreeSeed {
             original_cwd,
@@ -229,13 +267,69 @@ impl RuntimeHandle {
         task_id: &str,
         authority_class: &AuthorityClass,
     ) -> Result<()> {
-        let Some(task) = self.inner.storage.latest_task_record(task_id)? else {
-            return Ok(());
+        let mut mutation = self.begin_mutation().await?;
+        let scope = mutation.input_evidence_scope();
+        let limits = self.inner.input_evidence_budget.limits();
+        let request = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+            query: Default::default(),
+            capture: super::resident_task::TaskCaptureRequest::current(),
+            record_limit: usize::try_from(limits.record_limit)?,
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("child Running limits overflow")?,
+            )?,
         };
+        let _selector = crate::runtime_db::command_task_terminal::charge_material(
+            &scope,
+            task_id
+                .len()
+                .checked_add(256)
+                .and_then(|n| n.checked_mul(8))
+                .context("child Running selector overflow")?,
+            8,
+            &request,
+            &self.inner.input_evidence_budget,
+        )?;
+        let mut capture = super::resident_task::TaskCaptureRequest::current();
+        capture
+            .required_keys
+            .insert(super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                task_id,
+            ));
+        mutation.prepare_owner_task_request(&capture).await?;
+        let selected = mutation.capture_tasks(&capture)?;
+        let fact = selected
+            .lookup(&super::resident_task::TaskKey::new(
+                super::resident_task::TaskFamily::Task,
+                task_id,
+            ))?
+            .context("child Running producer Task missing")?;
+        let super::resident_task::CanonicalTaskFact::Task(task) = &fact.fact else {
+            anyhow::bail!("child Running producer selected another family")
+        };
+        let _message_material = crate::runtime_db::command_task_terminal::charge_material(
+            &scope,
+            usize::try_from(super::input_evidence_budget::serialized_bytes(task)?)?
+                .checked_add(1024)
+                .and_then(|n| n.checked_mul(8))
+                .context("child Running Message material overflow")?,
+            super::child_task_terminal::completion_value_nodes(task.detail.as_ref())?
+                .checked_add(8)
+                .and_then(|n| n.checked_mul(8))
+                .context("child Running Message nodes overflow")?,
+            &request,
+            &self.inner.input_evidence_budget,
+        )?;
         let task_summary = task.summary.clone().unwrap_or_default();
         let running_message = MessageEnvelope {
+            work_item_id: task.work_item_id.clone(),
             metadata: Some(serde_json::json!({
                 "task_id": task.id.clone(),
+                "task_created_at": task.created_at,
+                "work_item_id": task.work_item_id.clone(),
                 "task_kind": task.kind.clone(),
                 "task_status": "running",
                 "task_summary": task.summary.clone(),
@@ -259,6 +353,7 @@ impl RuntimeHandle {
                 AdmissionContext::RuntimeOwned,
             )
         };
+        drop(mutation);
         self.enqueue(running_message).await.map(|_| ())
     }
 
@@ -280,7 +375,8 @@ impl RuntimeHandle {
             None,
             None,
             prompt_metadata,
-        ))?;
+        ))
+        .await?;
         let response = self
             .current_provider()
             .await
@@ -294,7 +390,7 @@ impl RuntimeHandle {
             .await?;
 
         {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             guard.state.total_input_tokens += response.input_tokens;
             guard.state.total_output_tokens += response.output_tokens;
             guard.state.total_model_rounds += 1;
@@ -302,7 +398,7 @@ impl RuntimeHandle {
                 response.input_tokens,
                 response.output_tokens,
             ));
-            guard.persist_state(&self.inner.storage)?;
+            guard.persist_state(&self.inner.storage).await?;
         }
 
         self.persist_transcript_evidence(&TranscriptEntry {
@@ -319,7 +415,8 @@ impl RuntimeHandle {
                     "metadata": assistant_metadata,
                 }),
             )
-        })?;
+        })
+        .await?;
 
         let text = sanitize_subagent_result(
             &response
@@ -467,4 +564,76 @@ fn strip_xml_like_tool_calls(input: &str) -> String {
     }
 
     result.join("\n")
+}
+
+#[cfg(test)]
+mod running_generation_tests {
+    use super::*;
+    use crate::types::{AgentLifecycleDisposition, ChildAgentWorkspaceMode};
+    #[tokio::test]
+    async fn actual_worktree_running_source_carries_qualified_birth_and_raw_work() -> Result<()> {
+        let harness = crate::runtime::tests::support::LifecycleHarness::new();
+        let runtime = harness.runtime();
+        let work = runtime
+            .create_work_item("original worktree owner".into(), None, None, vec![])
+            .await?;
+        let at = runtime.now();
+        let task = TaskRecord {
+            id: crate::ids::task_id(),
+            agent_id: "default".into(),
+            kind: TaskKind::WorktreeSubagentTask,
+            status: TaskStatus::Running,
+            created_at: at,
+            updated_at: at,
+            parent_message_id: None,
+            work_item_id: Some(work.id.clone()),
+            summary: Some("original worktree Running".into()),
+            detail: Some(serde_json::json!({"workspace_mode":"worktree"})),
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: "original worktree Running".into(),
+                prompt: "accepted".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+                workspace_mode: ChildAgentWorkspaceMode::Worktree,
+                lifecycle_disposition: AgentLifecycleDisposition::Retain,
+            }),
+        };
+        runtime
+            .persist_task_transition(&task, "actual_worktree_running_admission")
+            .await?;
+        runtime
+            .emit_worktree_child_task_running_status(
+                &task.agent_id,
+                &task.id,
+                &AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        let raw:String=runtime.runtime_db().connection()?.query_row("SELECT payload_json FROM messages WHERE kind='task_status' AND json_extract(payload_json,'$.metadata.task_id')=?1 ORDER BY rowid DESC LIMIT 1",[&task.id],|r|r.get(0))?;
+        let message: MessageEnvelope = serde_json::from_str(&raw)?;
+        assert!(message.message_seq.is_some_and(|seq| seq > 0));
+        assert_eq!(message.work_item_id, task.work_item_id);
+        let metadata = message.metadata.as_ref().unwrap();
+        assert_eq!(
+            metadata["task_created_at"],
+            serde_json::to_value(task.created_at)?
+        );
+        assert_eq!(
+            metadata["work_item_id"],
+            serde_json::to_value(&task.work_item_id)?
+        );
+        assert_eq!(metadata["task_detail"], serde_json::to_value(&task.detail)?);
+        assert_eq!(
+            metadata["task_recovery"],
+            serde_json::to_value(&task.recovery)?
+        );
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .tasks()
+                .latest(&task.id)?
+                .unwrap()
+                .created_at,
+            task.created_at
+        );
+        Ok(())
+    }
 }

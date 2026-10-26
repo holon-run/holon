@@ -4,9 +4,11 @@
 //! - `tools`: Tool-specific prompt guidance (registry-style)
 //! - Top-level: execution-oriented sections and overall assembly
 
+mod resources;
 pub mod time;
 pub mod tools;
 
+pub use resources::PromptResource;
 pub use tools::{tool_sections, ToolPromptContext};
 
 use std::path::{Path, PathBuf};
@@ -18,9 +20,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     context::{
-        build_context_with_default_external_ingress, reproject_recent_turns,
-        reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig, ContextPlanEvidence,
-        RecentTurnsReprojection, WorkItemScopedReprojection,
+        build_context_from_snapshot, build_context_with_default_external_ingress,
+        reproject_recent_turns, reproject_work_item_scoped_with_limit, BuiltContext, ContextConfig,
+        ContextHistoryPreparation, ContextPlanEvidence, ContextSnapshot, RecentTurnsReprojection,
+        WorkItemScopedReprojection,
     },
     projection_eval::{
         compare_prompt_history_selectors, manifest_from_effective_prompt,
@@ -86,14 +89,14 @@ pub struct PromptCacheScopeDiagnostics {
     pub turn_scoped_fingerprint: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EffectivePrompt {
     pub agent_home: PathBuf,
     pub identity: AgentIdentityView,
     pub execution: ExecutionSnapshot,
-    pub loaded_agents_md: LoadedAgentsMd,
+    pub loaded_agents_md: PromptResource<LoadedAgentsMd>,
     pub cache_identity: PromptCacheIdentity,
-    pub loaded_agent_memory: LoadedAgentMemory,
+    pub loaded_agent_memory: PromptResource<LoadedAgentMemory>,
     pub system_sections: Vec<PromptSection>,
     pub context_sections: Vec<PromptSection>,
     pub rendered_system_prompt: String,
@@ -104,6 +107,56 @@ pub struct EffectivePrompt {
     pub(crate) projection_evidence: ProjectionEvidenceIndex,
     pub(crate) context_plan_evidence: ContextPlanEvidence,
     pub(crate) recent_turns_reprojection: Option<RecentTurnsReprojection>,
+    pub(crate) frozen_history_policy: ContextHistoryPreparation,
+    pub(crate) frozen_projection_budget: Option<usize>,
+    pub(crate) frozen_recent_message_limit: Option<usize>,
+    pub(crate) _resource_read_material: Option<ResourcePromptMaterial>,
+}
+
+impl Clone for EffectivePrompt {
+    fn clone(&self) -> Self {
+        let material = self._resource_read_material.clone();
+        Self {
+            agent_home: self.agent_home.clone(),
+            identity: self.identity.clone(),
+            execution: self.execution.clone(),
+            loaded_agents_md: self.loaded_agents_md.clone(),
+            cache_identity: self.cache_identity.clone(),
+            loaded_agent_memory: self.loaded_agent_memory.clone(),
+            system_sections: self.system_sections.clone(),
+            context_sections: self.context_sections.clone(),
+            rendered_system_prompt: self.rendered_system_prompt.clone(),
+            rendered_context_attachment: self.rendered_context_attachment.clone(),
+            projection_owner: self.projection_owner.clone(),
+            projection_binding: self.projection_binding.clone(),
+            projection_turn_id: self.projection_turn_id.clone(),
+            projection_evidence: self.projection_evidence.clone(),
+            context_plan_evidence: self.context_plan_evidence.clone(),
+            recent_turns_reprojection: self.recent_turns_reprojection.clone(),
+            frozen_history_policy: self.frozen_history_policy.clone(),
+            frozen_projection_budget: self.frozen_projection_budget.clone(),
+            frozen_recent_message_limit: self.frozen_recent_message_limit.clone(),
+            _resource_read_material: material,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ResourcePromptMaterial {
+    pub(crate) observation:
+        std::sync::Arc<crate::runtime::resource_observation::ResourceObservation>,
+    pub(crate) allocation:
+        Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub(crate) model: Option<std::sync::Arc<crate::runtime::PreparedAgentModelState>>,
+}
+impl Clone for ResourcePromptMaterial {
+    fn clone(&self) -> Self {
+        Self {
+            observation: self.observation.clone(),
+            allocation: self.allocation.as_ref().map(|guard| guard.fork_owned()),
+            model: self.model.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -187,6 +240,26 @@ impl EffectivePrompt {
         self
     }
 
+    pub(crate) fn history_policy(&self) -> ContextHistoryPreparation {
+        self.frozen_history_policy
+    }
+
+    pub(crate) fn frozen_projection_budget(&self) -> Option<usize> {
+        self.frozen_projection_budget
+    }
+
+    pub(crate) fn frozen_recent_message_limit(&self) -> Option<usize> {
+        self.frozen_recent_message_limit
+    }
+
+    /// Identity of the prepared history acquisition. Budget and selector rendering
+    /// preserve it. This is not an owner publication revision.
+    pub fn context_snapshot_id(&self) -> Option<u64> {
+        self.recent_turns_reprojection
+            .as_ref()
+            .map(RecentTurnsReprojection::snapshot_id)
+    }
+
     pub fn projection_manifest(&self) -> ProjectionManifest {
         manifest_from_effective_prompt(self)
     }
@@ -206,7 +279,6 @@ impl EffectivePrompt {
 
     pub(crate) fn reproject_for_history_selector(
         &self,
-        storage: &AppStorage,
         budget: usize,
         available_tools: &[ToolSpec],
         selector: HistorySelector,
@@ -220,17 +292,18 @@ impl EffectivePrompt {
         let Some(reprojection) = self.recent_turns_reprojection.as_ref() else {
             return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
         };
-        let (replacement, replacement_evidence, turns_loaded) = match selector {
+        let (selected, replacement, replacement_evidence, turns_loaded) = match selector {
             HistorySelector::RecentTurns => {
-                let Some(replacement) = reproject_recent_turns(storage, reprojection, budget)
-                else {
+                let selected = reprojection.select_recent();
+                let Some(replacement) = reproject_recent_turns(&selected, budget) else {
                     return Ok(HistoryReprojectionOutcome::NoOwnedTurnRecords);
                 };
-                (replacement, None, reprojection.turn_count())
+                let evidence = selected.agent_evidence();
+                let turns_loaded = selected.turn_count();
+                (selected, replacement, evidence, turns_loaded)
             }
             HistorySelector::WorkItemScoped => {
                 match reproject_work_item_scoped_with_limit(
-                    storage,
                     reprojection,
                     budget,
                     work_item_scoped_window,
@@ -245,7 +318,12 @@ impl EffectivePrompt {
                         section,
                         evidence,
                         turns_loaded,
-                    } => (section, Some(evidence), turns_loaded),
+                    } => (
+                        reprojection.select_scoped(work_item_scoped_window)?,
+                        section,
+                        evidence,
+                        turns_loaded,
+                    ),
                 }
             }
         };
@@ -265,11 +343,10 @@ impl EffectivePrompt {
         context_sections.insert(insertion_index, replacement);
         let rendered_context_attachment = render_sections(&context_sections);
         let mut prompt = self.clone();
-        if let Some(evidence) = replacement_evidence {
-            prompt
-                .projection_evidence
-                .insert("recent_turns".to_string(), evidence);
-        }
+        prompt.recent_turns_reprojection = Some(selected);
+        prompt
+            .projection_evidence
+            .insert("recent_turns".to_string(), replacement_evidence);
         prompt
             .context_plan_evidence
             .record_reprojection("recent_turns", Some(&replacement_for_evidence));
@@ -326,7 +403,6 @@ impl EffectivePrompt {
 
     pub(crate) fn reproject_recent_turns(
         &self,
-        storage: &AppStorage,
         budget: usize,
         available_tools: &[ToolSpec],
     ) -> Option<Self> {
@@ -334,7 +410,7 @@ impl EffectivePrompt {
         if budget >= reprojection.initial_budget() {
             return None;
         }
-        let replacement = reproject_recent_turns(storage, reprojection, budget);
+        let replacement = reproject_recent_turns(reprojection, budget);
         let replacement_for_evidence = replacement.clone();
         let mut context_sections = self
             .context_sections
@@ -752,6 +828,91 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
             error
         }
     })?;
+    assemble_effective_prompt(
+        built_context,
+        session,
+        execution,
+        current_message,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        loaded_agent_memory,
+        skills,
+        available_tools,
+        tool_prompt_context,
+    )
+}
+
+/// Pure prompt construction over a fully prepared context. The acquisition
+/// config has already reserved runtime-time tokens before its SQLite view opens.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_effective_prompt_from_context_snapshot(
+    snapshot: &ContextSnapshot,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: impl Into<PromptResource<LoadedAgentsMd>>,
+    loaded_agent_memory: impl Into<PromptResource<LoadedAgentMemory>>,
+    available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
+) -> Result<EffectivePrompt> {
+    let effective_estimated_tokens = snapshot.prepared_budget();
+    let built_context =
+        build_context_from_snapshot(snapshot, effective_estimated_tokens).map_err(|error| {
+            if error.is::<crate::context::ContextPlanningError>() {
+                error.context(ContextBuildBudget {
+                    configured_estimated_tokens: effective_estimated_tokens
+                        + time::RUNTIME_TIME_RESERVED_TOKENS,
+                    effective_estimated_tokens,
+                    runtime_time_reserved_tokens: time::RUNTIME_TIME_RESERVED_TOKENS,
+                })
+            } else {
+                error
+            }
+        })?;
+    let mut prompt = assemble_effective_prompt(
+        built_context,
+        snapshot.agent(),
+        snapshot.execution(),
+        snapshot.current_message(),
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        loaded_agent_memory,
+        snapshot.skills(),
+        available_tools,
+        tool_prompt_context,
+    )?;
+    prompt._resource_read_material =
+        snapshot
+            .resident_resources()
+            .map(|observation| ResourcePromptMaterial {
+                observation: observation.clone(),
+                allocation: snapshot.resource_allocation().cloned(),
+                model: None,
+            });
+    Ok(prompt)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_effective_prompt(
+    built_context: BuiltContext,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: impl Into<PromptResource<LoadedAgentsMd>>,
+    loaded_agent_memory: impl Into<PromptResource<LoadedAgentMemory>>,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
+) -> Result<EffectivePrompt> {
+    let loaded_agents_md = loaded_agents_md.into();
+    let loaded_agent_memory = loaded_agent_memory.into();
     let system_sections = build_system_sections(
         identity,
         current_message,
@@ -810,6 +971,10 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         projection_evidence: built_context.projection_evidence,
         context_plan_evidence: built_context.plan_evidence,
         recent_turns_reprojection: built_context.recent_turns_reprojection,
+        frozen_history_policy: built_context.history_policy,
+        frozen_projection_budget: Some(built_context.projection_budget),
+        frozen_recent_message_limit: Some(built_context.recent_message_limit),
+        _resource_read_material: None,
     })
 }
 
@@ -2820,7 +2985,8 @@ mod tests {
                     description: "Review workflow".into(),
                     path: PathBuf::from("/repo/.agents/skills/review/SKILL.md"),
                     scope: crate::types::SkillScope::Workspace,
-                }],
+                }]
+                .into(),
                 ..SkillsRuntimeView::default()
             },
             &[ToolSpec {
@@ -2897,8 +3063,9 @@ mod tests {
                     content: "workspace guidance".into(),
                 }),
                 ..LoadedAgentsMd::default()
-            },
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            }
+            .into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: sample_cache_identity(),
             system_sections: vec![PromptSection {
                 name: "test_section".to_string(),
@@ -2934,6 +3101,10 @@ mod tests {
                 }],
             },
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         };
 
         let dump = prompt.render_dump();
@@ -3100,8 +3271,8 @@ mod tests {
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: sample_execution_snapshot(),
-            loaded_agents_md: LoadedAgentsMd::default(),
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            loaded_agents_md: LoadedAgentsMd::default().into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: sample_cache_identity(),
             system_sections: Vec::new(),
             context_sections: Vec::new(),
@@ -3138,6 +3309,10 @@ mod tests {
                 ],
             },
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         };
 
         assert_eq!(prompt.history_reprojection_budget(64), 30);
@@ -3151,8 +3326,8 @@ mod tests {
             identity: sample_identity(),
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: sample_execution_snapshot(),
-            loaded_agents_md: LoadedAgentsMd::default(),
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            loaded_agents_md: LoadedAgentsMd::default().into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: sample_cache_identity(),
             system_sections: vec![PromptSection {
                 name: "constrained_repair".to_string(),
@@ -3176,6 +3351,10 @@ mod tests {
             projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         };
 
         let dump = prompt.render_dump();
@@ -3219,8 +3398,9 @@ mod tests {
                 }),
                 workspace_source: None,
                 ..LoadedAgentsMd::default()
-            },
-            loaded_agent_memory: LoadedAgentMemory::default(),
+            }
+            .into(),
+            loaded_agent_memory: LoadedAgentMemory::default().into(),
             cache_identity: sample_cache_identity(),
             system_sections: vec![PromptSection {
                 name: "agent_agents_md".to_string(),
@@ -3239,6 +3419,10 @@ mod tests {
             projection_evidence: ProjectionEvidenceIndex::new(),
             context_plan_evidence: ContextPlanEvidence::default(),
             recent_turns_reprojection: None,
+            frozen_history_policy: ContextHistoryPreparation::default(),
+            frozen_projection_budget: None,
+            frozen_recent_message_limit: None,
+            _resource_read_material: None,
         };
 
         let dump = prompt.render_dump();
@@ -3402,7 +3586,8 @@ mod tests {
                     description: "demo skill".into(),
                     path: PathBuf::from("/tmp/user/.agents/skills/demo/SKILL.md"),
                     scope: crate::types::SkillScope::UserGlobal,
-                }],
+                }]
+                .into(),
                 ..SkillsRuntimeView::default()
             },
             &[],

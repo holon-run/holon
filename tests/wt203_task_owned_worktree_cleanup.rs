@@ -79,6 +79,7 @@ impl AgentProvider for DelayedTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         sleep(Duration::from_millis(250)).await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Made changes in worktree".into(),
             }],
@@ -100,6 +101,7 @@ impl AgentProvider for SlowTextProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         sleep(Duration::from_secs(2)).await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![ModelBlock::Text {
                 text: "Slow worktree result".into(),
             }],
@@ -335,6 +337,10 @@ async fn wt203_task_stop_retains_deleted_child_worktree_for_review() -> Result<(
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     assert_eq!(stopped.status, TaskStatus::Cancelled);
+    let association = &stopped.detail.as_ref().expect("original task detail")["worktree"];
+    assert_eq!(association["original_cwd"], workspace.to_str().unwrap());
+    assert_eq!(association["projection_kind"], "git_worktree_root");
+    assert!(association["original_branch"].is_string());
     assert!(expected_worktree.exists());
     assert!(!git(
         &workspace,

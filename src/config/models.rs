@@ -257,19 +257,8 @@ impl ResolvedModelCapabilities {
             accepted_parameters: resolved_parameter_contracts(policy),
             anthropic_cache: None,
         };
+        let (image_input, image_output) = apply_policy_transport_constraints(policy, transport);
         let transport = transport.capabilities();
-        let image_input = constrain_transport_capability(
-            policy,
-            ModelMetadataField::ImageInput,
-            policy.capabilities.image_input,
-            transport.image_input,
-        );
-        let image_output = constrain_transport_capability(
-            policy,
-            ModelMetadataField::ImageGeneration,
-            policy.capabilities.image_generation,
-            transport.image_output,
-        );
         Self {
             agent_turn: policy.agent_turn,
             decision_capable: policy.decision_capable,
@@ -289,6 +278,26 @@ impl ResolvedModelCapabilities {
             ModelRouteCapability::ImageGeneration => self.image_output,
         }
     }
+}
+
+fn apply_policy_transport_constraints(
+    policy: &mut ResolvedRuntimeModelPolicy,
+    transport: ProviderTransportKind,
+) -> (bool, bool) {
+    let transport = transport.capabilities();
+    let image_input = constrain_transport_capability(
+        policy,
+        ModelMetadataField::ImageInput,
+        policy.capabilities.image_input,
+        transport.image_input,
+    );
+    let image_output = constrain_transport_capability(
+        policy,
+        ModelMetadataField::ImageGeneration,
+        policy.capabilities.image_generation,
+        transport.image_output,
+    );
+    (image_input, image_output)
 }
 
 fn constrain_transport_capability(
@@ -435,11 +444,153 @@ pub struct RuntimeModelCatalog {
     pub context_budget_overrides: crate::context::ContextBudgetOverrides,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ModelListCatalog<'a> {
+    pub(crate) default_model: &'a ModelRouteRef,
+    fallback_models: &'a [ModelRouteRef],
+    route_options: &'a BTreeMap<String, ModelRouteOptions>,
+    disable_provider_fallback: bool,
+    built_in_catalog: &'a BuiltInModelCatalog,
+}
+
+#[cfg(test)]
+#[path = "models/list_catalog_tests.rs"]
+mod list_catalog_tests;
+
+#[cfg(test)]
+#[path = "models/policy_material_tests.rs"]
+mod policy_material_tests;
+
+impl<'a> ModelListCatalog<'a> {
+    pub(crate) fn from_config(config: &'a AppConfig) -> Self {
+        Self {
+            default_model: &config.default_model,
+            fallback_models: &config.fallback_models,
+            route_options: &config.stored_config.model.route_options,
+            disable_provider_fallback: config.provider_fallback_disabled(),
+            built_in_catalog: BuiltInModelCatalog::shared(),
+        }
+    }
+
+    pub(crate) fn route_service_tier(self, route: &ModelRouteRef) -> Option<ServiceTier> {
+        let model_ref = route.model_ref();
+        let canonical = self.built_in_catalog.canonical_model_ref(&model_ref);
+        self.route_options
+            .get(&format!(
+                "{}@{}/{}",
+                route.provider.as_str(),
+                route.endpoint.as_str(),
+                canonical.model
+            ))
+            .and_then(|o| o.service_tier)
+    }
+
+    pub(crate) fn try_route_service_tier(
+        self,
+        route: &ModelRouteRef,
+    ) -> Result<Option<ServiceTier>> {
+        use crate::diagnostics::resource_io::charge_owned_metadata;
+        charge_owned_metadata(
+            route
+                .provider
+                .as_str()
+                .len()
+                .saturating_add(route.model.len())
+                .saturating_add(std::mem::size_of::<ModelRef>()) as u64,
+            2,
+        )?;
+        let model_ref = route.model_ref();
+        let canonical = self.built_in_catalog.canonical_model_ref(&model_ref);
+        // Canonicalization changes only the model name in the route lookup.
+        let key_len = route
+            .provider
+            .as_str()
+            .len()
+            .saturating_add(route.endpoint.as_str().len())
+            .saturating_add(canonical.model.len())
+            .saturating_add(2);
+        charge_owned_metadata(
+            key_len.saturating_add(std::mem::size_of::<String>()) as u64,
+            1,
+        )?;
+        let mut key = String::new();
+        key.try_reserve_exact(key_len)?;
+        key.push_str(route.provider.as_str());
+        key.push('@');
+        key.push_str(route.endpoint.as_str());
+        key.push('/');
+        key.push_str(&canonical.model);
+        Ok(self.route_options.get(&key).and_then(|o| o.service_tier))
+    }
+
+    pub(crate) fn provider_chain_refs(
+        self,
+        model_override: Option<&'a ModelRouteRef>,
+    ) -> impl Iterator<Item = &'a ModelRouteRef> {
+        let effective = model_override.unwrap_or(self.default_model);
+        // No implicit default fallback; keep the first occurrence of each route.
+        std::iter::once(effective).chain(
+            self.fallback_models
+                .iter()
+                .take(if self.disable_provider_fallback {
+                    0
+                } else {
+                    self.fallback_models.len()
+                })
+                .enumerate()
+                .filter_map(move |(index, model)| {
+                    (model != effective && !self.fallback_models[..index].contains(model))
+                        .then_some(model)
+                }),
+        )
+    }
+
+    pub(crate) fn provider_chain_for_turn_refs(
+        self,
+        model_override: Option<&'a ModelRouteRef>,
+        pending_fallback_model: Option<&'a ModelRouteRef>,
+    ) -> impl Iterator<Item = &'a ModelRouteRef> {
+        let start = pending_fallback_model.and_then(|pending| {
+            self.provider_chain_refs(model_override)
+                .position(|route| route == pending)
+        });
+        let unmatched = pending_fallback_model.filter(|_| start.is_none());
+        unmatched
+            .into_iter()
+            .chain(
+                self.provider_chain_refs(model_override)
+                    .skip(if unmatched.is_some() {
+                        usize::MAX
+                    } else {
+                        start.unwrap_or(0)
+                    }),
+            )
+    }
+}
+
+impl<'a> From<&'a RuntimeModelCatalog> for ModelListCatalog<'a> {
+    fn from(catalog: &'a RuntimeModelCatalog) -> Self {
+        Self {
+            default_model: &catalog.default_model,
+            fallback_models: &catalog.fallback_models,
+            route_options: &catalog.route_options,
+            disable_provider_fallback: catalog.disable_provider_fallback,
+            built_in_catalog: &catalog.built_in_catalog,
+        }
+    }
+}
+
 impl RuntimeModelCatalog {
     pub fn route_service_tier(&self, route: &ModelRouteRef) -> Option<ServiceTier> {
-        self.route_options
-            .get(&self.canonicalize_model_route_ref(route).as_string())
-            .and_then(|o| o.service_tier)
+        ModelListCatalog::from(self).route_service_tier(route)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_route_service_tier(
+        &self,
+        route: &ModelRouteRef,
+    ) -> Result<Option<ServiceTier>> {
+        ModelListCatalog::from(self).try_route_service_tier(route)
     }
 
     pub(crate) fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
@@ -669,18 +820,14 @@ impl RuntimeModelCatalog {
     }
 
     pub fn provider_chain(&self, model_override: Option<&ModelRouteRef>) -> Vec<ModelRouteRef> {
-        if self.disable_provider_fallback {
-            return vec![self.effective_model(model_override)];
-        }
-        // The default model is only the primary when no override is set; it
-        // never joins the chain as an implicit fallback entry.
-        let mut chain = vec![self.effective_model(model_override)];
-        for model in &self.fallback_models {
-            if !chain.iter().any(|existing| existing == model) {
-                chain.push(model.clone());
-            }
-        }
-        chain
+        self.provider_chain_refs(model_override).cloned().collect()
+    }
+
+    pub(crate) fn provider_chain_refs<'a>(
+        &'a self,
+        model_override: Option<&'a ModelRouteRef>,
+    ) -> impl Iterator<Item = &'a ModelRouteRef> {
+        ModelListCatalog::from(self).provider_chain_refs(model_override)
     }
 
     pub fn provider_chain_for_turn(
@@ -688,15 +835,10 @@ impl RuntimeModelCatalog {
         model_override: Option<&ModelRouteRef>,
         pending_fallback_model: Option<&ModelRouteRef>,
     ) -> Vec<ModelRouteRef> {
-        let chain = self.provider_chain(model_override);
-        let Some(pending_fallback_model) = pending_fallback_model else {
-            return chain;
-        };
-        chain
-            .iter()
-            .position(|model| model == pending_fallback_model)
-            .map(|index| chain[index..].to_vec())
-            .unwrap_or_else(|| vec![pending_fallback_model.clone()])
+        ModelListCatalog::from(self)
+            .provider_chain_for_turn_refs(model_override, pending_fallback_model)
+            .cloned()
+            .collect()
     }
 
     pub fn effective_model(&self, model_override: Option<&ModelRouteRef>) -> ModelRouteRef {
@@ -710,12 +852,84 @@ impl RuntimeModelCatalog {
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
     ) -> ResolvedRuntimeModelPolicy {
-        let route_ref = self.effective_model(model_override);
-        self.resolve_explicit_model_metadata(base_context_config, &route_ref)
-            .map(|route| route.policy)
-            .unwrap_or_else(|| {
-                self.resolved_model_policy_for_route(base_context_config, &route_ref)
-            })
+        let route_ref = model_override.unwrap_or(&self.default_model);
+        let mut policy = self.resolved_model_policy_for_route(base_context_config, route_ref);
+        if let Some(endpoint) = self.provider_endpoints.iter().find(|endpoint| {
+            endpoint.provider == route_ref.provider && endpoint.endpoint == route_ref.endpoint
+        }) {
+            apply_policy_transport_constraints(&mut policy, endpoint.runtime_config.transport);
+        }
+        policy
+    }
+
+    pub(crate) fn try_resolved_model_policy(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRouteRef>,
+    ) -> Result<ResolvedRuntimeModelPolicy> {
+        use crate::diagnostics::resource_io::charge_owned_metadata;
+        let route = model_override.unwrap_or(&self.default_model);
+        charge_owned_metadata(
+            (std::mem::size_of::<ModelRef>() + route.provider.as_str().len() + route.model.len())
+                as u64,
+            2,
+        )?;
+        let model_ref = route.model_ref();
+        let canonical = self.built_in_catalog.canonical_model_ref(&model_ref);
+        charge_owned_metadata(
+            (std::mem::size_of::<ModelRouteRef>()
+                + route.provider.as_str().len()
+                + route.endpoint.as_str().len()
+                + canonical.model.len()) as u64,
+            3,
+        )?;
+        let canonical_route = ModelRouteRef::new(
+            route.provider.clone(),
+            route.endpoint.clone(),
+            canonical.model.clone(),
+        );
+        let mut policy = self.built_in_catalog.try_resolve_route_policy(
+            &canonical_route,
+            &self.model_overrides,
+            &self.discovered_models,
+            self.unknown_model_fallback.as_ref(),
+            base_context_config,
+            self.configured_runtime_max_output_tokens,
+        )?;
+        if let Some(endpoint) = self.provider_endpoints.iter().find(|endpoint| {
+            endpoint.provider == route.provider && endpoint.endpoint == route.endpoint
+        }) {
+            let transport = endpoint.runtime_config.transport.capabilities();
+            for (field, model_supports, transport_supports) in [
+                (
+                    ModelMetadataField::ImageInput,
+                    policy.capabilities.image_input,
+                    transport.image_input,
+                ),
+                (
+                    ModelMetadataField::ImageGeneration,
+                    policy.capabilities.image_generation,
+                    transport.image_output,
+                ),
+            ] {
+                if model_supports && !transport_supports {
+                    // Vec relocation copies slots, not the existing String bodies.
+                    charge_owned_metadata(
+                        (2 * (policy.evidence.constraints.len() + 1)
+                            * std::mem::size_of::<ModelMetadataConstraint>()
+                            + 9) as u64,
+                        3,
+                    )?;
+                }
+                constrain_transport_capability(
+                    &mut policy,
+                    field,
+                    model_supports,
+                    transport_supports,
+                );
+            }
+        }
+        Ok(policy)
     }
 
     fn resolved_model_policy_for_route(

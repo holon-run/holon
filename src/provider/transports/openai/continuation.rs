@@ -2,13 +2,14 @@ use super::*;
 
 #[derive(Debug, Default)]
 pub(super) struct OpenAiContinuationState {
-    pub(super) windows: HashMap<ContinuationScopeId, OpenAiProviderWindow>,
+    pub(super) windows: HashMap<ContinuationScopeId, Arc<OpenAiProviderWindow>>,
     pub(super) unsupported_compact_endpoints: HashMap<String, u16>,
     pub(super) next_generation: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct OpenAiProviderWindow {
+    pub(super) material: crate::provider::ProviderRequestMaterial,
     pub(super) response_id: Option<String>,
     pub(super) request_shape: OpenAiRequestShape,
     pub(super) items: Vec<Value>,
@@ -19,7 +20,7 @@ pub(super) struct OpenAiProviderWindow {
     pub(super) generation: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) struct OpenAiRequestShape {
     pub(super) wire_shape: Value,
     pub(super) prompt_frame: ProviderPromptFrame,
@@ -27,6 +28,7 @@ pub(super) struct OpenAiRequestShape {
 
 #[derive(Debug)]
 pub(super) struct OpenAiRequestPlan {
+    pub(super) material: crate::provider::ProviderRequestMaterial,
     pub(super) body: Value,
     pub(super) fallback_replay: Option<(Value, Vec<Value>)>,
     pub(super) scope: Option<ContinuationScopeId>,
@@ -56,42 +58,73 @@ pub(super) fn continuation_scope(request: &ProviderTurnRequest) -> Option<Contin
     request.continuation_scope_id.clone()
 }
 
+pub(super) fn admit_openai_window_header(
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<()> {
+    material.read(|| {
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            (std::mem::size_of::<OpenAiProviderWindow>() + 2 * std::mem::size_of::<usize>()) as u64,
+            1,
+        )?;
+        Ok(())
+    })
+}
+
+pub(super) fn admit_openai_request_shape(
+    body: &Value,
+    request: &ProviderTurnRequest,
+    excluded: &[&str],
+) -> Result<()> {
+    request.material.read(|| {
+        use crate::diagnostics::resource_io::admit_cloned_value;
+        admit_cloned_value(&request.prompt_frame)?;
+        if let Some(object) = body.as_object() {
+            for (key, value) in object {
+                if !excluded.contains(&key.as_str()) {
+                    admit_cloned_value(&(key, value))?;
+                }
+            }
+        } else {
+            admit_cloned_value(body)?;
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn request_shape_hash(request_shape: &OpenAiRequestShape) -> String {
     let value = json!({
         "wire_shape": request_shape.wire_shape,
         "prompt_frame": request_shape.prompt_frame,
     });
-    sha256_hex(canonical_json(&value).as_bytes())
+    canonical_json_hash(&value)
 }
 
 pub(super) fn canonical_json(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()),
-        Value::Array(values) => {
-            let items = values.iter().map(canonical_json).collect::<Vec<_>>();
-            format!("[{}]", items.join(","))
-        }
-        Value::Object(map) => {
-            let ordered = map
-                .iter()
-                .map(|(key, value)| (key, value))
-                .collect::<BTreeMap<_, _>>();
-            let items = ordered
-                .into_iter()
-                .map(|(key, value)| {
-                    format!(
-                        "{}:{}",
-                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()),
-                        canonical_json(value)
-                    )
-                })
-                .collect::<Vec<_>>();
-            format!("{{{}}}", items.join(","))
-        }
+    // Map is key-ordered: the build does not enable serde_json/preserve_order.
+    // Avoid retaining a second canonical String for every nested subtree.
+    serde_json::to_string(value).expect("JSON Value is serializable")
+}
+
+struct JsonHashWriter(Sha256);
+impl std::io::Write for JsonHashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
     }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn canonical_json_hash(value: &impl serde::Serialize) -> String {
+    let mut writer = JsonHashWriter(Sha256::new());
+    serde_json::to_writer(&mut writer, value).expect("JSON hash source is serializable");
+    writer
+        .0
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {

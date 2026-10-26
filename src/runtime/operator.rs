@@ -48,7 +48,7 @@ impl RuntimeHandle {
             causation_id: None,
             created_at: Utc::now(),
         };
-        self.persist_operator_notification(&record)?;
+        self.persist_operator_notification(&record).await?;
         if let Some(target_parent_agent_id) = record.target_parent_agent_id.as_deref() {
             if target_parent_agent_id != record.requested_by_agent_id {
                 if let Some(bridge) = self.inner.host_bridge.as_ref() {
@@ -64,7 +64,8 @@ impl RuntimeHandle {
                                 "target_parent_agent_id": target_parent_agent_id,
                                 "error": error.to_string(),
                             }),
-                        )?;
+                        )
+                        .await?;
                     } else {
                         bridge
                             .submit_operator_notification_delivery(target_parent_agent_id, &record)
@@ -80,15 +81,16 @@ impl RuntimeHandle {
         Ok(record)
     }
 
-    pub(crate) fn persist_operator_notification(
+    pub(crate) async fn persist_operator_notification(
         &self,
         record: &OperatorNotificationRecord,
     ) -> Result<()> {
         self.inner.storage.append_operator_notification(record)?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "operator_notification_requested",
             to_json_value(record),
-        ))?;
+        ))
+        .await?;
         Ok(())
     }
 
@@ -118,7 +120,8 @@ impl RuntimeHandle {
         self.append_audit_event(
             "operator_transport_binding_upserted",
             operator_transport_binding_audit_value(&binding),
-        )?;
+        )
+        .await?;
         Ok(binding)
     }
 
@@ -213,13 +216,15 @@ impl RuntimeHandle {
         self.inner
             .storage
             .append_operator_delivery_record(&record)?;
-        self.append_audit_event("operator_delivery_submitted", to_json_value(&record))?;
+        self.append_audit_event("operator_delivery_submitted", to_json_value(&record))
+            .await?;
 
         record = submit_delivery_intent(&binding, notification, record).await;
         self.inner
             .storage
             .append_operator_delivery_record(&record)?;
-        self.append_audit_event("operator_delivery_completed", to_json_value(&record))?;
+        self.append_audit_event("operator_delivery_completed", to_json_value(&record))
+            .await?;
         Ok(Some(record))
     }
 }

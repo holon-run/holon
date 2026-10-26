@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use reqwest::{header::HeaderMap, Client, Response};
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,10 @@ use crate::provider::retry::{
 };
 
 const ANTHROPIC_PROVIDER_BLOCK_FORMAT: &str = "anthropic_messages/v1";
+
+#[cfg(test)]
+#[path = "anthropic_material_tests.rs"]
+mod material_tests;
 
 #[derive(Clone)]
 pub struct AnthropicProvider {
@@ -439,6 +443,37 @@ impl AnthropicProvider {
         &self,
         request: &ProviderTurnRequest,
     ) -> Result<PreparedAnthropicRequest> {
+        let material = &request.material;
+        material.admit_value(&(&request.prompt_frame, &request.tools))?;
+        material.read(|| {
+            use crate::diagnostics::resource_io;
+            resource_io::charge_owned_metadata(
+                u64::try_from(request.conversation.len())?
+                    .checked_mul(u64::try_from(std::mem::size_of::<ConversationMessage>())?)
+                    .context("Anthropic conversation material overflow")?,
+                request.conversation.len(),
+            )?;
+            for message in &request.conversation {
+                match message {
+                    ConversationMessage::UserText(text) => {
+                        resource_io::admit_cloned_value(text)?
+                    }
+                    ConversationMessage::UserBlocks(blocks) => {
+                        resource_io::admit_cloned_value(blocks)?
+                    }
+                    ConversationMessage::UserImage {
+                        prompt, media_type, ..
+                    } => resource_io::admit_cloned_value(&(prompt, media_type))?,
+                    ConversationMessage::AssistantBlocks(blocks) => {
+                        resource_io::admit_cloned_value(blocks)?
+                    }
+                    ConversationMessage::UserToolResults(results) => {
+                        resource_io::admit_cloned_value(results)?
+                    }
+                }
+            }
+            Ok(())
+        })?;
         let cache_strategy = self.context_management.cache_strategy;
         let cache_control = self.context_management.cache_capabilities.cache_control;
         let system = build_anthropic_system(request, cache_strategy, cache_control);
@@ -446,6 +481,24 @@ impl AnthropicProvider {
         let wire_conversation = build_anthropic_wire_conversation(request, mark_context);
         let rolling_cache_marker =
             rolling_conversation_cache_marker(&wire_conversation, cache_strategy, cache_control);
+        material.read(|| {
+            for message in &wire_conversation {
+                if let ConversationMessage::UserImage {
+                    prompt,
+                    media_type,
+                    data_base64,
+                ..
+                } = message
+                {
+                    crate::diagnostics::resource_io::admit_cloned_value(&(
+                        prompt,
+                        media_type,
+                        &**data_base64,
+                    ))?;
+                }
+            }
+            Ok(())
+        })?;
         let mut messages =
             build_anthropic_messages(&wire_conversation, rolling_cache_marker, cache_control);
         if needs_placeholder_user_text(&self.route_provider) {
@@ -476,7 +529,7 @@ impl AnthropicProvider {
                 .then_some(1.0),
             context_management: build_context_management_request(&self.context_management),
         };
-        let mut request_payload = serde_json::to_value(&request_body)?;
+        let mut request_payload = material.json_value(&request_body)?;
         let effective_output = effective_output_tokens(
             self.context_window_tokens,
             self.max_output_tokens,
@@ -516,210 +569,223 @@ impl AgentProvider for AnthropicProvider {
         &self,
         mut request: ProviderTurnRequest,
     ) -> Result<ProviderTurnResponse> {
-        let mut prepared = self.prepare_request_payload(&request)?;
-        let mut overflow = estimate_context_budget(
-            self.context_window_tokens,
-            prepared.effective_output_tokens,
-            &prepared.payload,
-            &["max_tokens"],
-        )
-        .filter(|budget| budget.overflow_tokens() > 0);
-        if overflow.is_some() {
-            let first_optional_image = request.conversation.iter().position(|message| {
-                matches!(
-                    message,
-                    ConversationMessage::UserImage {
-                        optional_history: true,
-                        ..
-                    }
-                )
-            });
-            if let Some(index) = first_optional_image {
-                request.conversation.retain(|message| {
-                    !matches!(
-                        message,
-                        ConversationMessage::UserImage {
-                            optional_history: true,
-                            ..
-                        }
-                    )
-                });
-                // Replace the first omitted image without moving the dynamic time
-                // tail or introducing a new rolling cache breakpoint.
-                request.conversation.insert(
-                    index,
-                    ConversationMessage::UserBlocks(vec![PromptContentBlock {
-                        text: "Historical original images were omitted to fit the context budget. \
-                               Use prior textual observations only if present in this context; \
-                               request ViewImage explicitly if image details need inspection."
-                            .to_string(),
-                        stability: PromptStability::TurnScoped,
-                        cache_breakpoint: false,
-                    }]),
-                );
-                prepared = self.prepare_request_payload(&request)?;
-                overflow = estimate_context_budget(
+        let material = request.material.clone();
+        material.validate_images(&request.conversation)?;
+        material
+            .complete_turn(async {
+                let mut prepared = self.prepare_request_payload(&request)?;
+                let mut overflow = estimate_context_budget(
                     self.context_window_tokens,
                     prepared.effective_output_tokens,
                     &prepared.payload,
                     &["max_tokens"],
                 )
                 .filter(|budget| budget.overflow_tokens() > 0);
-            }
-        }
-        let url = format!("{}/v1/messages", self.base_url);
-        let model_ref = self.model_route.clone();
-        if let Some(budget) = overflow {
-            return Err(context_budget_overflow_error(
-                &self.route_provider,
-                &model_ref,
-                &url,
-                budget,
-            ));
-        }
-        let PreparedAnthropicRequest {
-            payload: request_payload,
-            wire_conversation,
-            rolling_cache_marker,
-            ..
-        } = prepared;
-        let cache_strategy = self.context_management.cache_strategy;
-        let mut headers = vec![
-            ("content-type", "application/json".to_string()),
-            ("anthropic-version", "2023-06-01".to_string()),
-        ];
-        if let Some(auth_token) = self.auth_token.as_deref() {
-            headers.push(("authorization", format!("Bearer {auth_token}")));
-        }
-        if self.context_management.enabled {
-            headers.push((
-                "anthropic-beta",
-                "context-management-2025-06-27".to_string(),
-            ));
-        }
-        #[cfg(test)]
-        let trace = self
-            .http_trace_override
-            .clone()
-            .or_else(|| ProviderHttpTrace::from_env(self.trace_home_dir.clone()));
-        #[cfg(not(test))]
-        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
-        let request_trace = trace.and_then(|trace| {
-            trace.begin_request(
-                request
-                    .prompt_frame
-                    .cache
-                    .as_ref()
-                    .map(|cache| cache.agent_id.as_str()),
-                &self.route_provider,
-                Some(&model_ref),
-                url.as_str(),
-                "messages",
-                &headers,
-                &request_payload,
-            )
-        });
-        let mut request_builder = self.client.post(&url);
-        for (name, value) in &headers {
-            request_builder = request_builder.header(*name, value);
-        }
-        let request_started_at = chrono::Utc::now();
-        let response = send_provider_request(
-            request_builder.json(&request_payload),
-            "Anthropic request failed",
-            "request_send",
-            &self.route_provider,
-            Some(&model_ref),
-            Some(url.as_str()),
-            RequestDeadline::TextStream,
-            request_trace.as_ref(),
-            request.dispatch_guard.as_deref(),
-        )
-        .await?;
-        let response_headers_at = chrono::Utc::now();
-        if let Some(trace) = request_trace.as_ref() {
-            trace.write_response_headers(response.status(), response.headers());
-        }
-        let provider_request_id = provider_request_id_from_headers(response.headers());
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let retry_after = parse_retry_after(response.headers());
-            let body = read_error_response_body(response, request_trace.as_ref()).await;
-            return Err(crate::provider::retry::set_provider_transport_streaming(
-                classify_status_error_with_trace(
+                if overflow.is_some() {
+                    let first_optional_image = request.conversation.iter().position(|message| {
+                        matches!(
+                            message,
+                            ConversationMessage::UserImage {
+                                optional_history: true,
+                                ..
+                            }
+                        )
+                    });
+                    if let Some(index) = first_optional_image {
+                        request.conversation.retain(|message| {
+                            !matches!(
+                                message,
+                                ConversationMessage::UserImage {
+                                    optional_history: true,
+                                    ..
+                                }
+                            )
+                        });
+                        // Replace the first omitted image without moving the dynamic time
+                        // tail or introducing a new rolling cache breakpoint.
+                        request.conversation.insert(
+                            index,
+                            ConversationMessage::UserBlocks(vec![PromptContentBlock {
+                                text: "Historical original images were omitted to fit the context budget. \
+                                       Use prior textual observations only if present in this context; \
+                                       request ViewImage explicitly if image details need inspection."
+                                    .to_string(),
+                                stability: PromptStability::TurnScoped,
+                                cache_breakpoint: false,
+                            }]),
+                        );
+                        prepared = self.prepare_request_payload(&request)?;
+                        overflow = estimate_context_budget(
+                            self.context_window_tokens,
+                            prepared.effective_output_tokens,
+                            &prepared.payload,
+                            &["max_tokens"],
+                        )
+                        .filter(|budget| budget.overflow_tokens() > 0);
+                    }
+                }
+                let url = format!("{}/v1/messages", self.base_url);
+                let model_ref = self.model_route.clone();
+                if let Some(budget) = overflow {
+                    return Err(context_budget_overflow_error(
+                        &self.route_provider,
+                        &model_ref,
+                        &url,
+                        budget,
+                    ));
+                }
+                let PreparedAnthropicRequest {
+                    payload: request_payload,
+                    wire_conversation,
+                    rolling_cache_marker,
+                    ..
+                } = prepared;
+                let cache_strategy = self.context_management.cache_strategy;
+                let mut headers = vec![
+                    ("content-type", "application/json".to_string()),
+                    ("anthropic-version", "2023-06-01".to_string()),
+                ];
+                if let Some(auth_token) = self.auth_token.as_deref() {
+                    headers.push(("authorization", format!("Bearer {auth_token}")));
+                }
+                if self.context_management.enabled {
+                    headers.push((
+                        "anthropic-beta",
+                        "context-management-2025-06-27".to_string(),
+                    ));
+                }
+                #[cfg(test)]
+                let trace = self
+                    .http_trace_override
+                    .clone()
+                    .or_else(|| ProviderHttpTrace::from_env(self.trace_home_dir.clone()));
+                #[cfg(not(test))]
+                let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+                let request_trace = trace
+                    .map(|trace| {
+                        trace.begin_request_with_material(
+                            request
+                                .prompt_frame
+                                .cache
+                                .as_ref()
+                                .map(|cache| cache.agent_id.as_str()),
+                            &self.route_provider,
+                            Some(&model_ref),
+                            url.as_str(),
+                            "messages",
+                            &headers,
+                            &request_payload,
+                            &material,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                let mut request_builder = self.client.post(&url);
+                for (name, value) in &headers {
+                    request_builder = request_builder.header(*name, value);
+                }
+                let request_started_at = chrono::Utc::now();
+                let response = send_provider_request(
+                    request_builder.body(material.json_bytes(&request_payload)?),
                     "Anthropic request failed",
-                    "response_status",
-                    Some(&self.route_provider),
+                    "request_send",
+                    &self.route_provider,
                     Some(&model_ref),
                     Some(url.as_str()),
-                    status,
-                    body,
+                    RequestDeadline::TextStream,
                     request_trace.as_ref(),
-                    retry_after,
-                ),
-                true,
-            ));
-        }
+                    request.dispatch_guard.as_deref(),
+                )
+                .await?;
+                let response_headers_at = chrono::Utc::now();
+                if let Some(trace) = request_trace.as_ref() {
+                    trace.write_response_headers(response.status(), response.headers());
+                }
+                let provider_request_id = provider_request_id_from_headers(response.headers());
 
-        let streaming = anthropic_response_is_sse(&response);
-        let parsed = if streaming {
-            read_anthropic_streaming_response(
-                response,
-                &self.route_provider,
-                &model_ref,
-                url.as_str(),
-                request_trace.as_ref(),
-            )
-            .await?
-        } else {
-            read_anthropic_json_response(
-                response,
-                &self.route_provider,
-                &model_ref,
-                url.as_str(),
-                request_trace.as_ref(),
-            )
-            .await?
-        };
-        let response_body_completed_at = chrono::Utc::now();
-        let mut response = anthropic_messages_response_to_turn_response(
-            parsed,
-            provider_request_id,
-            &request,
-            &wire_conversation,
-            rolling_cache_marker,
-            &request_payload,
-            self.route_provider.as_str(),
-            self.model.as_str(),
-            cache_strategy,
-            &self.effective_betas(),
-            &model_ref,
-            url.as_str(),
-            request_trace.as_ref(),
-        )?;
-        let parse_completed_at = chrono::Utc::now();
-        let cache_diagnostics = response
-            .request_diagnostics
-            .as_mut()
-            .and_then(|diagnostics| diagnostics.anthropic_cache.as_mut())
-            .expect("Anthropic responses include cache diagnostics");
-        cache_diagnostics.explicit_cache_control_enabled =
-            Some(self.context_management.cache_capabilities.cache_control);
-        cache_diagnostics.cache_control_source = self.cache_control_source;
-        cache_diagnostics.model_route = Some(self.model_route.clone());
-        response
-            .request_diagnostics
-            .as_mut()
-            .expect("Anthropic responses include request diagnostics")
-            .transport_timeline = Some(ProviderTransportTimeline {
-            request_started_at,
-            response_headers_at,
-            response_body_completed_at: Some(response_body_completed_at),
-            parse_completed_at,
-            streaming,
-        });
-        Ok(response)
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let retry_after = parse_retry_after(response.headers());
+                    let body = read_error_response_body(response, request_trace.as_ref(), &material).await?;
+                    return Err(crate::provider::retry::set_provider_transport_streaming(
+                        classify_status_error_with_trace(
+                            "Anthropic request failed",
+                            "response_status",
+                            Some(&self.route_provider),
+                            Some(&model_ref),
+                            Some(url.as_str()),
+                            status,
+                            body,
+                            request_trace.as_ref(),
+                            retry_after,
+                        ),
+                        true,
+                    ));
+                }
+
+                let streaming = anthropic_response_is_sse(&response);
+                let parsed = if streaming {
+                    read_anthropic_streaming_response(
+                        response,
+                        &self.route_provider,
+                        &model_ref,
+                        url.as_str(),
+                        request_trace.as_ref(),
+                        &material,
+                    )
+                    .await?
+                } else {
+                    read_anthropic_json_response(
+                        response,
+                        &self.route_provider,
+                        &model_ref,
+                        url.as_str(),
+                        request_trace.as_ref(),
+                        &material,
+                    )
+                    .await?
+                };
+                let response_body_completed_at = chrono::Utc::now();
+                material.admit_value(&parsed)?;
+                let mut response = anthropic_messages_response_to_turn_response(
+                    parsed,
+                    provider_request_id,
+                    &request,
+                    &wire_conversation,
+                    rolling_cache_marker,
+                    &request_payload,
+                    self.route_provider.as_str(),
+                    self.model.as_str(),
+                    cache_strategy,
+                    &self.effective_betas(),
+                    &model_ref,
+                    url.as_str(),
+                    request_trace.as_ref(),
+                )?;
+                let parse_completed_at = chrono::Utc::now();
+                let cache_diagnostics = response
+                    .request_diagnostics
+                    .as_mut()
+                    .and_then(|diagnostics| diagnostics.anthropic_cache.as_mut())
+                    .expect("Anthropic responses include cache diagnostics");
+                cache_diagnostics.explicit_cache_control_enabled =
+                    Some(self.context_management.cache_capabilities.cache_control);
+                cache_diagnostics.cache_control_source = self.cache_control_source;
+                cache_diagnostics.model_route = Some(self.model_route.clone());
+                response
+                    .request_diagnostics
+                    .as_mut()
+                    .expect("Anthropic responses include request diagnostics")
+                    .transport_timeline = Some(ProviderTransportTimeline {
+                    request_started_at,
+                    response_headers_at,
+                    response_body_completed_at: Some(response_body_completed_at),
+                    parse_completed_at,
+                    streaming,
+                });
+                Ok(response)
+            })
+            .await
     }
 
     #[cfg(test)]
@@ -847,35 +913,45 @@ async fn read_anthropic_json_response(
     model_ref: &str,
     url: &str,
     trace: Option<&ProviderHttpTraceRequest>,
+    material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<MessagesResponse> {
-    let response_body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
-        Ok(Ok(text)) => text,
-        Ok(Err(error)) => {
-            return Err(classify_reqwest_transport_error_with_trace(
-                "Anthropic response body failed",
-                "response_body",
-                provider,
-                Some(model_ref),
-                Some(url),
-                error,
-                trace,
-            ));
-        }
-        Err(_elapsed) => {
-            return Err(timeout_transport_error_with_trace(
-                "Anthropic response body read timed out",
-                "response_body",
-                provider,
-                Some(model_ref),
-                Some(url),
-                format!("timed out after {:?}", response_body_timeout()),
-                trace,
-            ));
-        }
-    };
+    let response_body =
+        match tokio::time::timeout(response_body_timeout(), material.response_text(response)).await
+        {
+            Ok(Ok(text)) => text,
+            Ok(Err(error)) if error.downcast_ref::<reqwest::Error>().is_none() => {
+                return Err(error)
+            }
+            Ok(Err(error)) => {
+                return Err(classify_reqwest_transport_error_with_trace(
+                    "Anthropic response body failed",
+                    "response_body",
+                    provider,
+                    Some(model_ref),
+                    Some(url),
+                    match error.downcast::<reqwest::Error>() {
+                        Ok(error) => error,
+                        Err(error) => return Err(error),
+                    },
+                    trace,
+                ));
+            }
+            Err(_elapsed) => {
+                return Err(timeout_transport_error_with_trace(
+                    "Anthropic response body read timed out",
+                    "response_body",
+                    provider,
+                    Some(model_ref),
+                    Some(url),
+                    format!("timed out after {:?}", response_body_timeout()),
+                    trace,
+                ));
+            }
+        };
     if let Some(trace) = trace {
         trace.write_response_body(&response_body);
     }
+    material.read(|| crate::diagnostics::resource_io::admit_json_payload(&response_body))?;
     serde_json::from_str(&response_body).map_err(|error| {
         invalid_response_error_with_trace(
             "invalid Anthropic JSON",
@@ -895,9 +971,16 @@ async fn read_anthropic_streaming_response(
     model_ref: &str,
     url: &str,
     trace: Option<&ProviderHttpTraceRequest>,
+    material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<MessagesResponse> {
-    let mut parser = SseParser::default();
-    let mut accumulator = AnthropicStreamAccumulator::default();
+    let mut parser = SseParser {
+        material: material.clone(),
+        ..Default::default()
+    };
+    let mut accumulator = AnthropicStreamAccumulator {
+        material: material.clone(),
+        ..Default::default()
+    };
     let idle_timeout = stream_idle_timeout();
 
     loop {
@@ -924,15 +1007,17 @@ async fn read_anthropic_streaming_response(
                     trace.write_stream_chunk(&chunk);
                 }
                 for event in parser.push(&chunk).map_err(|error| {
-                    invalid_response_error_with_trace(
-                        "invalid Anthropic stream event",
-                        "streaming_response_parse",
-                        provider,
-                        Some(model_ref),
-                        Some(url),
-                        error,
-                        trace,
-                    )
+                    classify_anthropic_sse_parse_error(error, |detail| {
+                        invalid_response_error_with_trace(
+                            "invalid Anthropic stream event",
+                            "streaming_response_parse",
+                            provider,
+                            Some(model_ref),
+                            Some(url),
+                            detail,
+                            trace,
+                        )
+                    })
                 })? {
                     accumulator.apply(event, model_ref, url, trace)?;
                 }
@@ -953,21 +1038,23 @@ async fn read_anthropic_streaming_response(
     }
 
     for event in parser.finish().map_err(|error| {
-        invalid_response_error_with_trace(
-            "invalid Anthropic stream event",
-            "streaming_response_parse",
-            provider,
-            Some(model_ref),
-            Some(url),
-            error,
-            trace,
-        )
+        classify_anthropic_sse_parse_error(error, |detail| {
+            invalid_response_error_with_trace(
+                "invalid Anthropic stream event",
+                "streaming_response_parse",
+                provider,
+                Some(model_ref),
+                Some(url),
+                detail,
+                trace,
+            )
+        })
     })? {
         accumulator.apply(event, model_ref, url, trace)?;
     }
     let response = accumulator.finish(provider, model_ref, url, trace)?;
     if let Some(trace) = trace {
-        trace.write_stream_terminal(&serde_json::to_value(&response).unwrap_or_else(|_| json!({})));
+        trace.write_stream_terminal(&material.json_value(&response)?);
     }
     Ok(response)
 }
@@ -1117,6 +1204,7 @@ fn anthropic_messages_response_to_turn_response(
         }),
     );
     Ok(ProviderTurnResponse {
+        material: Default::default(),
         blocks,
         stop_reason: parsed.stop_reason,
         input_tokens,
@@ -1188,16 +1276,29 @@ fn provider_request_id_from_headers(headers: &HeaderMap) -> Option<String> {
 #[derive(Default)]
 struct SseParser {
     buffer: Vec<u8>,
+    material: crate::provider::ProviderRequestMaterial,
 }
 
 impl SseParser {
-    fn push(&mut self, chunk: &[u8]) -> std::result::Result<Vec<AnthropicStreamEvent>, String> {
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<AnthropicStreamEvent>> {
+        self.material.read(|| {
+            crate::diagnostics::resource_io::charge_owned_payload(u64::try_from(chunk.len())?)?;
+            Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                128, 1,
+            )?)
+        })?;
         self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
         loop {
             let Some(end) = find_sse_event_end(&self.buffer) else {
                 break;
             };
+            self.material.read(|| {
+                crate::diagnostics::resource_io::charge_owned_payload(u64::try_from(end)?)?;
+                Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                    128, 1,
+                )?)
+            })?;
             let raw = self.buffer.drain(..end).collect::<Vec<_>>();
             let separator_len = if self.buffer.starts_with(b"\r\n\r\n") {
                 4
@@ -1205,19 +1306,33 @@ impl SseParser {
                 2
             };
             self.buffer.drain(..separator_len);
-            if let Some(event) = parse_sse_event(&raw)? {
+            if let Some(event) = parse_sse_event_with_material(&raw, &self.material)? {
+                self.admit_event_slot()?;
                 events.push(event);
             }
         }
         Ok(events)
     }
 
-    fn finish(mut self) -> std::result::Result<Vec<AnthropicStreamEvent>, String> {
+    fn admit_event_slot(&self) -> Result<()> {
+        self.material.read(|| {
+            Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(std::mem::size_of::<AnthropicStreamEvent>())?,
+                1,
+            )?)
+        })
+    }
+
+    fn finish(mut self) -> Result<Vec<AnthropicStreamEvent>> {
         if self.buffer.is_empty() {
             return Ok(Vec::new());
         }
         let raw = std::mem::take(&mut self.buffer);
-        parse_sse_event(&raw).map(|event| event.into_iter().collect())
+        let event = parse_sse_event_with_material(&raw, &self.material)?;
+        if event.is_some() {
+            self.admit_event_slot()?;
+        }
+        Ok(event.into_iter().collect())
     }
 }
 
@@ -1228,8 +1343,42 @@ fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
         .or_else(|| buffer.windows(2).position(|window| window == b"\n\n"))
 }
 
-fn parse_sse_event(raw: &[u8]) -> std::result::Result<Option<AnthropicStreamEvent>, String> {
-    let text = std::str::from_utf8(raw).map_err(|error| error.to_string())?;
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct AnthropicSseParseError(String);
+
+fn classify_anthropic_sse_parse_error(
+    error: anyhow::Error,
+    invalid: impl FnOnce(String) -> anyhow::Error,
+) -> anyhow::Error {
+    match error.downcast::<AnthropicSseParseError>() {
+        Ok(error) => invalid(error.0),
+        Err(error) => error,
+    }
+}
+
+#[cfg(test)]
+fn parse_sse_event(raw: &[u8]) -> Result<Option<AnthropicStreamEvent>> {
+    parse_sse_event_with_material(raw, &Default::default())
+}
+
+fn parse_sse_event_with_material(
+    raw: &[u8],
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<Option<AnthropicStreamEvent>> {
+    let text =
+        std::str::from_utf8(raw).map_err(|error| AnthropicSseParseError(error.to_string()))?;
+    material.read(|| {
+        let lines = text.lines().count();
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(lines)?
+                .checked_mul(32)
+                .context("SSE line material overflow")?,
+            lines,
+        )?;
+        crate::diagnostics::resource_io::charge_owned_payload(u64::try_from(raw.len())?)?;
+        Ok(())
+    })?;
     let mut data = Vec::new();
     let mut event_type: Option<&str> = None;
     for line in text.lines() {
@@ -1250,10 +1399,14 @@ fn parse_sse_event(raw: &[u8]) -> std::result::Result<Option<AnthropicStreamEven
     if data.trim() == "[DONE]" {
         return Ok(None);
     }
+    material.read(|| crate::diagnostics::resource_io::admit_json_payload(&data))?;
     match serde_json::from_str::<AnthropicStreamEvent>(&data) {
         Ok(event) => Ok(Some(event)),
-        Err(_) if event_type == Some("error") => parse_fallback_error_event(&data),
-        Err(error) => Err(error.to_string()),
+        Err(_) if event_type == Some("error") => {
+            material.read(|| crate::diagnostics::resource_io::admit_json_payload(&data))?;
+            parse_fallback_error_event(&data).map_err(|error| AnthropicSseParseError(error).into())
+        }
+        Err(error) => Err(AnthropicSseParseError(error.to_string()).into()),
     }
 }
 
@@ -1327,6 +1480,7 @@ struct AnthropicStreamAccumulator {
     response: Option<MessagesResponse>,
     content: Vec<ApiResponseBlock>,
     saw_message_stop: bool,
+    material: crate::provider::ProviderRequestMaterial,
 }
 
 impl AnthropicStreamAccumulator {
@@ -1350,21 +1504,16 @@ impl AnthropicStreamAccumulator {
                     return Ok(());
                 };
                 normalize_stream_start_block(&mut block);
-                if self.content.len() <= index {
-                    self.content
-                        .resize_with(index + 1, ApiResponseBlock::default);
-                }
+                self.ensure_content_index(index)?;
                 self.content[index] = block;
             }
             "content_block_delta" => {
                 let Some(index) = event.index else {
                     return Ok(());
                 };
-                if self.content.len() <= index {
-                    self.content
-                        .resize_with(index + 1, ApiResponseBlock::default);
-                }
-                apply_stream_delta(&mut self.content[index], event.delta);
+                self.ensure_content_index(index)?;
+                self.material
+                    .read(|| apply_stream_delta(&mut self.content[index], event.delta))?;
             }
             "message_delta" => {
                 let response = self.response.get_or_insert_with(MessagesResponse::default);
@@ -1385,6 +1534,12 @@ impl AnthropicStreamAccumulator {
             }
             "ping" | "content_block_stop" => {}
             "error" => {
+                self.material.admit_value(
+                    &event
+                        .error
+                        .as_ref()
+                        .map(|error| (&error.kind, &error.message)),
+                )?;
                 let detail = event
                     .error
                     .map(|error| {
@@ -1408,6 +1563,25 @@ impl AnthropicStreamAccumulator {
             _ => {}
         }
         let _ = (model_ref, url, trace);
+        Ok(())
+    }
+
+    fn ensure_content_index(&mut self, index: usize) -> Result<()> {
+        if self.content.len() <= index {
+            let length = index
+                .checked_add(1)
+                .context("ResourceExhausted: SSE content index")?;
+            let added = length - self.content.len();
+            self.material.read(|| {
+                Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                    u64::try_from(added)?
+                        .checked_mul(u64::try_from(std::mem::size_of::<ApiResponseBlock>())?)
+                        .context("ResourceExhausted: SSE content material")?,
+                    added,
+                )?)
+            })?;
+            self.content.resize_with(length, ApiResponseBlock::default);
+        }
         Ok(())
     }
 
@@ -1440,12 +1614,20 @@ impl AnthropicStreamAccumulator {
                 trace,
             ));
         }
+        self.material.read(|| {
+            Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(self.content.len())?
+                    .checked_mul(u64::try_from(std::mem::size_of::<ApiResponseBlock>())?)
+                    .context("SSE content material overflow")?,
+                self.content.len(),
+            )?)
+        })?;
         response.content = self
             .content
             .into_iter()
             .filter(|block| !block.kind.is_empty())
-            .map(finalize_stream_block)
-            .collect();
+            .map(|block| self.material.read(|| finalize_stream_block(block)))
+            .collect::<Result<Vec<_>>>()?;
         Ok(response)
     }
 }
@@ -1462,10 +1644,21 @@ fn normalize_stream_start_block(block: &mut ApiResponseBlock) {
     }
 }
 
-fn apply_stream_delta(block: &mut ApiResponseBlock, delta: Option<AnthropicStreamDelta>) {
+fn apply_stream_delta(
+    block: &mut ApiResponseBlock,
+    delta: Option<AnthropicStreamDelta>,
+) -> Result<()> {
     let Some(delta) = delta else {
-        return;
+        return Ok(());
     };
+    let appended = match delta.kind.as_deref() {
+        Some("text_delta") => delta.text.as_deref().unwrap_or_default(),
+        Some("thinking_delta") => delta.thinking.as_deref().unwrap_or_default(),
+        Some("input_json_delta") => delta.partial_json.as_deref().unwrap_or_default(),
+        _ => "",
+    };
+    crate::diagnostics::resource_io::charge_owned_payload(u64::try_from(appended.len())?)?;
+    crate::diagnostics::resource_io::charge_owned_metadata(128, 1)?;
     match delta.kind.as_deref() {
         Some("text_delta") => {
             block
@@ -1485,27 +1678,27 @@ fn apply_stream_delta(block: &mut ApiResponseBlock, delta: Option<AnthropicStrea
         Some("input_json_delta") => {
             let current = block
                 .input
-                .get_or_insert_with(|| Value::String(String::new()))
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
-            *block.input.as_mut().expect("input inserted") = Value::String(format!(
-                "{}{}",
-                current,
-                delta.partial_json.unwrap_or_default()
-            ));
+                .get_or_insert_with(|| Value::String(String::new()));
+            if !current.is_string() {
+                *current = Value::String(String::new());
+            }
+            if let Value::String(current) = current {
+                current.push_str(delta.partial_json.as_deref().unwrap_or_default());
+            }
         }
         _ => {}
     }
+    Ok(())
 }
 
-fn finalize_stream_block(mut block: ApiResponseBlock) -> ApiResponseBlock {
+fn finalize_stream_block(mut block: ApiResponseBlock) -> Result<ApiResponseBlock> {
     if block.kind == "tool_use" {
         if let Some(Value::String(raw)) = block.input.take() {
+            crate::diagnostics::resource_io::admit_json_payload(&raw)?;
             block.input = Some(serde_json::from_str(&raw).unwrap_or_else(|_| json!({})));
         }
     }
-    block
+    Ok(block)
 }
 
 fn merge_anthropic_usage(target: &mut ApiUsage, update: ApiUsage) {
@@ -3494,6 +3687,7 @@ mod tests {
     fn claude_code_prompt_cache_keeps_turn_scoped_context_out_of_system_prefix() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "unused plain system".to_string(),
@@ -3596,6 +3790,7 @@ mod tests {
         ];
         ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
                 "stable system".to_string(),
@@ -4118,7 +4313,7 @@ mod tests {
         let conversation = vec![ConversationMessage::UserImage {
             prompt: "Describe the visible error dialog.".to_string(),
             media_type: "image/png".to_string(),
-            data_base64: "iVBORw0KGgo=".to_string(),
+            data_base64: "iVBORw0KGgo=".to_string().into(),
             optional_history: false,
         }];
 
@@ -4414,6 +4609,7 @@ mod tests {
     fn anthropic_request_payload_for_fingerprints_is_wire_object() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "unused plain system".to_string(),
@@ -4452,6 +4648,7 @@ mod tests {
     fn test_collect_anthropic_cache_diagnostics_initial_request() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "You are a helpful assistant.".to_string(),
@@ -4548,6 +4745,7 @@ mod tests {
     fn test_collect_anthropic_cache_diagnostics_continuation_with_breakpoints() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "You are a helpful assistant.".to_string(),
@@ -5038,6 +5236,7 @@ mod tests {
     fn test_estimate_token_distribution() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "System prompt".to_string(),
@@ -5098,6 +5297,7 @@ mod tests {
 
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
                 system_prompt: "System prompt".to_string(),

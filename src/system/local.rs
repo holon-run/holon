@@ -30,6 +30,33 @@ pub struct ProcessGroupId {
     pub pid: u32,
 }
 
+#[cfg(unix)]
+struct LocalRegisteredProcessGroupProbe {
+    frozen_pgid: u32,
+}
+#[cfg(unix)]
+impl super::process::RegisteredProcessGroupProbe for LocalRegisteredProcessGroupProbe {
+    fn observe(&self) -> super::process::RegisteredProcessGroupQuiescence {
+        use super::process::RegisteredProcessGroupQuiescence as Q;
+        let Ok(pgid) = i32::try_from(self.frozen_pgid) else {
+            return Q::Unknown;
+        };
+        if pgid <= 0 {
+            return Q::Unknown;
+        }
+        // Signal zero only probes the original frozen group; it sends no signal.
+        let found = unsafe { libc::kill(-pgid, 0) };
+        if found == 0 {
+            return Q::NonEmpty;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Q::Empty,
+            // EPERM, reuse/unknown membership and all other errors grant nothing.
+            _ => Q::Unknown,
+        }
+    }
+}
+
 impl LocalSystem {
     pub fn new() -> Self {
         Self
@@ -503,6 +530,22 @@ struct LocalPtyRunningProcess {
 
 #[async_trait]
 impl RunningProcess for LocalRunningProcess {
+    fn registered_group_probe(
+        &self,
+    ) -> Option<Arc<dyn super::process::RegisteredProcessGroupProbe>> {
+        #[cfg(unix)]
+        {
+            self.process_group_id.as_ref().map(|id| {
+                Arc::new(LocalRegisteredProcessGroupProbe {
+                    frozen_pgid: id.pid,
+                }) as Arc<dyn super::process::RegisteredProcessGroupProbe>
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
     fn id(&self) -> String {
         self.child
             .id()
@@ -568,6 +611,22 @@ impl RunningProcess for LocalRunningProcess {
 
 #[async_trait]
 impl RunningProcess for LocalPtyRunningProcess {
+    fn registered_group_probe(
+        &self,
+    ) -> Option<Arc<dyn super::process::RegisteredProcessGroupProbe>> {
+        #[cfg(unix)]
+        {
+            self.process_group_id.as_ref().map(|id| {
+                Arc::new(LocalRegisteredProcessGroupProbe {
+                    frozen_pgid: id.pid,
+                }) as Arc<dyn super::process::RegisteredProcessGroupProbe>
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
     fn id(&self) -> String {
         self.child
             .lock()
@@ -995,5 +1054,100 @@ mod tests {
             .unwrap();
         assert_eq!(read.path, external);
         assert_eq!(read.content, "skill body");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod registered_process_group_tests {
+    use super::*;
+    use crate::system::process::RegisteredProcessGroupQuiescence as Q;
+    fn execution() -> (tempfile::TempDir, EffectiveExecution) {
+        let dir = tempfile::tempdir().unwrap();
+        let view = WorkspaceView::new(
+            None,
+            dir.path().into(),
+            dir.path().into(),
+            dir.path().into(),
+            None,
+            None,
+            super::super::WorkspaceProjectionKind::CanonicalRoot,
+            None,
+        )
+        .unwrap();
+        (
+            dir,
+            EffectiveExecution {
+                profile: super::super::ExecutionProfile::default(),
+                workspace: view,
+                scope: super::super::ExecutionScopeKind::AgentTurn,
+                attached_workspaces: vec![],
+            },
+        )
+    }
+    fn request(command: &str) -> ProcessRequest {
+        ProcessRequest {
+            program: ProgramInvocation::Shell {
+                command: command.into(),
+                shell: Some("sh".into()),
+                login: false,
+            },
+            cwd: None,
+            env: vec![],
+            stdin: StdioSpec::Null,
+            tty: false,
+            capture: super::super::CaptureSpec::NONE,
+            timeout: None,
+            purpose: super::super::ProcessPurpose::CommandTask,
+        }
+    }
+    #[tokio::test]
+    async fn original_local_group_is_nonempty_before_exit_and_empty_after_actual_wait() -> Result<()>
+    {
+        let (_dir, e) = execution();
+        let system = LocalSystem::new();
+        let mut process = system.spawn(&e, request("sleep 0.1")).await?;
+        let group = process
+            .registered_group_probe()
+            .expect("real Local process has frozen pgid");
+        assert_eq!(group.observe(), Q::NonEmpty);
+        process.wait().await?;
+        assert_eq!(group.observe(), Q::Empty);
+        drop(process);
+        assert_eq!(group.observe(), Q::Empty);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn foreground_wait_does_not_prove_background_same_group_empty() -> Result<()> {
+        let (_dir, e) = execution();
+        let system = LocalSystem::new();
+        let mut process = system.spawn(&e, request("sleep 30 & exit 0")).await?;
+        let group = process
+            .registered_group_probe()
+            .expect("real Local process has frozen pgid");
+        assert!(process.wait().await?.success());
+        assert_eq!(
+            group.observe(),
+            Q::NonEmpty,
+            "background original group is still a producer"
+        );
+        // Test-owned subprocess cleanup only. No production proof comes from this
+        // signal; an unreaped background child may correctly remain nonempty.
+        process.stop(StopSignal::Force).await?;
+        Ok(())
+    }
+    #[test]
+    fn invalid_or_unknown_frozen_group_grants_no_empty_proof() {
+        use crate::system::process::RegisteredProcessGroupProbe;
+        assert_eq!(
+            LocalRegisteredProcessGroupProbe { frozen_pgid: 0 }.observe(),
+            Q::Unknown
+        );
+        assert_eq!(
+            LocalRegisteredProcessGroupProbe {
+                frozen_pgid: u32::MAX
+            }
+            .observe(),
+            Q::Unknown
+        );
     }
 }

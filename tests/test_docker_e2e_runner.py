@@ -1938,6 +1938,40 @@ class DockerE2ERunnerTests(unittest.TestCase):
             "http://localhost/api/callbacks/wake/<redacted>",
         )
 
+    def test_evidence_redacts_secrets_in_subprocess_failures(self) -> None:
+        token = "temporary-docker-control-token"
+        credential = "temporary-provider-credential"
+        command = [
+            "docker", "run", "--env", f"HOLON_CONTROL_TOKEN={token}",
+            "--env", f"OPENAI_API_KEY={credential}", "holon:test",
+        ]
+        for error in (
+            subprocess.TimeoutExpired(command, 30),
+            subprocess.CalledProcessError(1, command),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                evidence = runner.redact_evidence(
+                    {"error": str(error), "cleanup_errors": [str(error)]},
+                    [token, credential],
+                )
+                runner.write_json(root / "case.json", evidence)
+                (root / "failure.txt").write_text(evidence["error"])
+                self.assertNotIn(token, evidence["error"])
+                self.assertNotIn(credential, evidence["error"])
+                self.assertIn("docker", evidence["error"])
+                self.assertIn("holon:test", evidence["error"])
+                self.assertEqual(
+                    runner.secret_scan(root, [token, credential])["status"], "pass"
+                )
+                (root / "unrelated.txt").write_text(credential)
+                self.assertEqual(
+                    runner.secret_scan(root, [token, credential])["status"], "fail"
+                )
+
     def test_capture_logs_redacts_callback_capability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             harness = runner.CaseHarness(

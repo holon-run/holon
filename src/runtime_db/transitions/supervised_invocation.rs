@@ -225,6 +225,12 @@ mod tests {
     use tempfile::TempDir;
 
     fn fixture() -> Result<(TempDir, RuntimeDb, TaskRecord, QueueTransitionCommand)> {
+        fixture_with_native_task(false)
+    }
+
+    fn fixture_with_native_task(
+        native: bool,
+    ) -> Result<(TempDir, RuntimeDb, TaskRecord, QueueTransitionCommand)> {
         let dir = tempfile::tempdir()?;
         let db = RuntimeDb::open_and_migrate(
             dir.path().join("state/runtime.sqlite"),
@@ -254,7 +260,39 @@ mod tests {
             detail: Some(json!({"sentinel": "preserved"})),
             recovery: None,
         };
-        db.tasks().upsert(&task)?;
+        if native {
+            use crate::runtime::{
+                resident_input_evidence::InputEvidenceScope,
+                resident_task::{TaskCaptureRequest, TaskFamily, TaskKey},
+            };
+            use crate::runtime_db::task_snapshot;
+            let scope = InputEvidenceScope {
+                agent_id: parent.agent_id.clone(),
+                identity_incarnation: parent.incarnation,
+            };
+            let state = crate::types::AgentState::new(&parent.agent_id);
+            db.transaction(|tx| {
+                crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
+                let keys = std::collections::BTreeSet::from([
+                    TaskKey::new(TaskFamily::Task, &task.id),
+                ]);
+                let proof = task_snapshot::prepare_task_write_tx(tx, &scope, &keys)?;
+                crate::runtime_db::repositories::upsert_task_tx(tx, &task)?;
+                task_snapshot::register_task_writes_tx(
+                    tx, &proof, &keys, &state,
+                    &task_snapshot::TaskDomainLoadRequest {
+                        recovery_at: None,
+                        query: Default::default(),
+                        capture: TaskCaptureRequest::current(),
+                        byte_limit: 64 * 1024 * 1024,
+                        record_limit: 65_536,
+                    },
+                )?;
+                Ok(())
+            })?;
+        } else {
+            db.tasks().upsert(&task)?;
+        }
         let child = AgentIdentityRecord::new(
             "child",
             AgentKind::Child,
@@ -268,6 +306,11 @@ mod tests {
         let relations = supervised_creation_records(&child, &parent.agent_id, &task.id, None);
         db.agent_identities()
             .create_with_relations(&child, &relations)?;
+        if native {
+            db.transaction(|tx| crate::runtime_db::evidence::upsert_agent_state_tx(
+                tx, &crate::types::AgentState::new(&child.agent_id),
+            ))?;
+        }
         let mut message = MessageEnvelope::new(
             child.agent_id.clone(),
             MessageKind::InternalFollowup,
@@ -315,6 +358,148 @@ mod tests {
             brief_evidence: Vec::new(),
         };
         Ok((dir, db, task, command))
+    }
+
+    fn prepared_admission(
+        command: QueueTransitionCommand,
+        task: &TaskRecord,
+        nonce: &str,
+    ) -> Result<super::super::PreparedInputTransition> {
+        use super::super::{
+            PreparedInputTransition, PreparedQueueTransition, PreparedSupervisedInvocationAdmission,
+        };
+        use crate::runtime::resident_input_evidence::InputEvidenceScope;
+        let child = InputEvidenceScope {
+            agent_id: command.agent_id.clone(),
+            identity_incarnation: 1,
+        };
+        let parent = InputEvidenceScope {
+            agent_id: task.agent_id.clone(),
+            identity_incarnation: 1,
+        };
+        let mut queue = PreparedQueueTransition::new(command);
+        queue.supervised_invocation = Some(PreparedSupervisedInvocationAdmission {
+            parent_scope: parent.clone(),
+            parent_task: task.clone(),
+            child_incarnation: child.identity_incarnation,
+        });
+        PreparedInputTransition::queue(child.clone(), nonce.into(), Utc::now(), queue)?
+            .with_scope_group(vec![parent, child])
+    }
+
+    #[test]
+    fn plain_queue_preserves_its_original_body_without_supervision() -> Result<()> {
+        let (_dir, _db, _task, command) = fixture()?;
+        let queue = super::super::PreparedQueueTransition::new(command);
+        assert!(serde_json::to_value(queue)?.get("supervised_invocation").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_supervised_admission_keeps_parent_delta_and_receipt_in_parent_scope() -> Result<()> {
+        use super::super::InputMutationExecution;
+        let (_dir, db, task, command) = fixture_with_native_task(true)?;
+        let prepared = prepared_admission(command.clone(), &task, "native-admit")?;
+        let child = prepared.descriptor().scopes().iter()
+            .find(|scope| scope.agent_id == command.agent_id).unwrap().clone();
+        let InputMutationExecution::Committed { value, receipt } =
+            db.transitions_in_scope(&child).commit_prepared_transition(&prepared)?
+        else { anyhow::bail!("original admission must commit") };
+        assert!(value.applied);
+        assert_eq!(value.effects.related_task_deltas.len(), 1);
+        assert_eq!(value.effects.related_task_deltas[0].scope.agent_id, task.agent_id);
+        assert!(value.effects.tasks.is_empty());
+        assert!(value.effects.task_write_keys.is_empty());
+        let parent = receipt.outcome.scopes.iter()
+            .find(|outcome| outcome.scope.agent_id == task.agent_id).unwrap();
+        assert!(parent.install_keys.tasks.contains(&task.id));
+        let child_outcome = receipt.outcome.scopes.iter()
+            .find(|outcome| outcome.scope == child).unwrap();
+        assert!(!child_outcome.install_keys.tasks.contains(&task.id));
+        let bound = db.tasks().latest(&task.id)?.unwrap();
+        assert_eq!(bound.detail.as_ref().unwrap()["source_message_id"], command.message_evidence[0].id);
+        assert!(db.messages().by_id(Some(&child.agent_id), &command.message_evidence[0].id)?.is_some());
+        assert!(matches!(
+            db.transitions_in_scope(&child).commit_prepared_transition(&prepared)?,
+            InputMutationExecution::Replayed { .. }
+        ));
+        let duplicate = prepared_admission(command, &task, "native-duplicate")?;
+        let InputMutationExecution::Committed { value, receipt } =
+            db.transitions_in_scope(&child).commit_prepared_transition(&duplicate)?
+        else { anyhow::bail!("duplicate must write its original no-op receipt") };
+        assert!(!value.applied);
+        assert!(value.effects.related_task_deltas.is_empty());
+        // An idempotent no-op binding writes no parent Task, so it must not
+        // publish a parent current receipt.
+        let duplicate_parent = receipt.outcome.scopes.iter()
+            .find(|outcome| outcome.scope.agent_id == task.agent_id).unwrap();
+        assert!(duplicate_parent.install_keys.tasks.is_empty());
+        let duplicate_child = receipt.outcome.scopes.iter()
+            .find(|outcome| outcome.scope == child).unwrap();
+        assert!(!duplicate_child.install_keys.tasks.contains(&task.id));
+        assert_eq!(db.tasks().latest(&task.id)?.unwrap(), bound);
+        assert!(duplicate.with_scope_group(vec![child]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn supervised_parent_scope_must_be_an_active_business_writer() -> Result<()> {
+        let (_dir, db, task, command) = fixture_with_native_task(true)?;
+        let child_agent_id = command.agent_id.clone();
+        let message_id = command.message_evidence[0].id.clone();
+        // A retiring parent keeps its read-only group gate but is no longer an
+        // allowed business writer for a new supervised admission.
+        db.transaction(|tx| {
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                [&task.agent_id],
+                |row| row.get(0),
+            )?;
+            let mut identity: AgentIdentityRecord = serde_json::from_str(&payload)?;
+            identity.status = crate::types::AgentRegistryStatus::Deleting;
+            tx.execute(
+                "UPDATE agent_identities SET status = 'deleting', payload_json = ?2 WHERE agent_id = ?1",
+                rusqlite::params![task.agent_id, serde_json::to_string(&identity)?],
+            )?;
+            Ok(())
+        })?;
+        let prepared = prepared_admission(command, &task, "deleting-parent")?;
+        let child = prepared.descriptor().scopes().iter()
+            .find(|scope| scope.agent_id == child_agent_id).unwrap().clone();
+        let error = db.transitions_in_scope(&child)
+            .commit_prepared_transition(&prepared)
+            .expect_err("a retiring parent must not open a new supervised admission");
+        assert!(
+            format!("{error:#}").contains("identity incarnation is no longer current"),
+            "unexpected failure: {error:#}"
+        );
+        assert!(db.messages().by_id(Some(&child.agent_id), &message_id)?.is_none());
+        assert!(db.queue_entries().latest(&message_id)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_supervised_admission_rolls_back_parent_binding_with_child_source() -> Result<()> {
+        use super::super::TransitionFaultPoint;
+        for fault in [
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_dir, db, task, mut command) = fixture_with_native_task(true)?;
+            command.fault = Some(fault);
+            let prepared = prepared_admission(command.clone(), &task, "native-failed")?;
+            let child = prepared.descriptor().scopes().iter()
+                .find(|scope| scope.agent_id == command.agent_id).unwrap();
+            assert!(db.transitions_in_scope(child).commit_prepared_transition(&prepared).is_err());
+            assert_eq!(db.tasks().latest(&task.id)?.unwrap(), task);
+            assert!(db.messages().by_id(Some(&child.agent_id), &command.message_evidence[0].id)?.is_none());
+            assert!(db.queue_entries().latest(&command.message_evidence[0].id)?.is_none());
+            let count: u64 = db.connection()?.query_row(
+                "SELECT COUNT(*) FROM input_mutation_receipts", [], |row| row.get(0),
+            )?;
+            assert_eq!(count, 0);
+        }
+        Ok(())
     }
 
     #[test]

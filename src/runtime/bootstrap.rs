@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -38,7 +38,7 @@ use crate::{
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
         ActiveWorkspaceEntry, AgentState, AuditEvent, ResolvedModelAvailability,
-        SkillActivationSource, SkillActivationState,
+        SkillActivationSource, SkillActivationState, TaskRecord, TaskStatus,
     },
 };
 
@@ -288,8 +288,8 @@ impl ViewImageCandidateHealth {
 
 use super::{
     clock::{Clock, SystemClock},
-    scheduler, scheduler_executor, workspace, AgentRuntimeProjectionCache, InitialWorkspaceBinding,
-    RuntimeAgent, RuntimeHandle, RuntimeInner,
+    scheduler, scheduler_executor, workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle,
+    RuntimeInner,
 };
 
 fn model_route_parameter_override(state: &AgentState) -> Option<ModelRouteParameterOverride<'_>> {
@@ -308,6 +308,7 @@ fn model_route_parameter_override(state: &AgentState) -> Option<ModelRouteParame
 /// without disturbing an in-progress turn.
 #[derive(Clone)]
 pub(super) struct ConfigSnapshot {
+    pub resource_generation: u64,
     pub default_timezone: Option<String>,
     pub user_home_dir: Option<PathBuf>,
     pub model_catalog: RuntimeModelCatalog,
@@ -346,6 +347,7 @@ impl ConfigSnapshot {
             ..ContextConfig::default()
         };
         Ok(Self {
+            resource_generation: 0,
             default_timezone: config.stored_config.runtime.timezone.clone(),
             user_home_dir: config.user_home_dir.clone(),
             model_catalog,
@@ -679,6 +681,9 @@ impl RuntimeHandle {
         event_bus: Option<EventBus>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
+        let agent_id = agent_id.into();
+        // Validate configuration before claiming an owner or closing a SQL gate.
+        // Pure preparation failures must leave a retryable namespace untouched.
         let autonomous_continuation_decision_hook = provider_reconfig
             .as_ref()
             .map(|reconfig| {
@@ -704,6 +709,7 @@ impl RuntimeHandle {
             })
             .unwrap_or_default();
         let config_snapshot = Arc::new(ConfigSnapshot {
+            resource_generation: 0,
             default_timezone: provider_reconfig
                 .as_ref()
                 .and_then(|reconfig| reconfig.config.stored_config.runtime.timezone.clone()),
@@ -746,7 +752,70 @@ impl RuntimeHandle {
                 .and_then(|tools| tools.min_confidence)
                 .unwrap_or(0.0),
         });
+        let runtime_db = match runtime_db {
+            Some(runtime_db) => runtime_db,
+            None => RuntimeDb::open_and_migrate(
+                data_dir.join(".holon/state/runtime.sqlite"),
+                data_dir.join(".holon/state/runtime.lock"),
+            )?,
+        };
+        let storage_setup = prepare_runtime_storage_setup(
+            agent_id.clone(),
+            data_dir,
+            initial_workspace,
+            Some(runtime_db.clone()),
+        )?;
+        let input_evidence_budget = match host_bridge.as_ref() {
+            Some(bridge) => bridge.input_evidence_budget()?,
+            None => super::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                provider_reconfig
+                    .as_ref()
+                    .map(|reconfig| reconfig.config.stored_config.runtime.state_memory.resolve())
+                    .transpose()?
+                    .unwrap_or_default(),
+            )?,
+        };
+        let identity_incarnation = runtime_db
+            .agent_identities()
+            .latest_for_mutation(&agent_id)?
+            .map_or(1, |identity| identity.incarnation);
+        let (mutation_owner, mut bootstrap_reservation) = match host_bridge.as_ref() {
+            Some(bridge) => {
+                bridge.claim_reserved_mutation_owner(&agent_id, identity_incarnation)?
+            }
+            None => {
+                let owner = super::mutation_owner::MutationOwner::standalone(
+                    &agent_id,
+                    identity_incarnation,
+                );
+                let reservation = owner.try_reserve()?;
+                (owner, reservation)
+            }
+        };
+        super::control_recovery::resolve_unloaded_control_recovery(
+            &runtime_db,
+            std::slice::from_mut(&mut bootstrap_reservation),
+            context_config.recent_episode_candidates,
+            &input_evidence_budget,
+        )?;
+        super::episode_recovery::resolve_episode_recovery(
+            &runtime_db,
+            std::slice::from_mut(&mut bootstrap_reservation),
+            context_config.recent_episode_candidates,
+        )?;
+        mutation_owner.validate_bootstrap()?;
+        if bootstrap_reservation.recovery()?.is_some() {
+            let known = super::mutation_owner::MutationReservation::validate_group_known(
+                std::slice::from_ref(&bootstrap_reservation),
+            )?;
+            super::mutation_owner::MutationReservation::reconcile_all(
+                std::slice::from_mut(&mut bootstrap_reservation),
+                known,
+            )?;
+        }
         let mut provider = provider;
+        // Private construction owns its namespace before normalization writes.
+        // The helper records the exact posture ACK before derived preparation.
         let PreparedRuntimeStorage {
             storage,
             runtime_db,
@@ -754,14 +823,23 @@ impl RuntimeHandle {
             queue,
             active_tasks,
             active_timers,
-            projection_cache,
-        } = prepare_runtime_storage(
-            agent_id,
-            data_dir,
-            initial_workspace,
-            runtime_db,
-            clock.now(),
+        } = prepare_runtime_storage_owned(
+            storage_setup,
+            Some(&mut bootstrap_reservation),
+            &context_config,
+            Some(&config_snapshot),
+            &input_evidence_budget,
         )?;
+        let queue_budget_view = input_evidence_budget.register_queue_view(
+            &super::resident_input_evidence::InputEvidenceScope {
+                agent_id: state.id.clone(),
+                identity_incarnation,
+            },
+            super::input_evidence_budget::InputMemoryCategory::Current,
+            queue.shared_messages(),
+        )?;
+        bootstrap_reservation.publish(Arc::new(state.clone()))?;
+        drop(bootstrap_reservation);
         if let Some(event_bus) = event_bus {
             storage.enable_event_bus(event_bus)?;
         }
@@ -794,24 +872,39 @@ impl RuntimeHandle {
         };
         let base_provider = provider.clone();
 
-        let identity_incarnation = runtime_db
-            .agent_identities()
-            .latest(&state.id)?
-            .map_or(1, |identity| identity.incarnation);
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
+                mutation_owner: mutation_owner.clone(),
+                resources: super::resource_refresh::RuntimeResources::new(
+                    &input_evidence_budget,
+                    super::resident_input_evidence::InputEvidenceScope {
+                        agent_id: agent_id.clone(),
+                        identity_incarnation,
+                    },
+                    host_bridge.as_ref(),
+                )?,
+                input_evidence_budget,
+                standalone_related_mutation_owners:
+                    super::mutation_owner::MutationOwnerRegistry::default(),
                 agent: Mutex::new(RuntimeAgent {
+                    #[cfg(test)]
+                    mutation_owner,
                     last_persisted_state: state.clone(),
                     state,
                     queue,
                     current_run_abort: None,
+                    _queue_budget_view: Some(queue_budget_view),
                 }),
-                projection_cache: Mutex::new(projection_cache),
+                #[cfg(test)]
+                installation_barrier: Mutex::new(()),
+                #[cfg(test)]
+                run_loop_test_gate: RwLock::new(()),
                 object_query_cache: Arc::new(crate::object_query_cache::ObjectQueryCache::new(256)),
                 notify: Notify::new(),
                 operator_interjection_notify: Notify::new(),
                 operator_interjection_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                provider_cooldown_wait: StdMutex::new(None),
                 storage,
                 runtime_db,
                 clock,
@@ -821,6 +914,9 @@ impl RuntimeHandle {
                 turn_provider_admission: StdMutex::new(None),
                 config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
+                #[cfg(test)]
+                context_capture_checkpoint:
+                    super::context_capture::ContextCaptureCheckpoint::default(),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
                 view_image_candidate_health: Mutex::new(ViewImageCandidateHealth::default()),
                 model_discovery_refreshes: Mutex::new(HashSet::new()),
@@ -831,7 +927,17 @@ impl RuntimeHandle {
                 default_agent_id,
                 host_bridge,
                 task_handles: Mutex::new(HashMap::new()),
+                #[cfg(test)]
+                last_child_deletion_rejections_for_test: StdMutex::new(HashMap::new()),
+                task_stop_effects: super::task_stop_effects::TaskStopEffectRegistry::default(),
                 owned_task_handles: StdMutex::new(Vec::new()),
+                owned_task_drain: Mutex::new(Vec::new()),
+                control_cancellations:
+                    super::control_cancellation::ControlCancellationRegistry::default(),
+                mutation_tasks: StdMutex::new(super::state_mutation::OwnedMutationTasks::default()),
+                task_queries: super::task_queries::TaskQueryRegistry::default(),
+                input_queries: super::input_query_roles::InputQueryRegistry::default(),
+                current_queries: super::current_queries::CurrentQueryRegistry::default(),
                 recovered_tasks: Mutex::new(Some(active_tasks)),
                 recovered_timers: Mutex::new(Some(active_timers)),
                 bootstrap_result: StdMutex::new(None),
@@ -846,6 +952,10 @@ impl RuntimeHandle {
                 shutdown_requested: AtomicBool::new(false),
                 execution_admission: super::execution_admission::ExecutionAdmission::default(),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
+                #[cfg(test)]
+                terminal_transition_faults: StdMutex::new(std::collections::VecDeque::new()),
+                #[cfg(test)]
+                claim_transition_faults: StdMutex::new(std::collections::VecDeque::new()),
                 #[cfg(test)]
                 completion_binding_replacement: StdMutex::new(None),
                 #[cfg(test)]
@@ -872,6 +982,7 @@ impl RuntimeHandle {
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };
+        runtime.start_resource_worker()?;
         Ok(runtime)
     }
 
@@ -883,18 +994,28 @@ impl RuntimeHandle {
         self.model_state_for_turn(state, None)
     }
 
+    pub(crate) fn try_model_state_for(
+        &self,
+        state: &AgentState,
+    ) -> Result<crate::types::AgentModelState> {
+        let snap = self.inner.config_snapshot.load();
+        super::try_agent_model_state_for_catalog(
+            &snap.model_catalog,
+            &snap.base_context_config,
+            state,
+        )
+    }
+
     pub(crate) fn model_state_for_turn(
         &self,
         state: &AgentState,
         fallback_model: Option<&ModelRouteRef>,
     ) -> crate::types::AgentModelState {
         let snap = self.inner.config_snapshot.load();
-        let mut selected_state = state.clone();
-        selected_state.pending_fallback_model = None;
         let mut model_state = super::agent_model_state_for_catalog(
             &snap.model_catalog,
             &snap.base_context_config,
-            &selected_state,
+            state,
         );
         if let Some(fallback_model) = fallback_model {
             model_state.effective_service_tier = if model_state.effective_model == *fallback_model {
@@ -1059,9 +1180,9 @@ impl RuntimeHandle {
     pub(crate) async fn reload_config(&self, config: &AppConfig) -> Result<()> {
         let mut config = config.clone();
         config.user_home_dir = self.inner.config_snapshot.load().user_home_dir.clone();
-        let new_snapshot = Arc::new(ConfigSnapshot::from_config(&config)?);
-        let should_reconfigure_provider = new_snapshot.provider_reconfig.is_some();
-        let decision_hook = new_snapshot
+        let mut replacement = ConfigSnapshot::from_config(&config)?;
+        let should_reconfigure_provider = replacement.provider_reconfig.is_some();
+        let decision_hook = replacement
             .provider_reconfig
             .as_ref()
             .map(|reconfig| {
@@ -1072,12 +1193,24 @@ impl RuntimeHandle {
             .transpose()?
             .flatten()
             .map(|hook| Arc::new(hook) as Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>);
-        // Atomically swap the snapshot.
-        self.inner.config_snapshot.store(new_snapshot);
-        // Recompute eligibility, without clearing shared provider incidents.
-        self.inner
-            .runtime_db
-            .clear_agent_provider_queue_parking(&self.inner.default_agent_id)?;
+        // Config assignment and installation share the short Host fence.
+        self.inner.resources.gate.publish_config(|| {
+            replacement.resource_generation = self
+                .inner
+                .config_snapshot
+                .load()
+                .resource_generation
+                .checked_add(1)
+                .context("context resource config generation exhausted")?;
+            self.inner.config_snapshot.store(Arc::new(replacement));
+            self.inner.resources.registry.invalidate(
+                super::resource_observation::ResourceInvalidation::ConfigurationChange,
+            )?;
+            Ok(())
+        })?;
+        self.inner.resources.notify();
+        // Recompute eligibility without clearing shared provider incidents.
+        self.inner.runtime_db.clear_agent_provider_queue_parking(&self.inner.default_agent_id)?;
         self.inner.view_image_candidate_health.lock().await.reset();
         *self
             .inner
@@ -1493,7 +1626,7 @@ impl RuntimeHandle {
             vec![ConversationMessage::UserImage {
                 prompt: prompt.to_string(),
                 media_type: media_type.to_string(),
-                data_base64: BASE64_STANDARD.encode(bytes),
+                data_base64: BASE64_STANDARD.encode(bytes).into(),
                 optional_history: false,
             }],
             Vec::new(),
@@ -1530,7 +1663,7 @@ impl RuntimeHandle {
         use crate::tool::ToolError;
         use serde_json::json;
 
-        let state = self.agent_state().await?;
+        let state = self.capture_committed_state().await?;
         let fallback_model = self.inner.turn_fallback_model.read().await.clone();
         let snap = self.inner.config_snapshot.load();
         let requested_route = requested_model
@@ -1577,7 +1710,8 @@ impl RuntimeHandle {
                     .with_recovery_hint(error.recovery_hint.clone())
             })?;
         let resolved = &parameters.provider_parameters;
-        let request = ProviderGenerateImageRequest {
+        let mut request = ProviderGenerateImageRequest {
+            material: request.material,
             prompt: request.prompt,
             size: resolved.size.clone(),
             aspect_ratio: resolved.aspect_ratio.clone(),
@@ -1590,6 +1724,18 @@ impl RuntimeHandle {
         })?;
         let provider =
             build_candidate_from_model_route(&reconfig.config.home_dir, &route)?.provider;
+        if !request.material.is_scoped() {
+            request.material =
+                crate::provider::ProviderRequestMaterial::scoped(self.context_resource_material()?);
+        }
+        anyhow::ensure!(
+            request.material.matches_runtime(
+                &self.inner.input_evidence_budget,
+                self.inner.mutation_owner.agent_id(),
+                self.inner.identity_incarnation,
+            ),
+            "image generation material differs from Runtime identity"
+        );
         let response = generate_image_with_shared_quota(provider.as_ref(), request).await.map_err(|error| {
             if let Some(tool_error) = error.downcast_ref::<ToolError>() {
                 let mut details = tool_error.details.clone().unwrap_or_else(|| json!({}));
@@ -1807,14 +1953,127 @@ impl RuntimeHandle {
     }
 }
 
+/// The original same-Tx boot observation retains selected Arcs, never a root.
+pub(super) struct BootstrapTaskRecovery {
+    selected: super::resident_task::CapturedTasks,
+    record_limit: usize,
+    byte_limit: usize,
+}
+pub(super) struct BootstrapTaskRecoveryRetention {
+    _selected: super::resident_task::CapturedTasks,
+    _owned: Arc<super::input_evidence_budget::BudgetViewGuard>,
+}
+impl BootstrapTaskRecovery {
+    /// Old transient recovery APIs still consume owned records. Charge before
+    /// cloning, and retain both that allocation and its frozen source until ACK.
+    pub(super) fn into_records(
+        self,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<(Vec<TaskRecord>, BootstrapTaskRecoveryRetention)> {
+        use super::input_evidence_budget::{
+            serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
+        };
+        use super::resident_task::{CanonicalTaskFact, TaskReadError};
+        let count = super::task_reads::active_task_count(&self.selected)?;
+        let mut bytes = 256u64;
+        let mut present = 0usize;
+        for row in &self.selected.records {
+            let CanonicalTaskFact::Task(task) = &row.fact else {
+                continue;
+            };
+            if !self.selected.coverage.active_task_ids.contains(&task.id) {
+                continue;
+            }
+            row.validate(&self.selected.scope)?;
+            anyhow::ensure!(
+                matches!(
+                    task.status,
+                    TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+                ),
+                "bootstrap active Task body differs"
+            );
+            present = present
+                .checked_add(1)
+                .context("bootstrap Task count overflow")?;
+            bytes = bytes
+                .checked_add(serialized_bytes(task)?)
+                .and_then(|n| n.checked_add(std::mem::size_of::<TaskRecord>() as u64))
+                .context("bootstrap Task material overflow")?;
+        }
+        anyhow::ensure!(
+            present == count,
+            "bootstrap active Task snapshot missing body"
+        );
+        let bytes = bytes
+            .checked_mul(8)
+            .context("bootstrap Task copies overflow")?;
+        let records = count
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(8))
+            .context("bootstrap Task copies overflow")?;
+        anyhow::ensure!(
+            bytes <= u64::try_from(self.byte_limit)? && records <= self.record_limit,
+            TaskReadError::ResourceExhausted("bootstrap transient Task recovery")
+        );
+        let guard = ledger.register_owned_bytes(
+            &self.selected.scope,
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: bytes,
+                metadata_estimate_bytes: 0,
+            },
+        )?;
+        let mut tasks = self
+            .selected
+            .records
+            .iter()
+            .filter_map(|row| {
+                let CanonicalTaskFact::Task(task) = &row.fact else {
+                    return None;
+                };
+                self.selected
+                    .coverage
+                    .active_task_ids
+                    .contains(&task.id)
+                    .then(|| task.clone())
+            })
+            .collect::<Vec<_>>();
+        // Preserve ContextDurableRead::active_tasks normalized SQL order.
+        tasks.sort_by(|a, b| {
+            b.updated_at
+                .timestamp_millis()
+                .cmp(&a.updated_at.timestamp_millis())
+                .then_with(|| {
+                    b.created_at
+                        .timestamp_millis()
+                        .cmp(&a.created_at.timestamp_millis())
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok((
+            tasks,
+            BootstrapTaskRecoveryRetention {
+                _selected: self.selected,
+                _owned: guard,
+            },
+        ))
+    }
+}
+
 struct PreparedRuntimeStorage {
     storage: AppStorage,
     runtime_db: RuntimeDb,
     state: AgentState,
     queue: RuntimeQueue,
-    active_tasks: Vec<crate::types::TaskRecord>,
-    active_timers: Vec<crate::types::TimerRecord>,
-    projection_cache: AgentRuntimeProjectionCache,
+    active_tasks: BootstrapTaskRecovery,
+    active_timers: super::resident_scheduling::CapturedScheduling,
+}
+
+struct RuntimeStorageSetup {
+    storage: AppStorage,
+    runtime_db: RuntimeDb,
+    agent_id: String,
+    initial_workspace_entry: Option<crate::types::WorkspaceEntry>,
 }
 
 fn prepare_runtime_storage(
@@ -1824,6 +2083,17 @@ fn prepare_runtime_storage(
     runtime_db: Option<RuntimeDb>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<PreparedRuntimeStorage> {
+    let setup = prepare_runtime_storage_setup(agent_id, data_dir, initial_workspace, runtime_db)?;
+    let budget = super::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
+    prepare_runtime_storage_owned(setup, None, &ContextConfig::default(), None, &budget)
+}
+
+fn prepare_runtime_storage_setup(
+    agent_id: impl Into<String>,
+    data_dir: PathBuf,
+    initial_workspace: impl Into<InitialWorkspaceBinding>,
+    runtime_db: Option<RuntimeDb>,
+) -> Result<RuntimeStorageSetup> {
     let agent_id = agent_id.into();
     let runtime_dir = data_dir.join(".holon");
     let runtime_db = match runtime_db {
@@ -1834,20 +2104,6 @@ fn prepare_runtime_storage(
         )?,
     };
     let storage = AppStorage::new_for_agent(data_dir, agent_id.clone(), runtime_db.clone())?;
-    #[cfg(test)]
-    if runtime_db.agent_identities().latest(&agent_id)?.is_none() {
-        runtime_db
-            .agent_identities()
-            .upsert(&crate::types::AgentIdentityRecord::new(
-                agent_id.clone(),
-                crate::types::AgentKind::Default,
-                crate::types::AgentVisibility::Public,
-                crate::types::AgentOwnership::SelfOwned,
-                crate::types::AgentProfilePreset::PublicNamed,
-                None,
-                None,
-            ))?;
-    }
     let initial_workspace = initial_workspace.into();
     let initial_workspace_entry = match &initial_workspace {
         InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
@@ -1869,25 +2125,307 @@ fn prepare_runtime_storage(
         )),
     };
 
-    let workspace_entries_complete = storage.legacy_importer().workspace_entries_complete()?;
+    Ok(RuntimeStorageSetup {
+        storage,
+        runtime_db,
+        agent_id,
+        initial_workspace_entry,
+    })
+}
+
+fn finish_bootstrap_metadata_phase(
+    reservation: &mut super::mutation_owner::MutationReservation,
+    facts: crate::runtime_db::context_inputs::ContextScopeFacts,
+) -> Result<()> {
+    finish_bootstrap_metadata_ack(
+        reservation,
+        Arc::new(super::mutation_owner::IdentityMutationFacts {
+            identity: facts.identity.map(Arc::new),
+            state: facts.state,
+        }),
+    )
+}
+
+fn finish_bootstrap_metadata_ack(
+    reservation: &mut super::mutation_owner::MutationReservation,
+    facts: Arc<super::mutation_owner::IdentityMutationFacts>,
+) -> Result<()> {
+    super::mutation_owner::MutationReservation::committed_all(
+        std::slice::from_mut(reservation),
+        vec![super::mutation_owner::KnownCommit::Metadata(facts)],
+    )?;
+    let known = super::mutation_owner::MutationReservation::validate_group_known(
+        std::slice::from_ref(reservation),
+    )?;
+    super::mutation_owner::MutationReservation::reconcile_all(
+        std::slice::from_mut(reservation),
+        known,
+    )?;
+    Ok(())
+}
+
+/// Bootstrap has no loaded Runtime yet. Each Audit keeps its own receipt
+/// under the existing reservation; it does not also acknowledge a State write.
+pub(crate) fn append_unloaded_audit_event(
+    storage: &AppStorage,
+    db: &RuntimeDb,
+    scope: &super::resident_input_evidence::InputEvidenceScope,
+    prior: &Arc<super::mutation_owner::IdentityMutationFacts>,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    reservation: &mut super::mutation_owner::MutationReservation,
+    event: AuditEvent,
+) -> Result<()> {
+    validate_bootstrap_audit_scope(scope, prior, Some(reservation))?;
+    reservation.begin(crate::ids::audit_event_id())?;
+    append_bootstrap_audit_event(storage, db, scope, prior, budget, Some(reservation), event)?;
+    finish_bootstrap_metadata_ack(reservation, prior.clone())
+}
+
+fn validate_bootstrap_audit_scope(
+    scope: &super::resident_input_evidence::InputEvidenceScope,
+    prior: &Arc<super::mutation_owner::IdentityMutationFacts>,
+    reservation: Option<&super::mutation_owner::MutationReservation>,
+) -> Result<()> {
+    let identity = prior
+        .identity
+        .as_ref()
+        .context("bootstrap Audit prior identity missing")?;
+    anyhow::ensure!(
+        identity.agent_id == scope.agent_id
+            && identity.incarnation == scope.identity_incarnation
+            && identity.status == crate::types::AgentRegistryStatus::Active,
+        "bootstrap Audit prior identity differs"
+    );
+    anyhow::ensure!(
+        prior
+            .state
+            .as_ref()
+            .is_none_or(|state| state.id == scope.agent_id),
+        "bootstrap Audit prior State differs"
+    );
+    if let Some(reservation) = reservation.as_ref() {
+        anyhow::ensure!(
+            reservation.agent_id() == scope.agent_id
+                && reservation.identity_incarnation() == scope.identity_incarnation,
+            "bootstrap Audit owner differs"
+        );
+    }
+    Ok(())
+}
+
+fn append_bootstrap_audit_event(
+    storage: &AppStorage,
+    db: &RuntimeDb,
+    scope: &super::resident_input_evidence::InputEvidenceScope,
+    prior: &Arc<super::mutation_owner::IdentityMutationFacts>,
+    budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    mut reservation: Option<&mut super::mutation_owner::MutationReservation>,
+    event: AuditEvent,
+) -> Result<()> {
+    use crate::runtime_db::{
+        input_mutation_receipts::OriginalInputMutationAttempt,
+        transitions::{InputMutationExecution, PreparedInputTransition},
+    };
+    validate_bootstrap_audit_scope(scope, prior, reservation.as_deref())?;
+    storage.event_log().ensure_writable()?;
+    let prepared = PreparedInputTransition::audit(
+        scope.clone(),
+        event.id.clone(),
+        chrono::Utc::now(),
+        event,
+        None,
+    )?;
+    let limits = budget.limits();
+    let record_limit = usize::try_from(limits.record_limit)?;
+    let byte_limit = usize::try_from(
+        limits
+            .history_per_agent_bytes
+            .checked_add(limits.pending_per_agent_bytes)
+            .context("bootstrap Audit byte limit overflow")?,
+    )?;
+    let work = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+        capture: super::resident_work::WorkCaptureRequest::current(),
+        record_limit,
+        byte_limit,
+    };
+    let tasks = crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+        query: Default::default(),
+        capture: super::resident_task::TaskCaptureRequest::current(),
+        record_limit,
+        byte_limit,
+    };
+    let witness = super::mutation_witness::MutationWitness::input_mutation(
+        prepared.descriptor().command_nonce().to_owned(),
+        OriginalInputMutationAttempt::new(prepared.descriptor().clone()),
+        Vec::new(),
+    )?;
+    if let Some(reservation) = reservation.as_deref_mut() {
+        finish_bootstrap_metadata_ack(reservation, prior.clone())?;
+        super::mutation_owner::MutationReservation::begin_all_with_witness(
+            std::slice::from_mut(reservation),
+            prepared.descriptor().command_nonce().to_owned(),
+            witness.clone(),
+        )?;
+    }
+    let result = db
+        .transitions_in_scope(scope)
+        .commit_prepared_transition_with_work_request_and_memory_budget(
+            &prepared, &work, budget, &tasks,
+        );
+    witness.finish_original_attempt();
+    let execution = match result {
+        Ok(execution) => execution,
+        Err(error) => {
+            if crate::runtime_db::persistence_certainty(&error)
+                == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+            {
+                if let Some(reservation) = reservation.as_deref_mut() {
+                    super::mutation_owner::MutationReservation::definitely_not_committed_all(
+                        std::slice::from_mut(reservation),
+                    )?;
+                }
+            }
+            return Err(error);
+        }
+    };
+    let receipt = match &execution {
+        InputMutationExecution::Committed { receipt, .. }
+        | InputMutationExecution::Replayed { receipt, .. } => receipt,
+    };
+    witness.mark_original_input_receipt_pending(receipt, false)?;
+    if let Some(reservation) = reservation.as_deref_mut() {
+        // Audit cannot change the prior durable identity/State. Its original
+        // body proof is durable; complete bootstrap domains are prepared later.
+        finish_bootstrap_metadata_ack(reservation, prior.clone())?;
+        reservation.begin(crate::ids::audit_event_id())?;
+    }
+    if let InputMutationExecution::Committed { value, .. } = execution {
+        storage
+            .event_log()
+            .publish_transition_events(&value.effects);
+    }
+    Ok(())
+}
+
+fn prepare_runtime_storage_owned(
+    setup: RuntimeStorageSetup,
+    mut reservation: Option<&mut super::mutation_owner::MutationReservation>,
+    context_config: &ContextConfig,
+    config_snapshot: Option<&ConfigSnapshot>,
+    input_budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<PreparedRuntimeStorage> {
+    let RuntimeStorageSetup {
+        storage,
+        runtime_db,
+        agent_id,
+        initial_workspace_entry,
+    } = setup;
+    AppStorage::validate_sqlite_layout(storage.data_dir(), Some(&agent_id), &runtime_db)?;
+    // Initialization and recovery normalization retain their existing transactions.
+    // An error before the posture ACK cannot prove their combined outcome.
+    if let Some(reservation) = reservation.as_deref_mut() {
+        reservation.begin(crate::ids::audit_event_id())?;
+    }
+    runtime_db.initialize_sqlite_storage_domains()?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
-        let known = storage.latest_workspace_entries()?;
+        let known = runtime_db
+            .workspace_entries()
+            .latest_all_for_preparation()?;
         if !known
             .iter()
             .any(|entry| entry.workspace_id == workspace.workspace_id)
         {
-            if workspace_entries_complete {
-                runtime_db.workspace_entries().upsert(workspace)?;
-            } else {
-                storage.append_workspace_entry(workspace)?;
-            }
+            runtime_db.workspace_entries().upsert(workspace)?;
         }
     }
 
-    storage.legacy_importer().import_runtime_domains()?;
-    let timer_wake_recovery = runtime_db
+    // Standalone construction materializes an explicit durable namespace while
+    // its reservation is held; missing identity is never loader incarnation proof.
+    if runtime_db
+        .agent_identities()
+        .latest_for_mutation(&agent_id)?
+        .is_none()
+    {
+        runtime_db
+            .agent_identities()
+            .create_legacy_materialized_with_relations(
+                &crate::types::AgentIdentityRecord::new(
+                    agent_id.clone(),
+                    crate::types::AgentKind::Default,
+                    crate::types::AgentVisibility::Public,
+                    crate::types::AgentOwnership::SelfOwned,
+                    crate::types::AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                ),
+                &crate::types::AgentCanonicalRecordSet::default(),
+            )?;
+    }
+    let durable_identity = runtime_db
+        .agent_identities()
+        .latest_for_mutation(&agent_id)?
+        .ok_or_else(|| anyhow!("bootstrap has no durable identity"))?;
+    anyhow::ensure!(
+        durable_identity.status == crate::types::AgentRegistryStatus::Active,
+        "bootstrap identity is no longer active"
+    );
+    if let Some(reservation) = reservation.as_deref() {
+        anyhow::ensure!(
+            durable_identity.incarnation == reservation.identity_incarnation(),
+            "bootstrap imports changed the reserved durable incarnation"
+        );
+    }
+
+    let input_scope = super::resident_input_evidence::InputEvidenceScope {
+        agent_id: agent_id.clone(),
+        identity_incarnation: durable_identity.incarnation,
+    };
+    // Every import/materialization operation above returned its own ACK. This
+    // read records their cold preparation handoff, not a legacy atomic receipt.
+    let imported = runtime_db.bootstrap_scope_facts(&input_scope)?;
+    anyhow::ensure!(
+        imported.identity.as_ref() == Some(&durable_identity),
+        "bootstrap import identity changed before its metadata handoff"
+    );
+    if let Some(reservation) = reservation.as_deref_mut() {
+        finish_bootstrap_metadata_phase(reservation, imported)?;
+        reservation.begin(crate::ids::audit_event_id())?;
+    }
+    let normalized = match runtime_db
         .timers()
-        .normalize_wakes_for_recovery(&agent_id, now)?;
+        .normalize_wakes_for_recovery_in_scope(&input_scope, input_budget)
+    {
+        Ok(normalized) => normalized,
+        Err(error) => {
+            if crate::runtime_db::persistence_certainty(&error)
+                == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+            {
+                if let Some(reservation) = reservation.as_deref_mut() {
+                    super::mutation_owner::MutationReservation::definitely_not_committed_all(
+                        std::slice::from_mut(reservation),
+                    )?;
+                }
+            }
+            return Err(error);
+        }
+    };
+    let audit_facts = Arc::new(super::mutation_owner::IdentityMutationFacts {
+        identity: normalized.scope_facts.identity.map(Arc::new),
+        state: normalized.scope_facts.state,
+    });
+    if let Some(reservation) = reservation.as_deref_mut() {
+        // Queue/wake normalization is its original independent transaction.
+        // Save its exact ACK before audit or further bootstrap work can fail.
+        finish_bootstrap_metadata_ack(reservation, audit_facts.clone())?;
+        reservation.begin(crate::ids::audit_event_id())?;
+    }
+    // No Message/Episode evidence was rewritten by normalization. Its exact
+    // queue removals are reflected by the fresh pending read below.
+    anyhow::ensure!(
+        normalized.queue_entries.len() == normalized.result.dropped_message_ids.len(),
+        "timer normalization omitted an exact queue change"
+    );
+    let timer_wake_recovery = normalized.result;
     if timer_wake_recovery.retained_wakes > 0
         || timer_wake_recovery.created_wakes > 0
         || timer_wake_recovery.reactivated_wakes > 0
@@ -1895,31 +2433,36 @@ fn prepare_runtime_storage(
         || !timer_wake_recovery.dropped_message_ids.is_empty()
         || !timer_wake_recovery.settled_wait_conditions.is_empty()
     {
-        storage.append_event(&AuditEvent::legacy(
-            "timer_wakes_recovered",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "retained_wakes": timer_wake_recovery.retained_wakes,
-                "created_wakes": timer_wake_recovery.created_wakes,
-                "reactivated_wakes": timer_wake_recovery.reactivated_wakes,
-                "invalidated_wakes": timer_wake_recovery.invalidated_wakes,
-                "dropped_message_ids": timer_wake_recovery.dropped_message_ids,
-                "cancelled_wait_condition_ids": timer_wake_recovery.settled_wait_conditions
-                    .iter().map(|condition| &condition.id).collect::<Vec<_>>(),
-                "blocked_work_item_ids": timer_wake_recovery.work_items
-                    .iter().map(|work| &work.id).collect::<Vec<_>>(),
-                "audit_event_ids": timer_wake_recovery.audit_events
-                    .iter().map(|event| &event.id).collect::<Vec<_>>(),
-            }),
-        ))?;
+        append_bootstrap_audit_event(
+            &storage,
+            &runtime_db,
+            &input_scope,
+            &audit_facts,
+            input_budget,
+            reservation.as_deref_mut(),
+            AuditEvent::legacy(
+                "timer_wakes_recovered",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "retained_wakes": timer_wake_recovery.retained_wakes,
+                    "created_wakes": timer_wake_recovery.created_wakes,
+                    "reactivated_wakes": timer_wake_recovery.reactivated_wakes,
+                    "invalidated_wakes": timer_wake_recovery.invalidated_wakes,
+                    "dropped_message_ids": timer_wake_recovery.dropped_message_ids,
+                    "cancelled_wait_condition_ids": timer_wake_recovery.settled_wait_conditions.iter().map(|condition| &condition.id).collect::<Vec<_>>(),
+                    "blocked_work_item_ids": timer_wake_recovery.work_items.iter().map(|work| &work.id).collect::<Vec<_>>(),
+                    "audit_event_ids": timer_wake_recovery.audit_events.iter().map(|event| &event.id).collect::<Vec<_>>(),
+                }),
+            ),
+        )?;
     }
 
-    let snapshot = storage.recovery_snapshot(&agent_id)?;
-    let mut queue = RuntimeQueue::default();
-    for message in &snapshot.replay_messages {
-        queue.push(message.clone());
-    }
-    let recovered_agent = snapshot.agent;
+    // The normalization ACK/material has crossed its independent Known phase.
+    drop((normalized.queue_entries, normalized.scheduling_ack));
+    let pending = runtime_db.bootstrap_pending_metadata(&input_scope, input_budget)?;
+    let queued_messages = pending.count;
+    let recovered_agent = pending.facts.into_owned_state()?;
+    let expected_agent_state = recovered_agent.clone();
     let recovered_from_storage = recovered_agent.is_some();
     let mut state = recovered_agent.unwrap_or_else(|| AgentState::new(agent_id.clone()));
 
@@ -1960,21 +2503,31 @@ fn prepare_runtime_storage(
 
     if workspace::canonicalize_agent_home_bindings(&mut state, storage.data_dir(), &agent_id)? {
         let workspace = workspace::agent_home_workspace_entry(storage.data_dir(), &agent_id);
-        let known = storage.latest_workspace_entries()?;
+        let known = runtime_db
+            .workspace_entries()
+            .latest_all_for_preparation()?;
         if !known
             .iter()
             .any(|entry| entry.workspace_id == workspace.workspace_id)
         {
             storage.append_workspace_entry(&workspace)?;
         }
-        storage.append_event(&AuditEvent::legacy(
-            "agent_home_workspace_bindings_migrated",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "workspace_id": workspace.workspace_id,
-                "legacy_workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
-            }),
-        ))?;
+        append_bootstrap_audit_event(
+            &storage,
+            &runtime_db,
+            &input_scope,
+            &audit_facts,
+            input_budget,
+            reservation.as_deref_mut(),
+            AuditEvent::legacy(
+                "agent_home_workspace_bindings_migrated",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "workspace_id": workspace.workspace_id,
+                    "legacy_workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+                }),
+            ),
+        )?;
     }
 
     if state
@@ -1982,17 +2535,25 @@ fn prepare_runtime_storage(
         .as_ref()
         .is_some_and(|worktree| !worktree.worktree_path.exists())
     {
-        storage.append_event(&AuditEvent::legacy(
-            "recovery_cleared_missing_worktree_session",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "worktree_path": state
-                    .worktree_session
-                    .as_ref()
-                    .map(|w| w.worktree_path.display().to_string()),
-                "reason": "worktree_path_does_not_exist"
-            }),
-        ))?;
+        append_bootstrap_audit_event(
+            &storage,
+            &runtime_db,
+            &input_scope,
+            &audit_facts,
+            input_budget,
+            reservation.as_deref_mut(),
+            AuditEvent::legacy(
+                "recovery_cleared_missing_worktree_session",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "worktree_path": state
+                        .worktree_session
+                        .as_ref()
+                        .map(|w| w.worktree_path.display().to_string()),
+                    "reason": "worktree_path_does_not_exist"
+                }),
+            ),
+        )?;
         state.worktree_session = None;
         if state
             .active_workspace_entry
@@ -2027,27 +2588,36 @@ fn prepare_runtime_storage(
         skill.activation_source = SkillActivationSource::Restored;
     }
     if let Some(legacy_fallback) = state.pending_fallback_model.take() {
-        storage.append_event(&AuditEvent::legacy(
-            "legacy_pending_fallback_discarded",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "fallback_model_ref": legacy_fallback,
-                "reason": "fallback_selection_is_message_bound",
-            }),
-        ))?;
+        append_bootstrap_audit_event(
+            &storage,
+            &runtime_db,
+            &input_scope,
+            &audit_facts,
+            input_budget,
+            reservation.as_deref_mut(),
+            AuditEvent::legacy(
+                "legacy_pending_fallback_discarded",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "fallback_model_ref": legacy_fallback,
+                    "reason": "fallback_selection_is_message_bound",
+                }),
+            ),
+        )?;
     }
-    state.pending = queue.len();
-    state.total_message_count = storage.count_messages().unwrap_or_default();
+    state.pending = queued_messages;
+    state.total_message_count = runtime_db
+        .messages()
+        .count_for_preparation(Some(&agent_id))
+        .unwrap_or_default();
     scheduler_executor::apply_bootstrap_recovered_projection(
         &mut state,
-        scheduler_executor::BootstrapRecoveryFacts {
-            queued_messages: queue.len(),
-        },
+        scheduler_executor::BootstrapRecoveryFacts { queued_messages },
     );
     if let Some(active) = state.active_workspace_entry.as_ref() {
         let existing = runtime_db
             .execution_root_entries()
-            .get(&active.execution_root_id)?;
+            .get_for_preparation(&active.execution_root_id)?;
         let entry = workspace::execution_root_entry_from_active(
             active,
             existing
@@ -2066,31 +2636,243 @@ fn prepare_runtime_storage(
             );
         }
     }
-    storage.write_agent(&state)?;
-    storage
-        .legacy_importer()
-        .import_derived_domains(&state.id)?;
+    runtime_db
+        .transitions_in_scope(&input_scope)
+        .commit_agent_posture(
+            &crate::runtime_db::transitions::AgentPostureTransitionCommand {
+                agent_id: state.id.clone(),
+                expected_incarnation: runtime_db
+                    .agent_identities()
+                    .latest_for_mutation(&state.id)?
+                    .map(|identity| identity.incarnation),
+                agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                    expected: expected_agent_state.map(Box::new),
+                    record: Box::new(state.clone()),
+                },
+                audit_events: Vec::new(),
+                fault: None,
+            },
+        )?;
+    // This receipt proves the canonical posture only. Derived cache
+    // failure remains retryable without treating the whole bootstrap as atomic.
+    if let Some(reservation) = reservation.as_deref_mut() {
+        reservation.committed(Arc::new(state.clone()), None)?;
+    }
+    runtime_db.validate_expected_storage_domains(RuntimeDb::expected_storage_domains())?;
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
-    let projection_cache = AgentRuntimeProjectionCache::rebuild(
-        state.id.clone(),
-        runtime_db.tasks().latest_for_agent(&state.id, usize::MAX)?,
-        runtime_db
-            .work_items()
-            .latest_for_agent(&state.id, usize::MAX)?,
-        runtime_db
-            .timers()
-            .recent_for_agent(&state.id, usize::MAX)?,
-        runtime_db.external_triggers().latest_for_agent(&state.id)?,
-    );
+
+    let recent_episode_candidates = context_config.recent_episode_candidates;
+    let (episodes, inputs, work, tasks, scheduling, pending) = runtime_db.transaction(|tx| {
+        let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
+            tx,
+            &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
+                agent_id: agent_id.clone(),
+                identity_incarnation: durable_identity.incarnation,
+            },
+            recent_episode_candidates,
+            None,
+        )?
+        .require_current()?;
+        let pending = crate::runtime_db::bootstrap_inputs::pending_queue_inputs_and_charges_tx(
+            tx,
+            &input_scope,
+            input_budget,
+        )?;
+        anyhow::ensure!(
+            current.identity == durable_identity
+                && current.state.as_ref() == Some(&state)
+                && current.control_revision.is_some()
+                && pending.metadata.facts.identity.as_ref() == Some(&current.identity)
+                && pending.metadata.facts.state.as_deref() == current.state.as_ref()
+                && pending.metadata.facts.control_revision == current.control_revision
+                && pending.metadata.count == state.pending,
+            "bootstrap domains do not match their canonical State ACK"
+        );
+        let input_config = config_snapshot
+            .filter(|snap| snap.provider_reconfig.is_some())
+            .map(|snap| {
+                snap.model_catalog.resolved_context_config(
+                    &snap.base_context_config,
+                    state.model_override.as_ref(),
+                )
+            })
+            .unwrap_or_else(|| context_config.clone());
+        let history = config_snapshot
+            .map(|snap| {
+                let model = snap
+                    .model_catalog
+                    .effective_model(state.model_override.as_ref());
+                super::turn::context_history_preparation(&state.id, &model)
+            })
+            .unwrap_or_default();
+        let limits = input_budget.limits();
+        let mut request = super::context_capture::context_input_evidence_request(
+            &state,
+            None,
+            &input_config,
+            history,
+            Default::default(),
+            usize::try_from(limits.record_limit)?,
+            usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .ok_or_else(|| anyhow!("bootstrap input byte limit overflow"))?,
+            )?,
+        )?;
+        // Ordinary loaded closure readers do not expand windows on a miss.
+        super::scheduler::include_scheduler_brief_window(&mut request.windows);
+        for message in &pending.messages {
+            use super::resident_input_evidence::{
+                InputEvidenceFamily as Family, InputEvidenceKey as Key,
+            };
+            request
+                .mandatory_roots
+                .insert(Key::new(Family::Message, &message.id));
+            // Snapshot preparation validates asserted recovery sources on its
+            // same read view, including focused canonical absence observations.
+        }
+        let mut work_request = super::resident_work::WorkCaptureRequest::current();
+        for message in &pending.messages {
+            work_request
+                .required_trigger_message_ids
+                .insert(message.id.clone());
+            if message.kind == crate::types::MessageKind::TaskResult {
+                if let crate::types::MessageOrigin::Task { task_id } = &message.origin {
+                    anyhow::ensure!(
+                        message.task_id.as_deref() == Some(task_id.as_str()),
+                        "bootstrap TaskResult source differs"
+                    );
+                    work_request.required_task_ids.insert(task_id.clone());
+                }
+            }
+        }
+        let tasks = crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
+            tx,
+            &input_scope,
+            &state,
+            &super::resident_task::TaskCaptureRequest::current(),
+            &pending.messages,
+            request.record_limit,
+            request.byte_limit,
+            input_budget,
+        )?;
+        request.mandatory_roots.extend(tasks.input_roots);
+        work_request
+            .mandatory_roots
+            .extend(tasks.work_roots.iter().map(|id| {
+                super::resident_work::WorkKey::new(super::resident_work::WorkFamily::Work, id)
+            }));
+        let tasks = tasks.resident;
+        let recovered_tasks = BootstrapTaskRecovery {
+            selected: tasks.capture(&super::task_reads::active_task_request())?,
+            record_limit: request.record_limit,
+            byte_limit: request.byte_limit,
+        };
+        let work = crate::runtime_db::work_snapshot::prepare_work_domain_snapshot_tx(
+            tx,
+            &input_scope,
+            &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                capture: work_request,
+                record_limit: request.record_limit,
+                byte_limit: request.byte_limit,
+            },
+        )?
+        .require_current()?;
+        anyhow::ensure!(
+            work.facts.identity.as_ref() == Some(&current.identity)
+                && work.facts.state.as_deref() == current.state.as_ref()
+                && work.facts.control_revision == current.control_revision,
+            "bootstrap Work domain differs from its canonical State ACK"
+        );
+        request.mandatory_roots.extend(work.owning_input_roots);
+        let work = Arc::new(work.resident.with_budget(input_budget.clone())?);
+        let scheduling =
+            crate::runtime_db::scheduling_snapshot::prepare_scheduling_domain_snapshot_tx(
+                tx,
+                &input_scope,
+                &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                    capture: super::resident_scheduling::SchedulingCaptureRequest::current(),
+                    record_limit: request.record_limit,
+                    byte_limit: request.byte_limit,
+                },
+                input_budget,
+            )?
+            .require_current()?;
+        anyhow::ensure!(
+            scheduling.facts.identity.as_ref() == Some(&current.identity)
+                && scheduling.facts.state.as_deref() == current.state.as_ref()
+                && scheduling.facts.control_revision == current.control_revision,
+            "bootstrap Scheduling domain differs from its canonical State ACK"
+        );
+        request.mandatory_roots.extend(scheduling.input_roots);
+        let scheduling = Arc::new(scheduling.resident);
+        let crate::runtime_db::input_evidence_snapshot::InputEvidenceBootstrapSnapshot::Current(
+            inputs,
+        ) = crate::runtime_db::input_evidence_snapshot::prepare_input_evidence_snapshot_tx(
+            tx,
+            &input_scope,
+            &request,
+        )?
+        else {
+            return Err(anyhow!("bootstrap input evidence scope retired"));
+        };
+        anyhow::ensure!(
+            inputs.facts.identity.as_ref() == Some(&current.identity)
+                && inputs.facts.state.as_deref() == current.state.as_ref()
+                && inputs.facts.control_revision == current.control_revision,
+            "bootstrap Episode/input domains were read from different canonical facts"
+        );
+        tracing::debug!(agent_id=%agent_id,control_revision=current.control_revision,
+            continuity=?current.continuity,"prepared coherent Episode/input bootstrap domains");
+        let episodes = Arc::new(super::resident_state::ResidentEpisodes::bootstrap(
+            &agent_id,
+            durable_identity.incarnation,
+            recent_episode_candidates,
+            !current.has_more,
+            current.episodes,
+        )?);
+        let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
+        input_budget.check_history_budget()?;
+        Ok((
+            episodes,
+            inputs,
+            work,
+            (tasks, recovered_tasks),
+            scheduling,
+            pending,
+        ))
+    })?;
+    let (tasks, recovered_tasks) = tasks;
+    let recovered_timers =
+        scheduling.capture(&super::resident_scheduling::SchedulingCaptureRequest::current())?;
+    let mut queue = RuntimeQueue::default();
+    for message in pending.messages {
+        queue.push(message);
+    }
+    if let Some(reservation) = reservation.as_deref_mut() {
+        // Preserve the posture ACK immediately after its SQL, even if derived
+        // preparation fails. The ready readback is a separate installation fact,
+        // not an in-place rewrite of that already acknowledged commit.
+        reservation.publish(Arc::new(state.clone()))?;
+        reservation.begin(crate::ids::audit_event_id())?;
+        reservation.committed_prepared_with_scheduling_domains(
+            Arc::new(state.clone()),
+            Some(episodes),
+            Some(inputs),
+            Some(work),
+            Some(tasks),
+            Some(scheduling),
+        )?;
+    }
 
     Ok(PreparedRuntimeStorage {
         storage,
         runtime_db,
         state,
         queue,
-        active_tasks: snapshot.active_tasks,
-        active_timers: snapshot.active_timers,
-        projection_cache,
+        active_tasks: recovered_tasks,
+        active_timers: recovered_timers,
     })
 }
 
@@ -2926,3 +3708,342 @@ mod view_image_candidate_health_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod mutation_bootstrap_tests {
+    use super::*;
+    use crate::{host::RuntimeHost, provider::StubProvider};
+
+    fn build_for_retry(
+        host: &RuntimeHost,
+        data_dir: PathBuf,
+        workspace: PathBuf,
+        agent_id: &str,
+    ) -> Result<RuntimeHandle> {
+        RuntimeHandle::new_internal(
+            agent_id,
+            data_dir,
+            workspace,
+            String::new(),
+            Arc::new(StubProvider::new("unused")),
+            agent_id.into(),
+            ContextConfig::default(),
+            ContextConfig::default(),
+            None,
+            RuntimeModelCatalog::default(),
+            Vec::new(),
+            crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+            crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+            crate::web::WebConfig::default(),
+            None,
+            Some(host.runtime_db().clone()),
+            Some(host.bridge()),
+            None,
+            Arc::new(SystemClock),
+        )
+    }
+
+    fn retry_host(home: &std::path::Path) -> RuntimeHost {
+        std::fs::write(
+            home.join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.to_path_buf())).unwrap();
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_setup_failure_leaves_same_host_owner_retryable() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let host = retry_host(home.path());
+        let data_dir = home.path().join("setup-retry");
+        std::fs::write(&data_dir, "blocks the agent directory").unwrap();
+        let owner = host.bridge().mutation_owner_for("setup-retry", 1).unwrap();
+        let error = build_for_retry(
+            &host,
+            data_dir.clone(),
+            workspace.path().to_path_buf(),
+            "setup-retry",
+        )
+        .err()
+        .expect("a file cannot be used as the agent directory");
+        assert!(error.to_string().contains("failed to create"));
+        assert!(owner.capture().unwrap().is_none());
+        assert!(host
+            .runtime_db()
+            .agent_states()
+            .latest("setup-retry")
+            .unwrap()
+            .is_none());
+        std::fs::remove_file(&data_dir).unwrap();
+        let runtime = build_for_retry(
+            &host,
+            data_dir,
+            workspace.path().to_path_buf(),
+            "setup-retry",
+        )
+        .unwrap();
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn cache_decode_failure_retains_exact_posture_ack_for_same_host_retry() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let host = retry_host(home.path());
+        let data_dir = home.path().join("cache-retry");
+        let build = || {
+            build_for_retry(
+                &host,
+                data_dir.clone(),
+                workspace.path().to_path_buf(),
+                "cache-retry",
+            )
+        };
+        let runtime = build().unwrap();
+        let capability = runtime
+            .default_external_trigger(crate::types::CallbackDeliveryMode::WakeHint)
+            .await
+            .unwrap();
+        let descriptor = host
+            .runtime_db()
+            .external_triggers()
+            .latest(&capability.external_trigger_id)
+            .unwrap()
+            .unwrap();
+        let mut before = runtime.agent_state().await.unwrap();
+        before.status = crate::types::AgentStatus::AwakeRunning;
+        before.current_run_id = Some("unsettled-before-bootstrap".into());
+        before.total_input_tokens = 413;
+        runtime.storage().write_agent_for_fixture(&before).unwrap();
+        drop(runtime);
+        let connection = host.runtime_db().connection().unwrap();
+        connection
+            .execute(
+                "UPDATE external_triggers SET payload_json = 'invalid-json' WHERE external_trigger_id = ?1",
+                [&descriptor.external_trigger_id],
+            )
+            .unwrap();
+        assert!(build().is_err(), "cache must decode the corrupted trigger");
+        let committed = host
+            .runtime_db()
+            .agent_states()
+            .latest("cache-retry")
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            committed, before,
+            "canonical posture ACK precedes cache decode"
+        );
+        assert_eq!(committed.total_input_tokens, 413);
+        let owner = host.bridge().mutation_owner_for("cache-retry", 1).unwrap();
+        {
+            let reservation = owner.reserve().await.unwrap();
+            let recovery = reservation.recovery().unwrap().unwrap();
+            assert_eq!(recovery.committed_state.as_deref(), Some(&committed));
+            assert!(recovery.known.is_some());
+        }
+        connection
+            .execute(
+                "UPDATE external_triggers SET payload_json = ?1 WHERE external_trigger_id = ?2",
+                rusqlite::params![
+                    serde_json::to_string(&descriptor).unwrap(),
+                    descriptor.external_trigger_id
+                ],
+            )
+            .unwrap();
+        let runtime = build().unwrap();
+        assert_eq!(runtime.agent_state().await.unwrap(), committed);
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest("cache-retry")
+                .unwrap(),
+            Some(committed)
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_budget_preflight_keeps_same_host_bootstrap_retryable() {
+        use crate::runtime::{
+            input_evidence_budget::{
+                BudgetResource, InputEvidenceBudgetError, InputEvidenceBudgetLedger,
+            },
+            resident_input_evidence::InputEvidenceScope,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let host = retry_host(home.path());
+        let data_dir = home.path().join("budget-retry");
+        let runtime = build_for_retry(
+            &host,
+            data_dir.clone(),
+            workspace.path().to_path_buf(),
+            "budget-retry",
+        )
+        .unwrap();
+        let mut before = runtime.agent_state().await.unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: before.id.clone(),
+            identity_incarnation: runtime.inner.identity_incarnation,
+        };
+        let message = crate::types::MessageEnvelope::new(
+            &scope.agent_id,
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "durably accepted before cold activation".into(),
+            },
+        );
+        let message = host
+            .runtime_db()
+            .messages()
+            .append_with_index_changes_in_scope(&scope, &message, &[])
+            .unwrap()
+            .record;
+        host.runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::repositories::upsert_queue_entry_tx(
+                    tx,
+                    &crate::types::QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: scope.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: crate::types::QueueEntryStatus::Queued,
+                        created_at: message.created_at,
+                        updated_at: message.created_at,
+                    },
+                )
+            })
+            .unwrap();
+        before.pending = 1;
+        runtime.storage().write_agent_for_fixture(&before).unwrap();
+        drop(runtime);
+        let (owner, mut reservation) = host
+            .bridge()
+            .claim_reserved_mutation_owner(&scope.agent_id, scope.identity_incarnation)
+            .unwrap();
+        let tiny_budget = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits {
+            pending_per_agent_bytes: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        let setup = prepare_runtime_storage_setup(
+            &scope.agent_id,
+            data_dir.clone(),
+            workspace.path().to_path_buf(),
+            Some(host.runtime_db().clone()),
+        )
+        .unwrap();
+        let error = prepare_runtime_storage_owned(
+            setup,
+            Some(&mut reservation),
+            &ContextConfig::default(),
+            None,
+            &tiny_budget,
+        )
+        .err()
+        .expect("metadata must reject before normalization decodes the accepted body");
+        assert!(
+            matches!(
+                error.downcast_ref::<InputEvidenceBudgetError>(),
+                Some(InputEvidenceBudgetError::ResourceExhausted {
+                    resource: BudgetResource::PendingAgentBytes,
+                    ..
+                })
+            ),
+            "{error:#}"
+        );
+        assert_eq!(
+            crate::runtime_db::persistence_certainty(&error),
+            Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+        );
+        assert!(reservation.recovery().unwrap().is_none());
+        assert!(owner.capture().unwrap().is_some());
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&scope.agent_id)
+                .unwrap(),
+            Some(before)
+        );
+        assert_eq!(tiny_budget.report().unwrap().pending.count, 0);
+        drop(reservation);
+        let runtime = build_for_retry(
+            &host,
+            data_dir,
+            workspace.path().to_path_buf(),
+            &scope.agent_id,
+        )
+        .unwrap();
+        assert_eq!(runtime.agent_state().await.unwrap().pending, 1);
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn invalid_pure_configuration_does_not_fence_the_owner_and_can_be_retried() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let mut invalid = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(invalid.clone(), Arc::new(StubProvider::new("unused")))
+                .unwrap();
+        let bridge = host.bridge();
+        let owner = bridge.mutation_owner_for("config-retry", 1).unwrap();
+        invalid.stored_config.decision.enabled = Some(true);
+        invalid.stored_config.decision.model = None;
+        let build = |reconfig| {
+            RuntimeHandle::new_internal(
+                "config-retry",
+                home.path().join("agents/config-retry"),
+                workspace.path().to_path_buf(),
+                String::new(),
+                Arc::new(StubProvider::new("unused")),
+                "config-retry".into(),
+                ContextConfig::default(),
+                ContextConfig::default(),
+                None,
+                RuntimeModelCatalog::default(),
+                Vec::new(),
+                crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS,
+                crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
+                crate::web::WebConfig::default(),
+                reconfig,
+                Some(host.runtime_db().clone()),
+                Some(bridge.clone()),
+                None,
+                Arc::new(SystemClock),
+            )
+        };
+        let error = build(Some(ProviderReconfigurator { config: invalid }))
+            .err()
+            .expect("invalid decision config must fail");
+        assert!(error
+            .to_string()
+            .contains("decision.enabled requires decision.model"));
+        // The preexisting owner epoch remains valid; neither claim nor begin ran.
+        assert!(owner.capture().unwrap().is_none());
+        let runtime = build(None).unwrap();
+        assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+#[path = "bootstrap_task_recovery_tests.rs"]
+mod task_recovery_tests;
+
+#[cfg(test)]
+#[path = "bootstrap_audit_tests.rs"]
+mod audit_tests;

@@ -9,6 +9,7 @@ use crate::types::{
     LiveInputBatchRecord, MessageKind, Priority, TranscriptEntryKind, TurnOwner,
 };
 
+#[derive(Debug, serde::Serialize)]
 pub(crate) struct LiveInputAttachmentCommand {
     pub expected_attempt: ExecutionAttempt,
     pub expected_turn: TurnRecord,
@@ -16,10 +17,21 @@ pub(crate) struct LiveInputAttachmentCommand {
     pub messages: Vec<MessageEnvelope>,
     pub queues: Vec<QueueEntryRecord>,
     pub agent_state: AgentStateMutation,
+    #[serde(skip)]
+    pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct LiveInputRecoveryCommand {
+    pub expected_attempt: ExecutionAttempt,
+    pub expected_turn: TurnRecord,
+    pub predecessor: TurnRecord,
+    #[serde(skip)]
     pub fault: Option<TransitionFaultPoint>,
 }
 
 impl RuntimeTransitionRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn commit_live_input_recovery(
         &self,
         expected_attempt: &ExecutionAttempt,
@@ -27,7 +39,22 @@ impl RuntimeTransitionRepository<'_> {
         predecessor: &TurnRecord,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<TransitionCommit> {
-        self.db.transaction(|tx| {
+        self.db.transaction(|tx| self.commit_live_input_recovery_tx(
+            tx, None, expected_attempt, expected_turn, predecessor, fault, None,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn commit_live_input_recovery_tx(
+        &self,
+        tx: &Transaction<'_>,
+        input_scope: Option<&InputEvidenceScope>,
+        expected_attempt: &ExecutionAttempt,
+        expected_turn: &TurnRecord,
+        predecessor: &TurnRecord,
+        fault: Option<TransitionFaultPoint>,
+        allowed_results: Option<&BTreeSet<crate::runtime::resident_task::TaskKey>>,
+    ) -> Result<TransitionCommit> {
             let agent_id = &expected_attempt.agent_id;
             if predecessor.live_input_batches.is_empty() || !expected_turn.live_input_batches.is_empty()
                 || expected_turn.idle_input_batch.is_some()
@@ -196,6 +223,25 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let mut changed_results = BTreeSet::new();
+            let mut query = tx.prepare(
+                "SELECT result_identity FROM task_result_settlements
+                 WHERE agent_id = ?1 AND activation_id = ?2 AND state = 'caller_admitted'",
+            )?;
+            for id in query.query_map(params![agent_id, prior.attempt_id], |row| {
+                row.get::<_, String>(0)
+            })? {
+                let key = crate::runtime::resident_task::TaskKey::new(
+                    crate::runtime::resident_task::TaskFamily::ResultSettlement, id?,
+                );
+                if let Some(allowed) = allowed_results {
+                    anyhow::ensure!(
+                        allowed.contains(&key),
+                        "recovered live Result is outside its original Task proof"
+                    );
+                }
+                changed_results.insert(key);
+            }
             if !crate::runtime_db::task_result_settlement::recover_live_task_results_tx(
                 tx, agent_id, &prior.attempt_id, &expected_attempt.attempt_id, &identities, Utc::now(),
             )? {
@@ -203,21 +249,34 @@ impl RuntimeTransitionRepository<'_> {
             }
             upsert_turn_record_tx(tx, &turn)?;
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            finish_transition_tx(tx, true, agent_id, &[AuditEvent::legacy(
+            finish_transition_tx(tx, input_scope, true, agent_id, &[AuditEvent::legacy(
                 "live_input_recovered", serde_json::json!({
                     "agent_id": agent_id, "turn_id": expected_turn.turn_id,
                     "source_turn_id": predecessor.turn_id, "activation_id": expected_attempt.attempt_id,
                     "predecessor_activation_id": prior.attempt_id, "result_identities": identities,
                 }),
-            )], &[], fault, PostCommitEffects::default())
-        })
+            )], &[], fault, PostCommitEffects {
+                turns: vec![turn],
+                task_write_keys: changed_results,
+                ..PostCommitEffects::default()
+            })
     }
 
+    #[cfg(test)]
     pub(crate) fn commit_live_input_attachment(
         &self,
         command: &LiveInputAttachmentCommand,
     ) -> Result<TransitionCommit> {
-        self.db.transaction(|tx| {
+        self.db.transaction(|tx| self.commit_live_input_attachment_tx(tx, None, command, None))
+    }
+
+    pub(super) fn commit_live_input_attachment_tx(
+        &self,
+        tx: &Transaction<'_>,
+        input_scope: Option<&InputEvidenceScope>,
+        command: &LiveInputAttachmentCommand,
+        allowed_results: Option<&BTreeSet<crate::runtime::resident_task::TaskKey>>,
+    ) -> Result<TransitionCommit> {
             let agent_id = &command.expected_attempt.agent_id;
             let turn_id = &command.expected_turn.turn_id;
             if !live_binding_matches_tx(tx, command)? {
@@ -350,6 +409,16 @@ impl RuntimeTransitionRepository<'_> {
                 return Ok(TransitionCommit::default());
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+            if let Some(allowed) = allowed_results {
+                for id in &identities {
+                    anyhow::ensure!(
+                        allowed.contains(&crate::runtime::resident_task::TaskKey::new(
+                            crate::runtime::resident_task::TaskFamily::ResultSettlement, id,
+                        )),
+                        "live Result is outside its original Task proof"
+                    );
+                }
+            }
             if !crate::runtime_db::task_result_settlement::admit_live_task_results_tx(
                 tx,
                 agent_id,
@@ -376,13 +445,12 @@ impl RuntimeTransitionRepository<'_> {
             }
             apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
             let mut turn = command.expected_turn.clone();
+            let mut transcript_entries = Vec::new();
             for message in &command.messages {
                 if !turn.input_message_ids.contains(&message.id) {
                     turn.input_message_ids.push(message.id.clone());
                 }
-                append_transcript_entry_tx(
-                    tx,
-                    &TranscriptEntry::new(
+                let entry = TranscriptEntry::new(
                         agent_id,
                         TranscriptEntryKind::IncomingMessage,
                         Some(batch.safe_point.provider_round),
@@ -394,14 +462,16 @@ impl RuntimeTransitionRepository<'_> {
                             "routing_context": message.routing_context,
                             "activation_id": batch.activation_id,
                         }),
-                    ),
-                )?;
+                    );
+                append_transcript_entry_tx(tx, &entry)?;
+                transcript_entries.push(entry);
             }
             turn.live_input_batches.push(batch.clone());
             upsert_turn_record_tx(tx, &turn)?;
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             finish_transition_tx(
                 tx,
+                input_scope,
                 true,
                 agent_id,
                 &[AuditEvent::legacy(
@@ -418,10 +488,17 @@ impl RuntimeTransitionRepository<'_> {
                 command.fault,
                 PostCommitEffects {
                     agent_state: Some(command.agent_state.clone()),
+                    turns: vec![turn],
+                    transcript_entries,
+                    current_queue_write_ids: command.queues.iter()
+                        .map(|queue| queue.message_id.clone()).collect(),
+                    task_write_keys: identities.into_iter().map(|id|
+                        crate::runtime::resident_task::TaskKey::new(
+                            crate::runtime::resident_task::TaskFamily::ResultSettlement, id,
+                        )).collect(),
                     ..PostCommitEffects::default()
                 },
             )
-        })
     }
 }
 

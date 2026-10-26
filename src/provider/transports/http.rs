@@ -5,7 +5,7 @@ use super::{http_timeouts, response_body_timeout, stream_idle_timeout};
 use crate::provider::{
     http_trace::ProviderHttpTraceRequest,
     retry::{classify_reqwest_transport_error_with_trace, timeout_transport_error_with_trace},
-    ProviderDispatchGuard,
+    ProviderDispatchGuard, ProviderRequestMaterial,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -74,8 +74,9 @@ mod tests {
                     .unwrap();
                 let response = build_http_client().unwrap().get(url).send().await.unwrap();
                 trace.write_response_headers(response.status(), response.headers());
-                assert!(read_error_response_body(response, Some(&trace))
+                assert!(read_error_response_body(response, Some(&trace), &Default::default())
                     .await
+                    .unwrap()
                     .is_empty());
                 let path = trace.diagnostics(Some(503)).unwrap().path;
                 let events = std::fs::read_to_string(path).unwrap();
@@ -96,16 +97,20 @@ mod tests {
 pub(super) async fn read_error_response_body(
     response: Response,
     trace: Option<&ProviderHttpTraceRequest>,
-) -> String {
-    match tokio::time::timeout(response_body_timeout(), response.text()).await {
+    material: &ProviderRequestMaterial,
+) -> Result<String> {
+    match tokio::time::timeout(response_body_timeout(), material.response_text(response)).await {
         Ok(Ok(body)) => {
             if let Some(trace) = trace {
                 trace.write_response_body(&body);
             }
-            body
+            Ok(body)
+        }
+        Ok(Err(error)) if error.downcast_ref::<reqwest::Error>().is_none() => {
+            Err(material.hold_error(error))
         }
         // Keep status-based retry semantics, without claiming the body completed.
-        _ => String::new(),
+        _ => Ok(String::new()),
     }
 }
 

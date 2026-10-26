@@ -53,6 +53,7 @@ impl AgentProvider for BlockingCompletionProvider {
         self.entered.notify_one();
         self.release.notified().await;
         Ok(ProviderTurnResponse {
+            material: Default::default(),
             blocks: vec![holon::provider::ModelBlock::Text {
                 text: "active execution released".into(),
             }],
@@ -909,7 +910,6 @@ pub async fn complete_work_item_route_rejects_active_execution_bound_target() ->
         AdmissionContext::ControlAuthenticated,
     );
     message.work_item_id = Some(target.id.clone());
-    let runtime_task = tokio::spawn(runtime.clone().run());
     runtime.enqueue(message).await?;
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -932,8 +932,9 @@ pub async fn complete_work_item_route_rejects_active_execution_bound_target() ->
         }))
         .send()
         .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let status = response.status();
     let body: serde_json::Value = response.json().await?;
+    assert_eq!(status, reqwest::StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "work_item_execution_active", "{body}");
     assert_eq!(runtime.agent_state().await?, state_before);
     assert_eq!(
@@ -945,7 +946,6 @@ pub async fn complete_work_item_route_rejects_active_execution_bound_target() ->
     );
 
     provider.release.notify_one();
-    runtime_task.abort();
     harness.abort();
     Ok(())
 }

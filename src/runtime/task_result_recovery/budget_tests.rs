@@ -178,6 +178,7 @@ async fn paused_diagnostic_preserves_deferred_reason_with_legacy_budget_default(
 
         runtime
             .publish_paused_task_result_diagnostics("default")
+            .await
             .unwrap();
         let briefs = runtime.storage().read_recent_briefs(20).unwrap();
         assert_eq!(briefs.len(), 1);

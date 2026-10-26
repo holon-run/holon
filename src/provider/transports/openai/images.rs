@@ -42,6 +42,10 @@ pub(super) fn build_images_request(
     use crate::provider::image_generation::{
         contract_for_api, ImageGenerationApi, ImageGenerationParameters,
     };
+    request.material.admit_value(&(model, request))?;
+    request.material.read(|| {
+        Ok(crate::diagnostics::resource_io::charge_owned_metadata(512, 32)?)
+    })?;
     let api = match dialect {
         OpenAiImagesDialect::OpenAi => ImageGenerationApi::OpenAiImages,
         OpenAiImagesDialect::Xai => ImageGenerationApi::XaiImages,
@@ -156,30 +160,35 @@ pub(super) fn build_openai_codex_image_generation_request(
 pub(super) async fn send_openai_images_request(
     client: &Client,
     url: String,
-    body: Value,
+    body: &Value,
     headers: Vec<(&str, String)>,
     provider_id: &str,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<Vec<ProviderGeneratedImage>> {
     let model_ref = provider_model_ref(provider_id, &body);
-    let request_trace = trace.and_then(|trace| {
-        trace.begin_request(
-            agent_id,
-            provider_id,
-            Some(&model_ref),
-            url.as_str(),
-            "images_generations",
-            &headers,
-            &body,
-        )
-    });
+    let request_trace = trace
+        .map(|trace| {
+            trace.begin_request_with_material(
+                agent_id,
+                provider_id,
+                Some(&model_ref),
+                url.as_str(),
+                "images_generations",
+                &headers,
+                &body,
+                material,
+            )
+        })
+        .transpose()?
+        .flatten();
     let mut request = client.post(&url).header("content-type", "application/json");
     for (name, value) in headers {
         request = request.header(name, value);
     }
     let mut response = send_openai_request(
-        request.json(&body),
+        request.body(material.json_bytes(body)?),
         "Images request failed",
         "request_send",
         provider_id,
@@ -198,7 +207,7 @@ pub(super) async fn send_openai_images_request(
     if !response.status().is_success() {
         let status = response.status();
         let retry_after = parse_retry_after(response.headers());
-        let body = read_error_response_body(response, request_trace.as_ref()).await;
+        let body = read_error_response_body(response, request_trace.as_ref(), material).await?;
         return Err(classify_status_error_with_trace(
             "Images request failed",
             "response_status",
@@ -228,7 +237,12 @@ pub(super) async fn send_openai_images_request(
             if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                 return Err(image_receipt_limit("image response exceeds 46 MiB"));
             }
-            bytes.extend_from_slice(&chunk);
+            material.read(|| {
+                crate::diagnostics::resource_io::charge_owned_buffer(u64::try_from(chunk.len())?)?;
+                crate::diagnostics::resource_io::charge_owned_metadata(128, 1)?;
+                bytes.extend_from_slice(&chunk);
+                Ok(())
+            })?;
         }
         String::from_utf8(bytes)
             .map_err(|error| invalid_response_error("invalid image response encoding", error))
@@ -249,12 +263,23 @@ pub(super) async fn send_openai_images_request(
         }
     };
     trace_response_body(request_trace.as_ref(), &body);
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|error| invalid_response_error("invalid OpenAI Images JSON", error))?;
-    parse_openai_images_response(parsed)
+    let parsed: Value = material.read(|| {
+        crate::diagnostics::resource_io::admit_json_payload(&body)?;
+        serde_json::from_str(&body)
+            .map_err(|error| invalid_response_error("invalid OpenAI Images JSON", error))
+    })?;
+    parse_openai_images_response_with_material(parsed, material)
 }
 
+#[cfg(test)]
 pub(super) fn parse_openai_images_response(value: Value) -> Result<Vec<ProviderGeneratedImage>> {
+    parse_openai_images_response_with_material(value, &Default::default())
+}
+
+fn parse_openai_images_response_with_material(
+    value: Value,
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<Vec<ProviderGeneratedImage>> {
     let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
         invalid_response_error("OpenAI Images response missing data", "missing data")
     })?;
@@ -269,9 +294,15 @@ pub(super) fn parse_openai_images_response(value: Value) -> Result<Vec<ProviderG
                     "missing b64_json",
                 )
             })?;
-        let bytes = decode_generated_image(b64)?;
+        let bytes = decode_generated_image(b64, material)?;
         // xAI Grok Imagine reports the real media type per item; OpenAI omits
         // it and lets the runtime detect the format from the decoded bytes.
+        material.admit_value(&item.get("mime_type"))?;
+        material.read(|| {
+            Ok(crate::diagnostics::resource_io::charge_owned_metadata(
+                512, 4,
+            )?)
+        })?;
         let mime = item
             .get("mime_type")
             .and_then(Value::as_str)
@@ -289,6 +320,7 @@ pub(super) fn parse_openai_images_response(value: Value) -> Result<Vec<ProviderG
 
 pub(super) fn parse_openai_codex_image_generation_response_items(
     output_items: Vec<Value>,
+    material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<Vec<ProviderGeneratedImage>> {
     let mut images = Vec::new();
     for item in output_items {
@@ -301,7 +333,7 @@ pub(super) fn parse_openai_codex_image_generation_response_items(
                 "missing result",
             )
         })?;
-        let bytes = decode_generated_image(b64)?;
+        let bytes = decode_generated_image(b64, material)?;
         images.push(ProviderGeneratedImage {
             bytes,
             mime: Some("image/png".into()),
@@ -316,16 +348,22 @@ pub(super) fn parse_openai_codex_image_generation_response_items(
     Ok(images)
 }
 
-fn decode_generated_image(encoded: &str) -> Result<Vec<u8>> {
+fn decode_generated_image(
+    encoded: &str,
+    material: &crate::provider::ProviderRequestMaterial,
+) -> Result<tokio_util::bytes::Bytes> {
     use crate::provider::image_delivery::MAX_IMAGE_BYTES;
     if encoded.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
         return Err(image_receipt_limit(
             "encoded source exceeds the 32 MiB image limit",
         ));
     }
-    let bytes = BASE64_STANDARD
-        .decode(encoded)
-        .map_err(|error| invalid_response_error("invalid generated image base64 payload", error))?;
+    let bytes = material.decode_image(encoded).map_err(|error| {
+        if error.downcast_ref::<base64::DecodeError>().is_none() {
+            return error;
+        }
+        invalid_response_error("invalid generated image base64 payload", error)
+    })?;
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(image_receipt_limit("source exceeds the 32 MiB image limit"));
     }
@@ -346,13 +384,14 @@ pub(super) fn image_receipt_limit(message: &str) -> anyhow::Error {
 pub(super) async fn send_openai_codex_image_generation_request(
     client: &Client,
     url: String,
-    body: Value,
+    body: &Value,
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
+    material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<Vec<ProviderGeneratedImage>> {
     let model_ref = provider_model_ref("openai-codex", &body);
-    let terminal_response = send_openai_responses_streaming_request(
+    let terminal_response = responses::send_openai_responses_streaming_request_with_material(
         client,
         url,
         body,
@@ -362,7 +401,12 @@ pub(super) async fn send_openai_codex_image_generation_request(
         "openai-codex",
         &model_ref,
         None,
+        material,
     )
     .await?;
-    parse_openai_codex_image_generation_response_items(terminal_response.output_items)
+    parse_openai_codex_image_generation_response_items(terminal_response.output_items, material)
 }
+
+#[cfg(test)]
+#[path = "images_material_tests.rs"]
+mod material_tests;

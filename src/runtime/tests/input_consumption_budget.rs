@@ -74,6 +74,7 @@ async fn start(runtime: &RuntimeHandle) -> MessageEnvelope {
         .unwrap();
     runtime
         .record_incoming_transcript_entry(&scheduled.message)
+        .await
         .unwrap();
     scheduled.message
 }
@@ -91,6 +92,22 @@ async fn build(
         .skills_runtime_view_for_state(&state, &identity)
         .await
         .unwrap();
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: state.id.clone(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    let material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
+        &runtime.inner.input_evidence_budget,
+        &scope,
+    )
+    .unwrap();
+    let resources = runtime
+        .capture_context_resources(
+            &state,
+            &runtime.inner.config_snapshot.load_full(),
+            &material,
+        )
+        .unwrap();
     build_effective_prompt_with_apply_patch_surface(
         runtime.storage(),
         &state,
@@ -100,8 +117,8 @@ async fn build(
         &execution.execution_root,
         runtime.agent_home().as_path(),
         &identity,
-        runtime.loaded_agents_md_for_state(&state).unwrap(),
-        runtime.loaded_agent_memory_for_state().unwrap(),
+        resources.body().guidance.clone(),
+        resources.body().memory.clone(),
         &skills,
         &provider.prompt_tool_specs(&tools),
         surface,

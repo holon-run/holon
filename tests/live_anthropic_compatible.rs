@@ -50,6 +50,7 @@ async fn live_turn_scoped_context_rounds(provider_name: &str, model: &str) -> Re
             let response = provider
                 .complete_turn(ProviderTurnRequest {
                     dispatch_guard: None,
+                    material: Default::default(),
                     continuation_scope_id: None,
                     prompt_frame: frame.clone(),
                     conversation: conversation.clone(),
@@ -187,6 +188,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
     let first_output = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: prompt_frame.clone(),
             conversation: vec![
@@ -215,6 +217,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
     let output = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame,
             conversation: vec![
@@ -305,6 +308,7 @@ async fn provider_builtin_web_search_reports_backend(
     let output = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
                 "Use web search if needed. Reply in one short sentence.",

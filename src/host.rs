@@ -1,4 +1,36 @@
 mod scoped_projection;
+#[path = "host/task_stop_original.rs"]
+mod task_stop_original;
+pub(crate) use task_stop_original::OriginalTaskStopMetadataRead;
+mod agent_list_read;
+mod cold_summary;
+mod observer_read;
+pub(crate) use observer_read::{observer_hint_bytes, observer_json_bytes};
+mod child_monitor_binding;
+mod child_task_producer;
+#[cfg(test)]
+#[path = "host/child_task_summaries_read_tests.rs"]
+mod child_task_summaries_read_tests;
+mod cold_scheduling;
+mod event_read;
+pub use agent_list_read::{OwnedAgentListEntry, OwnedAgentListRead, OwnedAgentTreeRead};
+pub(crate) use event_read::OwnedEventPageRead;
+mod command_task_producer;
+pub(crate) mod context_resources;
+mod input_evidence;
+#[path = "host/child_task_spawn.rs"]
+mod original_child_spawn;
+mod pending_budget;
+pub(crate) mod resource_writes;
+mod startup_dispatch_memory;
+mod task_monitor_read;
+#[cfg(test)]
+mod task_monitor_read_tests;
+mod task_status_metadata;
+mod task_stop_phases;
+mod task_stop_worktree;
+pub(crate) use task_stop_worktree::TaskStopWorktreeCleanupObserved;
+mod task_stop_supervisor;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -13,11 +45,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use crate::types::ExternalTriggerStatus;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::{
-    sync::{mpsc, watch, Mutex as AsyncMutex, Notify, RwLock},
+    sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Notify, RwLock},
     task::{spawn_blocking, JoinHandle, JoinSet},
 };
 use tokio_util::sync::CancellationToken;
@@ -42,6 +76,10 @@ use crate::{
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider, BootstrapProvider},
     runtime::{
+        mutation_owner::{
+            IdentityMutationFacts, KnownCommit, MutationOwner, MutationOwnerError,
+            MutationOwnerRegistry, MutationReservation,
+        },
         InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle,
         SchedulerRepairInspection,
     },
@@ -65,21 +103,7 @@ use crate::{
     types::{
         normalize_agent_name, AdmissionContext, AgentBootstrapDesiredState,
         AgentBootstrapInitialMessage, AgentBootstrapRecord, AgentBootstrapStatus,
-        AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapSummary,
-        AgentBootstrapWorkspaceState, AgentCanonicalDurability, AgentCreateReceipt,
-        AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDeletionStatus, AgentDetail,
-        AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
-        AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome,
-        AgentMessageDeliveryReceipt, AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState,
-        AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution,
-        AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-        AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary,
-        AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary,
-        LoadedAgentsMdView, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, OperatorNotificationRecord, Priority, QueueEntryStatus,
-        RuntimeFailureSummary, TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
+        AgentBootstrapStep, AgentBootstrapStepStatus, AgentBootstrapSummary, AgentBootstrapWorkspaceState, AgentCanonicalDurability, AgentCreateReceipt, AgentCreateResult, AgentCreateStage, AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry, AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt, AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState, AgentMessagePrincipalKind, AgentMessageSendRequest, AgentModelResolution, AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest, ExternalTriggerRecord, ExternalTriggerSummary, LoadedAgentsMdView, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskKind, TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind, WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
         WorkspaceOccupancyRecord,
     },
 };
@@ -94,12 +118,38 @@ pub struct PublicAgentActivitySnapshot {
 
 /// Host-level roster snapshot data assembled from one committed read view.
 /// The HTTP layer maps this onto the wire `AgentRosterSnapshot` contract.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct AgentRosterSnapshotData {
     pub runtime_id: String,
     pub event_log_epoch: String,
     pub visibility_policy_generation: u64,
     pub agents: Vec<AgentRosterEntryData>,
+    pub(crate) _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub(crate) acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
+}
+
+impl Clone for AgentRosterSnapshotData {
+    fn clone(&self) -> Self {
+        let acquisition = self.acquisition.fork_owned();
+        let material = Some(acquisition.guard().expect("roster clone acquisition"));
+        Self {
+            runtime_id: self.runtime_id.clone(),
+            event_log_epoch: self.event_log_epoch.clone(),
+            visibility_policy_generation: self.visibility_policy_generation,
+            agents: self.agents.clone(),
+            _material: material,
+            acquisition,
+        }
+    }
+}
+
+impl PartialEq for AgentRosterSnapshotData {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime_id == other.runtime_id
+            && self.event_log_epoch == other.event_log_epoch
+            && self.visibility_policy_generation == other.visibility_policy_generation
+            && self.agents == other.agents
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,7 +171,7 @@ pub(crate) struct AgentRosterLatestBriefData {
 /// Host-level per-Agent projection snapshot data assembled from one
 /// committed read view. The HTTP layer maps this onto the wire
 /// `AgentProjectionSnapshot` contract.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct AgentProjectionSnapshotData {
     pub runtime_id: String,
     pub event_log_epoch: String,
@@ -143,6 +193,50 @@ pub(crate) struct AgentProjectionSnapshotData {
     /// durable per-record deletion ledger exists for these families yet,
     /// and absence is represented by the null anchors above.
     pub hydration_references: Vec<AgentHydrationReferenceData>,
+    pub(crate) _material: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+    pub(crate) acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
+}
+
+impl Clone for AgentProjectionSnapshotData {
+    fn clone(&self) -> Self {
+        let acquisition = self.acquisition.fork_owned();
+        let material = Some(acquisition.guard().expect("projection clone acquisition"));
+        Self {
+            runtime_id: self.runtime_id.clone(),
+            event_log_epoch: self.event_log_epoch.clone(),
+            visibility_policy_generation: self.visibility_policy_generation,
+            agent_id: self.agent_id.clone(),
+            snapshot_through_seq: self.snapshot_through_seq,
+            event_head_seq: self.event_head_seq,
+            oldest_retained_seq: self.oldest_retained_seq,
+            agent: self.agent.clone(),
+            canonical_relations: self.canonical_relations.clone(),
+            current_work_item: self.current_work_item.clone(),
+            conversation: self.conversation.clone(),
+            latest_brief: self.latest_brief.clone(),
+            hydration_references: self.hydration_references.clone(),
+            _material: material,
+            acquisition,
+        }
+    }
+}
+
+impl PartialEq for AgentProjectionSnapshotData {
+    fn eq(&self, other: &Self) -> bool {
+        self.runtime_id == other.runtime_id
+            && self.event_log_epoch == other.event_log_epoch
+            && self.visibility_policy_generation == other.visibility_policy_generation
+            && self.agent_id == other.agent_id
+            && self.snapshot_through_seq == other.snapshot_through_seq
+            && self.event_head_seq == other.event_head_seq
+            && self.oldest_retained_seq == other.oldest_retained_seq
+            && self.agent == other.agent
+            && self.canonical_relations == other.canonical_relations
+            && self.current_work_item == other.current_work_item
+            && self.conversation == other.conversation
+            && self.latest_brief == other.latest_brief
+            && self.hydration_references == other.hydration_references
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,19 +267,59 @@ pub(crate) enum ObserverSyncRecordKindData {
     TranscriptEntry,
 }
 
+fn projection_hydration_references(
+    message_id: Option<&str>,
+    transcript_entry_id: Option<&str>,
+    brief_id: Option<&str>,
+) -> Result<Vec<AgentHydrationReferenceData>> {
+    let anchors = [
+        (ObserverSyncRecordKindData::Message, message_id),
+        (
+            ObserverSyncRecordKindData::TranscriptEntry,
+            transcript_entry_id,
+        ),
+        (ObserverSyncRecordKindData::Brief, brief_id),
+    ];
+    let count = anchors.iter().filter(|(_, id)| id.is_some()).count();
+    let mut references = Vec::new();
+    if count == 0 {
+        return Ok(references);
+    }
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (count * std::mem::size_of::<AgentHydrationReferenceData>()) as u64,
+        count,
+    )?;
+    references.try_reserve_exact(count)?;
+    for (record_kind, record_id) in anchors {
+        if let Some(record_id) = record_id {
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                record_id
+                    .len()
+                    .saturating_add(std::mem::size_of::<String>()) as u64,
+                1,
+            )?;
+            references.push(AgentHydrationReferenceData {
+                record_kind,
+                record_id: record_id.to_owned(),
+            });
+        }
+    }
+    Ok(references)
+}
+
 /// Bounds a stored Brief preview to the roster contract's UTF-8 byte limit,
 /// cutting on a char boundary so the value stays valid UTF-8.
-fn brief_preview(preview: &Option<String>) -> String {
+fn brief_preview(preview: Option<String>) -> String {
     const MAX_UTF8_BYTES: usize = crate::http::observer_sync::LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES;
-    let text = preview.as_deref().unwrap_or("");
-    if text.len() <= MAX_UTF8_BYTES {
-        return text.to_string();
-    }
-    let mut end = MAX_UTF8_BYTES;
+    let mut text = preview.unwrap_or_default();
+    let mut end = text.len().min(MAX_UTF8_BYTES);
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    text[..end].to_string()
+    // Keep the admitted SQL allocation, including its capacity, on the
+    // snapshot's existing holder instead of allocating a second preview.
+    text.truncate(end);
+    text
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,8 +342,9 @@ pub(crate) struct AgentStateReadProjection {
     pub(crate) source: AgentStateProjectionSource,
     pub(crate) agent: LightweightAgentStateProjection,
     pub(crate) tasks: Vec<TaskRecord>,
-    pub(crate) timers: Vec<TimerRecord>,
-    pub(crate) external_triggers: Vec<ExternalTriggerRecord>,
+    pub(crate) timers: Vec<crate::runtime::TimerRecordLoan>,
+    pub(crate) external_triggers: Vec<crate::runtime::ExternalTriggerRecordLoan>,
+    pub(crate) material: crate::runtime::StateProjectionMaterial,
 }
 
 #[derive(Clone)]
@@ -307,7 +442,10 @@ pub(crate) struct HostInner {
     pub(crate) daemon_deletion_handle: Mutex<Option<JoinHandle<()>>>,
     pub(crate) agent_home_cleanup_lock: AsyncMutex<()>,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
+    startup_recovery_report: Mutex<startup_dispatch_memory::RetainedStartupRecoveryReport>,
+    task_stop_supervisor: task_stop_supervisor::TaskStopSupervisor,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
+    context_resources: Arc<context_resources::ContextResources>,
     static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
     #[cfg(test)]
     spawn_child_error: Mutex<Option<anyhow::Error>>,
@@ -318,9 +456,17 @@ pub(crate) struct HostInner {
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
+    #[cfg(test)]
+    clock_recovery_dispatch_gates: Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>,
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
+    shutdown_operation: Mutex<Option<HostShutdownOperation>>,
+    mutation_owners: MutationOwnerRegistry,
+    input_evidence_budget: crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    external_mutation_tasks: Mutex<Vec<JoinHandle<()>>>,
+    #[cfg(test)]
+    external_publication_fault: AtomicBool,
     runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
     runtime_recovery_token: CancellationToken,
@@ -355,6 +501,20 @@ struct PendingTemporaryRuntime {
     spawned: Arc<Mutex<Option<(String, RuntimeHandle, JoinHandle<()>)>>>,
     // Dropping the result wakes its already tracked cleanup, without spawning.
     _handoff: tokio::sync::oneshot::Sender<()>,
+}
+
+// Minted only inside the Host-owned startup worker after admission. Shutdown
+// drains that worker before releasing its lease; Closing cannot revoke it.
+struct AcceptedStartupRecovery {
+    host: std::sync::Weak<HostInner>,
+}
+
+impl AcceptedStartupRecovery {
+    fn permits_closing(&self, host: &RuntimeHost) -> bool {
+        self.host
+            .upgrade()
+            .is_some_and(|inner| Arc::ptr_eq(&inner, &host.inner))
+    }
 }
 
 const CONFIG_RELOAD_IDLE: u8 = 0;
@@ -397,6 +557,12 @@ struct AgentEntry {
     idle_observation: Option<IdleRuntimeObservation>,
 }
 
+struct TemporaryRuntimeEntry {
+    runtime: RuntimeHandle,
+    abort: tokio::task::AbortHandle,
+    phase: watch::Receiver<AgentRuntimePhase>,
+}
+
 struct IdleRuntimeObservation {
     evidence: String,
     since: std::time::Instant,
@@ -430,9 +596,37 @@ enum HostRuntimePhase {
 
 struct HostRuntimeRegistry {
     phase: HostRuntimePhase,
+    ever_activated: bool,
     agents: BTreeMap<String, AgentEntry>,
+    // Keep exact installation targets visible until their retirement drain ends.
+    unloading_mutations: BTreeMap<u64, RuntimeHandle>,
+    unloading_exits: BTreeMap<u64, (tokio::task::AbortHandle, watch::Receiver<AgentRuntimePhase>)>,
+    temporary_runtimes: BTreeMap<String, TemporaryRuntimeEntry>,
     next_generation: u64,
     recovering: HashMap<String, RuntimeRecoveryClaim>,
+}
+
+type HostShutdownResult = std::result::Result<(), HostShutdownFailure>;
+
+struct HostShutdownOperation {
+    completion: watch::Receiver<Option<HostShutdownResult>>,
+    // The Host owns shutdown; callers only wait for its shared completion.
+    _worker: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+struct HostShutdownFailure(Arc<anyhow::Error>);
+
+impl std::fmt::Display for HostShutdownFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
+impl std::error::Error for HostShutdownFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref().as_ref())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -492,6 +686,14 @@ fn stopped_unloaded_agent(agent_id: &str) -> AgentState {
     agent
 }
 
+fn try_stopped_unloaded_agent(agent_id: &str) -> Result<AgentState> {
+    crate::diagnostics::resource_io::charge_owned_metadata(
+        (agent_id.len() + std::mem::size_of::<String>()) as u64,
+        1,
+    )?;
+    Ok(stopped_unloaded_agent(agent_id))
+}
+
 fn skill_visibility(identity: &AgentIdentityView) -> SkillVisibility {
     if identity.kind == AgentKind::Default {
         SkillVisibility::DefaultAgent
@@ -513,7 +715,7 @@ pub(crate) struct ChildTaskSpawn {
     pub task_detail: Value,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("child task spawn failed after creating agent {child_agent_id}")]
 pub(crate) struct ChildTaskSpawnFailure {
     child_agent_id: String,
@@ -546,6 +748,11 @@ pub(crate) struct AgentMessageAdmission {
 enum NamedAgentExistingBehavior {
     Reuse,
     Reject,
+}
+
+enum NamedAgentPreparation {
+    Ready(AgentIdentityRecord, bool),
+    Reincarnate(AgentIdentityRecord),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -912,8 +1119,45 @@ pub(crate) enum AgentBootstrapKick {
     Started(tokio::sync::oneshot::Receiver<Result<AgentBootstrapRecord, String>>),
 }
 
+#[path = "host/task_stop_worktree_exit.rs"]
+mod task_stop_worktree_exit;
+pub(crate) use task_stop_worktree_exit::TaskStopWorktreeProducerExit;
+
+/// Construction requires original-target retirement, drain and home cleanup.
+pub(crate) struct TaskStopChildRetirement {
+    original: Arc<crate::runtime_db::task_stop::TaskStopRecord>,
+    _identity: crate::runtime_db::task_stop::PreparedTaskStopChildIdentity,
+    producer_exit: Option<Arc<TaskStopWorktreeProducerExit>>,
+}
+impl TaskStopChildRetirement {
+    pub(crate) fn producer_exit(&self) -> Option<Arc<TaskStopWorktreeProducerExit>> {
+        self.producer_exit.clone()
+    }
+    pub(crate) fn matches(&self, record: &crate::runtime_db::task_stop::TaskStopRecord) -> bool {
+        self.original.effect_seq == record.effect_seq
+            && self.original.prepared == record.prepared
+            && self.original.intent_digest == record.intent_digest
+            && self.original.generation_digest == record.generation_digest
+            && self.original.intent.child == record.intent.child
+    }
+}
+
 impl RuntimeHost {
     pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
+        let lease =
+            crate::runtime_db::RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
+                .context("pre-server preparation requires the daemon to be stopped")?;
+        Self::prepare_runtime_storage_with_maintenance_lease(config, &lease)
+    }
+
+    pub fn prepare_runtime_storage_with_maintenance_lease(
+        config: &AppConfig,
+        lease: &crate::runtime_db::RuntimeDbLock,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            lease.path() == config.runtime_db_maintenance_lock_path(),
+            "runtime maintenance lease path mismatch"
+        );
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         // Pre-server preparation targets the *resolved* default agent. A fresh
@@ -989,6 +1233,10 @@ impl RuntimeHost {
         event_bus_capacity: usize,
         bootstrap_provider_active: bool,
     ) -> Result<Self> {
+        let input_evidence_budget =
+            crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                config.stored_config.runtime.state_memory.resolve()?,
+            )?;
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
@@ -1009,20 +1257,35 @@ impl RuntimeHost {
                 daemon_deletion_handle: Mutex::new(None),
                 agent_home_cleanup_lock: AsyncMutex::new(()),
                 runtime_db_maintenance_lock: Mutex::new(None),
+                startup_recovery_report: Mutex::new(Default::default()),
+                task_stop_supervisor: Default::default(),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
+                context_resources: Arc::new(context_resources::ContextResources::default()),
                 static_provider: Mutex::new(static_provider),
                 #[cfg(test)]
                 spawn_child_error: Mutex::new(None),
                 #[cfg(test)]
                 runtime_constructor_gate: Mutex::new(None),
+                #[cfg(test)]
+                clock_recovery_dispatch_gates: Mutex::new(BTreeMap::new()),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
+                    ever_activated: false,
                     agents: BTreeMap::new(),
+                    unloading_mutations: BTreeMap::new(),
+                    unloading_exits: BTreeMap::new(),
+                    temporary_runtimes: BTreeMap::new(),
                     next_generation: 1,
                     recovering: HashMap::new(),
                 }),
+                shutdown_operation: Mutex::new(None),
+                mutation_owners: MutationOwnerRegistry::default(),
+                input_evidence_budget,
+                external_mutation_tasks: Mutex::new(Vec::new()),
+                #[cfg(test)]
+                external_publication_fault: AtomicBool::new(false),
                 runtime_recovery_tx,
                 runtime_recovery_rx: Mutex::new(Some(runtime_recovery_rx)),
                 runtime_recovery_token: CancellationToken::new(),
@@ -1047,7 +1310,6 @@ impl RuntimeHost {
             }),
         };
         host.ensure_legacy_public_agent_bootstraps()?;
-        host.import_legacy_external_triggers()?;
         Ok(host)
     }
 
@@ -1334,6 +1596,34 @@ impl RuntimeHost {
         }
     }
 
+    /// Serve transfers its pre-server lease so offline tools stay excluded
+    /// until every admitted writer has drained and the Host is Closed.
+    pub async fn adopt_runtime_db_maintenance_lease(
+        &self,
+        lease: crate::runtime_db::RuntimeDbLock,
+    ) -> Result<()> {
+        let registry = self.inner.runtimes.read().await;
+        anyhow::ensure!(
+            registry.phase == HostRuntimePhase::Open,
+            "runtime admission closed"
+        );
+        anyhow::ensure!(
+            lease.path() == self.config().runtime_db_maintenance_lock_path(),
+            "runtime maintenance lease path mismatch"
+        );
+        let mut current = self
+            .inner
+            .runtime_db_maintenance_lock
+            .lock()
+            .expect("maintenance lease poisoned");
+        anyhow::ensure!(
+            current.is_none(),
+            "runtime maintenance lease already installed"
+        );
+        *current = Some(lease);
+        Ok(())
+    }
+
     pub fn spawn_daemon_runtime_db_retention(&self) {
         if tokio::runtime::Handle::try_current().is_err() {
             tracing::debug!("daemon runtime db retention not spawned: no Tokio runtime");
@@ -1342,18 +1632,26 @@ impl RuntimeHost {
         if self.inner.daemon_retention_handle.lock().unwrap().is_some() {
             return;
         }
-        match crate::runtime_db::RuntimeDbLock::try_lock(
-            self.config().runtime_db_maintenance_lock_path(),
-        ) {
-            Ok(lock) => {
-                *self.inner.runtime_db_maintenance_lock.lock().unwrap() = Some(lock);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "daemon runtime db retention disabled: maintenance lock unavailable"
-                );
-                return;
+        if self
+            .inner
+            .runtime_db_maintenance_lock
+            .lock()
+            .unwrap()
+            .is_none()
+        {
+            match crate::runtime_db::RuntimeDbLock::try_lock(
+                self.config().runtime_db_maintenance_lock_path(),
+            ) {
+                Ok(lock) => {
+                    *self.inner.runtime_db_maintenance_lock.lock().unwrap() = Some(lock);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "daemon runtime db retention disabled: maintenance lock unavailable"
+                    );
+                    return;
+                }
             }
         }
         let host = self.clone();
@@ -1369,11 +1667,8 @@ impl RuntimeHost {
         if let Some(handle) = handle {
             let _ = handle.await;
         }
-        self.inner
-            .runtime_db_maintenance_lock
-            .lock()
-            .unwrap()
-            .take();
+        // The lease fences all serve writers through Host shutdown, including
+        // runtime and cold mutation drains after retention has stopped.
     }
 
     fn ensure_runtime_recovery_coordinator(&self) {
@@ -1592,7 +1887,9 @@ impl RuntimeHost {
                     }
                     continue;
                 } else if entry_terminated {
-                    registry.agents.remove(&notice.agent_id);
+                    if let Some(entry) = registry.agents.remove(&notice.agent_id) {
+                        registry.retain_unproved_original_processes(&entry);
+                    }
                     None
                 } else {
                     accessible_runtime
@@ -1657,8 +1954,7 @@ impl RuntimeHost {
                         continue;
                     }
                     let _ = runtime
-                        .storage()
-                        .append_event(&crate::types::AuditEvent::legacy(
+                        .append_audit_event(
                             "runtime_loop_recovered",
                             json!({
                                 "agent_id": notice.agent_id,
@@ -1666,7 +1962,8 @@ impl RuntimeHost {
                                 "recovered_generation": generation,
                                 "attempt": attempt,
                             }),
-                        ));
+                        )
+                        .await;
                     tracing::info!(
                         agent_id = notice.agent_id,
                         attempt,
@@ -1743,13 +2040,11 @@ impl RuntimeHost {
                 Duration::from_secs(policy.interval_hours.saturating_mul(60 * 60));
             if retention_enabled && now >= next_retention_pass {
                 next_retention_pass = now + retention_round;
-                let db = self.inner.runtime_db.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    db.run_retention_pass(policy, chrono::Utc::now())
-                })
-                .await;
+                let result = self
+                    .run_scoped_retention_pass(policy, chrono::Utc::now())
+                    .await;
                 match result {
-                    Ok(Ok(report)) => {
+                    Ok(report) => {
                         tracing::info!(
                             audit_deleted = report.audit_events.deleted_rows,
                             transcript_deleted = report.transcript_entries.deleted_rows,
@@ -1759,16 +2054,10 @@ impl RuntimeHost {
                             "daemon runtime db retention pass completed"
                         );
                     }
-                    Ok(Err(error)) => {
-                        tracing::warn!(
-                            error = %error,
-                            "daemon runtime db retention pass failed"
-                        );
-                    }
                     Err(error) => {
                         tracing::warn!(
                             error = %error,
-                            "daemon runtime db retention task failed"
+                            "daemon runtime db retention pass failed"
                         );
                     }
                 }
@@ -2295,28 +2584,595 @@ impl RuntimeHost {
         }
     }
 
+    /// Host owns accepted cold writes through publication, even if the API
+    /// caller disconnects. Admission shares the registry's shutdown fence.
+    pub(crate) async fn run_owned_external_mutation<T: Send + 'static>(
+        &self,
+        mutation: impl Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
+        self.register_owned_external_mutation(mutation, || Ok(()))
+            .await?
+            .await
+            .context("host mutation worker stopped before reporting completion")?
+    }
+
+    async fn register_owned_external_mutation<T: Send + 'static>(
+        &self,
+        mutation: impl Future<Output = Result<T>> + Send + 'static,
+        before_register: impl FnOnce() -> Result<()> + Send,
+    ) -> Result<oneshot::Receiver<Result<T>>> {
+        let (result_tx, result_rx) = oneshot::channel();
+        {
+            let registry = self.inner.runtimes.read().await;
+            anyhow::ensure!(
+                registry.phase == HostRuntimePhase::Open,
+                "runtime admission closed"
+            );
+            before_register()?;
+            let mut tasks = self
+                .inner
+                .external_mutation_tasks
+                .lock()
+                .expect("external mutation tasks poisoned");
+            tasks.retain(|task| !task.is_finished());
+            tasks.push(tokio::spawn(async move {
+                let result = mutation.await;
+                let _ = result_tx.send(result);
+            }));
+        }
+        Ok(result_rx)
+    }
+
+    pub(crate) async fn reserve_agent_mutations(
+        &self,
+        agent_ids: &[String],
+    ) -> Result<Vec<MutationReservation>> {
+        loop {
+            let mut scopes = agent_ids
+                .iter()
+                .map(|agent_id| {
+                    let incarnation = self
+                        .agent_identity_record(agent_id)?
+                        .map_or(1, |identity| identity.incarnation);
+                    Ok((agent_id.clone(), incarnation))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            scopes.sort();
+            scopes.dedup();
+            let owners = scopes
+                .iter()
+                .map(|(agent_id, incarnation)| {
+                    self.inner
+                        .mutation_owners
+                        .current_owner(agent_id, *incarnation)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut reservations = match MutationOwner::reserve_all(owners).await {
+                Ok(reservations) => reservations,
+                Err(MutationOwnerError::Replaced) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for (agent_id, incarnation) in &scopes {
+                anyhow::ensure!(
+                    self.agent_identity_record(agent_id)?
+                        .map_or(1, |identity| identity.incarnation)
+                        == *incarnation,
+                    "agent identity changed while reserving {agent_id}"
+                );
+            }
+            self.reconcile_external_mutations(&mut reservations).await?;
+            let current_scopes = scopes
+                .iter()
+                .map(|(agent_id, _)| {
+                    Ok((
+                        agent_id.clone(),
+                        self.agent_identity_record(agent_id)?
+                            .map_or(1, |identity| identity.incarnation),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if current_scopes != scopes {
+                drop(reservations);
+                continue;
+            }
+            // Recovery may have added other members. Its group is now fully
+            // published, so the next command keeps only its requested scopes.
+            reservations.retain(|reservation| {
+                scopes.iter().any(|(agent_id, incarnation)| {
+                    reservation.agent_id() == agent_id
+                        && reservation.identity_incarnation() == *incarnation
+                })
+            });
+            return Ok(reservations);
+        }
+    }
+
+    pub(crate) async fn reserve_mutation_scopes(
+        &self,
+        requested: &[(String, u64)],
+    ) -> Result<Vec<MutationReservation>> {
+        self.reserve_mutation_scopes_in(requested, self.runtime_db()).await
+    }
+
+    async fn reserve_mutation_scopes_in(
+        &self,
+        requested: &[(String, u64)],
+        db: &RuntimeDb,
+    ) -> Result<Vec<MutationReservation>> {
+        let mut scopes = requested.to_vec();
+        scopes.sort();
+        scopes.dedup();
+        loop {
+            let owners = scopes
+                .iter()
+                .map(|(agent_id, incarnation)| {
+                    self.inner
+                        .mutation_owners
+                        .current_owner(agent_id, *incarnation)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut reservations = match db.wait_for_memory_lock(MutationOwner::reserve_all(owners)).await? {
+                Ok(reservations) => reservations,
+                Err(MutationOwnerError::Replaced) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            self.reconcile_external_mutations(&mut reservations).await?;
+            reservations.retain(|reservation| {
+                scopes.iter().any(|(agent_id, incarnation)| {
+                    reservation.agent_id() == agent_id
+                        && reservation.identity_incarnation() == *incarnation
+                })
+            });
+            return Ok(reservations);
+        }
+    }
+
+    /// Read before SQL, while every affected owner is reserved. A successor
+    /// scope never borrows the predecessor's AgentState row.
+    pub(crate) fn external_identity_facts(
+        &self,
+        reservations: &[MutationReservation],
+    ) -> Result<Vec<IdentityMutationFacts>> {
+        reservations
+            .iter()
+            .map(|reservation| {
+                let identity = self
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(reservation.agent_id())?;
+                let state = if identity
+                    .as_ref()
+                    .map_or(reservation.identity_incarnation() == 1, |identity| {
+                        identity.incarnation == reservation.identity_incarnation()
+                    }) {
+                    self.runtime_db()
+                        .agent_states()
+                        .latest(reservation.agent_id())?
+                        .map(Arc::new)
+                } else {
+                    None
+                };
+                Ok(IdentityMutationFacts {
+                    identity: identity.map(Arc::new),
+                    state,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn acknowledge_external_metadata<T>(
+        &self,
+        reservations: &mut [MutationReservation],
+        operation_id: String,
+        persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
+    ) -> Result<T> {
+        MutationReservation::begin_all(reservations, operation_id)?;
+        let (result, facts) = match persist() {
+            Ok(committed) => committed,
+            Err(error) => {
+                if crate::runtime_db::persistence_certainty(&error)
+                    == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+                {
+                    MutationReservation::definitely_not_committed_all(reservations)?;
+                }
+                return Err(error);
+            }
+        };
+        // Recording the exact ACK must precede every asynchronous install.
+        MutationReservation::committed_all(
+            reservations,
+            facts
+                .into_iter()
+                .map(|facts| KnownCommit::Metadata(Arc::new(facts)))
+                .collect(),
+        )?;
+        Ok(result)
+    }
+
+    pub(crate) async fn commit_external_metadata<T>(
+        &self,
+        reservations: &mut [MutationReservation],
+        operation_id: String,
+        persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
+    ) -> Result<T> {
+        let result = self.acknowledge_external_metadata(reservations, operation_id, persist)?;
+        #[cfg(test)]
+        if self
+            .inner
+            .external_publication_fault
+            .swap(false, Ordering::SeqCst)
+        {
+            bail!("external mutation committed but publication requires reconciliation");
+        }
+        self.reconcile_external_mutations(reservations).await?;
+        Ok(result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_external_mutation_publication(&self) {
+        self.inner
+            .external_publication_fault
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) async fn reconcile_external_mutations(
+        &self,
+        reservations: &mut [MutationReservation],
+    ) -> Result<()> {
+        let task_queries = self.task_recovery_queries_for_group(reservations).await?;
+        crate::runtime::input_recovery::resolve_input_recovery_with_queries(
+            &self.inner.runtime_db,
+            reservations,
+            &self.inner.input_evidence_budget,
+            &self.runtime_context_config(),
+            &RuntimeModelCatalog::from_config(&self.config()),
+            &task_queries,
+        )?;
+        for reservation in reservations.iter_mut() {
+            let original_runtime = self.bridge().runtime_for_mutation(reservation).await?;
+            crate::runtime::control_recovery::resolve_control_recovery(
+                &self.inner.runtime_db,
+                std::slice::from_mut(reservation),
+                self.config().recent_episode_candidates,
+                original_runtime.as_ref(),
+                &self.inner.input_evidence_budget,
+            )
+            .await?;
+        }
+        crate::runtime::episode_recovery::resolve_episode_recovery(
+            &self.inner.runtime_db,
+            reservations,
+            self.config().recent_episode_candidates,
+        )?;
+        let known = MutationReservation::validate_group_known(reservations)?;
+        let mut notifications = Vec::new();
+        let mut cold_notifications = Vec::new();
+        let mut cancellations = Vec::new();
+        for (reservation, saved) in reservations.iter().zip(&known) {
+            let Some(saved) = saved else {
+                continue;
+            };
+            if let KnownCommit::Metadata(metadata) = saved {
+                if metadata.identity.as_ref().is_some_and(|identity| {
+                    identity.agent_id == reservation.agent_id()
+                        && identity.incarnation == reservation.identity_incarnation()
+                        && identity.status == AgentRegistryStatus::Deleted
+                }) {
+                    // The original metadata ACK is retained until this exact
+                    // retired scope's durable pending responsibility is checked.
+                    self.reconcile_deleted_pending_budget(reservation)?;
+                }
+                self.bridge()
+                    .install_mutation_metadata(
+                        reservation.agent_id(),
+                        reservation.identity_incarnation(),
+                        metadata,
+                    )
+                    .await?;
+            }
+            let loaded = self.bridge().runtime_for_mutation(reservation).await?;
+            if let Some(runtime) = loaded {
+                if runtime.instance_incarnation() != reservation.identity_incarnation() {
+                    continue;
+                }
+                if let Some(plan) = runtime.control_cancellation_for_known(reservation, saved)? {
+                    cancellations.push((runtime.clone(), plan));
+                }
+                if let Some(facts) = runtime.install_saved_mutation(reservation, saved).await? {
+                    notifications.push((runtime, facts));
+                }
+            } else if let KnownCommit::State {
+                runtime: Some(facts),
+                ..
+            } = saved
+            {
+                cold_notifications.push((reservation.agent_id().to_owned(), facts.clone()));
+            }
+        }
+        MutationReservation::reconcile_all(reservations, known)?;
+        for (runtime, plan) in cancellations {
+            runtime.resume_saved_control_cancellation(&plan)?;
+        }
+        for (runtime, facts) in notifications {
+            runtime
+                .reissue_mutation_notifications(facts.external_effects())
+                .await;
+        }
+        for (agent_id, facts) in cold_notifications {
+            // The original write has already published for every owner. Cold
+            // agents have no scheduler to wake; durable work is seen on activation.
+            let effects = facts.external_effects();
+            match self.agent_storage(&agent_id) {
+                Ok(storage) => {
+                    for warning in storage
+                        .publish_transition_events(effects)
+                        .into_iter()
+                        .chain(storage.notify_transition_memory_index(effects))
+                    {
+                        tracing::warn!(agent_id, effect = warning.effect, error = %warning.message,
+                            "external input mutation committed with post-commit warning");
+                    }
+                }
+                Err(error) => tracing::warn!(agent_id, error = %error,
+                    "external input mutation notification storage unavailable"),
+            }
+        }
+        Ok(())
+    }
+
+    async fn commit_external_known<T>(
+        &self,
+        reservations: &mut [MutationReservation],
+        known: Vec<KnownCommit>,
+        operation_id: String,
+        persist: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        anyhow::ensure!(
+            reservations.len() == known.len(),
+            "external mutation scope mismatch"
+        );
+        MutationReservation::begin_all(reservations, operation_id)?;
+        let result = match persist() {
+            Ok(result) => result,
+            Err(error) => {
+                if crate::runtime_db::persistence_certainty(&error)
+                    == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+                {
+                    MutationReservation::definitely_not_committed_all(reservations)?;
+                }
+                return Err(error);
+            }
+        };
+        // No await may separate the SQL ACK from recording its entire write set.
+        MutationReservation::committed_all(reservations, known)?;
+        self.reconcile_external_mutations(reservations).await?;
+        Ok(result)
+    }
+
+    async fn commit_external_agent_states<T>(
+        &self,
+        reservations: &mut [MutationReservation],
+        states: Vec<AgentState>,
+        operation_id: String,
+        persist: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        anyhow::ensure!(
+            reservations.len() == states.len(),
+            "external mutation scope mismatch"
+        );
+        let known = states
+            .into_iter()
+            .zip(reservations.iter())
+            .map(|(state, reservation)| {
+                anyhow::ensure!(
+                    state.id == reservation.agent_id(),
+                    "external State scope mismatch"
+                );
+                Ok(KnownCommit::State {
+                    state: Arc::new(state),
+                    episodes: reservation.prepared_episodes_for_state_only_commit()?,
+                    input_evidence: reservation.prepared_inputs_for_state_only_commit()?,
+                    work: reservation.prepared_work_for_state_only_commit()?,
+                    tasks: reservation.prepared_tasks_for_state_only_commit()?,
+                    scheduling: reservation.prepared_scheduling_for_state_only_commit()?,
+                    runtime: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.commit_external_known(reservations, known, operation_id, persist)
+            .await
+    }
+
+    pub(crate) async fn migrate_model_config_routes(
+        &self,
+        write: bool,
+    ) -> Result<crate::model_config_migration::ModelConfigMigrationReport> {
+        let config = self.config();
+        if !write {
+            return crate::model_config_migration::migrate_model_config_routes(
+                &config.config_file_path,
+                self.runtime_db(),
+                false,
+            );
+        }
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            let initial = crate::model_config_migration::prepare_model_config_migration(
+                &config.config_file_path,
+                host.runtime_db(),
+            )?;
+            if !initial.ok() {
+                return Ok(initial.into_report(true));
+            }
+            let agent_ids = initial.affected_agent_ids();
+            let mut reservations = host.reserve_agent_mutations(&agent_ids).await?;
+            let mut prepared = crate::model_config_migration::prepare_model_config_migration(
+                &config.config_file_path,
+                host.runtime_db(),
+            )?;
+            anyhow::ensure!(
+                prepared.affected_agent_ids() == agent_ids,
+                "model migration candidates changed while reserving owners; inspect again"
+            );
+            if !prepared.ok() {
+                return Ok(prepared.into_report(true));
+            }
+            let candidates = prepared.candidate_states()?;
+            // File effects are outside the SQL publication gate. A file write
+            // failure leaves the state command unattempted and owners ready.
+            let _writer = host.context_resources().begin_write()?;
+            prepared.write_config()?;
+            host.commit_external_agent_states(
+                &mut reservations,
+                candidates,
+                ids::audit_event_id(),
+                || prepared.commit_agent_states(host.runtime_db()),
+            )
+            .await?;
+            Ok(prepared.into_report(true))
+        })
+        .await
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
+        let mut completion = {
+            let mut operation = self
+                .inner
+                .shutdown_operation
+                .lock()
+                .expect("host shutdown operation poisoned");
+            match operation.as_ref() {
+                Some(operation) => operation.completion.clone(),
+                None => {
+                    let (completion_tx, completion) =
+                        watch::channel::<Option<HostShutdownResult>>(None);
+                    let host = self.clone();
+                    let worker = tokio::spawn(async move {
+                        let result = host
+                            .shutdown_inner()
+                            .await
+                            .map_err(|error| HostShutdownFailure(Arc::new(error)));
+                        completion_tx.send_replace(Some(result));
+                    });
+                    *operation = Some(HostShutdownOperation {
+                        completion: completion.clone(),
+                        _worker: worker,
+                    });
+                    completion
+                }
+            }
+        };
+        loop {
+            let result = completion.borrow_and_update().clone();
+            if let Some(result) = result {
+                return result.map_err(anyhow::Error::new);
+            }
+            completion
+                .changed()
+                .await
+                .context("host shutdown worker stopped before reporting completion")?;
+        }
+    }
+
+    async fn shutdown_inner(&self) -> Result<()> {
         let _shutdown = self.inner.runtime_shutdown_lock.lock().await;
         self.inner.runtime_operations.lock().unwrap().closing = true;
         self.inner.runtime_operations_token.cancel();
         self.shutdown_config_reload_coordinator().await;
         self.drain_runtime_operations().await;
-        let entries = {
+        self.inner.context_resources.begin_close()?;
+        let (entries, runtimes, temporary) = {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
                 HostRuntimePhase::Open => {
                     registry.phase = HostRuntimePhase::Closing;
-                    std::mem::take(&mut registry.agents)
+                    let entries = std::mem::take(&mut registry.agents)
                         .into_values()
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    for entry in &entries {
+                        entry.runtime.close_execution_admission();
+                        registry
+                            .unloading_mutations
+                            .insert(entry.generation, entry.runtime.clone());
+                        registry.unloading_exits.insert(
+                            entry.generation,
+                            (entry.task.abort_handle(), entry.phase.clone()),
+                        );
+                    }
+                    let runtimes = registry
+                        .unloading_mutations
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let temporary = registry
+                        .temporary_runtimes
+                        .iter()
+                        .map(|(id, entry)| {
+                            entry.runtime.close_execution_admission();
+                            (
+                                id.clone(),
+                                entry.runtime.clone(),
+                                entry.abort.clone(),
+                                entry.phase.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (entries, runtimes, temporary)
                 }
-                HostRuntimePhase::Closing | HostRuntimePhase::Closed => return Ok(()),
+                HostRuntimePhase::Closing => bail!("host shutdown registry is already closing"),
+                HostRuntimePhase::Closed => return Ok(()),
             }
         };
+        self.stop_task_stop_supervisor_discovery();
         self.shutdown_runtime_recovery_coordinator().await;
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
+        let mut external_error = None;
+        let mut retired_temporary = Vec::new();
+        for (agent_id, runtime, abort, phase) in &temporary {
+            let mut phase = phase.clone();
+            runtime.retire_instance_locally("daemon_shutdown").await;
+            abort.abort();
+            while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                if phase.changed().await.is_err() {
+                    break;
+                }
+            }
+            if let Err(error) = runtime.join_retiring_resources().await {
+                external_error.get_or_insert(error);
+                continue;
+            }
+            if let Err(error) = self
+                .archive_temporary_runtime_identity_owned(agent_id)
+                .await
+            {
+                external_error.get_or_insert(error);
+            } else {
+                retired_temporary.push(agent_id.clone());
+            }
+            // Homes remain available if the run's cleanup never completed.
+        }
+        let external_tasks = std::mem::take(
+            &mut *self
+                .inner
+                .external_mutation_tasks
+                .lock()
+                .expect("external mutation tasks poisoned"),
+        );
+        for task in external_tasks {
+            if let Err(error) = task.await {
+                external_error.get_or_insert_with(|| anyhow::Error::new(error));
+            }
+        }
+        // Accepted Host writers may finish after the first temporary drain.
+        // Keep exact targets until their final publication gate is reconciled.
+        for (agent_id, runtime, _, _) in &temporary {
+            if let Err(error) = runtime.join_retiring_resources().await {
+                retired_temporary.retain(|retired| retired != agent_id);
+                external_error.get_or_insert(error);
+            }
+        }
         let mut tasks = VecDeque::with_capacity(entries.len());
         for entry in entries {
             let _ = entry.runtime.request_service_shutdown().await;
@@ -2339,7 +3195,39 @@ impl RuntimeHost {
                 let _ = task.await;
             }
         }
-        self.inner.runtimes.write().await.phase = HostRuntimePhase::Closed;
+        let mut mutation_error = external_error;
+        for runtime in runtimes {
+            if let Err(error) = runtime.join_retiring_resources().await {
+                tracing::warn!(error = %error, "runtime mutation drain failed during host shutdown");
+                if mutation_error.is_none() {
+                    mutation_error = Some(error);
+                }
+            }
+        }
+        self.shutdown_task_stop_supervisor().await;
+        // Original Runtime producers have joined. Continue their durable Stop
+        // responsibilities once without constructing a replacement Runtime.
+        if let Err(error) = self.sweep_pending_task_stops_after_runtime_drain().await {
+            mutation_error.get_or_insert(error);
+        }
+        self.inner.context_resources.join_writers().await?;
+        {
+            let mut registry = self.inner.runtimes.write().await;
+            registry.phase = HostRuntimePhase::Closed;
+            registry.unloading_mutations.clear();
+            registry.unloading_exits.clear();
+            for agent_id in retired_temporary {
+                registry.temporary_runtimes.remove(&agent_id);
+            }
+        }
+        self.inner
+            .runtime_db_maintenance_lock
+            .lock()
+            .expect("maintenance lease poisoned")
+            .take();
+        if let Some(error) = mutation_error {
+            return Err(error.context("draining runtime mutations during host shutdown"));
+        }
         Ok(())
     }
 
@@ -2380,7 +3268,11 @@ impl RuntimeHost {
                 .get(agent_id)
                 .is_some_and(|entry| entry.generation == generation)
             {
-                registry.agents.remove(agent_id)
+                let entry = registry.agents.remove(agent_id);
+                if let Some(entry) = &entry {
+                    registry.retain_unproved_original_processes(entry);
+                }
+                entry
             } else {
                 None
             }
@@ -2462,7 +3354,9 @@ impl RuntimeHost {
                 *entry.phase.borrow(),
                 AgentRuntimePhase::Running | AgentRuntimePhase::Terminated
             ) || !entry.runtime.accepts_execution_admission()
+                || entry.runtime.resource_refresh_pending()
             {
+                entry.idle_observation = None;
                 continue;
             }
             let Some(evidence) = evidence else {
@@ -2567,19 +3461,128 @@ impl RuntimeHost {
     }
 
     pub(crate) async fn unload_runtime(&self, agent_id: &str) {
-        let entry = {
+        if let Err(error) = self.drain_runtime_incarnation(agent_id, None).await {
+            tracing::warn!(agent_id, error = %error, "runtime drain incomplete");
+        }
+    }
+
+    pub(crate) async fn drain_retired_runtime(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        self.drain_runtime_incarnation(agent_id, Some(incarnation))
+            .await
+    }
+
+    async fn drain_runtime_incarnation(
+        &self,
+        agent_id: &str,
+        incarnation: Option<u64>,
+    ) -> Result<()> {
+        self.drain_runtime_scope(agent_id, incarnation, None).await
+    }
+
+    async fn drain_runtime_scope(
+        &self,
+        agent_id: &str,
+        incarnation: Option<u64>,
+        owner_epoch: Option<u64>,
+    ) -> Result<()> {
+        let (entry, draining) = {
             let mut registry = self.inner.runtimes.write().await;
-            let entry = registry.agents.remove(agent_id);
+            let matches = |runtime: &RuntimeHandle| {
+                incarnation.is_none_or(|incarnation| runtime.instance_incarnation() == incarnation)
+                    && owner_epoch.is_none_or(|epoch| runtime.instance_owner_epoch() == epoch)
+            };
+            let entry = if registry.phase == HostRuntimePhase::Open
+                && registry
+                    .agents
+                    .get(agent_id)
+                    .is_some_and(|entry| matches(&entry.runtime))
+            {
+                registry.agents.remove(agent_id)
+            } else {
+                None
+            };
             if let Some(entry) = &entry {
                 entry.runtime.close_execution_admission();
+                registry
+                    .unloading_mutations
+                    .insert(entry.generation, entry.runtime.clone());
+                registry.unloading_exits.insert(
+                    entry.generation,
+                    (entry.task.abort_handle(), entry.phase.clone()),
+                );
             }
-            entry
+            let draining = if entry.is_none() {
+                registry
+                    .unloading_mutations
+                    .iter()
+                    .filter_map(|(generation, runtime)| {
+                        if runtime.instance_agent_id() != agent_id || !matches(runtime) {
+                            return None;
+                        }
+                        registry
+                            .unloading_exits
+                            .get(generation)
+                            .map(|(abort, phase)| {
+                                (*generation, runtime.clone(), abort.clone(), phase.clone())
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            (entry, draining)
         };
-        self.notify_runtime_recovery(agent_id).await;
         if let Some(entry) = entry {
-            entry.task.abort();
-            let _ = entry.task.await;
+            let host = self.clone();
+            let agent_id = agent_id.to_string();
+            // Accepted retirement keeps responsibility after its caller leaves.
+            let cleanup = tokio::spawn(async move {
+                entry
+                    .runtime
+                    .retire_instance_locally("runtime_unloaded")
+                    .await;
+                entry.task.abort();
+                let _ = entry.task.await;
+                let result = entry
+                    .runtime
+                    .join_retiring_resources_with_process_exit()
+                    .await;
+                if result.as_ref().is_ok_and(|proof| proof.is_some()) {
+                    let mut registry = host.inner.runtimes.write().await;
+                    if registry.phase == HostRuntimePhase::Open {
+                        registry.unloading_mutations.remove(&entry.generation);
+                        registry.unloading_exits.remove(&entry.generation);
+                    }
+                }
+                host.notify_runtime_recovery(&agent_id).await;
+                result.map(|_| ())
+            });
+            cleanup.await.context("runtime drain worker stopped")??;
+        } else {
+            for (generation, runtime, abort, mut phase) in draining {
+                // Closing waits for external mutations before its own joins.
+                // Drive this exact instance here; never wait for Host shutdown.
+                runtime.retire_instance_locally("runtime_unloaded").await;
+                abort.abort();
+                while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
+                    if phase.changed().await.is_err() {
+                        break;
+                    }
+                }
+                let proof = runtime.join_retiring_resources_with_process_exit().await?;
+                let mut registry = self.inner.runtimes.write().await;
+                if proof.is_some() && registry.phase == HostRuntimePhase::Open {
+                    registry.unloading_mutations.remove(&generation);
+                    registry.unloading_exits.remove(&generation);
+                }
+            }
+            self.notify_runtime_recovery(agent_id).await;
         }
+        Ok(())
     }
 
     pub async fn default_runtime(&self) -> Result<RuntimeHandle> {
@@ -2613,6 +3616,23 @@ impl RuntimeHost {
         &self,
         observation: &crate::startup::StartupObservation,
     ) -> Result<Vec<String>> {
+        let host = self.clone();
+        let observation = observation.clone();
+        self.run_owned_external_mutation(async move {
+            let admission = AcceptedStartupRecovery {
+                host: Arc::downgrade(&host.inner),
+            };
+            host.recover_orphaned_queue_claims_at_startup_inner(&admission, &observation)
+                .await
+        })
+        .await
+    }
+
+    async fn recover_orphaned_queue_claims_at_startup_inner(
+        &self,
+        admission: &AcceptedStartupRecovery,
+        observation: &crate::startup::StartupObservation,
+    ) -> Result<Vec<String>> {
         let phase = observation.phase("agent_recovery");
         let mut candidates = 0usize;
         let mut completed = 0usize;
@@ -2620,10 +3640,17 @@ impl RuntimeHost {
         let mut failed = 0usize;
         let result = async {
         let recovery_report = observation.observe("durable_reconcile", async {
+        self.reconcile_control_obligations_at_startup_inner(Some(admission))
+            .await?;
         let recovery_report = self
-            .runtime_db()
-            .recover_interrupted_runtime_state_at_startup()?;
-        let stale_waits = self.reconcile_stale_waits_at_startup()?;
+            .recover_startup_dispatch_memory_inner(admission)
+            .await?;
+        let stale_waits = self
+            .reconcile_stale_waits_at_startup_inner(Some(admission))
+            .await?;
+        // Any Result Queue ACK is visible to the original activation predicates
+        // below. Stop history alone never supplies an activation request.
+        self.sweep_pending_task_stops_at_startup().await?;
         for operation in self
             .runtime_db()
             .destructive_operations()
@@ -2662,7 +3689,7 @@ impl RuntimeHost {
         );
         Ok(recovery_report)
         }).await?;
-        let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids;
+        let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids.clone();
         let (recovery_agent_ids, queue_recovery_candidate_ids, active_task_owner_ids, active_timer_owner_ids) =
             observation.observe_sync("candidate_discovery", || {
         let queue_recovery_candidate_ids = self
@@ -2769,6 +3796,8 @@ impl RuntimeHost {
                 }
             }
         }
+        self.finish_startup_recovery_report();
+        self.start_task_stop_supervisor();
         Ok(recovered_queue_agent_ids)
         }.await;
         tracing::info!(
@@ -2785,99 +3814,247 @@ impl RuntimeHost {
         result
     }
 
-    fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
-        let runtime_db = self.runtime_db();
-        let waits = runtime_db.wait_conditions().unresolved_all()?;
-        let tasks = runtime_db.tasks().latest_all()?;
-        let external_triggers = runtime_db.external_triggers().latest_all()?;
-        let timers = runtime_db.timers().latest_all()?;
-        let mut stopped_agents = runtime_db
+    #[cfg(test)]
+    async fn reconcile_control_obligations_at_startup(&self) -> Result<usize> {
+        self.reconcile_control_obligations_at_startup_inner(None)
+            .await
+    }
+
+    async fn reconcile_control_obligations_at_startup_inner(
+        &self,
+        admission: Option<&AcceptedStartupRecovery>,
+    ) -> Result<usize> {
+        loop {
+            let scopes = self.runtime_db().pending_control_obligation_scopes()?;
+            if scopes.is_empty() {
+                return Ok(0);
+            }
+            // These may be retired original incarnations. Only their exact
+            // obligation rows change; no successor posture is installed.
+            let reservations = self
+                .reserve_startup_phase_scopes(&scopes, admission)
+                .await?;
+            let handoff = self.inner.bootstrap_handoff_lock.lock().await;
+            let registry = self.inner.runtimes.read().await;
+            anyhow::ensure!(
+                !registry.ever_activated
+                    && (registry.phase == HostRuntimePhase::Open
+                        || (registry.phase == HostRuntimePhase::Closing
+                            && admission.is_some_and(|admission| admission.permits_closing(self))))
+                    && registry.agents.is_empty()
+                    && registry.temporary_runtimes.is_empty()
+                    && registry.unloading_mutations.is_empty(),
+                "Control startup recovery requires a never-activated Host"
+            );
+            drop(registry);
+            if self.runtime_db().pending_control_obligation_scopes()? != scopes {
+                drop(handoff);
+                drop(reservations);
+                continue;
+            }
+            let mut lease = self
+                .inner
+                .runtime_db_maintenance_lock
+                .lock()
+                .expect("maintenance lease poisoned");
+            if lease.is_none() {
+                *lease = Some(crate::runtime_db::RuntimeDbLock::try_lock(
+                    self.config().runtime_db_maintenance_lock_path(),
+                )?);
+            }
+            let proof =
+                crate::runtime::control_reconcile::ControlStartupProof::for_pre_activation_host(
+                    self.runtime_db(),
+                    lease.as_ref().expect("startup lease installed"),
+                    &self.config().runtime_db_maintenance_lock_path(),
+                    &handoff,
+                )?;
+            let mut observed = 0;
+            for (agent_id, incarnation) in &scopes {
+                observed += crate::runtime::control_reconcile::reconcile_control_scope_at_startup(
+                    self.runtime_db(),
+                    agent_id,
+                    *incarnation,
+                    &proof,
+                    Utc::now(),
+                )?
+                .len();
+            }
+            return Ok(observed);
+        }
+    }
+
+    fn startup_mutation_scopes(&self) -> Result<Vec<(String, u64)>> {
+        self.runtime_db()
             .agent_states()
-            .latest_all()?
+            .startup_mutation_agent_ids()?
             .into_iter()
-            .filter(|state| state.status == AgentStatus::Stopped)
-            .map(|state| state.id)
-            .collect::<HashSet<_>>();
-        let mut cancelled = 0;
+            .map(|agent_id| {
+                let incarnation = self
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(&agent_id)?
+                    .map_or(1, |identity| identity.incarnation);
+                Ok((agent_id, incarnation))
+            })
+            .collect()
+    }
 
-        for wait in waits {
-            let state = runtime_db
-                .agent_states()
-                .latest(&wait.agent_id)?
-                .unwrap_or_else(|| AgentState::new(&wait.agent_id));
-            let task_stale = wait.wake_sources.iter().any(|source| {
-                let WakeSource::TaskResult { task_id } = source else {
-                    return false;
-                };
-                tasks
-                    .iter()
-                    .find(|task| task.id == *task_id && task.agent_id == wait.agent_id)
-                    .is_none_or(|task| {
-                        matches!(
-                            task.status,
-                            TaskStatus::Completed
-                                | TaskStatus::Failed
-                                | TaskStatus::Cancelled
-                                | TaskStatus::Interrupted
-                        )
-                    })
-            });
-            let external_stale = wait.wake_sources.iter().any(|source| {
-                let WakeSource::ExternalIngress {
-                    external_trigger_id,
-                } = source
-                else {
-                    return false;
-                };
-                external_trigger_id.as_ref().is_none_or(|trigger_id| {
-                    !external_triggers.iter().any(|trigger| {
-                        trigger.external_trigger_id == *trigger_id
-                            && trigger.target_agent_id == wait.agent_id
-                            && trigger.status == ExternalTriggerStatus::Active
-                    })
-                })
-            });
-            let timer_stale = wait.kind == crate::types::WaitConditionKind::Timer
-                && wait.subject_ref.as_ref().is_none_or(|timer_id| {
-                    !timers.iter().any(|timer| {
-                        timer.id == *timer_id
-                            && timer.agent_id == wait.agent_id
-                            && timer.status == crate::types::TimerStatus::Active
-                    })
-                });
+    #[cfg(test)]
+    async fn reserve_startup_mutations(
+        &self,
+    ) -> Result<(Vec<MutationReservation>, tokio::sync::MutexGuard<'_, ()>)> {
+        self.reserve_startup_mutations_inner(None).await
+    }
 
-            if state.status == AgentStatus::Stopped {
-                stopped_agents.insert(wait.agent_id.clone());
-            }
-            let wait_recheck_survives_stop =
-                wait.work_item_id.is_none() && wait.recheck_at().is_some();
-            if (state.status == AgentStatus::Stopped && !wait_recheck_survives_stop)
-                || task_stale
-                || external_stale
-                || timer_stale
+    async fn reserve_startup_mutations_inner(
+        &self,
+        admission: Option<&AcceptedStartupRecovery>,
+    ) -> Result<(Vec<MutationReservation>, tokio::sync::MutexGuard<'_, ()>)> {
+        loop {
             {
-                let mut cancelled_wait = wait;
-                cancelled_wait.status = WaitConditionStatus::Cancelled;
-                cancelled_wait.updated_at = Utc::now();
-                cancelled_wait.cancelled_at = Some(cancelled_wait.updated_at);
-                runtime_db.wait_conditions().upsert(&cancelled_wait)?;
-                cancelled += 1;
+                let registry = self.inner.runtimes.read().await;
+                anyhow::ensure!(
+                    !registry.ever_activated
+                        && (registry.phase == HostRuntimePhase::Open
+                        || (registry.phase == HostRuntimePhase::Closing
+                            && admission.is_some_and(|admission| admission.permits_closing(self))))
+                        && registry.agents.is_empty()
+                        && registry.unloading_mutations.is_empty()
+                        && registry.temporary_runtimes.is_empty(),
+                    "startup recovery requires no loaded, temporary, or draining runtimes before activation"
+                );
             }
+            let scopes = self.startup_mutation_scopes()?;
+            // Never wait for an owner while holding the activation handoff.
+            let reservations = self
+                .reserve_startup_phase_scopes(&scopes, admission)
+                .await?;
+            let handoff = self.inner.bootstrap_handoff_lock.lock().await;
+            let registry = self.inner.runtimes.read().await;
+            anyhow::ensure!(
+                !registry.ever_activated
+                        && (registry.phase == HostRuntimePhase::Open
+                        || (registry.phase == HostRuntimePhase::Closing
+                            && admission.is_some_and(|admission| admission.permits_closing(self))))
+                        && registry.agents.is_empty()
+                        && registry.unloading_mutations.is_empty()
+                        && registry.temporary_runtimes.is_empty(),
+                "startup recovery requires no loaded, temporary, or draining runtimes before activation"
+            );
+            drop(registry);
+            if self.startup_mutation_scopes()? != scopes {
+                drop(handoff);
+                drop(reservations);
+                continue;
+            }
+            return Ok((reservations, handoff));
         }
+    }
 
-        for agent_id in stopped_agents {
-            runtime_db
-                .timers()
-                .cancel_active_for_agent(&agent_id, Utc::now())?;
-            runtime_db
-                .queue_entries()
-                .abort_pending_for_agent(&agent_id)?;
-            if let Some(mut state) = runtime_db.agent_states().latest(&agent_id)? {
-                state.pending = 0;
-                runtime_db.agent_states().upsert(&state)?;
+    #[cfg(test)]
+    async fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
+        self.reconcile_stale_waits_at_startup_inner(None).await
+    }
+
+    async fn reconcile_stale_waits_at_startup_inner(
+        &self,
+        admission: Option<&AcceptedStartupRecovery>,
+    ) -> Result<usize> {
+        let (mut reservations, handoff) = self.reserve_startup_mutations_inner(admission).await?;
+        // Exact identities/State return from the guarded original transaction;
+        // do not decode a second full State before its material preflight.
+        let mut facts = reservations
+            .iter()
+            .map(|_| IdentityMutationFacts {
+                identity: None,
+                state: None,
+            })
+            .collect::<Vec<_>>();
+        let agent_ids = reservations
+            .iter()
+            .map(|reservation| reservation.agent_id().to_string())
+            .collect::<Vec<_>>();
+        let input_scopes = self
+            .runtime_db()
+            .startup_input_recovery_scopes(&agent_ids)?;
+        let limits = self.inner.input_evidence_budget.limits();
+        let work_request = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+            capture: crate::runtime::resident_work::WorkCaptureRequest {
+                nonopen_limit: 0,
+                ..crate::runtime::resident_work::WorkCaptureRequest::current()
+            },
+            record_limit: usize::try_from(limits.record_limit)
+                .context("startup Work record budget overflow")?,
+            byte_limit: usize::try_from(
+                limits
+                    .history_per_agent_bytes
+                    .checked_add(limits.pending_per_agent_bytes)
+                    .context("startup Work maintenance budget overflow")?,
+            )
+            .context("startup Work byte budget overflow")?,
+        };
+        let scheduling_request =
+            crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
+                record_limit: work_request.record_limit,
+                byte_limit: work_request.byte_limit,
+            };
+        let accounting = reservations
+            .iter()
+            .map(
+                |reservation| crate::runtime::resident_input_evidence::InputEvidenceScope {
+                    agent_id: reservation.agent_id().to_owned(),
+                    identity_incarnation: reservation.identity_incarnation(),
+                },
+            )
+            .collect::<Vec<_>>();
+        let mut scheduling_ack = None;
+        let mut handoff = Some(handoff);
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let result = {
+                    let mut lease=self.inner.runtime_db_maintenance_lock.lock()
+                        .expect("maintenance lease poisoned");
+                    if lease.is_none() {
+                        *lease=Some(crate::runtime_db::RuntimeDbLock::try_lock(
+                            self.config().runtime_db_maintenance_lock_path())?);
+                    }
+                    let proof=crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery::for_pre_activation_host(
+                        self.runtime_db(),lease.as_ref().expect("startup lease installed"),
+                        &self.config().runtime_db_maintenance_lock_path(),
+                        handoff.as_ref().expect("startup handoff held"))?;
+                    self.runtime_db().agent_states().reconcile_stale_waits_at_startup_with_scheduling(
+                        &input_scopes,&proof,&work_request,&scheduling_request,&accounting,&self.inner.input_evidence_budget,None)
+                };
+                // The transaction returns its exact states; no fallible ACK readback.
+                drop(handoff.take());
+                let (cancelled, states,ack) = result?;
+                for (agent_id,facts) in agent_ids.iter().zip(&mut facts) {
+                    facts.identity=ack.identities.get(agent_id).cloned().expect("startup Scheduling exact identity ACK invariant");
+                }
+                // Save actual material through Known installation/publication.
+                scheduling_ack=Some(ack);
+                for (agent_id, facts) in agent_ids.iter().zip(&mut facts) {
+                    facts.state = states.get(agent_id).cloned().map(Arc::new);
+                }
+                acknowledged = Some(cancelled);
+                Ok(((), facts))
+            })
+            .await;
+        if let Err(error) = committed {
+            if acknowledged.is_none() {
+                return Err(error);
             }
+            self.reconcile_external_mutations(&mut reservations)
+                .await
+                .with_context(|| {
+                    format!("startup wait cleanup ACK is pending publication: {error:#}")
+                })?;
         }
-        Ok(cancelled)
+        drop(scheduling_ack);
+        Ok(acknowledged.expect("startup wait cleanup ACK must retain its count"))
     }
 
     fn active_agent_identity(
@@ -2944,6 +4121,17 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)
     }
 
+    /// Fixture inspection only: observes entry presence without activation or filtering.
+    #[doc(hidden)]
+    pub async fn has_runtime_entry_for_fixture(&self, agent_id: &str) -> bool {
+        self.inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .contains_key(agent_id)
+    }
+
     pub(crate) async fn try_get_loaded_runtime(&self, agent_id: &str) -> Option<RuntimeHandle> {
         let registry = self.inner.runtimes.read().await;
         registry
@@ -2992,6 +4180,25 @@ impl RuntimeHost {
             .read_agent()
             .map_err(PublicAgentError::Runtime)?
             .unwrap_or_else(|| AgentState::new(agent_id));
+        self.operator_agent_skills_view_for_state(&identity_view, &state, None)
+            .await
+            .map_err(PublicAgentError::Runtime)
+    }
+
+    async fn operator_agent_skills_view_for_state(
+        &self,
+        identity: &AgentIdentityView,
+        state: &AgentState,
+        material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
+    ) -> Result<crate::types::SkillsRuntimeView> {
+        anyhow::ensure!(
+            state.id == identity.agent_id,
+            "skills State differs from captured identity"
+        );
+        if let Some(material) = material {
+            material.finish()?;
+        }
+        let agent_id = state.id.as_str();
         let agent_home = self.agent_data_dir(agent_id);
         let workspace_skill_root = state
             .active_workspace_entry
@@ -2999,24 +4206,29 @@ impl RuntimeHost {
             .map(|entry| entry.execution_root.as_path());
         let config = self.config();
         let skill_roots = effective_skill_root_registrations(
-            skill_visibility(&identity_view),
+            skill_visibility(identity),
             config.user_home_dir.as_deref(),
             agent_id,
             &agent_home,
             workspace_skill_root,
         );
         let mut registry = self.inner.skills_registry.write().await;
-        registry
-            .sync_effective_roots(skill_roots.clone())
-            .map_err(PublicAgentError::Runtime)?;
-        let mut skills = skills_runtime_view_from_catalog(
-            registry.catalog_for_roots(&skill_roots, None),
-            &skill_roots,
-            &state.active_skills,
-        );
-        skills.agent_templates_catalog =
-            discover_agent_templates_catalog(config.user_home_dir.as_deref(), &agent_home);
-        Ok(skills)
+        let mut read = || {
+            crate::diagnostics::resource_io::admit_cloned_value(&skill_roots)?;
+            registry.sync_effective_roots(skill_roots.clone())?;
+            let mut skills = skills_runtime_view_from_catalog(
+                registry.catalog_for_roots(&skill_roots, None),
+                &skill_roots,
+                &state.active_skills,
+            )?;
+            skills.agent_templates_catalog =
+                discover_agent_templates_catalog(config.user_home_dir.as_deref(), &agent_home);
+            Ok(skills)
+        };
+        match material {
+            Some(material) => material.read(read),
+            None => read(),
+        }
     }
 
     pub(crate) async fn search_memory_read_only(
@@ -3139,7 +4351,7 @@ impl RuntimeHost {
     pub(crate) async fn local_agent_summary(
         &self,
         agent_id: &str,
-    ) -> std::result::Result<AgentSummary, PublicAgentError> {
+    ) -> std::result::Result<crate::runtime::OwnedAgentSummaryRead, PublicAgentError> {
         self.active_agent_identity(agent_id)?;
         if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
             return runtime
@@ -3149,104 +4361,173 @@ impl RuntimeHost {
         }
         // Storage-backed fallback: build AgentSummary without activating runtime.
         let identity = self.active_agent_identity(agent_id)?;
-        let storage = self
-            .agent_storage_read_only(agent_id)
+        let cold = self
+            .acquire_cold_summary(&identity)
+            .await
             .map_err(PublicAgentError::Runtime)?;
-        let agent_state = storage
-            .read_agent()
-            .map_err(PublicAgentError::Runtime)?
-            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
-        let work_queue = storage
-            .work_queue_read_model()
+        let cold_summary::HeldColdSummary {
+            identity,
+            mut state,
+            read,
+            empty_projection,
+            scheduling: scheduling_material,
+            acquisition,
+            metadata,
+            notifications,
+            triggers,
+        } = cold;
+        if read.is_none() {
+            state.status = AgentStatus::Stopped;
+        }
+        let (
+            agent_state,
+            identity_view,
+            scheduling_material,
+            scheduling_posture,
+            closure,
+            model,
+            token_usage,
+            execution,
+            active_wait_conditions,
+            active_external_triggers,
+            active_task_count,
+            recent_operator_notifications,
+            recent_brief_count,
+            recent_event_count,
+        ) = acquisition
+            .read(|| {
+                let agent_state = state;
+                let closure_projection = read
+                    .as_ref()
+                    .map(|read| &read.projection)
+                    .or(empty_projection.as_ref())
+                    .context("cold Summary projection absent")?;
+                let scheduling_posture = if let Some(read) = &read {
+                    // The derived posture is built below from the qualified
+                    // Work/Wait facts, not a second raw storage observation.
+                    crate::diagnostics::resource_io::admit_cloned_value(&read.posture)?;
+                    read.posture.clone()
+                } else {
+                    crate::storage::derive_agent_posture(
+                        &agent_state,
+                        false,
+                        &crate::work_item_scheduling::WorkQueueReadModel::default(),
+                        &[],
+                    )?
+                };
+                let closure = RuntimeHandle::closure_decision_from_projection(
+                    &agent_state,
+                    &closure_projection,
+                    None,
+                    &acquisition,
+                )?;
+                let identity_view =
+                    AgentIdentityView::from_owned_record(identity, &self.config().default_agent_id);
+                let model = crate::runtime::try_agent_model_state_for_catalog(
+                    &self.inner.registry.model_catalog(),
+                    &self.runtime_context_config(),
+                    &agent_state,
+                )?;
+                crate::diagnostics::resource_io::admit_cloned_value(
+                    &agent_state.last_turn_token_usage,
+                )?;
+                let token_usage = AgentTokenUsageSummary {
+                    total: TokenUsage::new(
+                        agent_state.total_input_tokens,
+                        agent_state.total_output_tokens,
+                    ),
+                    total_model_rounds: agent_state.total_model_rounds,
+                    last_turn: agent_state.last_turn_token_usage.clone(),
+                };
+                let execution = if let Some(entry) = agent_state.active_workspace_entry.as_ref() {
+                    crate::diagnostics::resource_io::admit_cloned_value(&(
+                        &entry.workspace_id,
+                        &entry.workspace_anchor,
+                        &entry.execution_root,
+                        &entry.cwd,
+                        &entry.execution_root_id,
+                    ))?;
+                    ExecutionSnapshot {
+                        profile: ExecutionProfile::default(),
+                        policy: ExecutionProfile::default().policy_snapshot(),
+                        attached_workspaces: Vec::new(),
+                        workspace_id: Some(entry.workspace_id.clone()),
+                        workspace_anchor: entry.workspace_anchor.clone(),
+                        execution_root: entry.execution_root.clone(),
+                        cwd: entry.cwd.clone(),
+                        execution_root_id: Some(entry.execution_root_id.clone()),
+                        projection_kind: Some(entry.projection_kind),
+                        access_mode: Some(entry.access_mode),
+                        worktree_root: None,
+                        execution_roots: Vec::new(),
+                    }
+                } else {
+                    ExecutionSnapshot {
+                        profile: ExecutionProfile::default(),
+                        policy: ExecutionProfile::default().policy_snapshot(),
+                        attached_workspaces: Vec::new(),
+                        workspace_id: None,
+                        workspace_anchor: PathBuf::new(),
+                        execution_root: PathBuf::new(),
+                        cwd: PathBuf::new(),
+                        execution_root_id: None,
+                        projection_kind: None,
+                        access_mode: None,
+                        worktree_root: None,
+                        execution_roots: Vec::new(),
+                    }
+                };
+                let waits = read
+                    .as_ref()
+                    .map(|read| read.active_waits.as_slice())
+                    .unwrap_or(&[]);
+                let mut active_wait_conditions = Vec::new();
+                for wait in waits {
+                    crate::runtime_db::repositories::reserve_source_vec_slot(
+                        &mut active_wait_conditions,
+                    )?;
+                    crate::diagnostics::resource_io::admit_cloned_value(wait)?;
+                    active_wait_conditions.push(WaitConditionSummary::from(wait.clone()));
+                }
+                let active_external_triggers = triggers;
+                let active_task_count = closure_projection.active_tasks.len();
+                let recent_operator_notifications = notifications;
+                let recent_brief_count = metadata.recent_brief_count;
+                let recent_event_count = metadata.recent_event_count;
+                Ok((
+                    agent_state,
+                    identity_view,
+                    scheduling_material,
+                    scheduling_posture,
+                    closure,
+                    model,
+                    token_usage,
+                    execution,
+                    active_wait_conditions,
+                    active_external_triggers,
+                    active_task_count,
+                    recent_operator_notifications,
+                    recent_brief_count,
+                    recent_event_count,
+                ))
+            })
             .map_err(PublicAgentError::Runtime)?;
-        let scheduling_posture = storage
-            .agent_posture_projection_with_work_queue(&agent_state, &work_queue)
-            .map_err(PublicAgentError::Runtime)?;
-        let closure = RuntimeHandle::closure_decision_from_storage(&storage, &agent_state)
-            .map_err(PublicAgentError::Runtime)?;
+        // Primary facts are frozen before waiting on another agent.
         let active_children = self
             .child_agent_summaries(agent_id)
             .await
             .map_err(PublicAgentError::Runtime)?;
-        let identity_view =
-            AgentIdentityView::from_record(&identity, &self.config().default_agent_id);
-        let model = crate::runtime::agent_model_state_for_catalog(
-            &RuntimeModelCatalog::from_config(&self.config()),
-            &self.runtime_context_config(),
-            &agent_state,
-        );
-        let token_usage = AgentTokenUsageSummary {
-            total: TokenUsage::new(
-                agent_state.total_input_tokens,
-                agent_state.total_output_tokens,
-            ),
-            total_model_rounds: agent_state.total_model_rounds,
-            last_turn: agent_state.last_turn_token_usage.clone(),
-        };
-        let execution = if let Some(entry) = agent_state.active_workspace_entry.as_ref() {
-            ExecutionSnapshot {
-                profile: ExecutionProfile::default(),
-                policy: ExecutionProfile::default().policy_snapshot(),
-                attached_workspaces: Vec::new(),
-                workspace_id: Some(entry.workspace_id.clone()),
-                workspace_anchor: entry.workspace_anchor.clone(),
-                execution_root: entry.execution_root.clone(),
-                cwd: entry.cwd.clone(),
-                execution_root_id: Some(entry.execution_root_id.clone()),
-                projection_kind: Some(entry.projection_kind),
-                access_mode: Some(entry.access_mode),
-                worktree_root: None,
-                execution_roots: Vec::new(),
-            }
-        } else {
-            ExecutionSnapshot {
-                profile: ExecutionProfile::default(),
-                policy: ExecutionProfile::default().policy_snapshot(),
-                attached_workspaces: Vec::new(),
-                workspace_id: None,
-                workspace_anchor: PathBuf::new(),
-                execution_root: PathBuf::new(),
-                cwd: PathBuf::new(),
-                execution_root_id: None,
-                projection_kind: None,
-                access_mode: None,
-                worktree_root: None,
-                execution_roots: Vec::new(),
-            }
-        };
-        let active_wait_conditions = storage
-            .active_wait_conditions_for_agent(agent_id)
-            .map_err(PublicAgentError::Runtime)?
-            .into_iter()
-            .map(WaitConditionSummary::from)
-            .collect();
-        let active_external_triggers = storage
-            .latest_external_triggers()
-            .map_err(PublicAgentError::Runtime)?
-            .into_iter()
-            .filter(|record| record.status == ExternalTriggerStatus::Active)
-            .map(|record| ExternalTriggerSummary {
-                external_trigger_id: record.external_trigger_id,
-                target_agent_id: record.target_agent_id,
-                scope: record.scope,
-                delivery_mode: record.delivery_mode,
-                status: record.status,
-                delivery_count: record.delivery_count,
-                created_at: record.created_at,
-                revoked_at: record.revoked_at,
-                last_delivered_at: record.last_delivered_at,
-            })
-            .collect();
-        let skills = self.operator_agent_skills_view(agent_id).await?;
+        let skills = self
+            .operator_agent_skills_view_for_state(&identity_view, &agent_state, Some(&acquisition))
+            .await
+            .map_err(PublicAgentError::Runtime)?;
         let loaded_agents_md = LoadedAgentsMdView::default();
         let summary = AgentSummary {
             identity: identity_view,
             lifecycle: AgentLifecycleHint::from_status(agent_id, agent_state.status.clone()),
             agent: agent_state,
             scheduling_posture,
-            active_task_count: storage
-                .active_task_count_for_agent(agent_id)
-                .map_err(PublicAgentError::Runtime)?,
+            active_task_count,
             model,
             token_usage,
             closure,
@@ -3257,22 +4538,19 @@ impl RuntimeHost {
             active_children,
             active_wait_conditions,
             active_external_triggers,
-            recent_operator_notifications: storage
-                .read_recent_operator_notifications(10)
-                .map_err(PublicAgentError::Runtime)?,
-            recent_brief_count: storage
-                .read_recent_briefs(50)
-                .map_err(PublicAgentError::Runtime)?
-                .len(),
-            recent_event_count: storage
-                .read_recent_events(100)
-                .map_err(PublicAgentError::Runtime)?
-                .len(),
-            // The wait sub-state lives only in the active execution's
-            // memory; a restarted or unloaded agent never reports one.
+            recent_operator_notifications,
+            recent_brief_count,
+            recent_event_count,
+            // A cold summary has no active turn-local cooldown wait.
             provider_cooldown_wait: None,
         };
-        Ok(summary)
+        crate::runtime::OwnedAgentSummaryRead::new(
+            summary,
+            scheduling_material,
+            read.map(|read| read.guards).unwrap_or_default(),
+        )
+        .with_acquisition(acquisition)
+        .map_err(PublicAgentError::Runtime)
     }
 
     pub(crate) async fn local_agent_lightweight_projection(
@@ -3291,41 +4569,81 @@ impl RuntimeHost {
         let storage = self
             .agent_storage_read_only(agent_id)
             .map_err(PublicAgentError::Runtime)?;
-        let agent = storage
-            .read_agent()
-            .map_err(PublicAgentError::Runtime)?
-            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
-        let work_queue = storage
-            .work_queue_read_model()
+        let cold_scheduling::HeldColdSchedulingRead {
+            identity,
+            state,
+            triggers,
+            material: scheduling_material,
+            acquisition,
+            reservations,
+            ..
+        } = self
+            .acquire_cold_scheduling_query(&identity, 0)
+            .await
             .map_err(PublicAgentError::Runtime)?;
+        let agent = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
+        let (work_queue, scheduling_material) = self
+            .cold_work_queue_with_observed_scheduling(
+                &identity,
+                &storage,
+                &agent,
+                &triggers,
+                scheduling_material,
+            )
+            .map_err(PublicAgentError::Runtime)?;
+        drop(triggers);
         let scheduling_posture = storage
             .agent_posture_projection_with_work_queue(&agent, &work_queue)
             .map_err(PublicAgentError::Runtime)?;
-        let closure = RuntimeHandle::closure_decision_from_storage(&storage, &agent)
+        let (closure_projection, scheduling_material) = self
+            .cold_scheduler_with_observed_scheduling(
+                &identity,
+                &storage,
+                &agent,
+                std::borrow::Cow::Borrowed(&work_queue),
+                scheduling_material,
+            )
             .map_err(PublicAgentError::Runtime)?;
+        let closure = RuntimeHandle::closure_decision_from_projection(
+            &agent,
+            &closure_projection,
+            None,
+            &acquisition,
+        )
+        .map_err(PublicAgentError::Runtime)?;
+        let active_task_count = storage
+            .active_task_count_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        let model = acquisition
+            .read(|| {
+                crate::runtime::try_agent_model_state_for_catalog(
+                    &self.inner.registry.model_catalog(),
+                    &self.runtime_context_config(),
+                    &agent,
+                )
+            })
+            .map_err(PublicAgentError::Runtime)?;
+
+        drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
             .await
             .map_err(PublicAgentError::Runtime)?;
-        let active_task_count = storage
-            .active_task_count_for_agent(agent_id)
-            .map_err(PublicAgentError::Runtime)?;
-        let model = crate::runtime::agent_model_state_for_catalog(
-            &RuntimeModelCatalog::from_config(&self.config()),
-            &self.runtime_context_config(),
-            &agent,
-        );
-
         Ok(LightweightAgentStateProjection {
-            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
-            agent: agent.clone(),
+            identity: AgentIdentityView::from_owned_record(
+                identity,
+                &self.config().default_agent_id,
+            ),
             scheduling_posture,
             active_task_count,
             lifecycle: AgentLifecycleHint::from_status(agent_id, agent.status.clone()),
+            agent,
             model,
             closure,
             active_children,
             work_queue,
+            _work_budget: None,
+            _scheduling_material: Some(scheduling_material),
         })
     }
 
@@ -3368,6 +4686,22 @@ impl RuntimeHost {
         agent_id: &str,
         expected_incarnation: u64,
     ) -> Result<AgentDeletionJob> {
+        let host = self.clone();
+        let caller = caller.clone();
+        let agent_id = agent_id.to_string();
+        self.run_owned_external_mutation(async move {
+            host.begin_parent_agent_deletion_owned(&caller, &agent_id, expected_incarnation)
+                .await
+        })
+        .await
+    }
+
+    async fn begin_parent_agent_deletion_owned(
+        &self,
+        caller: &RuntimeHandle,
+        agent_id: &str,
+        expected_incarnation: u64,
+    ) -> Result<AgentDeletionJob> {
         self.validate_agent_id(agent_id)?;
         let parent_agent_id = caller.agent_state().await?.id;
         anyhow::ensure!(
@@ -3378,6 +4712,12 @@ impl RuntimeHost {
             .map_err(anyhow::Error::new)?;
         let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
         let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_mutation_scopes(&[
+                (parent_agent_id.clone(), caller.instance_incarnation()),
+                (agent_id.to_string(), expected_incarnation),
+            ])
+            .await?;
         self.runtime_db().transaction(|tx| {
             crate::runtime_db::repositories::validate_parent_cleanup_tx(
                 tx,
@@ -3391,7 +4731,7 @@ impl RuntimeHost {
             .runtime_db()
             .agent_identities()
             .latest(agent_id)?
-            .is_some_and(|i| i.status == AgentRegistryStatus::Active);
+            .is_some_and(|identity| identity.status == AgentRegistryStatus::Active);
         let policy = crate::deletion::AgentDeletionPolicy::PreserveProtectedResources;
         if identity_active {
             crate::deletion::ensure_agent_home_deletion_safe(
@@ -3403,6 +4743,7 @@ impl RuntimeHost {
                 .await?;
         }
         let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+        let mut facts = self.external_identity_facts(&reservations)?;
         let admit = || {
             if identity_active {
                 crate::deletion::ensure_agent_home_deletion_safe(
@@ -3411,12 +4752,24 @@ impl RuntimeHost {
                     policy,
                 )?;
             }
-            self.runtime_db().agent_deletions().begin_parent_cleanup(
-                agent_id,
-                &parent_agent_id,
-                expected_incarnation,
-                caller.instance_incarnation(),
-            )
+            self.acknowledge_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let admitted = self.runtime_db().agent_deletions().begin_parent_cleanup(
+                    agent_id,
+                    &parent_agent_id,
+                    expected_incarnation,
+                    caller.instance_incarnation(),
+                )?;
+                for fact in &mut facts {
+                    if fact
+                        .identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.agent_id == agent_id)
+                    {
+                        fact.identity = Some(Arc::new(admitted.0.clone()));
+                    }
+                }
+                Ok((admitted, facts))
+            })
         };
         let loaded = if identity_active {
             self.try_get_loaded_runtime(agent_id).await
@@ -3424,11 +4777,13 @@ impl RuntimeHost {
             None
         };
         let admitted = if let Some(runtime) = loaded {
-            runtime.admit_idle_cleanup(admit).await?
+            runtime.admit_idle_cleanup_reserved(admit).await?
         } else {
             admit()?
         };
-        self.cache_agent_identity(&admitted.0)?;
+        drop(_home_guard);
+        self.reconcile_external_mutations(&mut reservations).await?;
+        drop(reservations);
         self.notify_deletion_coordinator();
         Ok(admitted.1)
     }
@@ -3455,10 +4810,38 @@ impl RuntimeHost {
         requested_by: &str,
         archive: bool,
     ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        let requested_by = requested_by.to_string();
+        self.run_owned_external_mutation(async move {
+            Ok(host
+                .begin_public_agent_deletion_owned(
+                    &agent_id,
+                    cascade_private_children,
+                    &requested_by,
+                    archive,
+                )
+                .await)
+        })
+        .await
+        .map_err(PublicAgentError::Runtime)?
+    }
+
+    async fn begin_public_agent_deletion_owned(
+        &self,
+        agent_id: &str,
+        cascade_private_children: bool,
+        requested_by: &str,
+        archive: bool,
+    ) -> std::result::Result<(AgentIdentityRecord, AgentDeletionJob, bool), PublicAgentError> {
         self.validate_agent_id(agent_id)
             .map_err(PublicAgentError::Runtime)?;
         let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
         let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_string()])
+            .await
+            .map_err(PublicAgentError::Runtime)?;
         let identity = self
             .agent_identity_record(agent_id)
             .map_err(PublicAgentError::Runtime)?
@@ -3482,28 +4865,48 @@ impl RuntimeHost {
                 reason: "only public self-owned agents and private parent-supervised child agents have an operator delete surface".into(),
             });
         }
-        let (updated_identity, job, created) = {
-            let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
-            let archive_root = self.config().data_dir.join("archives");
-            self.runtime_db()
-                .agent_deletions()
-                .begin_with_archive(
+        let _home_guard = self.inner.agent_home_cleanup_lock.lock().await;
+        let archive_root = self.config().data_dir.join("archives");
+        let mut facts = self
+            .external_identity_facts(&reservations)
+            .map_err(PublicAgentError::Runtime)?;
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let admitted = self.runtime_db().agent_deletions().begin_with_archive(
                     agent_id,
                     identity.revision,
                     requested_by,
                     cascade_private_children,
                     archive.then_some(archive_root.as_path()),
-                )
-                .map_err(PublicAgentError::Runtime)?
+                )?;
+                for fact in &mut facts {
+                    fact.identity = Some(Arc::new(admitted.0.clone()));
+                }
+                acknowledged = Some(admitted.clone());
+                Ok((admitted, facts))
+            })
+            .await;
+        let (updated_identity, job, created) = match committed {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let Some(admitted) = acknowledged else {
+                    return Err(PublicAgentError::Runtime(error));
+                };
+                self.reconcile_external_mutations(&mut reservations)
+                    .await
+                    .map_err(PublicAgentError::Runtime)?;
+                admitted
+            }
         };
-        self.inner
-            .registry
-            .cache_agent_identity(&updated_identity)
-            .map_err(PublicAgentError::Runtime)?;
+        drop(_home_guard);
+        drop(reservations);
         if crate::deletion::AgentDeletionPolicy::from(job.mode)
             == crate::deletion::AgentDeletionPolicy::DeleteAgentData
         {
-            self.unload_runtime(agent_id).await;
+            self.drain_retired_runtime(agent_id, identity.incarnation)
+                .await
+                .map_err(PublicAgentError::Runtime)?;
         }
         // Coalesce new work into the single daemon deletion coordinator.
         if created {
@@ -3588,7 +4991,7 @@ impl RuntimeHost {
             .runtime_db()
             .agent_bootstraps()
             .latest(&identity.agent_id)?
-            .map(|record| record.summary());
+            .map(AgentBootstrapRecord::into_summary);
         let canonical_relations = self
             .runtime_db()
             .agent_canonical_relations()
@@ -3603,7 +5006,10 @@ impl RuntimeHost {
             name: identity.name.clone(),
             created_at: identity.created_at,
             updated_at: identity.updated_at,
-            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
+            identity: AgentIdentityView::from_owned_record(
+                identity,
+                &self.config().default_agent_id,
+            ),
             canonical_relations,
             lineage_children,
             bootstrap,
@@ -3676,7 +5082,6 @@ impl RuntimeHost {
         task_limit: usize,
         timer_limit: usize,
     ) -> std::result::Result<AgentStateReadProjection, PublicAgentError> {
-        let identity = self.active_agent_identity(agent_id)?;
         let runtime = {
             let registry = self.inner.runtimes.read().await;
             registry
@@ -3686,62 +5091,15 @@ impl RuntimeHost {
                 .map(|entry| entry.runtime.clone())
         };
 
-        let waits = self
-            .agent_storage_read_only(agent_id)
-            .map_err(PublicAgentError::Runtime)?
-            .raw_unresolved_wait_conditions_for_agent(agent_id)
-            .map_err(PublicAgentError::Runtime)?
-            .into_iter()
-            .take(50)
-            .collect();
-
         if let Some(runtime) = runtime {
             crate::diagnostics::record_projection_state_source_loaded();
-            tracing::debug!(
-                agent_id,
-                state_projection_source = AgentStateProjectionSource::Loaded.as_str(),
-                "building public agent state projection"
-            );
-            let agent_started = std::time::Instant::now();
-            let agent = runtime
-                .lightweight_agent_state_projection()
+            return runtime
+                .operator_state_read_projection(task_limit, timer_limit)
                 .await
-                .map_err(PublicAgentError::Runtime)?;
-            crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
-
-            let tasks_started = std::time::Instant::now();
-            let tasks = runtime
-                .active_tasks(task_limit)
-                .await
-                .map_err(PublicAgentError::Runtime)?;
-            crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
-
-            let timers_started = std::time::Instant::now();
-            let timers = runtime
-                .recent_timers(timer_limit)
-                .await
-                .map_err(PublicAgentError::Runtime)?;
-            crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
-
-            let triggers_started = std::time::Instant::now();
-            let external_triggers = runtime
-                .latest_external_triggers()
-                .await
-                .map_err(PublicAgentError::Runtime)?;
-            crate::diagnostics::record_projection_state_external_triggers(
-                triggers_started.elapsed(),
-            );
-
-            return Ok(AgentStateReadProjection {
-                waits,
-                source: AgentStateProjectionSource::Loaded,
-                agent,
-                tasks,
-                timers,
-                external_triggers,
-            });
+                .map_err(PublicAgentError::Runtime);
         }
 
+        let identity = self.active_agent_identity(agent_id)?;
         crate::diagnostics::record_projection_state_source_storage();
         crate::diagnostics::record_projection_state_runtime_spawn_avoided();
         tracing::debug!(
@@ -3753,28 +5111,79 @@ impl RuntimeHost {
             .agent_storage_read_only(agent_id)
             .map_err(PublicAgentError::Runtime)?;
 
+        let cold_scheduling::HeldColdSchedulingRead {
+            identity,
+            state,
+            timers,
+            triggers: external_triggers,
+            material: scheduling_material,
+            acquisition,
+            reservations,
+        } = self
+            .acquire_cold_scheduling_query(&identity, timer_limit)
+            .await
+            .map_err(PublicAgentError::Runtime)?;
         let agent_started = std::time::Instant::now();
-        let agent_state = storage
-            .read_agent()
-            .map_err(PublicAgentError::Runtime)?
-            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
-        let work_queue = storage
-            .work_queue_read_model()
+        let agent_state = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
+        let (work_queue, scheduling_material) = acquisition
+            .read(|| {
+                self.cold_work_queue_with_observed_scheduling(
+                    &identity,
+                    &storage,
+                    &agent_state,
+                    &external_triggers,
+                    scheduling_material,
+                )
+            })
             .map_err(PublicAgentError::Runtime)?;
-        let scheduling_posture = storage
-            .agent_posture_projection_with_work_queue(&agent_state, &work_queue)
+        let scheduling_posture = acquisition
+            .read(|| storage.agent_posture_projection_with_work_queue(&agent_state, &work_queue))
             .map_err(PublicAgentError::Runtime)?;
-        let closure = RuntimeHandle::closure_decision_from_storage(&storage, &agent_state)
+        let (closure_projection, scheduling_material) = acquisition
+            .read(|| {
+                self.cold_scheduler_with_observed_scheduling(
+                    &identity,
+                    &storage,
+                    &agent_state,
+                    std::borrow::Cow::Borrowed(&work_queue),
+                    scheduling_material,
+                )
+            })
             .map_err(PublicAgentError::Runtime)?;
+        let closure = RuntimeHandle::closure_decision_from_projection(
+            &agent_state,
+            &closure_projection,
+            None,
+            &acquisition,
+        )
+        .map_err(PublicAgentError::Runtime)?;
+        let tasks_started = std::time::Instant::now();
+        let (waits, active_task_count, tasks) = acquisition
+            .read(|| {
+                let waits = storage
+                    .raw_unresolved_wait_conditions_for_agent(agent_id)?
+                    .into_iter()
+                    .take(50)
+                    .collect();
+                let mut tasks = storage.latest_active_task_records(usize::MAX)?;
+                let active_task_count = tasks.len();
+                tasks.truncate(task_limit);
+                Ok((waits, active_task_count, tasks))
+            })
+            .map_err(PublicAgentError::Runtime)?;
+        crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
+        // Parent facts are frozen. Release before another agent's summary await.
+        drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
             .await
             .map_err(PublicAgentError::Runtime)?;
         let agent = LightweightAgentStateProjection {
-            identity: AgentIdentityView::from_record(&identity, &self.config().default_agent_id),
-            active_task_count: storage
-                .active_task_count_for_agent(agent_id)
-                .map_err(PublicAgentError::Runtime)?,
+            identity: AgentIdentityView::from_owned_record(
+                identity,
+                &self.config().default_agent_id,
+            ),
+            active_task_count,
             lifecycle: AgentLifecycleHint::from_status(agent_id, agent_state.status.clone()),
             model: crate::runtime::agent_model_state_for_catalog(
                 &RuntimeModelCatalog::from_config(&self.config()),
@@ -3786,27 +5195,20 @@ impl RuntimeHost {
             closure,
             active_children,
             work_queue,
+            _work_budget: None,
+            _scheduling_material: None,
         };
         crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
-
-        let tasks_started = std::time::Instant::now();
-        let tasks = storage
-            .latest_active_task_records(task_limit)
+        let mut material = crate::runtime::StateProjectionMaterial {
+            acquisition,
+            _work: None,
+            _tasks: None,
+            _scheduling: Some(scheduling_material),
+            _children: Vec::new(),
+        };
+        material
+            .retain_children(&agent.active_children)
             .map_err(PublicAgentError::Runtime)?;
-        crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
-
-        let timers_started = std::time::Instant::now();
-        let timers = storage
-            .read_recent_timers(timer_limit)
-            .map_err(PublicAgentError::Runtime)?;
-        crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
-
-        let triggers_started = std::time::Instant::now();
-        let external_triggers = storage
-            .latest_external_triggers()
-            .map_err(PublicAgentError::Runtime)?;
-        crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
-
         Ok(AgentStateReadProjection {
             waits,
             source: AgentStateProjectionSource::Storage,
@@ -3814,6 +5216,7 @@ impl RuntimeHost {
             tasks,
             timers,
             external_triggers,
+            material,
         })
     }
 
@@ -3892,6 +5295,10 @@ impl RuntimeHost {
         let admission = runtime
             .execution_admission_lease()
             .map_err(PublicAgentError::Runtime)?;
+        let (control_key, invocation) = runtime.freeze_direct_control(
+            action.clone(),
+            crate::types::AuthorityClass::OperatorInstruction,
+        );
         let was_stopped = matches!(
             runtime
                 .agent_state()
@@ -3901,16 +5308,34 @@ impl RuntimeHost {
             AgentStatus::Stopped
         );
         if action.is_start() && was_stopped {
-            self.unload_runtime(agent_id).await;
+            let host = self.clone();
+            let agent_id = agent_id.to_owned();
+            // Host accepts the entire handoff before retiring the old instance.
+            // Its closed runtime task admission must never be reopened.
+            return self
+                .run_owned_external_mutation(async move {
+                    host.drain_runtime_scope(
+                        &agent_id,
+                        Some(runtime.instance_incarnation()),
+                        Some(runtime.instance_owner_epoch()),
+                    )
+                    .await?;
+                    runtime
+                        .apply_host_admitted_control(control_key, invocation, admission)
+                        .await?;
+                    host.notify_runtime_recovery(&agent_id).await;
+                    host.get_public_agent(&agent_id)
+                        .await
+                        .map_err(|error| anyhow!(error))
+                })
+                .await
+                .map_err(PublicAgentError::Runtime);
         }
         runtime
-            .control_admitted(action.clone(), admission)
+            .control_command_admitted(control_key, invocation, admission)
             .await
             .map_err(PublicAgentError::Runtime)?;
         self.notify_runtime_recovery(agent_id).await;
-        if action.is_start() && was_stopped {
-            return self.get_public_agent(agent_id).await;
-        }
         Ok(runtime)
     }
 
@@ -4038,25 +5463,46 @@ impl RuntimeHost {
         } else {
             desired
         };
-        let (identity, created) = {
-            let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
-            let had_default_agent = self.configured_default_agent_id()?.is_some();
-            let (identity, created) = self
-                .ensure_named_agent(
-                    agent_id,
-                    lineage_parent_agent_id,
+        let host = self.clone();
+        let agent_id_owned = agent_id.to_string();
+        let lineage_parent_agent_id = lineage_parent_agent_id.map(ToString::to_string);
+        let requested_name = requested_name.map(ToString::to_string);
+        let (identity, created) = self
+            .run_owned_external_mutation(async move {
+                let bootstrap_lock = host.agent_bootstrap_lock(&agent_id_owned);
+                let _bootstrap_guard = bootstrap_lock.lock().await;
+                let handoff = host.inner.bootstrap_handoff_lock.lock().await;
+                let had_default_agent = host.configured_default_agent_id()?.is_some();
+                let prepared = host.prepare_named_agent(
+                    &agent_id_owned,
+                    lineage_parent_agent_id.as_deref(),
                     NamedAgentExistingBehavior::Reject,
-                    requested_name,
-                    desired,
-                )
-                .await?;
-            if created && !had_default_agent {
-                let mut config = (*self.config()).clone();
-                config.default_agent_id = identity.agent_id.clone();
-                self.inner.registry.replace_config(config);
-            }
-            (identity, created)
-        };
+                    requested_name.as_deref(),
+                    desired.clone(),
+                )?;
+                match prepared {
+                    NamedAgentPreparation::Ready(identity, created) => {
+                        if created && !had_default_agent {
+                            let mut config = (*host.config()).clone();
+                            config.default_agent_id = identity.agent_id.clone();
+                            host.inner.registry.replace_config(config);
+                        }
+                        Ok((identity, created))
+                    }
+                    NamedAgentPreparation::Reincarnate(tombstone) => {
+                        // No global handoff lock can span an owner wait.
+                        drop(handoff);
+                        host.reincarnate_deleted_agent(
+                            tombstone,
+                            lineage_parent_agent_id.as_deref(),
+                            requested_name.as_deref(),
+                            desired,
+                        )
+                        .await
+                    }
+                }
+            })
+            .await?;
         let (stage, bootstrap_summary) = match execution {
             AgentBootstrapExecution::Inline => {
                 let bootstrap = self.reconcile_agent_bootstrap(agent_id).await?;
@@ -4096,6 +5542,49 @@ impl RuntimeHost {
                 bootstrap: bootstrap_summary,
             },
         })
+    }
+
+    pub(crate) async fn append_agent_creation_audit(
+        &self,
+        agent_id: &str,
+        identity_incarnation: u64,
+        event: crate::types::AuditEvent,
+    ) -> Result<()> {
+        let host = self.clone();
+        let agent_id = agent_id.to_owned();
+        self.run_owned_external_mutation(async move {
+            let mut reservations = host
+                .reserve_mutation_scopes(&[(agent_id.clone(), identity_incarnation)])
+                .await?;
+            anyhow::ensure!(
+                host.active_agent_identity(&agent_id)?.incarnation == identity_incarnation,
+                "creation Audit identity incarnation differs"
+            );
+            // Select the original Runtime while deletion/activation is fenced.
+            if let Some(runtime) = host.try_get_loaded_runtime(&agent_id).await {
+                drop(reservations);
+                return runtime.append_original_audit_event(event).await;
+            }
+            let prior = Arc::new(
+                host.external_identity_facts(&reservations)?
+                    .pop()
+                    .context("creation Audit prior identity missing")?,
+            );
+            let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: agent_id.clone(),
+                identity_incarnation,
+            };
+            crate::runtime::append_unloaded_audit_event(
+                &host.agent_storage(&agent_id)?,
+                host.runtime_db(),
+                &scope,
+                &prior,
+                &host.inner.input_evidence_budget,
+                &mut reservations[0],
+                event,
+            )
+        })
+        .await
     }
 
     async fn create_agent(
@@ -4219,6 +5708,34 @@ impl RuntimeHost {
         requested_name: Option<&str>,
         desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
+        match self.prepare_named_agent(
+            agent_id,
+            lineage_parent_agent_id,
+            existing_behavior,
+            requested_name,
+            desired.clone(),
+        )? {
+            NamedAgentPreparation::Ready(identity, created) => Ok((identity, created)),
+            NamedAgentPreparation::Reincarnate(tombstone) => {
+                self.reincarnate_deleted_agent(
+                    tombstone,
+                    lineage_parent_agent_id,
+                    requested_name,
+                    desired,
+                )
+                .await
+            }
+        }
+    }
+
+    fn prepare_named_agent(
+        &self,
+        agent_id: &str,
+        lineage_parent_agent_id: Option<&str>,
+        existing_behavior: NamedAgentExistingBehavior,
+        requested_name: Option<&str>,
+        desired: AgentBootstrapDesiredState,
+    ) -> Result<NamedAgentPreparation> {
         self.validate_agent_id(agent_id)?;
         if agent_id == self.config().default_agent_id
             && self.agent_identity_record(agent_id)?.is_some()
@@ -4233,7 +5750,7 @@ impl RuntimeHost {
             }
             return self
                 .ensure_default_agent_identity()
-                .map(|record| (record, false));
+                .map(|record| NamedAgentPreparation::Ready(record, false));
         }
         if Self::is_temporary_agent_id(agent_id) {
             return Err(anyhow!(
@@ -4249,14 +5766,7 @@ impl RuntimeHost {
                     // A fully deleted id is creatable again: route through
                     // the reincarnation transaction when the deletion job
                     // completed, or fail closed with a typed error.
-                    return self
-                        .reincarnate_deleted_agent(
-                            existing,
-                            lineage_parent_agent_id,
-                            requested_name,
-                            desired,
-                        )
-                        .await;
+                    return Ok(NamedAgentPreparation::Reincarnate(existing));
                 }
                 if existing.status == AgentRegistryStatus::Deleting {
                     let job = self
@@ -4291,7 +5801,7 @@ impl RuntimeHost {
                     agent_id
                 ));
             }
-            return Ok((existing, false));
+            return Ok(NamedAgentPreparation::Ready(existing, false));
         }
         let normalized_name = requested_name
             .map(|name| {
@@ -4337,7 +5847,7 @@ impl RuntimeHost {
                 named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
             })?;
         self.inner.registry.cache_agent_identity(&record)?;
-        Ok((record, true))
+        Ok(NamedAgentPreparation::Ready(record, true))
     }
 
     /// Creates a new incarnation of a fully deleted agent id. The latest
@@ -4354,8 +5864,22 @@ impl RuntimeHost {
         desired: AgentBootstrapDesiredState,
     ) -> Result<(AgentIdentityRecord, bool)> {
         let agent_id = tombstone.agent_id.clone();
-        let bootstrap_lock = self.agent_bootstrap_lock(&agent_id);
-        let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_mutation_scopes(&[
+                (agent_id.clone(), tombstone.incarnation),
+                (agent_id.clone(), tombstone.incarnation.saturating_add(1)),
+            ])
+            .await?;
+        let current = self
+            .runtime_db()
+            .agent_identities()
+            .latest(&agent_id)?
+            .context("agent tombstone disappeared while reserving reincarnation")?;
+        anyhow::ensure!(
+            current.incarnation == tombstone.incarnation
+                && current.status == AgentRegistryStatus::Deleted,
+            "agent_reincarnation_rejected: tombstone changed while reserving owners"
+        );
         let job = self
             .runtime_db()
             .agent_deletions()
@@ -4398,58 +5922,90 @@ impl RuntimeHost {
         ensure_agent_home_layout(&self.agent_data_dir(&agent_id)).map_err(|error| {
             named_agent_create_failed_error(&agent_id, AgentCreateStage::Profiled, error)
         })?;
-        let identity = self
-            .runtime_db()
-            .agent_identities()
-            .reincarnate_with_bootstrap_and_relations(&agent_id, "agent_create", |tombstone| {
-                let mut record = AgentIdentityRecord::new(
-                    &agent_id,
-                    AgentKind::Named,
-                    AgentVisibility::Public,
-                    AgentOwnership::SelfOwned,
-                    AgentProfilePreset::PublicNamed,
-                    None,
-                    None,
-                )
-                .with_lineage_parent_agent_id(lineage_parent_agent_id.map(ToString::to_string));
-                let now = std::cmp::max(
-                    chrono::Utc::now(),
-                    tombstone.updated_at + chrono::Duration::nanoseconds(1),
-                );
-                record.name = normalized_name.clone();
-                record.incarnation = tombstone.incarnation.saturating_add(1);
-                record.revision = tombstone.revision.saturating_add(1);
-                record.created_at = now;
-                record.updated_at = now;
-                let bootstrap = AgentBootstrapRecord::new(&agent_id, desired.clone());
-                let relations = independent_creation_records(
-                    &record,
-                    lineage_parent_agent_id,
-                    AgentCanonicalDurability::Persistent,
-                );
-                (record, bootstrap, relations)
+        let scope_count = reservations.len();
+        let mut acknowledged = None;
+        let committed = self
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let identity = self
+                    .runtime_db()
+                    .agent_identities()
+                    .reincarnate_with_bootstrap_and_relations(
+                        &agent_id,
+                        "agent_create",
+                        |tombstone| {
+                            let mut record = AgentIdentityRecord::new(
+                                &agent_id,
+                                AgentKind::Named,
+                                AgentVisibility::Public,
+                                AgentOwnership::SelfOwned,
+                                AgentProfilePreset::PublicNamed,
+                                None,
+                                None,
+                            )
+                            .with_lineage_parent_agent_id(
+                                lineage_parent_agent_id.map(ToString::to_string),
+                            );
+                            let now = std::cmp::max(
+                                chrono::Utc::now(),
+                                tombstone.updated_at + chrono::Duration::nanoseconds(1),
+                            );
+                            record.name = normalized_name.clone();
+                            record.incarnation = tombstone.incarnation.saturating_add(1);
+                            record.revision = tombstone.revision.saturating_add(1);
+                            record.created_at = now;
+                            record.updated_at = now;
+                            let bootstrap = AgentBootstrapRecord::new(&agent_id, desired.clone());
+                            let relations = independent_creation_records(
+                                &record,
+                                lineage_parent_agent_id,
+                                AgentCanonicalDurability::Persistent,
+                            );
+                            (record, bootstrap, relations)
+                        },
+                    )?;
+                let facts = (0..scope_count)
+                    .map(|_| IdentityMutationFacts {
+                        identity: Some(Arc::new(identity.clone())),
+                        state: None,
+                    })
+                    .collect();
+                acknowledged = Some(identity.clone());
+                Ok((identity, facts))
             })
-            .map_err(|error| {
-                let message = error.to_string();
-                if message.contains("agent_reincarnation_rejected") {
-                    // The tombstone or deletion job changed concurrently;
-                    // re-read the job so the typed error carries fresh state.
-                    let job = self
-                        .runtime_db()
-                        .agent_deletions()
-                        .latest_for_agent(&agent_id)
-                        .ok()
-                        .flatten();
-                    return named_agent_deletion_incomplete_error(&agent_id, job.as_ref());
+            .await;
+        let identity = match committed {
+            Ok(identity) => Ok(identity),
+            Err(error) => match acknowledged {
+                Some(identity) => self
+                    .reconcile_external_mutations(&mut reservations)
+                    .await
+                    .map(|()| identity),
+                None => Err(error),
+            },
+        }
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("agent_reincarnation_rejected") {
+                // The tombstone or deletion job changed concurrently;
+                // re-read the job so the typed error carries fresh state.
+                let job = self
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent(&agent_id)
+                    .ok()
+                    .flatten();
+                return named_agent_deletion_incomplete_error(&agent_id, job.as_ref());
+            }
+            if let Some(name) = normalized_name.as_deref() {
+                if message.contains("UNIQUE constraint failed: agent_identities.name_key") {
+                    return named_agent_name_already_exists_error(&agent_id, name);
                 }
-                if let Some(name) = normalized_name.as_deref() {
-                    if message.contains("UNIQUE constraint failed: agent_identities.name_key") {
-                        return named_agent_name_already_exists_error(&agent_id, name);
-                    }
-                }
-                named_agent_create_failed_error(&agent_id, AgentCreateStage::Reserved, error)
-            })?;
-        self.inner.registry.cache_agent_identity(&identity)?;
+            }
+            named_agent_create_failed_error(&agent_id, AgentCreateStage::Reserved, error)
+        })?;
+        drop(reservations);
+        self.drain_retired_runtime(&agent_id, tombstone.incarnation)
+            .await?;
         Ok((identity, true))
     }
 
@@ -5117,22 +6673,39 @@ impl RuntimeHost {
             self.wait_for_runtime_operation(request_cancelled, self.wait_for_bootstrap_ready())
                 .await??;
         }
-        let _bootstrap_handoff_guard = self
-            .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
-            .await?;
-        let identity = self.active_agent_identity_async(agent_id).await?;
-        if expected_incarnation.is_some_and(|expected| expected != identity.incarnation) {
-            return Err(RuntimeError::policy(
-                "agent_incarnation_mismatch",
-                "invocation target incarnation changed before activation",
-            )
-            .into());
-        }
-        if agent_id == self.config().default_agent_id {
-            self.ensure_default_agent_home_initialized().await?;
+        {
+            let _bootstrap_handoff_guard = self
+                .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
+                .await?;
+            let identity = self.active_agent_identity_async(agent_id).await?;
+            if expected_incarnation.is_some_and(|expected| expected != identity.incarnation) {
+                return Err(RuntimeError::policy(
+                    "agent_incarnation_mismatch",
+                    "invocation target incarnation changed before activation",
+                )
+                .into());
+            }
+            if agent_id == self.config().default_agent_id {
+                self.ensure_default_agent_home_initialized().await?;
+            }
         }
         loop {
-            let mut stale_entry = None;
+            let identity = self.active_agent_identity_async(agent_id).await?;
+            let owner = self.inner.mutation_owners.current_owner(agent_id, identity.incarnation)?;
+            // Owner waits never retain the registry or bootstrap handoff.
+            match self
+                .wait_for_runtime_operation(request_cancelled, MutationOwner::reserve_all(vec![owner]))
+                .await?
+            {
+                Ok(mut reservations) => {
+                    self.reconcile_external_mutations(&mut reservations).await?;
+                }
+                Err(MutationOwnerError::Replaced) => continue,
+                Err(error) => return Err(error.into()),
+            }
+            let bootstrap_handoff_guard = self
+                .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
+                .await?;
             let mut failed_runtime_phase = None;
             let mut registry = self
                 .wait_for_runtime_operation(request_cancelled, self.inner.runtimes.write())
@@ -5157,15 +6730,11 @@ impl RuntimeHost {
                         || !entry.runtime.accepts_execution_admission())
                 {
                     failed_runtime_phase = Some(entry.phase.clone());
-                } else {
-                    stale_entry = registry.agents.remove(agent_id);
-                    if let Some(entry) = &stale_entry {
-                        entry.runtime.close_execution_admission();
-                    }
                 }
             }
             if let Some(mut phase) = failed_runtime_phase {
                 drop(registry);
+                drop(bootstrap_handoff_guard);
                 while *phase.borrow_and_update() != AgentRuntimePhase::Terminated {
                     if self
                         .wait_for_runtime_operation(request_cancelled, phase.changed())
@@ -5177,11 +6746,33 @@ impl RuntimeHost {
                 }
                 continue;
             }
+            registry.validate_retiring_process_instance_budget(
+                agent_id,
+                identity.incarnation,
+                &self.inner.input_evidence_budget,
+            )?;
+            registry.ever_activated = true;
             let generation = registry.next_generation;
-            registry.next_generation = registry.next_generation.saturating_add(1);
-            let (runtime, runtime_task, phase) = self
+            let (runtime, runtime_task, phase) = match self
                 .spawn_runtime(agent_id, Some(generation), observation.clone())
-                .await?;
+                .await
+            {
+                Ok(spawned) => spawned,
+                Err(error) if error.downcast_ref::<MutationOwnerError>().is_some_and(|error| {
+                    matches!(error, MutationOwnerError::Busy | MutationOwnerError::Replaced | MutationOwnerError::NeedsReconcile(_))
+                }) => {
+                    drop(registry);
+                    drop(bootstrap_handoff_guard);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            registry.next_generation = registry.next_generation.saturating_add(1);
+            let stale_entry = registry.agents.remove(agent_id);
+            if let Some(entry) = &stale_entry {
+                entry.runtime.close_execution_admission();
+                registry.retain_unproved_original_processes(entry);
+            }
             tracing::debug!(
                 agent_id,
                 activation_reason = reason.as_str(),
@@ -5198,6 +6789,7 @@ impl RuntimeHost {
                 },
             );
             drop(registry);
+            drop(bootstrap_handoff_guard);
             if let Some(entry) = stale_entry {
                 let _ = entry.task.await;
             }
@@ -5239,10 +6831,10 @@ impl RuntimeHost {
         category: &str,
         request_cancelled: &CancellationToken,
     ) -> Result<PendingTemporaryRuntime> {
-        let _bootstrap_handoff_guard = self
+        let bootstrap_handoff_guard = self
             .wait_for_runtime_operation(request_cancelled, self.inner.bootstrap_handoff_lock.lock())
             .await?;
-        let registry = self
+        let mut registry = self
             .wait_for_runtime_operation(request_cancelled, self.inner.runtimes.write())
             .await?;
         if registry.phase != HostRuntimePhase::Open {
@@ -5269,14 +6861,28 @@ impl RuntimeHost {
             .agent_identities()
             .create_with_relations(&identity, &relations)?;
         self.cache_agent_identity(&identity)?;
-        let (runtime, runtime_task, _phase) = match self.spawn_runtime(&agent_id, None, None).await
+        registry.ever_activated = true;
+        let (runtime, runtime_task, phase) = match self.spawn_runtime(&agent_id, None, None).await
         {
             Ok(spawned) => spawned,
             Err(error) => {
-                let _ = self.archive_temporary_runtime_identity(&agent_id);
+                drop(registry);
+                drop(bootstrap_handoff_guard);
+                if let Err(cleanup_error) = self.archive_temporary_runtime_identity_owned(&agent_id).await
+                {
+                    tracing::warn!(agent_id, error = %cleanup_error, "temporary bootstrap identity retirement failed");
+                }
                 return Err(error);
             }
         };
+        registry.temporary_runtimes.insert(
+            agent_id.clone(),
+            TemporaryRuntimeEntry {
+                runtime: runtime.clone(),
+                abort: runtime_task.abort_handle(),
+                phase,
+            },
+        );
         let spawned = Arc::new(Mutex::new(Some((agent_id, runtime, runtime_task))));
         let (handoff, handed_off) = tokio::sync::oneshot::channel();
         let cleanup_spawned = spawned.clone();
@@ -5294,20 +6900,20 @@ impl RuntimeHost {
                     _ = host.inner.runtime_operations_token.cancelled() => {}
                 }
                 let unclaimed = cleanup_spawned.lock().unwrap().take();
-                let Some((agent_id, _runtime, task)) = unclaimed else {
+                let Some((agent_id, runtime, task)) = unclaimed else {
                     return;
                 };
-                let _handoff = host.inner.bootstrap_handoff_lock.lock().await;
+                runtime.retire_instance_locally("cancelled_temporary_runtime_handoff").await;
                 task.abort();
                 let _ = task.await;
-                let cleanup_host = host.clone();
-                if let Err(error) = spawn_blocking(move || {
-                    cleanup_host.archive_temporary_runtime_identity(&agent_id)
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.into()))
-                {
-                    tracing::warn!(error = %error, "cancelled temporary runtime cleanup failed");
+                if let Err(error) = runtime.join_retiring_resources().await {
+                    tracing::warn!(agent_id, error = %error, "cancelled temporary runtime drain failed");
+                    return;
+                }
+                if let Err(error) = host.archive_temporary_runtime_identity_owned(&agent_id).await {
+                    tracing::warn!(agent_id, error = %error, "cancelled temporary runtime cleanup failed");
+                } else {
+                    host.inner.runtimes.write().await.temporary_runtimes.remove(&agent_id);
                 }
             });
         Ok(PendingTemporaryRuntime {
@@ -5316,21 +6922,90 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn archive_temporary_runtime_identity(&self, agent_id: &str) -> Result<()> {
+    pub(crate) async fn archive_temporary_runtime_identity(&self, agent_id: &str) -> Result<()> {
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        self.run_owned_external_mutation(async move {
+            host.archive_temporary_runtime_identity_owned(&agent_id)
+                .await
+        })
+        .await
+    }
+
+    async fn archive_temporary_runtime_identity_owned(&self, agent_id: &str) -> Result<()> {
         if !Self::is_temporary_agent_id(agent_id) {
             bail!("agent {agent_id} is not a temporary runtime");
         }
-        let Some(identity) = self.agent_identity_record(agent_id)? else {
-            bail!("temporary runtime {agent_id} is missing its host identity");
-        };
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let _bootstrap_guard = bootstrap_lock.lock().await;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_string()])
+            .await?;
+        let identity = self
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)?
+            .with_context(|| {
+                format!("temporary runtime {agent_id} is missing its host identity")
+            })?;
         if identity.status != AgentRegistryStatus::Deleted {
-            let identity = self
-                .runtime_db()
-                .agent_identities()
-                .tombstone_with_closed_supervision(agent_id)?;
-            self.cache_agent_identity(&identity)?;
+            let mut facts = self.external_identity_facts(&reservations)?;
+            let mut acknowledged = false;
+            let committed = self
+                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                    let identity = self
+                        .runtime_db()
+                        .agent_identities()
+                        .tombstone_with_closed_supervision(agent_id)?;
+                    for fact in &mut facts {
+                        fact.identity = Some(Arc::new(identity.clone()));
+                    }
+                    acknowledged = true;
+                    Ok(((), facts))
+                })
+                .await;
+            if let Err(error) = committed {
+                if !acknowledged {
+                    return Err(error);
+                }
+                self.reconcile_external_mutations(&mut reservations).await?;
+            }
         }
         Ok(())
+    }
+
+    pub(crate) async fn cleanup_temporary_runtime(
+        &self,
+        agent_id: String,
+        runtime: RuntimeHandle,
+        runtime_task: JoinHandle<()>,
+    ) -> Result<()> {
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            let _ = runtime.control(crate::types::ControlAction::Stop).await;
+            // The Host also retains this instance until successful cleanup, so
+            // Closing can take over if this cleanup is not admitted in time.
+            let _ = runtime.request_service_shutdown().await;
+            runtime_task.abort();
+            let _ = runtime_task.await;
+            let producer_exit = runtime.join_retiring_resources_with_process_exit().await?;
+            host.archive_temporary_runtime_identity_owned(&agent_id)
+                .await?;
+            let data_dir = host.agent_data_dir(&agent_id);
+            if data_dir.exists() {
+                fs::remove_dir_all(&data_dir)?;
+            }
+            if producer_exit.is_some() {
+                host.inner
+                    .runtimes
+                    .write()
+                    .await
+                    .temporary_runtimes
+                    .remove(&agent_id);
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
@@ -5347,30 +7022,6 @@ impl RuntimeHost {
 
     pub(crate) fn agent_identity_records(&self) -> Result<Vec<AgentIdentityRecord>> {
         self.inner.registry.agent_identity_records()
-    }
-
-    fn import_legacy_external_triggers(&self) -> Result<()> {
-        let mut records = Vec::new();
-        for identity in self
-            .agent_identity_records()?
-            .into_iter()
-            .filter(|record| record.status == AgentRegistryStatus::Active)
-        {
-            let agent_home = self.agent_data_dir(&identity.agent_id);
-            if !agent_home.exists() {
-                continue;
-            }
-            let storage = AppStorage::new_for_agent(
-                agent_home,
-                identity.agent_id.clone(),
-                self.runtime_db().clone(),
-            )?;
-            records.extend(storage.read_recent_external_triggers(usize::MAX)?);
-        }
-        self.inner
-            .runtime_db
-            .external_triggers()
-            .import_legacy(records)
     }
 
     #[cfg(test)]
@@ -5426,42 +7077,29 @@ impl RuntimeHost {
         self.inner.registry.ensure_workspace_entry(workspace_anchor)
     }
 
-    pub async fn list_agents(&self) -> Result<Vec<AgentSummary>> {
+    pub async fn list_agents(&self) -> Result<Vec<crate::runtime::OwnedAgentSummaryRead>> {
         let mut summaries = Vec::new();
-        for identity in self.agent_identity_records()?.into_iter().filter(|record| {
-            record.status == AgentRegistryStatus::Active
-                && record.visibility == AgentVisibility::Public
-        }) {
-            let runtime = self.get_or_create_agent(&identity.agent_id).await?;
-            summaries.push(runtime.agent_summary().await?);
+        let identities = self.inner.registry.agent_identity_reads(
+            &self.inner.input_evidence_budget,
+            |record| {
+                record.status == AgentRegistryStatus::Active
+                    && record.visibility == AgentVisibility::Public
+            },
+        )?;
+        for (identity, inventory) in identities {
+            let summary = self
+                .local_agent_summary(&identity.agent_id)
+                .await
+                .map_err(anyhow::Error::from)?
+                .with_fleet_inventory(&inventory)?;
+            inventory.read(|| {
+                crate::runtime_db::repositories::reserve_source_vec_slot(&mut summaries)?;
+                summaries.push(summary);
+                Ok(())
+            })?;
         }
-        summaries.sort_by(|left, right| left.agent.id.cmp(&right.agent.id));
+        // Identity selection is already sorted by the canonical Agent ID.
         Ok(summaries)
-    }
-
-    pub async fn list_agent_entries(&self) -> Result<Vec<AgentListEntry>> {
-        self.list_agent_entries_for_parent(None).await
-    }
-
-    pub async fn list_agent_entries_for_parent(
-        &self,
-        parent_agent_id: Option<&str>,
-    ) -> Result<Vec<AgentListEntry>> {
-        let identities = self.agent_list_identities(parent_agent_id)?;
-        if identities.is_empty() {
-            return Ok(Vec::new());
-        }
-        let agent_ids = identities
-            .iter()
-            .map(|record| record.agent_id.clone())
-            .collect::<Vec<_>>();
-        // Admission happens before blocking work; one pooled connection and
-        // read transaction cover every roster member's committed facts.
-        let rows = self
-            .runtime_db()
-            .agent_list_posture_rows_async(agent_ids)
-            .await?;
-        self.agent_list_entries_from_rows(identities, rows, self.runtime_db())
     }
 
     /// Run inside a registered blocking worker; no hidden async SQL task.
@@ -5469,15 +7107,19 @@ impl RuntimeHost {
         &self,
         parent_agent_id: Option<&str>,
         db: &RuntimeDb,
-    ) -> Result<Vec<AgentListEntry>> {
+    ) -> Result<OwnedAgentListRead> {
         db.check_read_scope()?;
+        let acquisition = self.observer_inventory_material()?;
+        acquisition.read(|| {
         let identities = self.agent_list_identities(parent_agent_id)?;
         let agent_ids = identities
             .iter()
             .map(|record| record.agent_id.clone())
             .collect::<Vec<_>>();
         let rows = db.agent_list_posture_rows(&agent_ids)?;
-        self.agent_list_entries_from_rows(identities, rows, db)
+        let entries = self.agent_list_entries_from_rows(identities, rows, db)?;
+        OwnedAgentListRead::from_observer_entries(entries, acquisition.clone())
+        })
     }
 
     fn agent_list_identities(
@@ -5589,95 +7231,8 @@ impl RuntimeHost {
         }
     }
 
-    pub async fn operator_agent_tree(&self) -> Result<AgentTreeProjection> {
-        let identities = self
-            .agent_identity_records()?
-            .into_iter()
-            .filter(|identity| identity.status == AgentRegistryStatus::Active)
-            .collect::<Vec<_>>();
-        let active_agent_ids = identities
-            .iter()
-            .map(|identity| identity.agent_id.clone())
-            .collect::<HashSet<_>>();
-        let mut nodes = HashMap::new();
-        let mut children_by_parent = HashMap::<String, Vec<String>>::new();
-        let mut root_ids = Vec::new();
-
-        for identity in identities {
-            let runtime = {
-                let registry = self.inner.runtimes.read().await;
-                registry
-                    .agents
-                    .get(&identity.agent_id)
-                    .filter(|entry| !entry.task.is_finished())
-                    .map(|entry| entry.runtime.clone())
-            };
-            let agent = if let Some(runtime) = runtime {
-                runtime.agent_list_entry().await?
-            } else {
-                self.agent_list_entry_from_storage(&identity)?
-            };
-            let canonical_relations = self
-                .runtime_db()
-                .agent_canonical_relations()
-                .latest(&identity.agent_id)?
-                .ok_or_else(|| {
-                    anyhow!(
-                        "missing canonical relations for active agent {}",
-                        identity.agent_id
-                    )
-                })?;
-            let parent_agent_id = canonical_relations
-                .lineage
-                .as_ref()
-                .map(|lineage| lineage.parent_agent_id.clone())
-                .filter(|parent_agent_id| active_agent_ids.contains(parent_agent_id));
-            if let Some(parent_agent_id) = parent_agent_id {
-                children_by_parent
-                    .entry(parent_agent_id)
-                    .or_default()
-                    .push(identity.agent_id.clone());
-            } else {
-                root_ids.push(identity.agent_id.clone());
-            }
-            nodes.insert(
-                identity.agent_id,
-                AgentTreeNode {
-                    agent,
-                    canonical_relations,
-                    children: Vec::new(),
-                },
-            );
-        }
-
-        root_ids.sort();
-        for child_ids in children_by_parent.values_mut() {
-            child_ids.sort();
-        }
-        let mut roots = Vec::new();
-        for root_id in root_ids {
-            if let Some(root) = build_agent_tree_node(
-                &root_id,
-                &mut nodes,
-                &children_by_parent,
-                &mut HashSet::new(),
-            ) {
-                roots.push(root);
-            }
-        }
-        let mut remaining_ids = nodes.keys().cloned().collect::<Vec<_>>();
-        remaining_ids.sort();
-        for agent_id in remaining_ids {
-            if let Some(root) = build_agent_tree_node(
-                &agent_id,
-                &mut nodes,
-                &children_by_parent,
-                &mut HashSet::new(),
-            ) {
-                roots.push(root);
-            }
-        }
-        Ok(AgentTreeProjection { roots })
+    pub async fn operator_agent_tree(&self) -> Result<OwnedAgentTreeRead> {
+        self.read_agent_tree().await
     }
 
     fn agent_list_entry_from_storage(
@@ -5687,22 +7242,25 @@ impl RuntimeHost {
         let storage = self.agent_storage(&identity.agent_id)?;
         let agent = match storage.read_agent() {
             Ok(Some(agent)) => agent,
-            Ok(None) => stopped_unloaded_agent(&identity.agent_id),
+            Ok(None) => try_stopped_unloaded_agent(&identity.agent_id)?,
             Err(error) => {
                 warn!(
                     agent_id = %identity.agent_id,
                     error = %error,
                     "failed to read agent state for /agents/list; using stopped placeholder"
                 );
-                stopped_unloaded_agent(&identity.agent_id)
+                try_stopped_unloaded_agent(&identity.agent_id)?
             }
         };
-        let model = crate::runtime::agent_model_state_for_catalog(
-            &RuntimeModelCatalog::from_config(&self.config()),
-            &self.runtime_context_config(),
+        let model = crate::runtime::try_agent_model_list_summary_for_catalog(
+            self.inner.registry.model_catalog().as_ref(),
             &agent,
-        );
-        let scheduling_posture = match storage.agent_posture_projection(&agent) {
+        )?;
+        let read_models = crate::storage::RuntimeReadModels::borrowed_for_agent(
+            self.runtime_db(),
+            &identity.agent_id,
+        )?;
+        let scheduling_posture = match read_models.agent_posture_for_snapshot(&agent) {
             Ok(posture) => posture,
             Err(error) => {
                 warn!(
@@ -5714,15 +7272,16 @@ impl RuntimeHost {
             }
         };
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
+        crate::diagnostics::resource_io::admit_cloned_value(identity)?;
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
-            lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
+            lifecycle: AgentLifecycleHint::try_from_status(&agent.id, agent.status.clone())?,
             status: agent.status,
             scheduling_posture,
             pending: agent.pending,
             current_run_id: agent.current_run_id,
             waiting_reason,
-            model: (&model).into(),
+            model,
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
@@ -5736,7 +7295,8 @@ impl RuntimeHost {
     /// canonical state instead of in-memory runtime watchers.
     #[cfg(test)]
     pub(crate) fn agent_roster_snapshot(&self) -> Result<AgentRosterSnapshotData> {
-        self.agent_roster_snapshot_scoped(self.runtime_db())
+        let acquisition = self.observer_inventory_material()?;
+        acquisition.read(|| self.agent_roster_snapshot_in(&acquisition))
     }
 
     pub(crate) fn agent_roster_snapshot_scoped(
@@ -5744,11 +7304,34 @@ impl RuntimeHost {
         db: &RuntimeDb,
     ) -> Result<AgentRosterSnapshotData> {
         db.check_read_scope()?;
+        let acquisition = self.observer_inventory_material()?;
+        acquisition.read(|| self.agent_roster_snapshot_in_scoped(&acquisition, db))
+    }
+
+    fn agent_roster_snapshot_in(
+        &self,
+        acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<AgentRosterSnapshotData> {
+        self.agent_roster_snapshot_in_scoped(acquisition, self.runtime_db())
+    }
+
+    fn agent_roster_snapshot_in_scoped(
+        &self,
+        acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        db: &RuntimeDb,
+    ) -> Result<AgentRosterSnapshotData> {
         let rows = db.agent_roster_snapshot_rows()?;
-        let catalog = RuntimeModelCatalog::from_config(&self.config());
-        let mut agents = Vec::with_capacity(rows.rows.len());
+        let config = self.config();
+        let catalog = crate::config::ModelListCatalog::from_config(&config);
+        let mut agents = Vec::new();
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            (rows.rows.len() * std::mem::size_of::<AgentRosterEntryData>()) as u64,
+            rows.rows.len(),
+        )?;
+        agents.try_reserve_exact(rows.rows.len())?;
         for row in rows.rows {
             db.check_read_cancellation()?;
+            crate::diagnostics::resource_io::admit_json_payload(&row.identity_json)?;
             let identity: AgentIdentityRecord =
                 serde_json::from_str(&row.identity_json).map_err(|error| {
                     anyhow!(
@@ -5760,6 +7343,7 @@ impl RuntimeHost {
                 .agent_state_json
                 .as_deref()
                 .map(|payload| {
+                    crate::diagnostics::resource_io::admit_json_payload(payload)?;
                     serde_json::from_str::<AgentState>(payload).map_err(|error| {
                         anyhow!(
                             "unreadable roster agent state payload for {}: {error}",
@@ -5789,12 +7373,12 @@ impl RuntimeHost {
                                     row.agent_id
                                 )
                             })?,
-                        preview: brief_preview(&brief.preview),
+                        preview: brief_preview(brief.preview),
                     })
                 })
                 .transpose()?;
             let agent =
-                self.agent_list_entry_from_committed_state(&identity, agent_state, &catalog)?;
+                self.agent_list_entry_from_committed_state_in(identity, agent_state, catalog, db)?;
             agents.push(AgentRosterEntryData {
                 agent,
                 event_head_seq: row.event_head_seq,
@@ -5808,6 +7392,8 @@ impl RuntimeHost {
             event_log_epoch: rows.event_log_epoch,
             visibility_policy_generation: rows.visibility_policy_generation,
             agents,
+            _material: rows._material,
+            acquisition: acquisition.clone(),
         })
     }
 
@@ -5821,7 +7407,8 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentProjectionSnapshotData>> {
-        self.agent_projection_snapshot_scoped(agent_id, self.runtime_db())
+        let acquisition = self.observer_inventory_material()?;
+        acquisition.read(|| self.agent_projection_snapshot_in(agent_id, &acquisition))
     }
 
     pub(crate) fn agent_projection_snapshot_scoped(
@@ -5830,12 +7417,31 @@ impl RuntimeHost {
         db: &RuntimeDb,
     ) -> Result<Option<AgentProjectionSnapshotData>> {
         db.check_read_scope()?;
+        let acquisition = self.observer_inventory_material()?;
+        acquisition.read(|| self.agent_projection_snapshot_in_scoped(agent_id, &acquisition, db))
+    }
+
+    fn agent_projection_snapshot_in(
+        &self,
+        agent_id: &str,
+        acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<Option<AgentProjectionSnapshotData>> {
+        self.agent_projection_snapshot_in_scoped(agent_id, acquisition, self.runtime_db())
+    }
+
+    fn agent_projection_snapshot_in_scoped(
+        &self,
+        agent_id: &str,
+        acquisition: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        db: &RuntimeDb,
+    ) -> Result<Option<AgentProjectionSnapshotData>> {
         let rows = db.agent_projection_snapshot_rows(agent_id)?;
         db.check_read_scope()?;
         let row = match rows.row {
             Some(row) => row,
             None => return Ok(None),
         };
+        crate::diagnostics::resource_io::admit_json_payload(&row.identity_json)?;
         let identity: AgentIdentityRecord =
             serde_json::from_str(&row.identity_json).map_err(|error| {
                 anyhow!(
@@ -5847,6 +7453,7 @@ impl RuntimeHost {
             .agent_state_json
             .as_deref()
             .map(|payload| {
+                crate::diagnostics::resource_io::admit_json_payload(payload)?;
                 serde_json::from_str::<AgentState>(payload).map_err(|error| {
                     anyhow!(
                         "unreadable projection agent state payload for {}: {error}",
@@ -5855,8 +7462,9 @@ impl RuntimeHost {
                 })
             })
             .transpose()?;
-        let catalog = RuntimeModelCatalog::from_config(&self.config());
-        let agent = self.agent_list_entry_from_committed_state(&identity, agent_state, &catalog)?;
+        let config = self.config();
+        let catalog = crate::config::ModelListCatalog::from_config(&config);
+        let agent = self.agent_list_entry_from_committed_state_in(identity, agent_state, catalog, db)?;
         let current_work_item = row
             .current_work_item
             .map(|work_item| -> Result<AgentWorkItemAnchorData> {
@@ -5907,31 +7515,17 @@ impl RuntimeHost {
                                 row.agent_id
                             )
                         })?,
-                    preview: brief_preview(&brief.preview),
+                    preview: brief_preview(brief.preview),
                 })
             })
             .transpose()?;
         // Hydration references mirror the anchors the projection itself
         // names; each id resolves through the per-family batch record API.
-        let mut hydration_references = Vec::new();
-        if let Some(message_id) = row.latest_message_id.clone() {
-            hydration_references.push(AgentHydrationReferenceData {
-                record_kind: ObserverSyncRecordKindData::Message,
-                record_id: message_id,
-            });
-        }
-        if let Some(transcript_entry_id) = row.latest_transcript_entry_id.clone() {
-            hydration_references.push(AgentHydrationReferenceData {
-                record_kind: ObserverSyncRecordKindData::TranscriptEntry,
-                record_id: transcript_entry_id,
-            });
-        }
-        if let Some(brief) = latest_brief.as_ref() {
-            hydration_references.push(AgentHydrationReferenceData {
-                record_kind: ObserverSyncRecordKindData::Brief,
-                record_id: brief.brief_id.clone(),
-            });
-        }
+        let hydration_references = projection_hydration_references(
+            row.latest_message_id.as_deref(),
+            row.latest_transcript_entry_id.as_deref(),
+            latest_brief.as_ref().map(|brief| brief.brief_id.as_str()),
+        )?;
         db.check_read_scope()?;
         Ok(Some(AgentProjectionSnapshotData {
             runtime_id: rows.runtime_id,
@@ -5950,6 +7544,8 @@ impl RuntimeHost {
             },
             latest_brief,
             hydration_references,
+            _material: rows._material,
+            acquisition: acquisition.clone(),
         }))
     }
 
@@ -5959,33 +7555,46 @@ impl RuntimeHost {
     /// is all-or-nothing and never substitutes placeholder facts. A member
     /// with no committed state yet keeps the stopped placeholder semantics
     /// it would also get from `/agents/list`.
-    fn agent_list_entry_from_committed_state(
+    #[cfg(test)]
+    fn agent_list_entry_from_committed_state<'a>(
         &self,
-        identity: &AgentIdentityRecord,
+        identity: AgentIdentityRecord,
         agent_state: Option<AgentState>,
-        catalog: &RuntimeModelCatalog,
+        catalog: impl Into<crate::config::ModelListCatalog<'a>>,
     ) -> Result<AgentListEntry> {
-        let storage = self.agent_storage_read_only(&identity.agent_id)?;
+        self.agent_list_entry_from_committed_state_in(identity, agent_state, catalog, self.runtime_db())
+    }
+
+    fn agent_list_entry_from_committed_state_in<'a>(
+        &self,
+        identity: AgentIdentityRecord,
+        agent_state: Option<AgentState>,
+        catalog: impl Into<crate::config::ModelListCatalog<'a>>,
+        db: &RuntimeDb,
+    ) -> Result<AgentListEntry> {
+        let read_models = crate::storage::RuntimeReadModels::borrowed_for_agent(
+            db,
+            &identity.agent_id,
+        )?;
         let agent = match agent_state {
             Some(agent) => agent,
-            None => stopped_unloaded_agent(&identity.agent_id),
+            None => try_stopped_unloaded_agent(&identity.agent_id)?,
         };
-        let model = crate::runtime::agent_model_state_for_catalog(
-            catalog,
-            &self.runtime_context_config(),
-            &agent,
-        );
-        let scheduling_posture = storage.agent_posture_projection(&agent)?;
+        let model = crate::runtime::try_agent_model_list_summary_for_catalog(catalog, &agent)?;
+        let scheduling_posture = read_models.agent_posture_for_snapshot(&agent)?;
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
-            identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
-            lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
+            identity: AgentIdentityView::from_owned_record(
+                identity,
+                &self.config().default_agent_id,
+            ),
+            lifecycle: AgentLifecycleHint::try_from_status(&agent.id, agent.status.clone())?,
             status: agent.status,
             scheduling_posture,
             pending: agent.pending,
             current_run_id: agent.current_run_id,
             waiting_reason,
-            model: (&model).into(),
+            model,
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
@@ -6159,7 +7768,7 @@ impl RuntimeHost {
             skill_registry.catalog_for_roots(&skill_roots, None),
             &skill_roots,
             &state.active_skills,
-        );
+        )?;
         skills.agent_templates_catalog =
             discover_agent_templates_catalog(config.user_home_dir.as_deref(), agent_home.as_path());
         let model_catalog = RuntimeModelCatalog::from_config(&config);
@@ -6251,44 +7860,56 @@ impl RuntimeHost {
         parent_agent_id: &str,
     ) -> Result<Vec<ChildAgentSummary>> {
         let mut children = Vec::new();
-        for identity in self.agent_identity_records()?.into_iter().filter(|record| {
-            record.status == AgentRegistryStatus::Active
-                && record.kind == AgentKind::Child
-                && record.parent_agent_id.as_deref() == Some(parent_agent_id)
-        }) {
-            let storage = self.agent_storage_read_only(&identity.agent_id)?;
-            let state = storage
-                .read_agent()?
-                .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
-            let active_task_count = storage.active_task_count_for_agent(&identity.agent_id)?;
-            children.push(ChildAgentSummary {
-                identity: AgentIdentityView::from_record(
-                    &identity,
-                    &self.config().default_agent_id,
-                ),
-                status: state.status.clone(),
-                current_run_id: state.current_run_id.clone(),
-                pending: state.pending,
-                active_task_count,
-                observability: self
-                    .child_agent_observability_snapshot(&identity.agent_id, &storage, &state)
-                    .await?,
-            });
+        for (identity, material) in self
+            .inner
+            .registry
+            .child_identity_reads(parent_agent_id, &self.inner.input_evidence_budget)?
+        {
+            if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
+                let mut read = runtime.child_agent_summary_observation().await?;
+                read.observability._source_material = Some(material.guard()?);
+                read.acquisition.read(|| {
+                    crate::diagnostics::resource_io::admit_cloned_value(
+                        &read.state.current_run_id,
+                    )?;
+                    crate::runtime_db::repositories::reserve_source_vec_slot(&mut children)?;
+                    children.push(ChildAgentSummary {
+                        identity: AgentIdentityView::from_owned_record(
+                            identity,
+                            &self.config().default_agent_id,
+                        ),
+                        status: read.state.status.clone(),
+                        current_run_id: read.state.current_run_id.clone(),
+                        pending: read.state.pending,
+                        active_task_count: read.active_task_count,
+                        observability: read.observability,
+                    });
+                    Ok(())
+                })?;
+                continue;
+            }
+            let cold = self.acquire_cold_summary(&identity).await?;
+            let active_task_count = cold.projection().active_tasks.len();
+            let mut observability = cold.observability()?;
+            observability._source_material = Some(material.guard()?);
+            cold.acquisition.read(|| {
+                crate::runtime_db::repositories::reserve_source_vec_slot(&mut children)?;
+                children.push(ChildAgentSummary {
+                    identity: AgentIdentityView::from_owned_record(
+                        cold.identity,
+                        &self.config().default_agent_id,
+                    ),
+                    status: cold.state.status,
+                    current_run_id: cold.state.current_run_id,
+                    pending: cold.state.pending,
+                    active_task_count,
+                    observability,
+                });
+                Ok(())
+            })?;
         }
         children.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
         Ok(children)
-    }
-
-    async fn child_agent_observability_snapshot(
-        &self,
-        agent_id: &str,
-        storage: &AppStorage,
-        state: &AgentState,
-    ) -> Result<crate::types::ChildAgentObservabilitySnapshot> {
-        if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
-            return runtime.child_agent_observability().await;
-        }
-        RuntimeHandle::child_agent_observability_from_storage(storage, state)
     }
 
     pub(crate) async fn deliver_external_callback(
@@ -6324,33 +7945,80 @@ impl RuntimeHost {
         Err(crate::runtime::execution_admission::closed_error())
     }
 
+    fn callback_discovery_request(
+        &self,
+    ) -> Result<crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest> {
+        let limits = self.inner.input_evidence_budget.limits();
+        Ok(
+            crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
+                byte_limit: usize::try_from(
+                    limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("callback discovery byte limit overflow")?,
+                )?,
+                record_limit: usize::try_from(limits.record_limit)?,
+            },
+        )
+    }
+
+    pub(crate) fn resolve_external_trigger_locator(
+        &self,
+        callback_token: &str,
+    ) -> Result<Option<crate::runtime_db::scheduling_snapshot::ExternalTriggerTokenLocator>> {
+        let token_hash = hash_callback_token(callback_token);
+        let request = self.callback_discovery_request()?;
+        self.runtime_db().transaction(|tx| {
+            crate::runtime_db::scheduling_snapshot::discover_external_trigger_token_tx(
+                tx,
+                &token_hash,
+                &request,
+                &self.inner.input_evidence_budget,
+            )
+        })
+    }
+
+    fn read_external_trigger_token_compatibility(
+        &self,
+        callback_token: &str,
+    ) -> Result<Option<crate::runtime_db::scheduling_snapshot::ExternalTriggerTokenRecordRead>>
+    {
+        let token_hash = hash_callback_token(callback_token);
+        let request = self.callback_discovery_request()?;
+        self.runtime_db().transaction(|tx| {
+            crate::runtime_db::scheduling_snapshot::read_external_trigger_token_compatibility_tx(
+                tx,
+                &token_hash,
+                &request,
+                &self.inner.input_evidence_budget,
+            )
+        })
+    }
+
     pub async fn resolve_external_trigger(
         &self,
         callback_token: &str,
     ) -> Result<Option<(RuntimeHandle, ExternalTriggerRecord)>> {
-        let Some((agent_id, descriptor)) =
-            self.resolve_external_trigger_record(callback_token).await?
-        else {
+        let Some(read) = self.read_external_trigger_token_compatibility(callback_token)? else {
             return Ok(None);
         };
-        let runtime = self.get_or_create_agent(&agent_id).await?;
-        Ok(Some((runtime, descriptor)))
+        // This legacy adapter retains all decoded material across activation.
+        let runtime = self
+            .get_or_create_agent(&read.record().target_agent_id)
+            .await?;
+        Ok(Some((runtime, read.into_record())))
     }
 
     pub async fn resolve_external_trigger_record(
         &self,
         callback_token: &str,
     ) -> Result<Option<(String, ExternalTriggerRecord)>> {
-        let token_hash = hash_callback_token(callback_token);
-        if let Some(descriptor) = self
-            .inner
-            .runtime_db
-            .external_triggers()
-            .active_by_token_hash(&token_hash)?
-        {
-            return Ok(Some((descriptor.target_agent_id.clone(), descriptor)));
-        }
-        Ok(None)
+        let Some(read) = self.read_external_trigger_token_compatibility(callback_token)? else {
+            return Ok(None);
+        };
+        let agent_id = read.record().target_agent_id.clone();
+        Ok(Some((agent_id, read.into_record())))
     }
 
     pub(crate) fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
@@ -6451,25 +8119,216 @@ impl RuntimeHost {
         Ok(record)
     }
 
+    #[cfg(test)]
     async fn archive_private_agent(&self, agent_id: &str) -> Result<()> {
-        if let Some(identity) = self.agent_identity_record(agent_id)? {
-            if identity.status != AgentRegistryStatus::Deleted {
-                let identity = self
-                    .runtime_db()
-                    .agent_identities()
-                    .tombstone_with_closed_supervision(agent_id)?;
-                self.cache_agent_identity(&identity)?;
+        let host = self.clone();
+        let agent_id = agent_id.to_string();
+        self.run_owned_external_mutation(async move {
+            host.archive_private_agent_owned(&agent_id).await
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    async fn archive_private_agent_owned(&self, agent_id: &str) -> Result<()> {
+        self.archive_private_agent_owned_with_original(agent_id, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn archive_private_agent_owned_with_original(
+        &self,
+        agent_id: &str,
+        original: Option<&crate::runtime_db::task_stop::TaskStopRecord>,
+    ) -> Result<(
+        Option<crate::runtime_db::task_stop::PreparedTaskStopChildIdentity>,
+        Option<task_stop_worktree_exit::CompleteOriginalChildProducerExit>,
+    )> {
+        let bootstrap_lock = self.agent_bootstrap_lock(agent_id);
+        let bootstrap_guard = bootstrap_lock.lock().await;
+        let child_limit = if original.is_some() {
+            usize::try_from(
+                self.inner
+                    .input_evidence_budget
+                    .limits()
+                    .history_per_agent_bytes
+                    .checked_add(
+                        self.inner
+                            .input_evidence_budget
+                            .limits()
+                            .pending_per_agent_bytes,
+                    )
+                    .context("TaskStop child owner budget overflow")?,
+            )?
+        } else {
+            0
+        };
+        let mut reservations = if let Some(record) = original {
+            let child = record
+                .intent
+                .child
+                .as_ref()
+                .context("TaskStop original child unavailable")?;
+            anyhow::ensure!(
+                child.scope.agent_id == agent_id,
+                "TaskStop child cleanup address differs"
+            );
+            self.reserve_mutation_scopes(&[
+                (
+                    record.intent.task.scope.agent_id.clone(),
+                    record.intent.task.scope.identity_incarnation,
+                ),
+                (
+                    child.scope.agent_id.clone(),
+                    child.scope.identity_incarnation,
+                ),
+            ])
+            .await?
+        } else {
+            self.reserve_agent_mutations(&[agent_id.to_string()])
+                .await?
+        };
+        let original_identity = original
+            .map(|record| {
+                self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::task_stop::prepare_task_stop_child_identity_tx(
+                        tx,
+                        record,
+                        false,
+                        child_limit,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+            })
+            .transpose()?;
+        let identity = if let Some(evidence) = &original_identity {
+            Some(evidence.identity.clone())
+        } else {
+            self.runtime_db().agent_identities().latest(agent_id)?
+        };
+        let incarnation = identity.as_ref().map_or(1, |identity| identity.incarnation);
+        let mut original_tombstone_evidence = None;
+        if identity
+            .as_ref()
+            .is_some_and(|identity| identity.status != AgentRegistryStatus::Deleted)
+        {
+            // Parent is only a held read dependency; only the child enters the
+            // metadata ACK group and receives the child identity candidate.
+            let child_index = reservations
+                .iter()
+                .position(|reservation| {
+                    reservation.agent_id() == agent_id
+                        && reservation.identity_incarnation() == incarnation
+                })
+                .context("TaskStop child write reservation missing")?;
+            let child_reservations = &mut reservations[child_index..child_index + 1];
+            let mut facts = self.external_identity_facts(child_reservations)?;
+            let mut acknowledged = false;
+            let committed = self
+                .commit_external_metadata(child_reservations, ids::audit_event_id(), || {
+                    let identity = if let Some(record) = original {
+                        let evidence = self.runtime_db().transaction(|tx| {
+                            crate::runtime_db::task_stop::tombstone_task_stop_child_tx(
+                                tx,
+                                record,
+                                child_limit,
+                                &self.inner.input_evidence_budget,
+                            )
+                        })?;
+                        let identity = evidence.identity.clone();
+                        original_tombstone_evidence = Some(evidence);
+                        identity
+                    } else {
+                        self.runtime_db()
+                            .agent_identities()
+                            .tombstone_with_closed_supervision(agent_id)?
+                    };
+                    for fact in &mut facts {
+                        fact.identity = Some(Arc::new(identity.clone()));
+                    }
+                    acknowledged = true;
+                    Ok(((), facts))
+                })
+                .await;
+            if let Err(error) = committed {
+                if !acknowledged {
+                    return Err(error);
+                }
+                self.reconcile_external_mutations(child_reservations)
+                    .await?;
             }
         }
-
-        let entry = self.inner.runtimes.write().await.agents.remove(agent_id);
-        if let Some(entry) = entry {
-            let _ = entry
-                .runtime
-                .control(crate::types::ControlAction::Stop)
-                .await;
-            let _ = entry.task.await;
-        }
+        drop(reservations);
+        drop(bootstrap_guard);
+        let producer_exit = if let Some(record) = original {
+            self.drain_original_task_stop_child_producers(
+                &record
+                    .intent
+                    .child
+                    .as_ref()
+                    .context("TaskStop original child unavailable")?
+                    .scope,
+            )
+            .await?
+        } else {
+            self.drain_retired_runtime(agent_id, incarnation).await?;
+            None
+        };
+        // Drain without owner/bootstrap locks; then fence this original scope
+        // again before touching durable rows or the shared agent home.
+        let _cleanup_bootstrap_guard = bootstrap_lock.lock().await;
+        let cleanup_reservations = if let Some(record) = original {
+            self.reserve_mutation_scopes(&[
+                (
+                    record.intent.task.scope.agent_id.clone(),
+                    record.intent.task.scope.identity_incarnation,
+                ),
+                (agent_id.to_owned(), incarnation),
+            ])
+            .await?
+        } else {
+            self.reserve_mutation_scopes(&[(agent_id.to_owned(), incarnation)])
+                .await?
+        };
+        let cleanup_reservation = cleanup_reservations
+            .iter()
+            .find(|reservation| {
+                reservation.agent_id() == agent_id
+                    && reservation.identity_incarnation() == incarnation
+            })
+            .context("private archive lost its original identity scope")?;
+        // Recheck this original generation after drain, before shared home data.
+        let cleanup_original = original
+            .map(|record| {
+                self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::task_stop::prepare_task_stop_child_identity_tx(
+                        tx,
+                        record,
+                        true,
+                        child_limit,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+            })
+            .transpose()?;
+        let archive_material = original
+            .map(|record| {
+                self.runtime_db().transaction(|tx| {
+                    crate::runtime_db::task_stop::prepare_task_stop_archive_material_tx(
+                        tx,
+                        &record
+                            .intent
+                            .child
+                            .as_ref()
+                            .context("TaskStop child unavailable")?
+                            .scope,
+                        child_limit,
+                        &self.inner.input_evidence_budget,
+                    )
+                })
+            })
+            .transpose()?;
+        self.reconcile_deleted_pending_budget(cleanup_reservation)?;
         // Cancel any active wait conditions before removing the data directory.
         // This produces audit events and avoids orphaned active waits.
         let now = chrono::Utc::now();
@@ -6486,6 +8345,7 @@ impl RuntimeHost {
                     }
                 }
                 if !cancelled_ids.is_empty() {
+                    // Archival observations remain raw in the retiring namespace.
                     let _ = storage.append_event(&crate::types::AuditEvent::legacy(
                         "wait_conditions_cancelled",
                         serde_json::json!({
@@ -6518,15 +8378,38 @@ impl RuntimeHost {
             }
         }
 
+        // Queue cleanup can fail or only partially apply. A fresh empty view,
+        // rather than the best-effort return value, releases Accepted charges.
+        self.reconcile_deleted_pending_budget(cleanup_reservation)?;
         let data_dir = self.agent_data_dir(agent_id);
         if data_dir.exists() {
             fs::remove_dir_all(&data_dir)?;
         }
-        Ok(())
+        drop(archive_material);
+        // Preserve this Stop's sealed transition only if the post-drain
+        // readback still names that exact identity revision.
+        let cleanup_original = match (original, original_tombstone_evidence, cleanup_original) {
+            (Some(record), Some(teardown), Some(current))
+                if teardown.proves_original_teardown(record, current.identity.revision) =>
+            {
+                Some(teardown)
+            }
+            (_, _, current) => current,
+        };
+        Ok((cleanup_original, producer_exit))
     }
 
-    async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {
-        self.archive_private_agent(agent_id).await
+    #[cfg(test)]
+    async fn stop_private_agent_for_task_stop(
+        &self,
+        original: Arc<crate::runtime_db::task_stop::TaskStopRecord>,
+    ) -> Result<TaskStopChildRetirement> {
+        let host = self.clone();
+        self.run_owned_external_mutation(async move {
+            host.stop_private_agent_for_owned_task_stop_record(original)
+                .await
+        })
+        .await
     }
 
     async fn spawn_child_task(
@@ -6538,6 +8421,30 @@ impl RuntimeHost {
         worktree: bool,
         template: Option<String>,
         model_resolution: AgentModelResolution,
+    ) -> Result<ChildTaskSpawn> {
+        self.spawn_child_task_inner(
+            parent_runtime,
+            task,
+            prompt,
+            authority_class,
+            worktree,
+            template,
+            model_resolution,
+            None,
+        )
+        .await
+    }
+
+    async fn spawn_child_task_inner(
+        &self,
+        parent_runtime: RuntimeHandle,
+        task: &TaskRecord,
+        prompt: String,
+        authority_class: AuthorityClass,
+        worktree: bool,
+        template: Option<String>,
+        model_resolution: AgentModelResolution,
+        original_source: Option<&crate::runtime::OriginalChildTaskProducer>,
     ) -> Result<ChildTaskSpawn> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -6552,6 +8459,11 @@ impl RuntimeHost {
         let child_agent_id = child_identity.agent_id.clone();
         let child_incarnation = child_identity.incarnation;
         async {
+            if let Some(source) = original_source {
+                source.original_spawn_identity_created(&child_identity)?;
+                #[cfg(test)]
+                source.wait_original_spawn_identity_gate_for_test().await?;
+            }
             let child_runtime = self.get_or_create_agent(&child_identity.agent_id).await?;
             child_runtime
                 .inherit_from_parent_state(&parent_state)
@@ -6577,12 +8489,17 @@ impl RuntimeHost {
             });
 
             if worktree {
-                let seed = parent_runtime
-                    .prepare_managed_worktree_for_task(&task.id)
-                    .await?;
+                let seed = if let Some(source) = original_source {
+                    parent_runtime
+                        .prepare_managed_worktree_for_original_child_spawn(&task.id, source)
+                        .await?
+                } else {
+                    parent_runtime
+                        .prepare_managed_worktree_for_task(&task.id)
+                        .await?
+                };
                 parent_runtime
-                    .storage()
-                    .append_transcript_entry(&TranscriptEntry::new(
+                    .persist_transcript_evidence(&TranscriptEntry::new(
                         parent_state.id.clone(),
                         TranscriptEntryKind::SubagentPrompt,
                         None,
@@ -6593,7 +8510,8 @@ impl RuntimeHost {
                             "task_id": task.id,
                             "workspace_root": seed.worktree_path,
                         }),
-                    ))?;
+                    ))
+                    .await?;
                 child_runtime
                     .enter_worktree(
                         seed.original_cwd.clone(),
@@ -6605,6 +8523,9 @@ impl RuntimeHost {
                 task_detail["worktree"] = json!({
                     "worktree_path": seed.worktree_path,
                     "worktree_branch": seed.worktree_branch,
+                    "projection_kind": "git_worktree_root",
+                    "original_cwd": seed.original_cwd,
+                    "original_branch": seed.original_branch,
                 });
             }
 
@@ -6637,12 +8558,28 @@ impl RuntimeHost {
                 .storage()
                 .latest_task_record(&task.id)?
                 .context("supervised invocation parent task missing before admission")?;
+            #[cfg(test)]
+            let fault = original_source
+                .and_then(|source| source.take_original_spawn_enqueue_fault_for_test());
+            #[cfg(test)]
+            let message = match fault {
+                Some(fault) => child_runtime
+                    .enqueue_supervised_invocation_with_fault_for_test(
+                        message, &admission_task, child_incarnation, fault,
+                    )
+                    .await?,
+                None => child_runtime
+                    .enqueue_supervised_invocation(message, &admission_task, child_incarnation)
+                    .await?,
+            };
+            #[cfg(not(test))]
             let message = child_runtime
                 .enqueue_supervised_invocation(message, &admission_task, child_incarnation)
                 .await?;
             task_detail["source_message_id"] = json!(message.id);
             task_detail["source_turn_id"] = json!(message.turn_id);
 
+            task_detail["target_identity_incarnation"] = json!(child_identity.incarnation);
             Ok::<ChildTaskSpawn, anyhow::Error>(ChildTaskSpawn {
                 child_agent_id: child_identity.agent_id,
                 child_turn_baseline,
@@ -6884,6 +8821,7 @@ impl RuntimeHost {
                 "agent_id": target_agent_id,
                 "incarnation": admission.target_incarnation,
             },
+            "target_identity_incarnation": identity.incarnation,
             "target_agent_kind": identity.kind,
             "target_agent_visibility": identity.visibility,
             "target_agent_ownership": identity.ownership(),
@@ -7101,6 +9039,22 @@ impl RuntimeHost {
         child_agent_id: &str,
         worktree: bool,
     ) -> Result<ChildInvocationResolution> {
+        self.resolve_supervised_invocation_with_roles(
+            task,
+            child_agent_id,
+            worktree,
+            &mut Vec::new(),
+        )
+        .await
+    }
+
+    async fn resolve_supervised_invocation_with_roles(
+        &self,
+        task: &TaskRecord,
+        child_agent_id: &str,
+        worktree: bool,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
+    ) -> Result<ChildInvocationResolution> {
         let incarnation = task.target().and_then(|target| target.incarnation);
         if let Some(result) = self
             .deleted_task_target_result(child_agent_id, incarnation)
@@ -7111,9 +9065,10 @@ impl RuntimeHost {
         let evidence = async {
             let host = self.clone();
             let task = task.clone();
-            let child_agent_id = child_agent_id.to_string();
+            let binding_child_agent_id = child_agent_id.to_string();
             let binding = spawn_blocking(move || {
                 use crate::domain::execution_protocol::ExecutionSourceIdentity;
+                let child_agent_id = binding_child_agent_id;
                 let (identity, source) =
                     host.supervised_invocation_source(&task, &child_agent_id)?;
                 let execution = host
@@ -7159,21 +9114,29 @@ impl RuntimeHost {
                         }
                     }
                 }
-                let Some(evidence) = host.canonical_invocation_terminal_evidence(
-                    &storage,
-                    &child_agent_id,
-                    &source.id,
+                Ok::<_, anyhow::Error>((
+                    storage,
+                    identity,
+                    source,
                     root.attempt_id.clone(),
                     root.turn_id.clone(),
-                    true,
-                )?
-                else {
-                    return Ok(None);
-                };
-                Ok::<_, anyhow::Error>(Some((storage, identity, source, evidence)))
+                ))
             })
             .await??;
-            let Some((storage, identity, source, evidence)) = binding else {
+            let (storage, identity, source, root_activation_id, root_turn_id) = binding;
+            let Some(evidence) = self
+                .canonical_invocation_terminal_evidence(
+                    &storage,
+                    child_agent_id,
+                    &source.id,
+                    root_activation_id,
+                    root_turn_id,
+                    true,
+                    identity.incarnation,
+                    task_roles,
+                )
+                .await?
+            else {
                 return Ok(ChildInvocationResolution::Pending(
                     ChildInvocationReason::AwaitingContinuation,
                 ));
@@ -7277,6 +9240,7 @@ impl RuntimeHost {
         );
         let storage = self.agent_storage(child_agent_id)?;
         let mut runtime_started = false;
+        let mut task_roles = Vec::new();
         loop {
             match self
                 .deleted_task_target_result(child_agent_id, incarnation)
@@ -7294,15 +9258,16 @@ impl RuntimeHost {
                 }
                 Err(error) => return Err(error),
             }
-            let host = self.clone();
-            let read_storage = storage.clone();
-            let child = child_agent_id.to_string();
-            let delivery = delivery_id.to_string();
-            let task = invocation_task_id.to_string();
-            let evidence = spawn_blocking(move || {
-                host.invocation_delivery_terminal_evidence(&read_storage, &child, &delivery, &task)
-            })
-            .await?;
+            let evidence = self
+                .invocation_delivery_terminal_evidence(
+                    &storage,
+                    child_agent_id,
+                    delivery_id,
+                    invocation_task_id,
+                    identity.incarnation,
+                    &mut task_roles,
+                )
+                .await;
             match evidence {
                 Ok(Some(evidence)) => match self
                     .invocation_terminal_result(
@@ -7476,12 +9441,14 @@ impl RuntimeHost {
         }
     }
 
-    fn invocation_delivery_terminal_evidence(
+    async fn invocation_delivery_terminal_evidence(
         &self,
         storage: &AppStorage,
         child_agent_id: &str,
         delivery_id: &str,
         invocation_task_id: &str,
+        child_incarnation: u64,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
     ) -> Result<Option<InvocationTerminalEvidence>> {
         let Some(delivery) = self
             .runtime_db()
@@ -7565,18 +9532,21 @@ impl RuntimeHost {
                 delivery.state,
                 AgentMessageDeliveryState::Queued | AgentMessageDeliveryState::Dispatched
             ),
+            child_incarnation,
+            task_roles,
         )
+        .await
     }
 
-    fn supervised_invocation_observation(&self, task: &TaskRecord) -> Result<Value> {
+    async fn supervised_invocation_observation(&self, task: &TaskRecord) -> Result<Value> {
         use crate::domain::execution_protocol::ExecutionSourceIdentity;
 
         let Some(target) = task.target() else {
             return Ok(Value::Null);
         };
         let mut observation = json!({ "steps": [] });
-        let result = (|| {
-            let (_, source) = self.supervised_invocation_source(task, &target.agent_id)?;
+        let result = async {
+            let (identity, source) = self.supervised_invocation_source(task, &target.agent_id)?;
             observation["source_message_id"] = json!(source.id);
             let execution = self
                 .runtime_db()
@@ -7601,9 +9571,13 @@ impl RuntimeHost {
                 root.attempt_id.clone(),
                 root.turn_id.clone(),
                 true,
+                identity.incarnation,
+                &mut Vec::new(),
                 &mut observation,
             )
-        })();
+            .await
+        }
+        .await;
         match result {
             Ok(evidence) => {
                 observation["resolution"] = json!(if evidence.is_some() {
@@ -7622,7 +9596,8 @@ impl RuntimeHost {
         Ok(observation)
     }
 
-    fn canonical_invocation_terminal_evidence(
+    #[allow(clippy::too_many_arguments)]
+    async fn canonical_invocation_terminal_evidence(
         &self,
         storage: &AppStorage,
         child_agent_id: &str,
@@ -7630,6 +9605,8 @@ impl RuntimeHost {
         root_activation_id: String,
         root_turn_id: Option<String>,
         awaiting_recovery: bool,
+        child_incarnation: u64,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
     ) -> Result<Option<InvocationTerminalEvidence>> {
         self.observed_invocation_terminal_evidence(
             storage,
@@ -7638,12 +9615,15 @@ impl RuntimeHost {
             root_activation_id,
             root_turn_id,
             awaiting_recovery,
+            child_incarnation,
+            task_roles,
             &mut Value::Null,
         )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn observed_invocation_terminal_evidence(
+    async fn observed_invocation_terminal_evidence(
         &self,
         storage: &AppStorage,
         child_agent_id: &str,
@@ -7651,6 +9631,8 @@ impl RuntimeHost {
         root_activation_id: String,
         root_turn_id: Option<String>,
         awaiting_recovery: bool,
+        child_incarnation: u64,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
         observation: &mut Value,
     ) -> Result<Option<InvocationTerminalEvidence>> {
         use crate::domain::execution_protocol::{
@@ -7850,12 +9832,34 @@ impl RuntimeHost {
                             let Some(turn_id) = attempt.turn_id.as_deref() else {
                                 return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                             };
-                            let all_tasks = self
-                                .runtime_db()
-                                .tasks()
-                                .latest_for_agent(child_agent_id, usize::MAX)?;
+                            let runtime =
+                                self.monitor_runtime(child_agent_id, child_incarnation).await?;
+                            let active_read = match &runtime {
+                                Some(runtime) => {
+                                    Some(runtime.active_task_records_read(usize::MAX).await?)
+                                }
+                                None => None,
+                            };
+                            let cold_tasks = if runtime.is_none() {
+                                self.require_cold_monitor_scope(
+                                    child_agent_id,
+                                    child_incarnation,
+                                )?;
+                                Some(
+                                    self.runtime_db()
+                                        .tasks()
+                                        .latest_for_agent(child_agent_id, usize::MAX)?,
+                                )
+                            } else {
+                                None
+                            };
+                            let active_tasks = active_read
+                                .as_ref()
+                                .map(|read| read.records.as_slice())
+                                .or_else(|| cold_tasks.as_deref())
+                                .ok_or(ChildInvocationReason::MissingInvocationBinding)?;
                             anyhow::ensure!(
-                                !all_tasks.iter().any(|task| {
+                                !active_tasks.iter().any(|task| {
                                     matches!(
                                         task.status,
                                         TaskStatus::Queued
@@ -7869,7 +9873,35 @@ impl RuntimeHost {
                                 }),
                                 ChildInvocationReason::MissingInvocationBinding
                             );
-                            for wait in storage.active_wait_conditions_for_agent(child_agent_id)? {
+                            drop(active_read);
+                            let loaded_wait_read = match &runtime {
+                                Some(runtime) => {
+                                    Some(runtime.child_monitor_read(child_incarnation).await?)
+                                }
+                                None => None,
+                            };
+                            let cold_waits = if runtime.is_none() {
+                                self.require_cold_monitor_scope(
+                                    child_agent_id,
+                                    child_incarnation,
+                                )?;
+                                storage.active_wait_conditions_for_agent(child_agent_id)?
+                            } else {
+                                Vec::new()
+                            };
+                            let loaded_waits = loaded_wait_read
+                                .as_ref()
+                                .map(|read| read.original_unresolved_waits())
+                                .transpose()?;
+                            for wait in loaded_waits
+                                .into_iter()
+                                .flatten()
+                                .chain(cold_waits.iter().map(Ok))
+                            {
+                                let wait = wait?;
+                                if wait.status != WaitConditionStatus::Active {
+                                    continue;
+                                }
                                 anyhow::ensure!(
                                     wait.turn_id.is_some(),
                                     ChildInvocationReason::MissingInvocationBinding
@@ -7878,8 +9910,57 @@ impl RuntimeHost {
                                     return Ok(None);
                                 }
                             }
-                            let tasks = all_tasks
-                                .into_iter()
+                            let task_rows = self
+                                .invocation_task_rows(
+                                    child_agent_id,
+                                    child_incarnation,
+                                    turn_id,
+                                    task_roles,
+                                )
+                                .await?;
+                            if task_rows.has_active() {
+                                return Ok(None);
+                            }
+                            let task_bodies = match (&runtime, &task_rows) {
+                                (Some(_), task_monitor_read::InvocationTaskRows::Loaded(_))
+                                    if task_rows.is_empty() =>
+                                {
+                                    Vec::new()
+                                }
+                                (
+                                    Some(runtime),
+                                    task_monitor_read::InvocationTaskRows::Loaded(read),
+                                ) => {
+                                    let session = task_roles
+                                        .iter()
+                                        .find(|role| role.turn_id() == turn_id)
+                                        .ok_or(ChildInvocationReason::MissingInvocationBinding)?;
+                                    let mut bodies = Vec::with_capacity(read.headers().len());
+                                    for task_id in read.headers().keys() {
+                                        bodies.push(
+                                            runtime
+                                                .capture_parent_turn_task_body(
+                                                    child_incarnation,
+                                                    session,
+                                                    read,
+                                                    task_id,
+                                                )
+                                                .await?,
+                                        );
+                                    }
+                                    bodies
+                                }
+                                (None, task_monitor_read::InvocationTaskRows::Cold(_)) => Vec::new(),
+                                _ => {
+                                    return Err(
+                                        ChildInvocationReason::MissingInvocationBinding.into(),
+                                    );
+                                }
+                            };
+                            let tasks = task_bodies
+                                .iter()
+                                .map(|body| body.record())
+                                .chain(cold_tasks.iter().flatten())
                                 .filter(|task| {
                                     task.detail
                                         .as_ref()
@@ -8521,23 +10602,33 @@ impl RuntimeHost {
         evidence: InvocationTerminalEvidence,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let loaded_state =
-            if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
-                Some(runtime.agent_state().await?)
-            } else {
-                None
-            };
+        let loaded: Option<crate::runtime::ChildMonitorRead> = match self
+            .monitor_runtime(&identity.agent_id, identity.incarnation)
+            .await?
+        {
+            Some(runtime) => Some(runtime.child_monitor_read(identity.incarnation).await?),
+            None => None,
+        };
+        let cold = if loaded.is_none() {
+            self.require_cold_monitor_scope(&identity.agent_id, identity.incarnation)?;
+            Some(
+                storage
+                    .read_agent()?
+                    .unwrap_or_else(|| stopped_unloaded_agent(&identity.agent_id)),
+            )
+        } else {
+            None
+        };
+        let state = loaded
+            .as_ref()
+            .map(|read| read.state())
+            .or(cold.as_ref())
+            .expect("loaded or genuine cold State");
         let db = self.runtime_db().clone();
         let read_storage = storage.clone();
         let agent_id = identity.agent_id.clone();
         let turn_id = evidence.turn_id.clone();
-        let (state, turn, briefs) = spawn_blocking(move || -> Result<_> {
-            let state = match loaded_state {
-                Some(state) => state,
-                None => read_storage
-                    .read_agent()?
-                    .unwrap_or_else(|| stopped_unloaded_agent(&agent_id)),
-            };
+        let (turn, briefs) = spawn_blocking(move || -> Result<_> {
             let turn = turn_id
                 .as_deref()
                 .map(|turn_id| db.turn_records().by_id(Some(&agent_id), turn_id))
@@ -8548,7 +10639,7 @@ impl RuntimeHost {
                 .map(|turn_id| read_storage.read_briefs_for_turn(turn_id))
                 .transpose()?
                 .unwrap_or_default();
-            Ok((state, turn, briefs))
+            Ok((turn, briefs))
         })
         .await??;
         // Terminal observability belongs to this invocation, never later child activity.
@@ -8718,6 +10809,17 @@ impl RuntimeHost {
         .await??;
         // The owning host task keeps the activation guards through registration
         // or temporary-runtime handoff, even if its requester is cancelled.
+        #[cfg(test)]
+        if let Some(gate) = self
+            .inner
+            .clock_recovery_dispatch_gates
+            .lock()
+            .unwrap()
+            .get(agent_id)
+            .cloned()
+        {
+            runtime.set_clock_recovery_dispatch_gate_for_test(gate);
+        }
         runtime.enable_memory_index_notify(self.inner.memory_index_notify.clone());
         let (phase_tx, phase_rx) = watch::channel(AgentRuntimePhase::Bootstrapping);
         let runtime_recovery_tx = self.inner.runtime_recovery_tx.clone();
@@ -8825,12 +10927,173 @@ fn build_agent_tree_node(
 }
 
 impl RuntimeHostBridge {
+    pub(crate) fn input_evidence_budget(
+        &self,
+    ) -> Result<crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger> {
+        Ok(self.host()?.inner.input_evidence_budget.clone())
+    }
     fn host(&self) -> Result<RuntimeHost> {
         let inner = self
             .inner
             .upgrade()
             .ok_or_else(|| anyhow!("runtime host is no longer available"))?;
         Ok(RuntimeHost { inner })
+    }
+
+    pub(crate) fn claim_reserved_mutation_owner(
+        &self,
+        agent_id: &str,
+        identity_incarnation: u64,
+    ) -> Result<(MutationOwner, MutationReservation)> {
+        self.host()?
+            .inner
+            .mutation_owners
+            .claim_reserved(agent_id, identity_incarnation)
+    }
+
+    pub(crate) fn mutation_owner_for(
+        &self,
+        agent_id: &str,
+        identity_incarnation: u64,
+    ) -> Result<MutationOwner> {
+        self.host()?
+            .inner
+            .mutation_owners
+            .current_owner(agent_id, identity_incarnation)
+    }
+
+    pub(crate) async fn reconcile_retiring_original_scope(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+    ) -> Result<()> {
+        use crate::runtime::input_evidence_budget::{InputMemoryCategory, OwnedBytesEstimate};
+        anyhow::ensure!(
+            incarnation > 0,
+            "retirement scope has no original incarnation"
+        );
+        let host = self.host()?;
+        let limits = host.inner.input_evidence_budget.limits();
+        let bytes = agent_id
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(1024))
+            .context("retirement owner selector overflow")?;
+        anyhow::ensure!(
+            limits.record_limit >= 8
+                && u64::try_from(bytes)?
+                    <= limits
+                        .history_per_agent_bytes
+                        .checked_add(limits.pending_per_agent_bytes)
+                        .context("retirement selector limits overflow")?
+                        .min(64 * 1024 * 1024),
+            "retirement owner selector ResourceExhausted"
+        );
+        let _selectors = host.inner.input_evidence_budget.register_host_owned_bytes(
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: u64::try_from(bytes)?,
+            },
+        )?;
+        // reserve_mutation_scopes resolves the original complete witness group
+        // before returning. No activation or installation through the old token.
+        let reservations = host
+            .reserve_mutation_scopes(&[(agent_id.to_owned(), incarnation)])
+            .await?;
+        anyhow::ensure!(
+            reservations.len() == 1
+                && reservations[0].agent_id() == agent_id
+                && reservations[0].identity_incarnation() == incarnation,
+            "retirement reconciliation changed its original scope"
+        );
+        drop(reservations);
+        Ok(())
+    }
+
+    pub(crate) async fn install_mutation_metadata(
+        &self,
+        agent_id: &str,
+        incarnation: u64,
+        facts: &IdentityMutationFacts,
+    ) -> Result<()> {
+        let host = self.host()?;
+        if let Some(identity) = &facts.identity {
+            anyhow::ensure!(
+                identity.agent_id == agent_id,
+                "metadata identity scope mismatch"
+            );
+            let current = host.agent_identity_record(agent_id)?;
+            if current.as_ref().is_none_or(|current| {
+                current.incarnation < identity.incarnation
+                    || (current.incarnation == identity.incarnation
+                        && current.revision <= identity.revision)
+            }) {
+                host.cache_agent_identity(identity)?;
+            }
+        } else {
+            host.inner
+                .registry
+                .forget_agent_identity(agent_id, incarnation);
+        }
+        let close_admission = facts.state.is_none()
+            || facts.identity.as_ref().is_none_or(|identity| {
+                identity.incarnation != incarnation
+                    || identity.status != AgentRegistryStatus::Active
+            });
+        if close_admission {
+            // Closing admission is synchronous. Never unload/join a runtime
+            // while holding the reservation its accepted mutations may need.
+            let registry = host.inner.runtimes.read().await;
+            for runtime in registry
+                .agents
+                .get(agent_id)
+                .map(|entry| &entry.runtime)
+                .into_iter()
+                .chain(registry.unloading_mutations.values())
+                .chain(
+                    registry
+                        .temporary_runtimes
+                        .values()
+                        .map(|entry| &entry.runtime),
+                )
+            {
+                if runtime.instance_agent_id() == agent_id
+                    && runtime.instance_incarnation() == incarnation
+                {
+                    runtime.close_execution_admission();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn runtime_for_mutation(
+        &self,
+        reservation: &MutationReservation,
+    ) -> Result<Option<RuntimeHandle>> {
+        let host = self.host()?;
+        let registry = host.inner.runtimes.read().await;
+        let active = registry
+            .agents
+            .get(reservation.agent_id())
+            .map(|entry| &entry.runtime)
+            .filter(|runtime| runtime.owns_mutation_reservation(reservation));
+        Ok(active
+            .or_else(|| {
+                registry
+                    .unloading_mutations
+                    .values()
+                    .find(|runtime| runtime.owns_mutation_reservation(reservation))
+            })
+            .or_else(|| {
+                registry
+                    .temporary_runtimes
+                    .get(reservation.agent_id())
+                    .map(|entry| &entry.runtime)
+                    .filter(|runtime| runtime.owns_mutation_reservation(reservation))
+            })
+            .cloned())
     }
 
     pub(crate) async fn wait_for_bootstrap_ready(&self) -> Result<()> {
@@ -8902,7 +11165,7 @@ impl RuntimeHostBridge {
     pub(crate) async fn agent_summary_for(
         &self,
         agent_id: &str,
-    ) -> Result<crate::types::AgentSummary> {
+    ) -> Result<crate::runtime::OwnedAgentSummaryRead> {
         self.host()?
             .local_agent_summary(agent_id)
             .await
@@ -8922,13 +11185,13 @@ impl RuntimeHostBridge {
         {
             return Ok(None);
         }
-        let storage = host.agent_storage(child_agent_id)?;
-        let state = storage
-            .read_agent()?
-            .unwrap_or_else(|| AgentState::new(child_agent_id.to_string()));
+        if let Some(runtime) = host.try_get_loaded_runtime(child_agent_id).await {
+            return Ok(Some(runtime.child_agent_observability().await?));
+        }
         Ok(Some(
-            host.child_agent_observability_snapshot(child_agent_id, &storage, &state)
-                .await?,
+            host.acquire_cold_summary(&identity)
+                .await?
+                .observability()?,
         ))
     }
 
@@ -9007,7 +11270,7 @@ impl RuntimeHostBridge {
         record: &OperatorNotificationRecord,
     ) -> Result<()> {
         let runtime = self.host()?.get_or_create_agent(agent_id).await?;
-        runtime.persist_operator_notification(record)
+        runtime.persist_operator_notification(record).await
     }
 
     pub(crate) async fn submit_operator_notification_delivery(
@@ -9055,13 +11318,28 @@ impl RuntimeHostBridge {
             .await
     }
 
+    pub(crate) async fn resolve_supervised_invocation_with_roles(
+        &self,
+        task: &TaskRecord,
+        child_agent_id: &str,
+        worktree: bool,
+        task_roles: &mut Vec<crate::runtime::TaskParentTurnSession>,
+    ) -> Result<ChildInvocationResolution> {
+        self.host()?
+            .resolve_supervised_invocation_with_roles(
+                task,
+                child_agent_id,
+                worktree,
+                task_roles,
+            )
+            .await
+    }
+
     pub(crate) async fn supervised_invocation_observation(
         &self,
         task: &TaskRecord,
     ) -> Result<Value> {
-        let host = self.host()?;
-        let task = task.clone();
-        spawn_blocking(move || host.supervised_invocation_observation(&task)).await?
+        self.host()?.supervised_invocation_observation(task).await
     }
 
     pub(crate) fn agent_message_delivery_rowid(&self, delivery_id: &str) -> Result<i64> {
@@ -9105,8 +11383,14 @@ impl RuntimeHostBridge {
             .await
     }
 
-    pub(crate) async fn stop_private_agent(&self, agent_id: &str) -> Result<()> {
-        self.host()?.stop_private_agent(agent_id).await
+    #[cfg(test)]
+    pub(crate) async fn stop_private_agent_for_task_stop(
+        &self,
+        original: Arc<crate::runtime_db::task_stop::TaskStopRecord>,
+    ) -> Result<TaskStopChildRetirement> {
+        self.host()?
+            .stop_private_agent_for_task_stop(original)
+            .await
     }
 
     pub(crate) async fn deliver_child_followup(
@@ -9204,7 +11488,7 @@ impl RuntimeHostBridge {
         self.host()?.release_workspace_occupancy(occupancy_id)
     }
 
-    pub(crate) async fn workspace_occupancy_by_id(
+    pub(crate) fn workspace_occupancy_by_id(
         &self,
         occupancy_id: &str,
     ) -> Result<Option<WorkspaceOccupancyRecord>> {
@@ -9292,6 +11576,50 @@ mod memory_indexer_retry_tests {
 
 #[cfg(test)]
 mod tests {
+    #[path = "agent_summary_scheduling_tests.rs"]
+    mod agent_summary_scheduling_tests;
+    #[path = "callback_discovery_tests.rs"]
+    mod callback_discovery_tests;
+    #[path = "child_summary_ownership_tests.rs"]
+    mod child_summary_ownership_tests;
+    #[path = "cold_capture_phase_tests.rs"]
+    mod cold_capture_phase_tests;
+    #[path = "cold_queue_borrow_tests.rs"]
+    mod cold_queue_borrow_tests;
+    #[path = "cold_scheduling_tests.rs"]
+    mod cold_scheduling_tests;
+    #[path = "cold_summary_projection_tests.rs"]
+    mod cold_summary_projection_tests;
+    #[path = "cold_work_queue_phase_tests.rs"]
+    mod cold_work_queue_phase_tests;
+    #[path = "projection_brief_preview_tests.rs"]
+    mod projection_brief_preview_tests;
+    #[path = "projection_hydration_tests.rs"]
+    mod projection_hydration_tests;
+    #[path = "projection_identity_move_tests.rs"]
+    mod projection_identity_move_tests;
+    #[path = "projection_lifecycle_material_tests.rs"]
+    mod projection_lifecycle_material_tests;
+    #[path = "projection_model_catalog_view_tests.rs"]
+    mod projection_model_catalog_view_tests;
+    #[path = "projection_model_material_tests.rs"]
+    mod projection_model_material_tests;
+    #[path = "projection_model_move_tests.rs"]
+    mod projection_model_move_tests;
+    #[path = "projection_model_summary_tests.rs"]
+    mod projection_model_summary_tests;
+    #[path = "projection_model_tier_material_tests.rs"]
+    mod projection_model_tier_material_tests;
+    #[path = "projection_posture_material_tests.rs"]
+    mod projection_posture_material_tests;
+    #[path = "projection_stopped_state_material_tests.rs"]
+    mod projection_stopped_state_material_tests;
+    #[path = "projection_storage_view_tests.rs"]
+    mod projection_storage_view_tests;
+    #[path = "projection_work_queue_material_tests.rs"]
+    mod projection_work_queue_material_tests;
+    #[path = "task_stop_cold_tests.rs"]
+    mod task_stop_cold_tests;
     use std::{
         fs,
         path::Path,
@@ -9427,6 +11755,13 @@ mod tests {
         );
     }
 
+    async fn restart_fixture_host(host: RuntimeHost) -> RuntimeHost {
+        let config = host.config().as_ref().clone();
+        host.shutdown().await.unwrap();
+        drop(host);
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap()
+    }
+
     fn canonical_test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
@@ -9445,109 +11780,891 @@ mod tests {
         use crate::domain::execution_protocol::{
             ExecutionProtocolState, RejoinFence, WorkItemExecutionRecord, WorkItemExecutionState,
         };
+        use crate::runtime::resident_input_evidence::InputEvidenceScope;
+        use crate::runtime_db::{
+            evidence::{append_message_tx, upsert_agent_state_tx},
+            input_evidence_snapshot::{
+                register_committed_input_evidence_tx, CanonicalInputEvidence,
+            },
+            repositories::{committed_turn_record_tx, upsert_turn_record_tx},
+            transitions::authority_fences_tx,
+        };
 
+        use crate::types::TurnRecord;
+
+        // Every caller has unloaded this Fresh namespace. The consumed source
+        // has canonical evidence and an actual started Turn, but no queue row.
         let storage = host.agent_storage(agent_id).unwrap();
         let mut work_item =
             WorkItemRecord::new(agent_id, "resume interrupted work", WorkItemState::Open);
         work_item.plan_status = crate::types::WorkItemPlanStatus::Ready;
-        storage.append_work_item(&work_item).unwrap();
         let mut agent = storage.read_agent().unwrap().unwrap();
         agent.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent(&agent).unwrap();
-        let authority = host
-            .runtime_db()
-            .transitions()
-            .load_execution_authority_fences(agent_id)
-            .unwrap();
         let task_id = format!("task-consumed-{agent_id}");
         let message_id = format!("result-consumed-{agent_id}");
         let attempt_id = format!("activation:message:{message_id}");
+        let turn_id = format!("turn-consumed-{agent_id}");
+        let run_id = format!("run-consumed-{agent_id}");
         let rejoin = RejoinFence {
             obligation_id: task_id.clone(),
             generation: 1,
             parent_turn_id: format!("parent-{agent_id}"),
         };
-        host.runtime_db()
-            .tasks()
-            .upsert(&TaskRecord {
-                id: task_id.clone(),
-                agent_id: agent_id.into(),
-                kind: crate::types::TaskKind::CommandTask,
-                status: TaskStatus::Completed,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                parent_message_id: Some(message_id.clone()),
-                work_item_id: Some(work_item.id.clone()),
-                summary: Some("consumed result".into()),
-                detail: Some(serde_json::json!({
-                    "terminal_reentry": false,
-                    "rejoin_obligation_id": rejoin.obligation_id,
-                    "rejoin_generation": rejoin.generation,
-                    "parent_turn_id": rejoin.parent_turn_id,
-                })),
-                recovery: None,
-            })
-            .unwrap();
-        let mut execution = ExecutionProtocolState::empty(agent_id);
-        execution.work_items.insert(
-            work_item.id.clone(),
-            WorkItemExecutionRecord {
-                source_revision: work_item.revision,
-                state: WorkItemExecutionState::InFlight {
-                    generation: 1,
-                    attempt_id: attempt_id.clone(),
-                },
+        let task = TaskRecord {
+            id: task_id.clone(),
+            agent_id: agent_id.into(),
+            kind: crate::types::TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: Some(message_id.clone()),
+            work_item_id: Some(work_item.id.clone()),
+            summary: Some("consumed result".into()),
+            detail: Some(serde_json::json!({
+                "terminal_reentry": false,
+                "rejoin_obligation_id": rejoin.obligation_id,
+                "rejoin_generation": rejoin.generation,
+                "parent_turn_id": rejoin.parent_turn_id,
+            })),
+            recovery: None,
+        };
+        host.runtime_db().tasks().upsert(&task).unwrap();
+        let mut source = MessageEnvelope::new(
+            agent_id,
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task_id.clone(),
             },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "consumed task result".into(),
+            },
+        )
+        .with_admission(
+            crate::types::MessageDeliverySurface::TaskRejoin,
+            crate::types::AdmissionContext::RuntimeOwned,
         );
-        execution.attempts.insert(
-            attempt_id.clone(),
-            ExecutionAttempt {
-                input_projection: None,
-                attempt_id: attempt_id.clone(),
-                agent_id: agent_id.into(),
-                source_message_id: Some(message_id.clone()),
-                source: ExecutionSource {
-                    identity: ExecutionSourceIdentity::TaskResult {
-                        task_id,
-                        result_message_id: message_id,
-                    },
-                    generation: 1,
-                },
-                binding: ExecutionBinding::WorkItem {
+        source.id = message_id.clone();
+        source.task_id = Some(task_id.clone());
+        source.work_item_id = Some(work_item.id.clone());
+        source.turn_id = Some(turn_id.clone());
+        source.metadata = Some(serde_json::json!({
+            "task_id": task.id,
+            "task_kind": task.kind,
+            "task_status": "completed",
+            "task_summary": task.summary,
+            "task_detail": task.detail,
+            "task_recovery": task.recovery,
+            "work_item_id": work_item.id,
+        }));
+        host.runtime_db()
+            .transaction(|tx| {
+                let identity: AgentIdentityRecord = serde_json::from_str(&tx.query_row(
+                    "SELECT payload_json FROM agent_identities WHERE agent_id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )?)?;
+                let scope = InputEvidenceScope {
+                    agent_id: agent_id.into(),
+                    identity_incarnation: identity.incarnation,
+                };
+                let work_keys = [crate::runtime::resident_work::WorkKey::new(
+                    crate::runtime::resident_work::WorkFamily::Work,
+                    &work_item.id,
+                )]
+                .into_iter()
+                .collect();
+                let work_proof = crate::runtime_db::work_snapshot::prepare_work_write_tx(
+                    tx, &scope, &work_keys,
+                )?;
+                assert!(crate::runtime_db::repositories::insert_new_work_item_tx(
+                    tx, &work_item,
+                )?);
+                let actual_source = append_message_tx(tx, &source)?.0;
+                let source_generation = actual_source
+                    .message_seq
+                    .expect("canonical TaskResult has an actual sequence");
+                let authority = authority_fences_tx(tx, agent_id)?;
+                agent.turn_index = agent.turn_index.saturating_add(1);
+                let message_count: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )?;
+                agent.total_message_count = usize::try_from(message_count)?;
+                upsert_agent_state_tx(tx, &agent)?;
+                let mut turn = TurnRecord::new(agent_id, &turn_id, agent.turn_index);
+                turn.run_id = Some(run_id.clone());
+                turn.current_work_item_id = Some(work_item.id.clone());
+                turn.owner = Some(crate::types::TurnOwner::WorkItem {
                     work_item_id: work_item.id.clone(),
-                },
-                provenance: ExecutionProvenance {
-                    origin: ExecutionOrigin::Task,
-                    trust: ExecutionTrust::RuntimeInstruction,
-                    priority: ExecutionPriority::Normal,
-                    correlation_id: None,
-                    causation_id: None,
-                },
-                admitted_fences: AdmittedFences {
-                    source_revision: 1,
-                    work_item_source_revision: Some(work_item.revision),
-                    work_item_generation: Some(1),
-                    rejoin: Some(rejoin),
-                    agent_control_revision: authority.agent_control_revision,
-                    host_registry_revision: authority.host_registry_revision,
-                },
-                state: ExecutionAttemptState::Open,
-                run_id: None,
-                turn_id: None,
-                recovery_of_attempt_id: None,
-                terminal_outcome_id: None,
-                admitted_at: Utc::now().to_rfc3339(),
-                terminal_at: None,
-            },
-        );
-        host.runtime_db()
-            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+                });
+                turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+                    &actual_source,
+                ));
+                turn.input_message_ids = vec![actual_source.id.clone()];
+                upsert_turn_record_tx(tx, &turn)?;
+                let actual_turn = committed_turn_record_tx(tx, agent_id, &turn_id)?.record;
+                let mut execution = ExecutionProtocolState::empty(agent_id);
+                execution.work_items.insert(
+                    work_item.id.clone(),
+                    WorkItemExecutionRecord {
+                        source_revision: work_item.revision,
+                        state: WorkItemExecutionState::InFlight {
+                            generation: 1,
+                            attempt_id: attempt_id.clone(),
+                        },
+                    },
+                );
+                execution.attempts.insert(
+                    attempt_id.clone(),
+                    ExecutionAttempt {
+                        input_projection: None,
+                        attempt_id: attempt_id.clone(),
+                        agent_id: agent_id.into(),
+                        source_message_id: Some(actual_source.id.clone()),
+                        source: ExecutionSource {
+                            identity: ExecutionSourceIdentity::TaskResult {
+                                task_id: task_id.clone(),
+                                result_message_id: actual_source.id.clone(),
+                            },
+                            generation: source_generation,
+                        },
+                        binding: ExecutionBinding::WorkItem {
+                            work_item_id: work_item.id.clone(),
+                        },
+                        provenance: ExecutionProvenance {
+                            origin: ExecutionOrigin::Task,
+                            trust: ExecutionTrust::RuntimeInstruction,
+                            priority: ExecutionPriority::Normal,
+                            correlation_id: None,
+                            causation_id: None,
+                        },
+                        admitted_fences: AdmittedFences {
+                            source_revision: source_generation,
+                            work_item_source_revision: Some(work_item.revision),
+                            work_item_generation: Some(1),
+                            rejoin: Some(rejoin.clone()),
+                            agent_control_revision: authority.agent_control_revision,
+                            host_registry_revision: authority.host_registry_revision,
+                        },
+                        state: ExecutionAttemptState::Open,
+                        run_id: Some(run_id.clone()),
+                        turn_id: Some(turn_id.clone()),
+                        recovery_of_attempt_id: None,
+                        terminal_outcome_id: None,
+                        admitted_at: Utc::now().to_rfc3339(),
+                        terminal_at: None,
+                    },
+                );
+                crate::runtime_db::transitions::persist_state_tx(tx, &execution)?;
+                let actual_execution =
+                    crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(
+                        tx, agent_id,
+                    )?;
+                register_committed_input_evidence_tx(
+                    tx,
+                    &scope,
+                    &[
+                        CanonicalInputEvidence::Message(actual_source),
+                        CanonicalInputEvidence::Turn(actual_turn),
+                        CanonicalInputEvidence::Attempt(
+                            actual_execution.attempts[&attempt_id].clone(),
+                        ),
+                        CanonicalInputEvidence::WorkExecution {
+                            work_item_id: work_item.id.clone(),
+                            record: actual_execution.work_items[&work_item.id].clone(),
+                        },
+                    ],
+                )?;
+                let limits = host.inner.input_evidence_budget.limits();
+                crate::runtime_db::work_snapshot::register_work_writes_tx(
+                    tx,
+                    &work_proof,
+                    &work_keys,
+                    &Default::default(),
+                    &agent,
+                    &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                        capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                        record_limit: usize::try_from(limits.record_limit)?,
+                        byte_limit: usize::try_from(
+                            limits
+                                .history_per_agent_bytes
+                                .checked_add(limits.pending_per_agent_bytes)
+                                .expect("fixture Work byte limit"),
+                        )?,
+                    },
+                )?;
+                Ok(())
+            })
             .unwrap();
         (work_item.id, attempt_id)
     }
 
     #[tokio::test]
+    async fn unloaded_waiting_execution_fixture_has_exact_fresh_input_qualification() {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+            PreparedInputEvidence,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            load_input_evidence_snapshot_tx, InputEvidenceBootstrapSnapshot,
+            InputEvidenceLoadRequest,
+        };
+
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-qualified-wait-fixture";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        let storage = host.agent_storage(agent_id).unwrap();
+        let work = WorkItemRecord::new(agent_id, "waiting fixture", WorkItemState::Open);
+        storage.append_work_item(&work).unwrap();
+        let scope = InputEvidenceScope {
+            agent_id: agent_id.into(),
+            identity_incarnation: host
+                .runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap()
+                .incarnation,
+        };
+        let key = Key::new(Family::WorkExecution, &work.id);
+        let request = InputEvidenceLoadRequest {
+            query: None,
+            windows: Vec::new(),
+            mandatory_roots: [key.clone()].into_iter().collect(),
+            selected_completion_brief_ids: Default::default(),
+            interrupted_sources: Default::default(),
+            record_limit: 64,
+            byte_limit: 64 * 1024,
+        };
+        // A plain storage fixture is not qualification for a Fresh identity.
+        crate::runtime::tests::support::seed_waiting_work_execution(
+            &storage,
+            &work,
+            "wait-qualified-fixture",
+        );
+        assert!(host
+            .runtime_db()
+            .transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope, &request))
+            .is_err());
+        crate::runtime::tests::support::seed_waiting_work_execution_for_unloaded_host(
+            &storage,
+            &work,
+            "wait-qualified-fixture",
+        );
+        let InputEvidenceBootstrapSnapshot::Current(snapshot) = host
+            .runtime_db()
+            .transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope, &request))
+            .unwrap()
+        else {
+            panic!("unloaded fixture namespace should remain current")
+        };
+        let captured = snapshot.resident.capture().unwrap();
+        let record = captured.lookup(&key).unwrap().unwrap();
+        let PreparedInputEvidence::WorkExecution { record, .. } = &record.record else {
+            panic!("fixture should contain an exact WorkExecution")
+        };
+        assert!(matches!(
+            &record.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Waiting { wait, .. }
+                if wait.wait_id == "wait-qualified-fixture"
+        ));
+        assert!(storage.latest_queue_entries().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unloaded_consumed_result_fixture_has_canonical_source_and_started_turn() {
+        use crate::runtime::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceScope,
+            PreparedInputEvidence,
+        };
+        use crate::runtime_db::input_evidence_snapshot::{
+            load_input_evidence_snapshot_tx, InputEvidenceBootstrapSnapshot,
+            InputEvidenceLoadRequest,
+        };
+
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-qualified-consumed-fixture";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        let (work_id, attempt_id) = seed_startup_consumed_result_attempt(&host, agent_id);
+        let scope = InputEvidenceScope {
+            agent_id: agent_id.into(),
+            identity_incarnation: host
+                .runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap()
+                .incarnation,
+        };
+        let request = InputEvidenceLoadRequest {
+            query: None,
+            windows: Vec::new(),
+            mandatory_roots: [Key::new(Family::WorkExecution, &work_id)]
+                .into_iter()
+                .collect(),
+            selected_completion_brief_ids: Default::default(),
+            interrupted_sources: Default::default(),
+            record_limit: 64,
+            byte_limit: 64 * 1024,
+        };
+        let InputEvidenceBootstrapSnapshot::Current(snapshot) = host
+            .runtime_db()
+            .transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope, &request))
+            .unwrap()
+        else {
+            panic!("unloaded consumed fixture should remain current")
+        };
+        let captured = snapshot.resident.capture().unwrap();
+        let attempt = captured
+            .lookup(&Key::new(Family::Attempt, &attempt_id))
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Attempt(attempt) = &attempt.record else {
+            panic!("fixture should capture its actual Attempt")
+        };
+        let source_id = attempt.source_message_id.as_deref().unwrap();
+        let source = captured
+            .lookup(&Key::new(Family::Message, source_id))
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Message(source) = &source.record else {
+            panic!("fixture should capture its actual TaskResult")
+        };
+        assert_eq!(source.kind, MessageKind::TaskResult);
+        assert_eq!(source.message_seq, Some(attempt.source.generation));
+        assert_eq!(
+            source.message_seq,
+            Some(attempt.admitted_fences.source_revision)
+        );
+        assert_eq!(
+            captured
+                .message_turn_keys
+                .get(source_id)
+                .unwrap()
+                .as_deref(),
+            attempt.turn_id.as_deref()
+        );
+        let turn = captured
+            .lookup(&Key::new(Family::Turn, attempt.turn_id.as_deref().unwrap()))
+            .unwrap()
+            .unwrap();
+        let PreparedInputEvidence::Turn(turn) = &turn.record else {
+            panic!("fixture should capture its actual started Turn")
+        };
+        assert_eq!(turn.run_id, attempt.run_id);
+        assert_eq!(turn.input_message_ids, vec![source_id.to_string()]);
+        assert_eq!(
+            captured.execution.source(source_id).unwrap().attempts.len(),
+            1
+        );
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .is_empty());
+    }
+
+    fn seed_stopped_startup_cleanup(host: &RuntimeHost) -> (AgentState, String, String, String) {
+        let agent_id = host.config().default_agent_id.clone();
+        let mut state = AgentState::new(&agent_id);
+        state.status = AgentStatus::Stopped;
+        state.pending = 1;
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
+        let message = MessageEnvelope::new(
+            &agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "stopped startup queue".into(),
+            },
+        );
+        host.runtime_db().messages().upsert(&message).unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: agent_id.clone(),
+                priority: message.priority,
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: message.created_at,
+            })
+            .unwrap();
+        let timer_id = "stopped-startup-timer".to_string();
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                &timer_id,
+                &agent_id,
+                TimerStatus::Active,
+                None,
+                Some(Utc::now() + chrono::Duration::hours(1)),
+            ))
+            .unwrap();
+        let wait_id = "stopped-startup-wait".to_string();
+        let now = Utc::now();
+        host.runtime_db()
+            .wait_conditions()
+            .upsert(&WaitConditionRecord {
+                id: wait_id.clone(),
+                agent_id,
+                work_item_id: None,
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Timer,
+                source: Some("timer".into()),
+                subject_ref: Some(timer_id.clone()),
+                waiting_for: "timer".into(),
+                wake_sources: vec![WakeSource::Timer { wake_at: now }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+                trigger_message_id: None,
+                triggered_at: None,
+            })
+            .unwrap();
+        let created_at = crate::runtime_db::migrations::timestamp(now);
+        host.runtime_db().transaction(|tx| {
+            tx.execute(
+                "INSERT INTO timer_wakes (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, 1, 'pending', ?3, ?3)",
+                rusqlite::params![timer_id, "stopped-startup-wake", created_at],
+            )?;
+            Ok(())
+        }).unwrap();
+        (state, message.id, timer_id, wait_id)
+    }
+
+    fn assert_stopped_startup_cleanup(
+        host: &RuntimeHost,
+        original: &AgentState,
+        message_id: &str,
+        timer_id: &str,
+        wait_id: &str,
+        applied: bool,
+    ) {
+        let mut expected = original.clone();
+        if applied {
+            expected.pending = 0;
+        }
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&original.id)
+                .unwrap(),
+            Some(expected)
+        );
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest(message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            if applied {
+                QueueEntryStatus::Aborted
+            } else {
+                QueueEntryStatus::Queued
+            }
+        );
+        assert_eq!(
+            host.runtime_db()
+                .timers()
+                .latest(timer_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            if applied {
+                TimerStatus::Cancelled
+            } else {
+                TimerStatus::Active
+            }
+        );
+        assert_eq!(
+            host.runtime_db()
+                .wait_conditions()
+                .latest_for_agent(&original.id)
+                .unwrap()
+                .into_iter()
+                .find(|wait| wait.id == wait_id)
+                .unwrap()
+                .status,
+            if applied {
+                WaitConditionStatus::Cancelled
+            } else {
+                WaitConditionStatus::Active
+            }
+        );
+        let connection = host.runtime_db().connection().unwrap();
+        let wake_status: String = connection
+            .query_row(
+                "SELECT status FROM timer_wakes WHERE message_id = 'stopped-startup-wake'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(wake_status, if applied { "cancelled" } else { "pending" });
+    }
+
+    #[tokio::test]
+    async fn startup_stopped_cleanup_rolls_back_wait_timer_wake_queue_and_state() {
+        use crate::runtime_db::transitions::TransitionFaultPoint;
+        for fault in [
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            let (_home, host) = test_host();
+            let (state, message_id, timer_id, wait_id) = seed_stopped_startup_cleanup(&host);
+            let (mut reservations, handoff) = host.reserve_startup_mutations().await.unwrap();
+            let facts = host.external_identity_facts(&reservations).unwrap();
+            let mut handoff = Some(handoff);
+            let error = host
+                .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                    let result = host
+                        .runtime_db()
+                        .agent_states()
+                        .reconcile_stale_waits_at_startup(Some(fault));
+                    drop(handoff.take());
+                    result.map(|(count, _)| (count, facts))
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(
+                crate::runtime_db::persistence_certainty(&error),
+                Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+            );
+            assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, false);
+            drop(reservations);
+            assert_eq!(host.reconcile_stale_waits_at_startup().await.unwrap(), 1);
+            assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, true);
+            assert!(host.inner.runtimes.read().await.agents.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_stopped_cleanup_retains_exact_known_state_before_publication() {
+        let (_home, host) = test_host();
+        let (state, message_id, timer_id, wait_id) = seed_stopped_startup_cleanup(&host);
+        let (mut reservations, handoff) = host.reserve_startup_mutations().await.unwrap();
+        let mut facts = host.external_identity_facts(&reservations).unwrap();
+        let agent_ids = reservations
+            .iter()
+            .map(|reservation| reservation.agent_id().to_string())
+            .collect::<Vec<_>>();
+        let mut handoff = Some(handoff);
+        host.fail_next_external_mutation_publication();
+        let error = host
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let result = host
+                    .runtime_db()
+                    .agent_states()
+                    .reconcile_stale_waits_at_startup(None);
+                drop(handoff.take());
+                let (count, states) = result?;
+                for (agent_id, facts) in agent_ids.iter().zip(&mut facts) {
+                    facts.state = states.get(agent_id).cloned().map(Arc::new);
+                }
+                Ok((count, facts))
+            })
+            .await
+            .unwrap_err();
+        drop(reservations);
+        assert!(error.to_string().contains("committed but publication"));
+        assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, true);
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&state.id, 1)
+            .unwrap();
+        assert!(matches!(
+            owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+        let mut reservations = host
+            .reserve_agent_mutations(&[state.id.clone()])
+            .await
+            .unwrap();
+        let observation = owner.capture().unwrap().unwrap();
+        let mut expected = state;
+        expected.pending = 0;
+        assert_eq!(observation.state.as_ref(), &expected);
+        assert!(reservations
+            .iter_mut()
+            .all(|reservation| reservation.recovery().unwrap().is_none()));
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_rechecks_new_orphan_scope_without_handoff_across_owner_wait() {
+        let (_home, host) = test_host();
+        let default_id = host.config().default_agent_id.clone();
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&default_id, 1)
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let mut prepare = Box::pin(host.reserve_startup_mutations());
+        // With no registry/handoff contention the first Pending is the owner wait.
+        std::future::poll_fn(|cx| {
+            assert!(prepare.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let handoff = host
+            .inner
+            .bootstrap_handoff_lock
+            .try_lock()
+            .expect("startup must not hold handoff while waiting for an owner");
+        let now = Utc::now();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "startup-orphan-scope-message".into(),
+                agent_id: "startup-orphan-scope".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Dequeued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+        drop(handoff);
+        drop(blocker);
+        let (mut reservations, handoff) = prepare.await.unwrap();
+        assert!(reservations
+            .iter()
+            .any(|reservation| reservation.agent_id() == "startup-orphan-scope"));
+        let orphan_owner = host
+            .inner
+            .mutation_owners
+            .current_owner("startup-orphan-scope", 1)
+            .unwrap();
+        let facts = host.external_identity_facts(&reservations).unwrap();
+        let mut handoff = Some(handoff);
+        host.fail_next_external_mutation_publication();
+        let error = host
+            .commit_external_metadata(&mut reservations, ids::audit_event_id(), || {
+                let result = host
+                    .runtime_db()
+                    .recover_interrupted_runtime_state_at_startup();
+                drop(handoff.take());
+                result.map(|report| (report, facts))
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("committed but publication"));
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest("startup-orphan-scope-message")
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Interrupted
+        );
+        assert!(matches!(
+            orphan_owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+        drop(reservations);
+        let _reservations = host.reserve_agent_mutations(&[default_id]).await.unwrap();
+        assert!(owner.capture().unwrap().is_none());
+        assert!(
+            orphan_owner.capture().unwrap().is_none(),
+            "known metadata absence must not create AgentState"
+        );
+        assert!(host
+            .runtime_db()
+            .agent_states()
+            .latest("startup-orphan-scope")
+            .unwrap()
+            .is_none());
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_caller_cancellation_keeps_host_worker_until_shutdown_drain() {
+        let (_home, host) = test_host();
+        let (state, message_id, timer_id, wait_id) = seed_stopped_startup_cleanup(&host);
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&state.id, 1)
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let caller = tokio::spawn({
+            let host = host.clone();
+            async move { host.recover_orphaned_queue_claims_at_startup().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .external_mutation_tasks
+                .lock()
+                .unwrap()
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        let _ = caller.await;
+        let shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !shutdown.is_finished(),
+            "accepted startup worker must still own the reservation wait"
+        );
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_stopped_startup_cleanup(&host, &state, &message_id, &timer_id, &wait_id, true);
+        assert!(owner.capture().is_ok());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_rejects_loaded_and_draining_runtimes_before_sql() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+            .control(crate::types::ControlAction::Stop)
+            .await
+            .unwrap();
+        let agent_id = host.config().default_agent_id.clone();
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let error = host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no loaded, temporary, or draining runtimes before activation"));
+        assert!(owner.capture().is_ok(), "rejection must precede begin_all");
+        let blocker = owner.reserve().await.unwrap();
+        let unload = tokio::spawn({
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            async move {
+                host.unload_runtime(&agent_id).await;
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let registry = host.inner.runtimes.read().await;
+                if registry.agents.is_empty() && !registry.unloading_mutations.is_empty() {
+                    break;
+                }
+                drop(registry);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.recover_orphaned_queue_claims_at_startup(),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no loaded, temporary, or draining runtimes before activation"));
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), unload)
+            .await
+            .unwrap()
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_rejects_temporary_runtime_without_loaded_runtime() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+            .control(crate::types::ControlAction::Stop)
+            .await
+            .unwrap();
+        {
+            let registry = host.inner.runtimes.read().await;
+            assert!(registry.agents.is_empty());
+            assert!(registry.unloading_mutations.is_empty());
+            assert!(registry.temporary_runtimes.contains_key(&agent_id));
+        }
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.recover_orphaned_queue_claims_at_startup(),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("no loaded, temporary, or draining runtimes before activation"));
+        assert!(owner.capture().is_ok(), "rejection must precede begin_all");
+        drop(blocker);
+        host.cleanup_temporary_runtime(agent_id, runtime, runtime_task)
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn startup_recovery_discovers_consumed_result_owner_without_queue_task_or_timer_wake() {
+        Box::pin(startup_consumed_result_owner_recovery(false)).await;
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_preserves_execution_only_owner_after_known_publication_fault() {
+        Box::pin(startup_consumed_result_owner_recovery(true)).await;
+    }
+
+    async fn startup_consumed_result_owner_recovery(publication_fault: bool) {
         let (_home, host) = canonical_test_host();
         let config = host.config().as_ref().clone();
         let agent_id = "startup-consumed-result-owner";
@@ -9579,13 +12696,22 @@ mod tests {
             }),
         )
         .unwrap();
+        if publication_fault {
+            restarted.fail_next_external_mutation_publication();
+        }
         restarted
             .recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), &mut started_wait)
             .await
-            .expect("recovered WorkItem should reenter without an old result wake");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "recovered WorkItem should reenter without an old result wake: {error:?}; state={:?}; events={:?}",
+                    restarted.runtime_db().agent_states().latest(agent_id),
+                    restarted.agent_storage(agent_id).unwrap().read_recent_events(30),
+                )
+            });
         let execution = restarted
             .runtime_db()
             .transitions()
@@ -9611,7 +12737,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_releases_stopped_execution_lane_without_starting_owner() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-stopped-execution-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
@@ -9619,8 +12745,10 @@ mod tests {
         let storage = host.agent_storage(agent_id).unwrap();
         let mut state = storage.read_agent().unwrap().unwrap();
         state.status = AgentStatus::Stopped;
-        storage.write_agent(&state).unwrap();
+        storage.write_agent_for_fixture(&state).unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -9644,7 +12772,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_releases_deleted_execution_lane_without_reviving_identity() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         for (agent_id, status) in [
             ("startup-deleting-execution", AgentRegistryStatus::Deleting),
             ("startup-deleted-execution", AgentRegistryStatus::Deleted),
@@ -9663,6 +12791,8 @@ mod tests {
                 .agent_identities()
                 .upsert(&identity)
                 .unwrap();
+            // Startup recovery runs on a new Host before any runtime activation.
+            host = restart_fixture_host(host).await;
             host.recover_orphaned_queue_claims_at_startup()
                 .await
                 .unwrap();
@@ -10509,7 +13639,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|summary| summary.identity.agent_id)
+            .map(|summary| summary.identity.agent_id.clone())
             .collect::<Vec<_>>();
         assert!(listed.contains(&host.config().default_agent_id));
         assert!(listed.contains(&"release-bot".to_string()));
@@ -10537,7 +13667,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|summary| summary.identity.agent_id)
+            .map(|summary| summary.identity.agent_id.clone())
             .collect::<Vec<_>>();
         assert_eq!(listed, vec!["first-onboarding".to_string()]);
         restarted.shutdown().await.unwrap();
@@ -10681,7 +13811,10 @@ mod tests {
         runtime_db.agent_identities().upsert(&identity).unwrap();
         let mut state = AgentState::new("release-bot");
         state.status = AgentStatus::Asleep;
-        runtime_db.agent_states().upsert(&state).unwrap();
+        runtime_db
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
 
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
@@ -11089,7 +14222,10 @@ mod tests {
         let agent_id = host.config().default_agent_id.clone();
         let mut state = AgentState::new(&agent_id);
         state.status = AgentStatus::Asleep;
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
 
         assert!(host.inner.runtimes.read().await.agents.is_empty());
         assert!(!host
@@ -11145,7 +14281,10 @@ mod tests {
         runtime_db.agent_identities().upsert(&identity).unwrap();
         let mut state = AgentState::new("release-bot");
         state.status = AgentStatus::Stopped;
-        runtime_db.agent_states().upsert(&state).unwrap();
+        runtime_db
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
 
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
@@ -11232,6 +14371,56 @@ mod tests {
                 .join("agents")
                 .join(&host.config().default_agent_id)
         );
+    }
+
+    #[tokio::test]
+    async fn creation_audit_rejects_foreign_incarnation_without_activating_or_appending() {
+        for template in [None, Some("missing-creation-audit-template")] {
+            let (_home, host) = test_host();
+            let created = host
+                .create_public_named_agent_with_name("audit-scope", template, None, None, None)
+                .await
+                .unwrap();
+            let loaded = host.has_runtime_entry_for_fixture("audit-scope").await;
+            assert_eq!(loaded, template.is_none());
+            let event = crate::types::AuditEvent::legacy(
+                "agent_created",
+                serde_json::json!({"receipt_id": created.receipt.receipt_id}),
+            );
+            assert!(host
+                .append_agent_creation_audit(
+                    "audit-scope",
+                    created.identity.incarnation + 1,
+                    event.clone(),
+                )
+                .await
+                .is_err());
+            assert!(!host
+                .runtime_db()
+                .audit_events()
+                .has_event_by_id(&event.id)
+                .unwrap());
+            assert_eq!(
+                host.has_runtime_entry_for_fixture("audit-scope").await,
+                loaded
+            );
+            host.append_agent_creation_audit(
+                "audit-scope",
+                created.identity.incarnation,
+                event.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(host
+                .runtime_db()
+                .audit_events()
+                .has_event_by_id(&event.id)
+                .unwrap());
+            assert_eq!(
+                host.has_runtime_entry_for_fixture("audit-scope").await,
+                loaded
+            );
+        }
     }
 
     #[tokio::test]
@@ -11609,7 +14798,13 @@ mod tests {
     async fn canonical_create_reuses_committed_agent_without_supervision_or_reconfiguration() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent
+            .agent_summary()
+            .await
+            .unwrap()
+            .identity
+            .agent_id
+            .clone();
 
         let created = parent
             .agent_creation_service()
@@ -11724,7 +14919,13 @@ mod tests {
     async fn canonical_existing_invocation_preserves_target_configuration_and_relations() {
         let (_home, host) = test_host_with_silent_peer("canonical-existing");
         let parent = host.default_runtime().await.unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent
+            .agent_summary()
+            .await
+            .unwrap()
+            .identity
+            .agent_id
+            .clone();
         parent
             .agent_creation_service()
             .create(CreateAgentRequest {
@@ -11873,7 +15074,7 @@ mod tests {
         assert!(!reused.created);
         assert_eq!(reused.agent_id, created.agent_id);
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id.clone();
         wait_for_agent_inputs_settled(&child).await;
         send_agent_message(
             &child,
@@ -12461,7 +15662,7 @@ mod tests {
                     && result.text == "repro child consumed command result"),
             "a legacy Replied root must resolve its exact historical wait: {resolved:?}"
         );
-        let observation = host.supervised_invocation_observation(task).unwrap();
+        let observation = host.supervised_invocation_observation(task).await.unwrap();
         assert_eq!(observation["resolution"], "ready");
         let steps = observation["steps"].as_array().unwrap();
         assert_eq!(steps.len(), execution.attempts.len());
@@ -13383,7 +16584,13 @@ mod tests {
         assert_eq!(first_terminal.status, TaskStatus::Completed);
 
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent
+            .agent_summary()
+            .await
+            .unwrap()
+            .identity
+            .agent_id
+            .clone();
 
         crate::runtime::enable_delivery_checkpoint(created.agent_id.clone());
         let _checkpoint_guard = DeliveryCheckpointGuard;
@@ -13510,7 +16717,13 @@ mod tests {
             .get_public_agent("message-wait-recovery")
             .await
             .unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent
+            .agent_summary()
+            .await
+            .unwrap()
+            .identity
+            .agent_id
+            .clone();
         let receipt = parent
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
@@ -13574,13 +16787,39 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_agent_message_wait_does_not_stop_the_target_or_late_messages() {
-        let (_home, host) = test_host();
+        struct PendingTarget {
+            started: Notify,
+        }
+        #[async_trait]
+        impl AgentProvider for PendingTarget {
+            async fn complete_turn(
+                &self,
+                _request: ProviderTurnRequest,
+            ) -> anyhow::Result<ProviderTurnResponse> {
+                self.started.notify_one();
+                std::future::pending().await
+            }
+        }
+        let _home = tempdir().unwrap();
+        write_test_model_config(_home.path());
+        let mut config = AppConfig::load_with_home(Some(_home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(_home.path().to_path_buf());
+        let provider = Arc::new(PendingTarget {
+            started: Notify::new(),
+        });
+        let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
         let parent = host.default_runtime().await.unwrap();
         host.create_named_agent("message-wait-cancel", None)
             .await
             .unwrap();
         let target = host.get_public_agent("message-wait-cancel").await.unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent
+            .agent_summary()
+            .await
+            .unwrap()
+            .identity
+            .agent_id
+            .clone();
         let receipt = parent
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
@@ -13594,6 +16833,9 @@ mod tests {
             .await
             .unwrap();
 
+        tokio::time::timeout(Duration::from_secs(10), provider.started.notified())
+            .await
+            .expect("the late reply must originate from a live target execution");
         let stopped = parent
             .stop_task(
                 &receipt.task_handle.task_id,
@@ -13641,6 +16883,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(terminal.status, TaskStatus::Cancelled);
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -13677,7 +16920,7 @@ mod tests {
         let (first, second) = tokio::join!(first, second);
         let first = first.unwrap();
         let second = second.unwrap();
-        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id.clone();
         wait_for_agent_inputs_settled(&child).await;
         let response = send_agent_message(
             &child,
@@ -13712,7 +16955,7 @@ mod tests {
                 .await
                 .unwrap();
             let target = host.get_public_agent("shared-reply-target").await.unwrap();
-            let parent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+            let parent_id = parent.agent_summary().await.unwrap().identity.agent_id.clone();
             let mut tasks = Vec::new();
             // The reply body is deduplicated within each batch, but every
             // waiter counts independently toward the P1 limit of eight.
@@ -13849,6 +17092,387 @@ mod tests {
                     .len()
                     .saturating_sub(batch_limit - 1)
                     .div_ceil(batch_limit),
+                "one model response per bounded batch, without synthetic task briefs"
+            );
+            if let Some(registration) = registration {
+                let wait = parent
+                    .storage()
+                    .latest_wait_conditions_for_agent(&parent_id)
+                    .unwrap()
+                    .into_iter()
+                    .find(|wait| wait.id == registration.condition.id)
+                    .unwrap();
+                assert_eq!(wait.status, crate::types::WaitConditionStatus::Resolved);
+                assert_eq!(wait.trigger_message_id(), Some(reply_id.as_str()));
+            }
+            for signal_id in signal_ids {
+                let settlement = host
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(&signal_id)
+                    .unwrap()
+                    .expect("reference settlement exists");
+                assert_eq!(
+                    settlement.state,
+                    crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                );
+                assert_eq!(
+                    settlement.disposition,
+                    Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_reply_is_model_delivered_once_beyond_settlement_batch_limit() {
+        struct ParentGateProvider {
+            started: Notify,
+            release: Notify,
+            first: AtomicBool,
+            target_started: Notify,
+            target_release: Notify,
+            target_first: AtomicBool,
+        }
+        #[async_trait]
+        impl AgentProvider for ParentGateProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> anyhow::Result<ProviderTurnResponse> {
+                if !self.first.swap(true, Ordering::SeqCst) {
+                    self.started.notify_one();
+                    self.release.notified().await;
+                    // Settle with typed NoBrief, without delivering the parent
+                    // report that would suppress these later reentries.
+                    let mut response = StubProvider::new("").complete_turn(request).await?;
+                    response.blocks = vec![crate::provider::ModelBlock::ToolUse {
+                        id: "shared-reply-setup-wait".into(),
+                        name: "WaitFor".into(),
+                        input: serde_json::json!({
+                            "wake": "system",
+                            "delivery": "silent",
+                            "reason": "leave the parent report pending for peer replies"
+                        }),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    }];
+                    response.stop_reason = Some("tool_use".into());
+                    return Ok(response);
+                }
+                // The second dispatch is the target: the parent remains gated
+                // until all observations exist. Keep its reply route live.
+                if !self.target_first.swap(true, Ordering::SeqCst) {
+                    self.target_started.notify_one();
+                    self.target_release.notified().await;
+                }
+                StubProvider::new("done").complete_turn(request).await
+            }
+        }
+        for use_wait in [false, true] {
+            let _home = tempdir().unwrap();
+            write_test_model_config(_home.path());
+            let mut config = AppConfig::load_with_home(Some(_home.path().to_path_buf())).unwrap();
+            config.user_home_dir = Some(_home.path().to_path_buf());
+            let provider = Arc::new(ParentGateProvider {
+                started: Notify::new(),
+                release: Notify::new(),
+                first: AtomicBool::new(false),
+                target_started: Notify::new(),
+                target_release: Notify::new(),
+                target_first: AtomicBool::new(false),
+            });
+            let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
+            host.ensure_default_agent_identity().unwrap();
+            let parent = host.default_runtime().await.unwrap();
+            let setup_source = parent
+                .enqueue(MessageEnvelope::new(
+                    parent.instance_agent_id(),
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "open the shared reply observation parent".into(),
+                    },
+                ))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), provider.started.notified())
+                .await
+                .expect("actual parent dispatch must reach the provider");
+            let started = parent.agent_state().await.unwrap();
+            let parent_turn = started
+                .current_turn_id
+                .clone()
+                .expect("actual Started parent Turn");
+            assert_eq!(
+                started
+                    .current_execution_binding
+                    .as_ref()
+                    .map(|binding| binding.source_message_id.as_str()),
+                Some(setup_source.id.as_str())
+            );
+            host.create_named_agent("shared-reply-target", None)
+                .await
+                .unwrap();
+            let target = host.get_public_agent("shared-reply-target").await.unwrap();
+            let parent_id = parent
+                .agent_summary()
+                .await
+                .unwrap()
+                .identity
+                .agent_id
+                .clone();
+            let mut tasks = Vec::new();
+            // The reply body is deduplicated within each batch, but every
+            // waiter counts independently toward the P1 limit of eight.
+            for index in 0..10 {
+                let receipt = parent
+                    .agent_invocation_service()
+                    .invoke(InvokeAgentRequest {
+                        target: InvokeAgentTarget::ExistingAgent {
+                            agent_id: "shared-reply-target".into(),
+                        },
+                        message: format!("request {index}"),
+                        authority_class: AuthorityClass::OperatorInstruction,
+                    })
+                    .await
+                    .unwrap();
+                let original = host
+                    .runtime_db()
+                    .tasks()
+                    .latest(&receipt.task_handle.task_id)
+                    .unwrap()
+                    .expect("actual invocation Task ACK");
+                assert_eq!(original.rejoin_fence().unwrap().parent_turn_id, parent_turn);
+                tasks.push(receipt.task_handle.task_id);
+            }
+            assert_eq!(tasks.len(), 10);
+            tokio::time::timeout(Duration::from_secs(10), provider.target_started.notified())
+                .await
+                .expect("the shared reply must originate from a live target execution");
+            provider.release.notify_one();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let acked = host
+                        .runtime_db()
+                        .queue_entries()
+                        .latest(&setup_source.id)
+                        .unwrap()
+                        .is_some_and(|entry| {
+                            entry.status == crate::types::QueueEntryStatus::Processed
+                        });
+                    if acked && parent.agent_state().await.unwrap().current_run_id.is_none() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("original parent must finish its actual Queue/Memory ACK");
+            let setup_briefs = parent.storage().read_recent_briefs(100).unwrap();
+            assert!(
+                setup_briefs.is_empty(),
+                "setup must not mark the parent report as already delivered"
+            );
+            let setup_turn = parent
+                .storage()
+                .read_turn_by_id(&parent_turn)
+                .unwrap()
+                .unwrap();
+            assert!(setup_turn.input_message_ids.contains(&setup_source.id));
+            assert!(setup_turn.produced_brief_ids.is_empty());
+            assert_eq!(
+                setup_turn.terminal.as_ref().unwrap().kind,
+                TurnTerminalKind::Completed
+            );
+            // Only setup needs silent settlement. Explicitly cancel its wait
+            // before testing implicit versus explicit reply admission.
+            let setup_waits = parent
+                .storage()
+                .latest_wait_conditions_for_agent(&parent_id)
+                .unwrap();
+            assert_eq!(setup_waits.len(), 1);
+            let setup_wait = &setup_waits[0];
+            assert_eq!(setup_wait.status, crate::types::WaitConditionStatus::Active);
+            let cleared = parent
+                .apply_scheduler_repair(crate::runtime::SchedulerRepairRequest {
+                    dry_run: false,
+                    reason: "setup finished; exercise peer reply admission independently".into(),
+                    operation: crate::runtime::SchedulerRepairOperation::CancelWait {
+                        wait_id: setup_wait.id.clone(),
+                        expected_status: setup_wait.status.clone(),
+                        expected_updated_at: setup_wait.updated_at,
+                    },
+                })
+                .await
+                .unwrap();
+            assert!(cleared.changed);
+            let setup_waits = parent
+                .storage()
+                .latest_wait_conditions_for_agent(&parent_id)
+                .unwrap();
+            assert_eq!(setup_waits.len(), 1);
+            assert_eq!(
+                setup_waits[0].status,
+                crate::types::WaitConditionStatus::Cancelled,
+                "setup wait must not block the remaining settlement batch"
+            );
+            let setup_brief_ids = setup_briefs
+                .iter()
+                .map(|brief| brief.id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            let registration = if use_wait {
+                Some(
+                    parent
+                        .register_wait_for(
+                            &parent_id,
+                            None,
+                            crate::runtime::WaitForWakeKind::TaskResult,
+                            Some(tasks[0].clone()),
+                            "waiting for peer reply".into(),
+                            None,
+                        )
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let response =
+                send_agent_message(&target, &parent_id, "shared-reply", "unique reply body").await;
+            provider.target_release.notify_one();
+            let reply_id = host
+                .runtime_db()
+                .agent_message_deliveries()
+                .latest(&response.delivery_id)
+                .unwrap()
+                .unwrap()
+                .message_id
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if tasks.iter().all(|id| {
+                        parent
+                            .storage()
+                            .latest_task_record(id)
+                            .unwrap()
+                            .is_some_and(|task| {
+                                matches!(
+                                    task.status,
+                                    TaskStatus::Completed
+                                        | TaskStatus::Failed
+                                        | TaskStatus::Cancelled
+                                )
+                            })
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("all concurrent observations should become terminal");
+            let mut signal_ids = Vec::new();
+            for id in tasks {
+                let terminal = wait_for_terminal_task(&parent, &id).await;
+                assert_eq!(terminal.status, TaskStatus::Completed);
+                assert_eq!(terminal.detail.as_ref().unwrap()["message_id"], reply_id);
+                let signal_id = terminal.parent_message_id.unwrap();
+                let signal = parent
+                    .storage()
+                    .read_message_by_id(&signal_id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    crate::wake_contract::agent_message_reply_reference(&signal),
+                    Some(reply_id.as_str())
+                );
+                assert!(!serde_json::to_string(&signal.body)
+                    .unwrap()
+                    .contains("unique reply body"));
+                assert_eq!(
+                    parent
+                        .task_output(&id, false, 0)
+                        .await
+                        .unwrap()
+                        .task
+                        .output_preview,
+                    "unique reply body"
+                );
+                signal_ids.push(signal_id);
+            }
+            let drained = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let entries = parent.storage().latest_queue_entries().unwrap();
+                    if signal_ids
+                        .iter()
+                        .chain(std::iter::once(&reply_id))
+                        .all(|id| {
+                            entries.iter().any(|entry| {
+                                &entry.message_id == id
+                                    && entry.status == crate::types::QueueEntryStatus::Processed
+                            })
+                        })
+                        && signal_ids.iter().all(|id| {
+                            host.runtime_db()
+                                .task_result_settlements()
+                                .latest_for_message(id)
+                                .unwrap()
+                                .is_some_and(|record| {
+                                    record.state
+                                        == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+                                })
+                        })
+                        && parent.agent_state().await.unwrap().current_run_id.is_none()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            assert!(
+                drained.is_ok(),
+                "reply and reference signals must drain; use_wait: {use_wait}; run: {:?}; settlements: {:?}; briefs: {:?}; queue: {:?}; events: {:?}",
+                parent.agent_state().await.unwrap().current_run_id,
+                signal_ids
+                    .iter()
+                    .map(|id| (
+                        id,
+                        host.runtime_db()
+                            .task_result_settlements()
+                            .latest_for_message(id)
+                            .unwrap()
+                    ))
+                    .collect::<Vec<_>>(),
+                parent.storage().read_recent_briefs(100).unwrap(),
+                parent.storage().latest_queue_entries().unwrap(),
+                parent
+                    .storage()
+                    .read_recent_events(1000)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| event.kind == "runtime_error")
+                    .collect::<Vec<_>>(),
+            );
+            let briefs = parent
+                .storage()
+                .read_recent_briefs(100)
+                .unwrap()
+                .into_iter()
+                .filter(|brief| !setup_brief_ids.contains(&brief.id))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                briefs.len(),
+                1 + signal_ids
+                    .len()
+                    .saturating_sub(crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT - 1)
+                    .div_ceil(crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT),
                 "one model response per bounded batch, without synthetic task briefs"
             );
             if let Some(registration) = registration {
@@ -14631,7 +18255,12 @@ mod tests {
         let child = host.get_or_create_agent(&spawned.agent_id).await.unwrap();
         let child_summary = child.agent_summary().await.unwrap();
         assert_eq!(
-            child_summary.model.override_model.unwrap().as_string(),
+            child_summary
+                .model
+                .override_model
+                .as_ref()
+                .unwrap()
+                .as_string(),
             "anthropic@default/claude-haiku-4-5"
         );
         assert_eq!(
@@ -15144,7 +18773,7 @@ mod tests {
         let mut state = AgentState::new("default");
         state.model_override =
             Some(ModelRouteRef::parse_compatible("anthropic/claude-haiku-4-5").unwrap());
-        storage.write_agent(&state).unwrap();
+        storage.write_agent_for_fixture(&state).unwrap();
 
         let runtime = RuntimeHandle::new_reconfigurable_with_host_bridge(
             "default",
@@ -15341,7 +18970,7 @@ mod tests {
         child_state.status = AgentStatus::AwakeRunning;
         child_state.pending = 1;
         child_state.current_run_id = Some("run-1".into());
-        child_storage.write_agent(&child_state).unwrap();
+        child_storage.write_agent_for_fixture(&child_state).unwrap();
         child_storage
             .append_task(&TaskRecord {
                 id: "task-1".into(),
@@ -15384,7 +19013,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|summary| summary.identity.agent_id)
+            .map(|summary| summary.identity.agent_id.clone())
             .collect::<Vec<_>>();
         assert!(listed.contains(&host.config().default_agent_id));
         assert!(!listed.contains(&"child_test".to_string()));
@@ -15395,9 +19024,10 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
-        parent_storage
-            .append_task(&TaskRecord {
+        let original_parent = host.default_runtime().await.unwrap();
+        crate::runtime::tests::support::persist_task_transition(
+            &original_parent,
+            &TaskRecord {
                 id: "task-1".into(),
                 agent_id: parent_agent_id.clone(),
                 kind: crate::types::TaskKind::SubagentTask,
@@ -15412,8 +19042,11 @@ mod tests {
                     "task_status": "interrupted",
                 })),
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "interrupted_child_original_task_fixture",
+        )
+        .await
+        .unwrap();
 
         let child = AgentIdentityRecord::new(
             "child_test",
@@ -15430,7 +19063,7 @@ mod tests {
         let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
         child_state.status = AgentStatus::AwaitingTask;
-        child_storage.write_agent(&child_state).unwrap();
+        child_storage.write_agent_for_fixture(&child_state).unwrap();
         child_storage
             .append_task(&TaskRecord {
                 id: "child-task-1".into(),
@@ -15447,6 +19080,18 @@ mod tests {
             })
             .unwrap();
 
+        assert!(
+            !host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .agents
+                .contains_key("child_test"),
+            "the original child remains a cold inspection fixture"
+        );
+        drop(original_parent);
+        host.shutdown().await.unwrap();
         drop(host);
 
         let restarted =
@@ -17239,37 +20884,55 @@ mod tests {
         )
         .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
-        parent_storage
-            .append_task(&TaskRecord {
-                id: "task-recover-child".into(),
-                agent_id: parent_agent_id.clone(),
-                kind: crate::types::TaskKind::ChildAgentTask,
-                status: TaskStatus::Running,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                parent_message_id: None,
-                work_item_id: None,
-                summary: Some("delegated child".into()),
-                detail: Some(serde_json::json!({
-                    "child_agent_id": "child_recover",
-                    "target": {
-                        "kind": "child_agent",
-                        "agent_id": child.agent_id,
-                        "incarnation": child.incarnation,
-                    },
-                    "child_turn_baseline": 0,
-                    "task_status": "running",
-                })),
-                recovery: Some(TaskRecoverySpec::ChildAgentTask {
-                    summary: "delegated child".into(),
-                    prompt: "continue delegated child".into(),
-                    authority_class: AuthorityClass::OperatorInstruction,
-                    workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
-                    lifecycle_disposition:
-                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
-                }),
-            })
-            .unwrap();
+        // Bootstrap the original empty domain before its real first Task ACK.
+        let original_parent = host.default_runtime().await.unwrap();
+        let original_task = TaskRecord {
+            id: "task-recover-child".into(),
+            agent_id: parent_agent_id.clone(),
+            kind: crate::types::TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("delegated child".into()),
+            detail: Some(serde_json::json!({
+                "child_agent_id": "child_recover",
+                "target": {
+                    "kind": "child_agent",
+                    "agent_id": child.agent_id,
+                    "incarnation": child.incarnation,
+                },
+                "child_turn_baseline": 0,
+                "task_status": "running",
+            })),
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: "delegated child".into(),
+                prompt: "continue delegated child".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+                workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                lifecycle_disposition: crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
+            }),
+        };
+        crate::runtime::tests::support::persist_task_transition(
+            &original_parent,
+            &original_task,
+            "recovered_child_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        assert!(original_parent
+            .active_tasks(usize::MAX)
+            .await
+            .unwrap()
+            .iter()
+            .any(|task| task == &original_task));
+        let qualified: bool = host.runtime_db().connection().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_domain_records WHERE agent_id=?1 AND identity_incarnation=?2 AND family='task' AND record_id=?3 AND availability='present')",
+            rusqlite::params![parent_agent_id, original_parent.instance_incarnation(), original_task.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert!(qualified, "original Task must be admitted before restart");
 
         host.append_agent_identity(&child).unwrap();
         host.runtime_db().agent_identities().upsert(&child).unwrap();
@@ -17289,10 +20952,27 @@ mod tests {
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
         });
-        child_storage.write_agent(&child_state).unwrap();
+        child_storage.write_agent_for_fixture(&child_state).unwrap();
 
         seed_supervised_child_terminal(&host, "task-recover-child", "child_recover");
 
+        // Retire only the old instance; the canonical running Task survives.
+        drop(original_parent);
+        host.shutdown().await.unwrap();
+        assert_eq!(
+            parent_storage
+                .latest_task_record(&original_task.id)
+                .unwrap(),
+            Some(original_task),
+        );
+        assert_eq!(
+            host.agent_identity_record("child_recover")
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active,
+        );
+        assert_eq!(child_storage.read_agent().unwrap(), Some(child_state));
         drop(host);
 
         let restarted =
@@ -17313,7 +20993,21 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for recovered child monitor to converge"
+                "timed out waiting for recovered child monitor to converge: task={task:?}, \
+                 parent_events={:?}, parent_state={:?}, child_state={:?}, child_identity={:?}, \
+                 runtime_finished={}, original_source={}",
+                runtime.storage().read_recent_events(100),
+                restarted
+                    .runtime_db()
+                    .agent_states()
+                    .latest(&parent_agent_id),
+                restarted
+                    .runtime_db()
+                    .agent_states()
+                    .latest("child_recover"),
+                restarted.agent_identity_record("child_recover"),
+                runtime_task.is_finished(),
+                runtime.recovered_child_monitor_diagnostics_for_test("task-recover-child"),
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -17357,7 +21051,29 @@ mod tests {
                 .agent_deletions()
                 .latest_for_agent("child_recover")
                 .unwrap()
-                .expect("terminal child cleanup should use a canonical deletion job");
+                .unwrap_or_else(|| {
+                    let receipts: anyhow::Result<Vec<(String, String)>> = (|| {
+                        let connection = restarted.runtime_db().connection()?;
+                        let mut statement = connection.prepare(
+                            "SELECT command_nonce,outcome_json FROM input_mutation_receipts
+                             WHERE family='task'
+                               AND json_extract(outcome_json,'$.result.kind')='child_task_terminal'
+                               AND json_extract(outcome_json,'$.result.ack.original.admitted.key.id')=?1
+                             ORDER BY committed_at DESC LIMIT 8",
+                        )?;
+                        let rows = statement.query_map(["task-recover-child"], |row| {
+                            Ok((row.get(0)?, row.get(1)?))
+                        })?;
+                        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+                    })();
+                    panic!(
+                        "terminal child cleanup should use a canonical deletion job: \
+                         task={task:?}, child_identity={child_identity:?}, canonical_relations={:?}, \
+                         terminal_receipts={receipts:?}, parent_events={events:?}, original_source={}",
+                        restarted.runtime_db().agent_canonical_relations().latest("child_recover"),
+                        runtime.recovered_child_monitor_diagnostics_for_test("task-recover-child"),
+                    );
+                });
             if child_identity.status == AgentRegistryStatus::Deleted
                 && deletion_job.status == crate::types::AgentDeletionStatus::Completed
             {
@@ -17449,7 +21165,7 @@ mod tests {
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
         });
-        child_storage.write_agent(&child_state).unwrap();
+        child_storage.write_agent_for_fixture(&child_state).unwrap();
         child_storage
             .append_task(&TaskRecord {
                 id: "child-command-still-running".into(),
@@ -17587,7 +21303,7 @@ mod tests {
             completed_at: chrono::Utc::now(),
             duration_ms: 1,
         });
-        child_storage.write_agent(&child_state).unwrap();
+        child_storage.write_agent_for_fixture(&child_state).unwrap();
         let now = chrono::Utc::now();
         child_storage
             .append_wait_condition(&crate::types::WaitConditionRecord {
@@ -17665,7 +21381,7 @@ mod tests {
             AppStorage::new_for_agent_for_test(host.agent_data_dir("child_orphan"), "child_orphan")
                 .unwrap();
         child_storage
-            .write_agent(&AgentState::new("child_orphan"))
+            .write_agent_for_fixture(&AgentState::new("child_orphan"))
             .unwrap();
 
         drop(host);
@@ -17748,7 +21464,7 @@ mod tests {
         )
         .unwrap();
         child_storage
-            .write_agent(&AgentState::new("child_parent_missing"))
+            .write_agent_for_fixture(&AgentState::new("child_parent_missing"))
             .unwrap();
 
         drop(host);
@@ -17769,29 +21485,85 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new_for_agent(
-            host.agent_data_dir(&parent_agent_id),
-            &parent_agent_id,
-            host.runtime_db().clone(),
+        let identity = host.ensure_default_agent_identity().unwrap();
+        host.runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::evidence::upsert_agent_state_tx(
+                    tx,
+                    &AgentState::new(&parent_agent_id),
+                )
+            })
+            .unwrap();
+        let task = TaskRecord {
+            id: "task-stop".into(),
+            agent_id: parent_agent_id.clone(),
+            kind: crate::types::TaskKind::SubagentTask,
+            status: TaskStatus::Interrupted,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("delegated child".into()),
+            detail: Some(serde_json::json!({
+                "child_agent_id": "child_stop",
+                "task_status": "interrupted",
+            })),
+            recovery: None,
+        };
+        let command = crate::runtime_db::transitions::TaskTransitionCommand {
+            agent_id: parent_agent_id.clone(),
+            task,
+            agent_deletion: None,
+            task_result_settlement: None,
+            queue_entry: None,
+            work_items: vec![],
+            expected_wait_conditions: vec![],
+            wait_conditions: vec![],
+            agent_state: None,
+            message_evidence: vec![],
+            audit_events: vec![],
+            index_changes: vec![],
+            notify_scheduler: false,
+            commit_on_idempotent: false,
+            fault: None,
+        };
+        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: parent_agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        };
+        let prepared = crate::runtime_db::transitions::PreparedInputTransition::task(
+            scope.clone(),
+            "restart-original-interrupted-task".into(),
+            chrono::Utc::now(),
+            crate::runtime_db::transitions::PreparedTaskTransition::new(
+                command,
+                Default::default(),
+                false,
+                None,
+                None,
+            )
+            .unwrap(),
         )
         .unwrap();
-        parent_storage
-            .append_task(&TaskRecord {
-                id: "task-stop".into(),
-                agent_id: parent_agent_id.clone(),
-                kind: crate::types::TaskKind::SubagentTask,
-                status: TaskStatus::Interrupted,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-                parent_message_id: None,
-                work_item_id: None,
-                summary: Some("delegated child".into()),
-                detail: Some(serde_json::json!({
-                    "child_agent_id": "child_stop",
-                    "task_status": "interrupted",
-                })),
-                recovery: None,
-            })
+        // Persist the original qualified Task before restart; a raw modern
+        // storage tail is intentionally ineligible for runtime execution.
+        host.runtime_db()
+            .transitions_in_scope(&scope)
+            .commit_prepared_transition_with_work_request_and_memory_budget(
+                &prepared,
+                &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                    capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+                &host.inner.input_evidence_budget,
+                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    query: Default::default(),
+                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+            )
             .unwrap();
 
         let child = AgentIdentityRecord::new(
@@ -17810,7 +21582,7 @@ mod tests {
             AppStorage::new_for_agent_for_test(host.agent_data_dir("child_stop"), "child_stop")
                 .unwrap();
         child_storage
-            .write_agent(&AgentState::new("child_stop"))
+            .write_agent_for_fixture(&AgentState::new("child_stop"))
             .unwrap();
 
         drop(host);
@@ -17824,6 +21596,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stopped.status, TaskStatus::Cancelled);
+        tokio::time::timeout(Duration::from_secs(10), runtime.join_owned_mutations())
+            .await
+            .unwrap()
+            .unwrap();
 
         let identity = restarted
             .agent_identity_record("child_stop")
@@ -17831,6 +21607,7 @@ mod tests {
             .expect("child identity should remain recorded after archive");
         assert_eq!(identity.status, AgentRegistryStatus::Deleted);
         assert!(!restarted.agent_data_dir("child_stop").exists());
+        restarted.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -17871,6 +21648,767 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unload_runtime_drains_owned_mutations_before_reactivation() {
+        let (_home, host) = test_host();
+        host.create_named_agent("alpha", None).await.unwrap();
+        let runtime = host.get_public_agent("alpha").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let mut unload = tokio::spawn({
+            let host = host.clone();
+            async move { host.unload_runtime("alpha").await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut unload)
+                .await
+                .is_err(),
+            "unload must wait for the admitted mutation"
+        );
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), unload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(finished.load(Ordering::Acquire));
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        let replacement = host.get_public_agent("alpha").await.unwrap();
+        assert!(replacement.execution_admission_lease().is_ok());
+        assert_eq!(replacement.agent_state().await.unwrap().id, "alpha");
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_runtime_restores_exact_known_facts_before_opening_the_gate() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime_task.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !runtime_task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (expected, abort_token, message_id) = runtime
+            .prepare_known_host_installation_fixture()
+            .await
+            .unwrap();
+        assert!(!abort_token.is_cancelled());
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        assert!(matches!(
+            owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+        {
+            let registry = host.inner.runtimes.read().await;
+            assert!(registry.agents.is_empty());
+            assert!(registry.unloading_mutations.is_empty());
+            assert!(registry.temporary_runtimes.contains_key(&agent_id));
+        }
+        let reservations = host
+            .reserve_agent_mutations(&[agent_id.clone()])
+            .await
+            .unwrap();
+        let (state, queue_len, abort_handle_absent) = runtime.host_installation_snapshot().await;
+        assert_eq!(state, expected);
+        assert_eq!(
+            queue_len, 0,
+            "saved temporary queue must install before Ready"
+        );
+        assert!(abort_handle_absent);
+        assert!(
+            abort_token.is_cancelled(),
+            "saved deferred abort must execute"
+        );
+        assert_eq!(owner.capture().unwrap().unwrap().state.as_ref(), &expected);
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .latest(&message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Aborted
+        );
+        drop(reservations);
+        host.cleanup_temporary_runtime(agent_id, runtime, runtime_task)
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    async fn retiring_runtime_keeps_exact_known_installation_target(shutdown: bool) {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        let agent_id = host.config().default_agent_id.clone();
+        host.inner.runtimes.read().await.agents[&agent_id]
+            .task
+            .abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !host.inner.runtimes.read().await.agents[&agent_id]
+                .task
+                .is_finished()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let (expected, abort_token, message_id) = runtime
+            .prepare_known_host_installation_fixture()
+            .await
+            .unwrap();
+        assert!(!abort_token.is_cancelled());
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let blocker = owner.reserve().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let recovered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let operation = tokio::spawn({
+            let host = host.clone();
+            let runtime = runtime.clone();
+            let agent_id = agent_id.clone();
+            let started = started.clone();
+            let recovered = recovered.clone();
+            let release = release.clone();
+            let expected = expected.clone();
+            let abort_token = abort_token.clone();
+            async move {
+                let worker_host = host.clone();
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    let reservations = worker_host.reserve_agent_mutations(&[agent_id]).await?;
+                    let (state, queue_len, abort_handle_absent) =
+                        runtime.host_installation_snapshot().await;
+                    assert_eq!(state, expected);
+                    assert_eq!(
+                        queue_len, 0,
+                        "saved runtime queue must install before Ready"
+                    );
+                    assert!(abort_handle_absent);
+                    assert!(
+                        abort_token.is_cancelled(),
+                        "saved deferred abort must execute"
+                    );
+                    recovered.notify_one();
+                    release.notified().await;
+                    drop(reservations);
+                    Ok(())
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        let retirement = tokio::spawn({
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            async move {
+                if shutdown {
+                    host.shutdown().await
+                } else {
+                    host.unload_runtime(&agent_id).await;
+                    Ok(())
+                }
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let registry = host.inner.runtimes.read().await;
+                if !registry.agents.contains_key(&agent_id)
+                    && !registry.unloading_mutations.is_empty()
+                    && (!shutdown || registry.phase == HostRuntimePhase::Closing)
+                {
+                    break;
+                }
+                drop(registry);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(host
+            .bridge()
+            .runtime_for_mutation(&blocker)
+            .await
+            .unwrap()
+            .is_some());
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), recovered.notified())
+            .await
+            .unwrap();
+        assert_eq!(owner.capture().unwrap().unwrap().state.as_ref(), &expected);
+        assert_eq!(
+            host.runtime_db()
+                .queue_entries()
+                .recent(Some(&agent_id), 100)
+                .unwrap()
+                .into_iter()
+                .find(|record| record.message_id == message_id)
+                .unwrap()
+                .status,
+            crate::types::QueueEntryStatus::Aborted
+        );
+        assert!(!retirement.is_finished());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), retirement)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .unloading_mutations
+            .is_empty());
+        if !shutdown {
+            host.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_restores_exact_known_facts_before_opening_the_gate() {
+        retiring_runtime_keeps_exact_known_installation_target(true).await;
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_restores_exact_known_facts_before_opening_the_gate() {
+        retiring_runtime_keeps_exact_known_installation_target(false).await;
+    }
+
+    #[tokio::test]
+    async fn accepted_retirement_drains_its_instance_while_host_is_closing() {
+        let (_home, host) = test_host();
+        host.create_named_agent("closing-retirement", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("closing-retirement").await.unwrap();
+        let incarnation = runtime.instance_incarnation();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let drained = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let operation = tokio::spawn({
+            let host = host.clone();
+            let worker = host.clone();
+            let started = started.clone();
+            let release = release.clone();
+            let drained = drained.clone();
+            let finish = finish.clone();
+            async move {
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    worker
+                        .drain_retired_runtime("closing-retirement", incarnation)
+                        .await?;
+                    drained.notify_one();
+                    finish.notified().await;
+                    Ok(())
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        operation.abort();
+        let _ = operation.await;
+        let shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), drained.notified())
+            .await
+            .unwrap();
+        assert!(runtime.execution_admission_lease().is_err());
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        assert!(
+            !shutdown.is_finished(),
+            "Host still owns the accepted cleanup worker"
+        );
+        finish.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_retirement_retry_releases_previously_failed_generation() {
+        let (_home, host) = test_host();
+        host.create_named_agent("retry-retirement", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("retry-retirement").await.unwrap();
+        let failed = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let failed = failed.clone();
+                async move {
+                    failed.notify_one();
+                    panic!("fixture mutation worker failure");
+                }
+            })
+            .unwrap();
+        failed.notified().await;
+        assert!(host
+            .drain_retired_runtime("retry-retirement", runtime.instance_incarnation())
+            .await
+            .is_err());
+        assert!(!host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .unloading_mutations
+            .is_empty());
+        host.drain_retired_runtime("retry-retirement", runtime.instance_incarnation())
+            .await
+            .unwrap();
+        let registry = host.inner.runtimes.read().await;
+        assert!(registry.unloading_mutations.is_empty());
+        assert!(registry.unloading_exits.is_empty());
+        drop(registry);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retirement_of_old_incarnation_does_not_drain_current_instance() {
+        let (_home, host) = test_host();
+        host.create_named_agent("current-retirement", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("current-retirement").await.unwrap();
+        host.drain_retired_runtime("current-retirement", runtime.instance_incarnation() + 1)
+            .await
+            .unwrap();
+        assert!(runtime.execution_admission_lease().is_ok());
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .contains_key("current-retirement"));
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_keeps_serve_maintenance_lease_until_external_mutations_drain() {
+        let (_home, host) = canonical_test_host();
+        let lease_path = host.config().runtime_db_maintenance_lock_path();
+        let lease = crate::runtime_db::RuntimeDbLock::try_lock(&lease_path).unwrap();
+        host.adopt_runtime_db_maintenance_lease(lease)
+            .await
+            .unwrap();
+        assert!(crate::runtime_db::RuntimeDbLock::try_lock(&lease_path).is_err());
+        host.spawn_daemon_runtime_db_retention();
+        host.shutdown_daemon_runtime_db_retention().await;
+        assert!(crate::runtime_db::RuntimeDbLock::try_lock(&lease_path).is_err());
+
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let operation = tokio::spawn({
+            let host = host.clone();
+            let started = started.clone();
+            let release = release.clone();
+            async move {
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok(())
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        operation.abort();
+        let _ = operation.await;
+        let mut shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut shutdown)
+                .await
+                .is_err()
+        );
+        assert!(crate::runtime_db::RuntimeDbLock::try_lock(&lease_path).is_err());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(crate::runtime_db::RuntimeDbLock::try_lock(&lease_path).is_ok());
+    }
+
+    #[tokio::test]
+    async fn host_model_migration_cancelled_caller_keeps_cold_owner_write_visible_to_shutdown() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "cold-model-migration";
+        let mut state = AgentState::new(agent_id);
+        state.turn_index = 17;
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
+        let mut payload = serde_json::to_value(&state).unwrap();
+        payload["model_override"] = json!("openai/gpt-5.4");
+        host.runtime_db()
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2",
+                rusqlite::params![serde_json::to_string(&payload).unwrap(), agent_id],
+            )
+            .unwrap();
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(agent_id, 1)
+            .unwrap();
+        let reservation = owner.reserve().await.unwrap();
+        let operation = tokio::spawn({
+            let host = host.clone();
+            async move { host.migrate_model_config_routes(true).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !host
+                    .inner
+                    .external_mutation_tasks
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        operation.abort();
+        let _ = operation.await;
+        let mut shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut shutdown)
+                .await
+                .is_err()
+        );
+        drop(reservation);
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let migrated = host
+            .runtime_db()
+            .agent_states()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated.turn_index, 17);
+        assert_eq!(
+            migrated.model_override.unwrap().as_string(),
+            crate::config::ModelRouteRef::parse_compatible("openai/gpt-5.4")
+                .unwrap()
+                .as_string()
+        );
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_drains_owned_mutations_before_closing() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let mut shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown must wait for the admitted mutation"
+        );
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(finished.load(Ordering::Acquire));
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_cancelled_caller_keeps_shared_mutation_drain() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let first = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase != HostRuntimePhase::Closing {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        let mut second = Box::pin(host.shutdown());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut second)
+                .await
+                .is_err(),
+            "a later caller must await the same unfinished mutation drain"
+        );
+        assert!(!finished.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(finished.load(Ordering::Acquire));
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Closed
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_cancelled_caller_keeps_mutations_visible_to_shutdown() {
+        let (_home, host) = test_host();
+        host.create_named_agent("alpha", None).await.unwrap();
+        let runtime = host.get_public_agent("alpha").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::clone(&finished);
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+                worker_finished.store(true, Ordering::Release);
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let unload = tokio::spawn({
+            let host = host.clone();
+            async move { host.unload_runtime("alpha").await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .unloading_mutations
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        unload.abort();
+        assert!(unload.await.unwrap_err().is_cancelled());
+        assert!(runtime.spawn_owned_mutation(async {}).is_err());
+        assert!(!host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .agents
+            .contains_key("alpha"));
+
+        let mut shutdown = Box::pin(host.shutdown());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown must inherit the cancelled unload's admitted mutations"
+        );
+        assert!(!finished.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(finished.load(Ordering::Acquire));
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert!(registry.unloading_mutations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unload_runtime_cancelled_caller_releases_completed_generation() {
+        let (_home, host) = test_host();
+        host.create_named_agent("alpha", None).await.unwrap();
+        let runtime = host.get_public_agent("alpha").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        runtime
+            .spawn_owned_mutation(async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+            })
+            .unwrap();
+        started_rx.await.unwrap();
+
+        let unload = tokio::spawn({
+            let host = host.clone();
+            async move { host.unload_runtime("alpha").await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .runtimes
+                .read()
+                .await
+                .unloading_mutations
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        unload.abort();
+        assert!(unload.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let released = host
+                    .inner
+                    .runtimes
+                    .read()
+                    .await
+                    .unloading_mutations
+                    .is_empty();
+                if released && runtime.strong_handle_count() == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled unload must release the old runtime without Host shutdown");
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Open
+        );
+        let replacement = host.get_public_agent("alpha").await.unwrap();
+        assert!(replacement.execution_admission_lease().is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_concurrent_callers_share_failure() {
+        let (_home, host) = test_host();
+        let runtime = host.default_runtime().await.unwrap();
+        runtime
+            .spawn_owned_mutation(async { panic!("controlled mutation failure") })
+            .unwrap();
+
+        let (first, second) = tokio::join!(host.shutdown(), host.shutdown());
+        let first = first.unwrap_err();
+        let second = second.unwrap_err();
+        assert_eq!(first.to_string(), second.to_string());
+        assert!(first
+            .chain()
+            .any(|error| error.is::<tokio::task::JoinError>()));
+        let repeated = host.shutdown().await.unwrap_err();
+        assert_eq!(first.to_string(), repeated.to_string());
+        assert_eq!(
+            host.inner.runtimes.read().await.phase,
+            HostRuntimePhase::Closed
+        );
+    }
+
+    #[tokio::test]
     async fn host_shutdown_preserves_public_agent_durable_status() {
         let (_home, host) = test_host();
         let storage = AppStorage::new_for_agent(
@@ -17881,7 +22419,7 @@ mod tests {
         .unwrap();
         let mut state = AgentState::new(&host.config().default_agent_id);
         state.status = AgentStatus::Stopped;
-        storage.write_agent(&state).unwrap();
+        storage.write_agent_for_fixture(&state).unwrap();
 
         let _runtime = host.default_runtime().await.unwrap();
         host.shutdown().await.unwrap();
@@ -17898,7 +22436,8 @@ mod tests {
     async fn host_shutdown_aborts_active_run_with_daemon_shutdown_reason() {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
-        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
         let agent_id = config.default_agent_id.clone();
         let started = Arc::new(Notify::new());
         let provider = Arc::new(BlockingProvider {
@@ -17924,9 +22463,14 @@ mod tests {
             ))
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), started_wait)
-            .await
-            .expect("provider turn should start");
+        let started = tokio::time::timeout(Duration::from_secs(5), started_wait).await;
+        assert!(
+            started.is_ok(),
+            "provider turn should start; state: {:?}; queue: {:?}; events: {:?}",
+            runtime.agent_state().await.unwrap(),
+            runtime.storage().latest_queue_entries().unwrap(),
+            runtime.storage().read_recent_events(12).unwrap(),
+        );
 
         tokio::time::timeout(Duration::from_secs(5), host.shutdown())
             .await
@@ -18381,6 +22925,34 @@ mod tests {
             !entry.task.is_finished(),
             "automatic recovery should start a fresh runtime loop"
         );
+        let recovered = entry
+            .runtime
+            .storage()
+            .read_recent_events(64)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "runtime_loop_recovered")
+            .expect("original recovery Audit");
+        host.runtime_db()
+            .transaction(|tx| {
+                let qualified: usize = tx.query_row(
+                    "SELECT COUNT(*) FROM current_read_qualification
+                     WHERE agent_id=?1 AND family='event' AND record_id=?2
+                       AND qualification_state='qualified'",
+                    rusqlite::params![agent_id, recovered.id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(qualified, 1);
+                let receipt: usize = tx.query_row(
+                    "SELECT COUNT(*) FROM input_mutation_receipts
+                     WHERE command_nonce=?1 AND family='audit'",
+                    [&recovered.id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(receipt, 1);
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[tokio::test]
@@ -18524,7 +23096,7 @@ mod tests {
         let child_storage = host.agent_storage("child_local_1").unwrap();
         let mut child_state = AgentState::new("child_local_1");
         child_state.status = AgentStatus::AwakeRunning;
-        child_storage.write_agent(&child_state).unwrap();
+        child_storage.write_agent_for_fixture(&child_state).unwrap();
 
         let runtime = host
             .get_agent_for_local_status("child_local_1")
@@ -18974,7 +23546,7 @@ mod tests {
             error.to_string().contains("exhausted retry deadline"),
             "unexpected deletion error: {error:#}"
         );
-        let failed = host
+        let mut failed = host
             .runtime_db()
             .agent_deletions()
             .latest_for_agent("delete-locked")
@@ -18996,11 +23568,14 @@ mod tests {
             .is_some());
         assert!(read_started.elapsed() < Duration::from_secs(1));
 
+        // Keep the not-due checks independent of wall-clock progress under load.
+        failed.next_attempt_at = Some(Utc::now() + chrono::Duration::days(1));
+        host.runtime_db().agent_deletions().update(&failed).unwrap();
         for _ in 0..32 {
             host.notify_deletion_coordinator();
             host.execute_deletion_job(failed.clone()).await.unwrap();
         }
-        let still_waiting = host
+        let mut still_waiting = host
             .runtime_db()
             .agent_deletions()
             .latest_for_agent("delete-locked")
@@ -19011,11 +23586,11 @@ mod tests {
 
         blocker.execute_batch("ROLLBACK").unwrap();
         drop(blocker);
-        let wait_for = (still_waiting.next_attempt_at.unwrap() - Utc::now())
-            .to_std()
-            .unwrap_or_default()
-            + Duration::from_millis(100);
-        tokio::time::sleep(wait_for).await;
+        still_waiting.next_attempt_at = Some(Utc::now() - chrono::Duration::days(1));
+        host.runtime_db()
+            .agent_deletions()
+            .update(&still_waiting)
+            .unwrap();
         host.execute_deletion_job(still_waiting).await.unwrap();
         let completed = host
             .runtime_db()
@@ -19047,7 +23622,10 @@ mod tests {
         host.cache_agent_identity(&child).unwrap();
         let mut state = AgentState::new(child_id.to_string());
         state.status = AgentStatus::AwakeIdle;
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         child
     }
 
@@ -19089,13 +23667,160 @@ mod tests {
         })
         .await
         .unwrap_or_else(|error| {
-            let blocker = host
-                .runtime_db()
-                .transaction(|tx| crate::runtime_db::reclamation::idle_blocker_tx(tx, agent_id))
-                .unwrap();
             let state = host.runtime_db().agent_states().latest(agent_id).unwrap();
-            panic!("idle candidate timeout for {agent_id}: {error}; blocker={blocker:?}; state={state:?}");
+            let events = host
+                .agent_storage_read_only(agent_id)
+                .unwrap()
+                .read_recent_events(100)
+                .unwrap();
+            panic!("idle candidate did not appear: {error:?}, state={state:?}, events={events:?}")
         })
+    }
+
+    #[tokio::test]
+    async fn resource_revision_loaded_ready_child_idle_retirement_and_parent_cleanup() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for cleanup in [false, true] {
+            let child = retained_cleanup_fixture(
+                &host,
+                if cleanup {
+                    "resource-parent-cleanup"
+                } else {
+                    "resource-idle-retirement"
+                },
+            );
+            let runtime = host.get_or_create_agent(&child.agent_id).await.unwrap();
+            runtime.wait_for_bootstrap().await.unwrap();
+            runtime
+                .preview_prompt(
+                    "Ready before cleanup".into(),
+                    AuthorityClass::OperatorInstruction,
+                )
+                .await
+                .unwrap();
+            if cleanup {
+                let job = host
+                    .begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                    .await
+                    .unwrap();
+                assert_eq!(job.mode, AgentDeletionMode::ParentCleanup);
+            } else {
+                let generation = observe_idle_candidate(&host, &child.agent_id).await;
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    host.try_retire_idle_runtime(&child.agent_id, generation),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
+            }
+            assert!(!runtime.accepts_execution_admission());
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_revision_cleanup_refuses_physical_refresh_then_exits_after_completion() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        for cleanup in [false, true] {
+            let child = retained_cleanup_fixture(
+                &host,
+                if cleanup {
+                    "resource-paused-cleanup"
+                } else {
+                    "resource-paused-retirement"
+                },
+            );
+            let runtime = host.get_or_create_agent(&child.agent_id).await.unwrap();
+            runtime.wait_for_bootstrap().await.unwrap();
+            runtime
+                .preview_prompt(
+                    "Ready before physical I/O".into(),
+                    AuthorityClass::OperatorInstruction,
+                )
+                .await
+                .unwrap();
+            let generation = observe_idle_candidate(&host, &child.agent_id).await;
+            let pause = runtime.pause_next_resource_refresh();
+            let refresh = tokio::spawn({
+                let runtime = runtime.clone();
+                async move { runtime.refresh_context_resources().await }
+            });
+            tokio::time::timeout(Duration::from_secs(5), pause.wait())
+                .await
+                .unwrap();
+            let error = if cleanup {
+                host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                    .await
+                    .unwrap_err()
+            } else {
+                host.try_retire_idle_runtime(&child.agent_id, generation)
+                    .await
+                    .unwrap_err()
+            };
+            assert!(error.to_string().contains("exit_pending"), "{error:#}");
+            assert!(runtime.accepts_execution_admission());
+            assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_some());
+            assert!(!refresh.is_finished());
+            assert!(host
+                .scan_idle_runtime_candidates(&mut None, 16, Duration::ZERO, true)
+                .await
+                .unwrap()
+                .iter()
+                .all(|(agent_id, _)| agent_id != &child.agent_id));
+            pause.release();
+            refresh.await.unwrap().unwrap();
+            if cleanup {
+                host.begin_parent_agent_deletion(&parent, &child.agent_id, child.incarnation)
+                    .await
+                    .unwrap();
+            } else {
+                let generation = observe_idle_candidate(&host, &child.agent_id).await;
+                host.try_retire_idle_runtime(&child.agent_id, generation)
+                    .await
+                    .unwrap();
+                assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
+            }
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_revision_failed_cleanup_admission_keeps_refresh_available() {
+        let (_home, host) = test_host();
+        let child = retained_cleanup_fixture(&host, "resource-cleanup-rollback");
+        let runtime = host.get_or_create_agent(&child.agent_id).await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+            .preview_prompt(
+                "Ready before rejected cleanup".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        let error = runtime
+            .admit_idle_cleanup::<()>(|| anyhow::bail!("resource_test_admission_rejected"))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("resource_test_admission_rejected"),
+            "{error:#}"
+        );
+        assert!(runtime.accepts_execution_admission());
+        runtime.refresh_context_resources().await.unwrap();
+        runtime
+            .preview_prompt(
+                "Ready after rejected cleanup".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -19324,7 +24049,10 @@ mod tests {
             max_turns: 0,
             run_start_turn_index: state.turn_index,
         });
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         assert!(!host
             .runtime_db()
             .subagent_reminder_is_current(&message)
@@ -19376,7 +24104,10 @@ mod tests {
             .unwrap()
             .unwrap();
         state.total_message_count += 1;
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         assert!(
             !host
                 .runtime_db()
@@ -20267,7 +24998,10 @@ mod tests {
         // A busy parent defers delivery and keeps the outbox pending.
         let mut state = parent.agent_state().await.unwrap();
         state.status = AgentStatus::AwakeRunning;
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         assert!(!host
             .runtime_db()
             .subagent_reminder_is_current(&message)
@@ -20282,7 +25016,10 @@ mod tests {
 
         // Once the parent is idle again, the same reminder is deliverable.
         state.status = AgentStatus::AwakeIdle;
-        host.runtime_db().agent_states().upsert(&state).unwrap();
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
         assert!(host
             .runtime_db()
             .subagent_reminder_is_current(&message)
@@ -20901,7 +25638,13 @@ mod tests {
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
-        let parent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let parent_id = parent
+            .agent_summary()
+            .await
+            .unwrap()
+            .identity
+            .agent_id
+            .clone();
         let created = parent
             .agent_invocation_service()
             .invoke(InvokeAgentRequest {
@@ -20916,6 +25659,39 @@ mod tests {
             .await
             .unwrap();
         let task = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
+        let assert_parent_result = || {
+            // This invocation predates the parent's first Turn. It has a
+            // durable result, but cannot acquire a fabricated rejoin fence.
+            assert_eq!(
+                task.rejoin_fence().unwrap_err(),
+                "task rejoin contract is missing parent turn identity"
+            );
+            let current = parent
+                .storage()
+                .latest_task_record(&task.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(current.agent_id, parent_id);
+            assert_eq!(current.parent_message_id, task.parent_message_id);
+            assert_eq!(current.work_item_id, task.work_item_id);
+            assert_eq!(
+                current.rejoin_fence().unwrap_err(),
+                "task rejoin contract is missing parent turn identity"
+            );
+            assert!(host
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(task.parent_message_id.as_deref().unwrap())
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                host.runtime_db()
+                    .task_result_settlements()
+                    .next_recheck_at(&parent_id)
+                    .unwrap(),
+                None
+            );
+        };
         let before = parent.task_output(&task.id, false, 0).await.unwrap();
         let old = host
             .try_get_loaded_runtime(&created.agent_id)
@@ -21019,12 +25795,23 @@ mod tests {
             Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
         ));
         assert_ne!(created.agent_id, parent_id);
-        assert!(host
+        let settlement = host
             .runtime_db()
             .task_result_settlements()
-            .next_recheck_at(&parent_id)
+            .latest_for_message(command.parent_message_id.as_deref().unwrap())
             .unwrap()
-            .is_some());
+            .unwrap();
+        assert_eq!(settlement.task_id, command.id);
+        assert_eq!(
+            settlement.rejoin_generation,
+            command.rejoin_fence().unwrap().generation
+        );
+        assert_eq!(
+            settlement.disposition,
+            Some(crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale)
+        );
+        assert_ne!(created.agent_id, parent_id);
+        assert_parent_result();
         assert_eq!(
             host.runtime_db()
                 .task_result_settlements()
@@ -21081,12 +25868,7 @@ mod tests {
                     state.sleeping_until, None,
                     "the child's final turn must not inherit its parent's result recheck"
                 );
-                assert!(host
-                    .runtime_db()
-                    .task_result_settlements()
-                    .next_recheck_at(&parent_id)
-                    .unwrap()
-                    .is_some());
+                assert_parent_result();
                 match host
                     .begin_parent_agent_deletion(&parent, &identity.agent_id, identity.incarnation)
                     .await
@@ -21096,6 +25878,7 @@ mod tests {
                         if error.to_string().contains("live_execution")
                             || error.to_string().contains("runtime_execution_or_wake")
                             || error.to_string().contains("queued_or_claimed_input")
+                            || error.to_string().contains("resource_refresh_exit_pending")
                             || error.to_string().contains("open_execution") =>
                     {
                         last_cleanup_rejection = Some(format!("{error:#}"));
@@ -21159,6 +25942,7 @@ mod tests {
             AgentRegistryStatus::Deleted
         );
         let after = parent.task_output(&task.id, false, 0).await.unwrap();
+        assert_parent_result();
         assert_eq!(after.task.output_preview, before.task.output_preview);
         assert_eq!(after.task.status, before.task.status);
         let message = MessageEnvelope::new(
@@ -22331,6 +27115,675 @@ mod tests {
         assert_eq!(archived_job.status, AgentDeletionStatus::Completed);
     }
 
+    async fn identity_owner_deleted_fixture(host: &RuntimeHost, agent_id: &str) -> RuntimeHandle {
+        host.create_public_named_agent(agent_id, None, None, None)
+            .await
+            .unwrap();
+        let old = host.get_public_agent(agent_id).await.unwrap();
+        let (_, job, _) = host
+            .begin_public_agent_deletion(agent_id, false, "owner-fixture")
+            .await
+            .unwrap();
+        host.execute_deletion_job(job).await.unwrap();
+        old
+    }
+
+    async fn identity_owner_private_fixture(host: &RuntimeHost, agent_id: &str) -> RuntimeHandle {
+        let identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Private,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PrivateChild,
+            None,
+            None,
+        );
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&identity)
+            .unwrap();
+        host.cache_agent_identity(&identity).unwrap();
+        let runtime = host.get_or_create_agent(agent_id).await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        runtime
+    }
+
+    #[tokio::test]
+    async fn reincarnation_waits_for_old_owner_outside_global_handoff() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-reincarnation-race";
+        let old = identity_owner_deleted_fixture(&host, agent_id).await;
+        let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+        let reservation = owner.reserve().await.unwrap();
+        let bootstrap_lock = host.agent_bootstrap_lock(agent_id);
+        let initial_handoff = host.inner.bootstrap_handoff_lock.lock().await;
+        let create = {
+            let host = host.clone();
+            tokio::spawn(async move {
+                host.create_public_named_agent(agent_id, None, None, None)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while bootstrap_lock.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // The worker queued on this handoff after taking its bootstrap lock.
+        // Our following lock request must pass only after it releases the handoff.
+        drop(initial_handoff);
+        let handoff = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.inner.bootstrap_handoff_lock.lock(),
+        )
+        .await
+        .unwrap();
+        assert!(!create.is_finished());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap()
+                .incarnation,
+            1
+        );
+        drop(handoff);
+        drop(reservation);
+        let recreated = tokio::time::timeout(Duration::from_secs(10), create)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(recreated.identity.incarnation, 2);
+        let current = host.get_public_agent(agent_id).await.unwrap();
+        let state = current.agent_state().await.unwrap();
+        assert!(old
+            .update_agent_state(|state| {
+                state.total_input_tokens = 999_999;
+                Ok(())
+            })
+            .await
+            .is_err());
+        assert_eq!(
+            host.runtime_db().agent_states().latest(agent_id).unwrap(),
+            Some(state)
+        );
+        assert!(
+            owner.capture().unwrap().is_none(),
+            "old namespace must not publish a successor State"
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reincarnation_rejects_unknown_old_scope_without_creating_home() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-reincarnation-unknown";
+        let _old = identity_owner_deleted_fixture(&host, agent_id).await;
+        let before = host.runtime_db().agent_states().latest(agent_id).unwrap();
+        let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+        let key = {
+            let mut reservation = owner.reserve().await.unwrap();
+            reservation.begin(ids::audit_event_id()).unwrap()
+        };
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(host
+            .create_public_named_agent(agent_id, None, None, None)
+            .await
+            .is_err());
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.incarnation, 1);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert_eq!(
+            host.runtime_db().agent_states().latest(agent_id).unwrap(),
+            before
+        );
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(
+            matches!(owner.capture(), Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key)
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn archive_known_publication_fault_still_drains_instance_and_home() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-private-known";
+        let runtime = identity_owner_private_fixture(&host, agent_id).await;
+        let before = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        host.fail_next_external_mutation_publication();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            host.archive_private_agent(agent_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert_eq!(
+            identity.revision,
+            before.revision + 1,
+            "known recovery must not repeat tombstone SQL"
+        );
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert!(!runtime.accepts_execution_admission());
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(host
+            .bridge()
+            .mutation_owner_for(agent_id, 1)
+            .unwrap()
+            .capture()
+            .is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_private_archive_finishes_drain_while_host_is_closing() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-private-cancel";
+        let runtime = identity_owner_private_fixture(&host, agent_id).await;
+        let release = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        let owner = host.bridge().mutation_owner_for(agent_id, 1).unwrap();
+        let reservation = owner.reserve().await.unwrap();
+        let bootstrap_lock = host.agent_bootstrap_lock(agent_id);
+        let archive = {
+            let host = host.clone();
+            tokio::spawn(async move { host.archive_private_agent(agent_id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while bootstrap_lock.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        archive.abort();
+        assert!(archive.await.unwrap_err().is_cancelled());
+        let shutdown = {
+            let host = host.clone();
+            tokio::spawn(async move { host.shutdown().await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host.inner.runtimes.read().await.phase == HostRuntimePhase::Closing {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(reservation);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(agent_id)
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    == AgentRegistryStatus::Deleted
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shutdown.is_finished());
+        assert!(
+            host.agent_data_dir(agent_id).exists(),
+            "home must outlive accepted mutations"
+        );
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!host.agent_data_dir(agent_id).exists());
+        assert!(!runtime.accepts_execution_admission());
+    }
+
+    #[tokio::test]
+    async fn public_deletion_known_publication_fault_still_drains_instance() {
+        let (_home, host) = test_host();
+        let agent_id = "owner-public-known";
+        host.create_public_named_agent(agent_id, None, None, None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
+        host.fail_next_external_mutation_publication();
+        let (identity, job, created) = host
+            .begin_public_agent_deletion(agent_id, false, "owner-known-fixture")
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(identity.status, AgentRegistryStatus::Deleting);
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(agent_id)
+                .unwrap(),
+            Some(job)
+        );
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert!(!runtime.accepts_execution_admission());
+        assert!(host
+            .bridge()
+            .mutation_owner_for(agent_id, 1)
+            .unwrap()
+            .capture()
+            .is_ok());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_temporary_cleanup_retains_instance_responsibility() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let release = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        let cleanup = {
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            let runtime = runtime.clone();
+            tokio::spawn(async move {
+                host.cleanup_temporary_runtime(agent_id, runtime, runtime_task)
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host
+                .inner
+                .external_mutation_tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|task| task.is_finished())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        cleanup.abort();
+        assert!(cleanup.await.unwrap_err().is_cancelled());
+        let shutdown = {
+            let host = host.clone();
+            tokio::spawn(async move { host.shutdown().await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if host.inner.runtimes.read().await.phase == HostRuntimePhase::Closing {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shutdown.is_finished());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(!host.agent_data_dir(&agent_id).exists());
+        assert!(!runtime.accepts_execution_admission());
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_after_closing_keeps_host_exit_responsibility() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let scheduler = runtime_task.abort_handle();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+        let release = Arc::new(Notify::new());
+        runtime
+            .spawn_owned_mutation({
+                let release = release.clone();
+                async move { release.notified().await }
+            })
+            .unwrap();
+        let shutdown = {
+            let host = host.clone();
+            tokio::spawn(async move { host.shutdown().await })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.inner.runtimes.read().await.phase == HostRuntimePhase::Open {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(host
+            .cleanup_temporary_runtime(agent_id.clone(), runtime.clone(), runtime_task)
+            .await
+            .is_err());
+        assert!(!shutdown.is_finished());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(scheduler.is_finished());
+        assert!(!runtime.accepts_execution_admission());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .is_empty());
+        let identity_count = host
+            .runtime_db()
+            .agent_identities()
+            .latest_all()
+            .unwrap()
+            .len();
+        assert!(host.spawn_temporary_runtime("run").await.is_err());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest_all()
+                .unwrap()
+                .len(),
+            identity_count
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_success_releases_host_entry_before_shutdown() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+        host.cleanup_temporary_runtime(agent_id.clone(), runtime, runtime_task)
+            .await
+            .unwrap();
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .is_empty());
+        assert!(!host.agent_data_dir(&agent_id).exists());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn temporary_shutdown_preserves_unknown_from_late_accepted_host_writer() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let scheduler = runtime_task.abort_handle();
+        let owner = host
+            .bridge()
+            .mutation_owner_for(&agent_id, runtime.instance_incarnation())
+            .unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let (key_tx, key_rx) = oneshot::channel();
+        let caller = tokio::spawn({
+            let host = host.clone();
+            let agent_id = agent_id.clone();
+            let started = started.clone();
+            let release = release.clone();
+            async move {
+                let worker_host = host.clone();
+                host.run_owned_external_mutation(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    assert_eq!(
+                        worker_host.runtime_db().agent_identities().latest(&agent_id)?.unwrap().status,
+                        AgentRegistryStatus::Deleted
+                    );
+                    let mut reservations = worker_host
+                        .reserve_agent_mutations(&[agent_id.clone()])
+                        .await?;
+                    let before = worker_host.runtime_db().agent_states().latest(&agent_id)?.unwrap();
+                    let mut candidate = before.clone();
+                    candidate.total_input_tokens += 1;
+                    let before_payload = serde_json::to_string(&before)?;
+                    let candidate_payload = serde_json::to_string(&candidate)?;
+                    let result = worker_host
+                        .commit_external_agent_states(
+                            &mut reservations,
+                            vec![candidate.clone()],
+                            "fixture-late-temporary-writer".into(),
+                            || {
+                                // Match the real model-migration State CAS:
+                                // an accepted Host writer may finish after retirement.
+                                worker_host.runtime_db().transaction(|tx| {
+                                    let changed = tx.execute(
+                                        "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2 AND payload_json = ?3",
+                                        rusqlite::params![candidate_payload, agent_id, before_payload],
+                                    )?;
+                                    anyhow::ensure!(changed == 1, "fixture State CAS must commit");
+                                    Ok(())
+                                })?;
+                                Err::<(), _>(crate::runtime_db::persistence::mark_persistence_failure(
+                                    anyhow!("fixture lost late Host State acknowledgment"),
+                                    crate::runtime_db::PersistenceCertainty::Indeterminate,
+                                    crate::runtime_db::persistence::PersistenceFailurePhase::Commit,
+                                    None,
+                                ))
+                            },
+                        )
+                        .await;
+                    let recovery = reservations[0].recovery()?.context("fixture recovery is missing")?;
+                    let _ = key_tx.send((recovery.key, candidate));
+                    result
+                })
+                .await
+            }
+        });
+        started.notified().await;
+        let shutdown = tokio::spawn({
+            let host = host.clone();
+            async move { host.shutdown().await }
+        });
+        // The first drain and metadata publication completed; shutdown must
+        // still await the accepted Host writer before releasing this instance.
+        let retired_identity = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let identity = host
+                    .runtime_db()
+                    .agent_identities()
+                    .latest(&agent_id)
+                    .unwrap()
+                    .unwrap();
+                let closing = host.inner.runtimes.read().await.phase == HostRuntimePhase::Closing;
+                if closing
+                    && identity.status == AgentRegistryStatus::Deleted
+                    && owner.capture().is_ok()
+                {
+                    break identity;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!shutdown.is_finished());
+        release.notify_one();
+        let (key, committed_state) = tokio::time::timeout(Duration::from_secs(5), key_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let caller_error = tokio::time::timeout(Duration::from_secs(5), caller)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            crate::runtime_db::persistence_certainty(&caller_error),
+            Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
+        );
+        let shutdown_error = tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            format!("{shutdown_error:#}").contains(&key.operation_id),
+            "shutdown must report the original unresolved operation: {shutdown_error:#}"
+        );
+        assert!(scheduler.is_finished());
+        assert!(!runtime.accepts_execution_admission());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert_eq!(
+            host.runtime_db().agent_states().latest(&agent_id).unwrap(),
+            Some(committed_state),
+            "the late State SQL really committed despite its missing ACK"
+        );
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap(),
+            Some(retired_identity)
+        );
+        assert!(matches!(owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key));
+        let reservation = owner.reserve().await.unwrap();
+        let recovery = reservation.recovery().unwrap().unwrap();
+        assert_eq!(recovery.key, key);
+        assert!(recovery.known.is_none());
+        let registry = host.inner.runtimes.read().await;
+        assert_eq!(registry.phase, HostRuntimePhase::Closed);
+        assert!(registry.temporary_runtimes.contains_key(&agent_id));
+    }
+
+    #[tokio::test]
+    async fn temporary_cleanup_unknown_outcome_preserves_identity_and_home() {
+        let (_home, host) = test_host();
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let owner = host.bridge().mutation_owner_for(&agent_id, 1).unwrap();
+        let key = {
+            let mut reservation = owner.reserve().await.unwrap();
+            reservation.begin(ids::audit_event_id()).unwrap()
+        };
+        assert!(host
+            .cleanup_temporary_runtime(agent_id.clone(), runtime.clone(), runtime_task)
+            .await
+            .is_err());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        assert!(!runtime.accepts_execution_admission());
+        assert!(
+            matches!(owner.capture(), Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key)
+        );
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+        assert!(host.shutdown().await.is_err());
+        assert!(host.agent_data_dir(&agent_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+        assert!(
+            matches!(owner.capture(), Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key)
+        );
+        assert!(host
+            .inner
+            .runtimes
+            .read()
+            .await
+            .temporary_runtimes
+            .contains_key(&agent_id));
+    }
+
     #[tokio::test]
     async fn archive_private_agent_aborts_pending_queue_entries() {
         let (_home, host) = test_host();
@@ -22487,6 +27940,21 @@ mod tests {
             .latest("msg-queued-delete-1")
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn runtime_entry_fixture_inspection_observes_without_activation() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        assert!(!host.has_runtime_entry_for_fixture(&agent_id).await);
+        assert!(!host.has_runtime_entry_for_fixture("missing").await);
+        assert!(host.inner.runtimes.read().await.agents.is_empty());
+
+        let _runtime = host.default_runtime().await.expect("load actual runtime");
+        assert!(host.has_runtime_entry_for_fixture(&agent_id).await);
+        assert!(!host.has_runtime_entry_for_fixture("missing").await);
+        assert_eq!(host.inner.runtimes.read().await.agents.len(), 1);
+        host.shutdown().await.expect("shutdown host");
     }
 
     #[tokio::test]
@@ -22771,13 +28239,14 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_activates_active_task_owners_and_waits_for_bootstrap() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-task-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        storage
-            .append_task(&TaskRecord {
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
                 id: "task-startup-owner".into(),
                 agent_id: agent_id.into(),
                 kind: crate::types::TaskKind::CommandTask,
@@ -22789,10 +28258,17 @@ mod tests {
                 summary: Some("startup owner task".into()),
                 detail: None,
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+        host.unload_runtime(agent_id).await;
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -22804,7 +28280,12 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Interrupted);
         let message_id = format!("message:task-restart:{}", task.id);
         assert!(storage.read_message_by_id(&message_id).unwrap().is_some());
-        assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
+        assert!(
+            host.try_get_loaded_runtime(agent_id).await.is_some(),
+            "startup owner must remain loaded; state={:?}; events={:?}",
+            storage.read_agent(),
+            storage.read_recent_events(40),
+        );
     }
 
     struct QueuedStartupProvider(Arc<std::sync::atomic::AtomicUsize>);
@@ -23053,35 +28534,31 @@ mod tests {
         let storage = host.agent_storage(agent_id).unwrap();
         let mut work_item = WorkItemRecord::new(agent_id, "wait for review", WorkItemState::Open);
         work_item.id = "work-startup-external".into();
-        storage.append_work_item(&work_item).unwrap();
         let now = Utc::now();
-        storage
-            .append_wait_condition(&WaitConditionRecord {
-                id: "wait-startup-external".into(),
-                agent_id: agent_id.into(),
-                work_item_id: Some(work_item.id.clone()),
-                status: WaitConditionStatus::Active,
-                kind: WaitConditionKind::External,
-                source: Some("github".into()),
-                subject_ref: Some("github:holon-run/holon#2528".into()),
-                waiting_for: "review".into(),
-                wake_sources: vec![WakeSource::ExternalIngress {
-                    external_trigger_id: Some("trigger-startup-external".into()),
-                }],
-                continuation: None,
-                created_at: now,
-                updated_at: now,
-                expires_at: None,
-                resolved_at: None,
-                cancelled_at: None,
-                turn_id: None,
-                trigger_message_id: None,
-                triggered_at: None,
-            })
-            .unwrap();
+        let wait = WaitConditionRecord {
+            id: "wait-startup-external".into(),
+            agent_id: agent_id.into(),
+            work_item_id: Some(work_item.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("github:holon-run/holon#2528".into()),
+            waiting_for: "review".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-startup-external".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        };
         let mut state = storage.read_agent().unwrap().unwrap();
         state.current_work_item_id = Some(work_item.id.clone());
-        storage.write_agent(&state).unwrap();
         let mut message = MessageEnvelope::new(
             agent_id,
             MessageKind::OperatorPrompt,
@@ -23097,15 +28574,104 @@ mod tests {
         );
         message.id = "msg-startup-interrupted-prompt".into();
         message.turn_id = Some("turn-startup-interrupted-prompt".into());
-        storage.append_message(&message).unwrap();
-        storage
-            .append_queue_entry(&QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: agent_id.into(),
-                priority: message.priority,
-                status: QueueEntryStatus::Interrupted,
-                created_at: message.created_at,
-                updated_at: now,
+        // This Fresh identity was already created and unloaded. Seed the
+        // interrupted input through one actual write/qualification transaction.
+        host.runtime_db()
+            .transaction(|tx| {
+                let identity =
+                    crate::runtime_db::context_inputs::ContextDurableRead::new(tx, agent_id)
+                        .scope_facts()?
+                        .identity
+                        .expect("fixture identity");
+                let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                    agent_id: agent_id.into(),
+                    identity_incarnation: identity.incarnation,
+                };
+                let work_keys = [
+                    crate::runtime::resident_work::WorkKey::new(
+                        crate::runtime::resident_work::WorkFamily::Work,
+                        &work_item.id,
+                    ),
+                    crate::runtime::resident_work::WorkKey::new(
+                        crate::runtime::resident_work::WorkFamily::Wait,
+                        &wait.id,
+                    ),
+                ]
+                .into_iter()
+                .collect();
+                let work_proof = crate::runtime_db::work_snapshot::prepare_work_write_tx(
+                    tx, &scope, &work_keys,
+                )?;
+                assert!(crate::runtime_db::repositories::insert_new_work_item_tx(
+                    tx, &work_item,
+                )?);
+                let writes = crate::runtime_db::repositories::upsert_wait_condition_with_writes_tx(
+                    tx, &wait,
+                )?;
+                assert!(writes.primary_applied);
+                assert_eq!(writes.wait_ids, [wait.id.clone()].into_iter().collect());
+                let work_execution = crate::domain::execution_protocol::WorkItemExecutionRecord {
+                    source_revision: work_item.revision,
+                    state: crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                        generation: work_item.revision.max(1),
+                        wait: crate::domain::execution_protocol::WaitReference {
+                            wait_id: wait.id.clone(),
+                        },
+                    },
+                };
+                let mut protocol =
+                    crate::domain::execution_protocol::ExecutionProtocolState::empty(agent_id);
+                protocol
+                    .work_items
+                    .insert(work_item.id.clone(), work_execution.clone());
+                crate::runtime_db::transitions::persist_state_tx(tx, &protocol)?;
+                let actual = crate::runtime_db::evidence::append_message_tx(tx, &message)?.0;
+                crate::runtime_db::repositories::upsert_queue_entry_tx(
+                    tx,
+                    &QueueEntryRecord {
+                        message_id: actual.id.clone(),
+                        agent_id: agent_id.into(),
+                        priority: actual.priority.clone(),
+                        status: QueueEntryStatus::Interrupted,
+                        created_at: actual.created_at,
+                        updated_at: now,
+                    },
+                )?;
+                state.pending = 1;
+                state.total_message_count = 1;
+                crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
+                crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
+                    tx,
+                    &scope,
+                    &[
+                        crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence::Message(
+                            actual,
+                        ),
+                        crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence::WorkExecution {
+                            work_item_id: work_item.id.clone(),
+                            record: work_execution,
+                        },
+                    ],
+                )?;
+                let limits = host.inner.input_evidence_budget.limits();
+                crate::runtime_db::work_snapshot::register_work_writes_tx(
+                    tx,
+                    &work_proof,
+                    &work_keys,
+                    &Default::default(),
+                    &state,
+                    &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                        capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                        record_limit: usize::try_from(limits.record_limit)?,
+                        byte_limit: usize::try_from(
+                            limits
+                                .history_per_agent_bytes
+                                .checked_add(limits.pending_per_agent_bytes)
+                                .expect("fixture Work byte limit"),
+                        )?,
+                    },
+                )?;
+                Ok(())
             })
             .unwrap();
 
@@ -23132,7 +28698,14 @@ mod tests {
             .is_empty());
         tokio::time::timeout(Duration::from_secs(5), &mut started_wait)
             .await
-            .expect("startup recovery should replay the interrupted prompt");
+            .unwrap_or_else(|error| {
+                let storage = restarted.agent_storage(agent_id).unwrap();
+                panic!(
+                    "startup recovery should replay the interrupted prompt: {error}; state={:?}; events={:?}",
+                    storage.read_agent(),
+                    storage.read_recent_events(60),
+                );
+            });
 
         let runtime = restarted
             .try_get_loaded_runtime(agent_id)
@@ -23151,16 +28724,14 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_converges_stopped_task_owner_without_reentry() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "stopped-task-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        let mut state = storage.read_agent().unwrap().unwrap();
-        state.status = AgentStatus::Stopped;
-        storage.write_agent(&state).unwrap();
-        storage
-            .append_task(&TaskRecord {
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
                 id: "task-stopped-owner".into(),
                 agent_id: agent_id.into(),
                 kind: crate::types::TaskKind::CommandTask,
@@ -23172,9 +28743,19 @@ mod tests {
                 summary: Some("stopped owner task".into()),
                 detail: None,
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+        host.unload_runtime(agent_id).await;
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.status = AgentStatus::Stopped;
+        storage.write_agent_for_fixture(&state).unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23254,24 +28835,35 @@ mod tests {
         let agent_id = "startup-timer-owner";
         host.create_named_agent(agent_id, None).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        let mut work_item = WorkItemRecord::new(agent_id, "wait for timer", WorkItemState::Open);
-        work_item.id = "work-startup-timer".into();
-        storage.append_work_item(&work_item).unwrap();
+        let work_item = {
+            let runtime = host
+                .try_get_loaded_runtime(agent_id)
+                .await
+                .expect("created agent runtime should stay loaded");
+            Box::pin(runtime.create_work_item("wait for timer".into(), None, None, Vec::new()))
+                .await
+                .unwrap()
+        };
         let now = Utc::now();
         // The timer is created already overdue. Overdue state comes from
         // wall-clock time passing while the agent is unloaded, not from a
         // record rewrite: the timers upsert guard rejects writes whose
         // effective updated_at (next_fire_at) moves backwards.
-        host.runtime_db()
-            .timers()
-            .upsert(&startup_timer_fixture(
+        crate::runtime::tests::support::persist_timer_creation_for_restart(
+            &host
+                .try_get_loaded_runtime(agent_id)
+                .await
+                .expect("original Timer creation owner must be loaded"),
+            &startup_timer_fixture(
                 "timer-startup-owner-1",
                 agent_id,
                 TimerStatus::Active,
                 None,
                 Some(now - chrono::Duration::minutes(30)),
-            ))
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
         // Register the wait through the live runtime so the durable wait
         // condition and its timer wake binding are real, rather than a
         // hand-written condition that skips wake admission state.
@@ -23303,12 +28895,13 @@ mod tests {
             .latest(&work_item.id)
             .unwrap()
             .unwrap();
-        crate::runtime::tests::support::seed_waiting_work_execution(
+        host.unload_runtime(agent_id).await;
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        crate::runtime::tests::support::seed_waiting_work_execution_for_unloaded_host(
             &storage,
             &registered_work_item,
             &registration.condition.id,
         );
-        host.unload_runtime(agent_id).await;
 
         // The timer is the only recovery signal: no queue or task candidates exist.
         assert!(storage.latest_queue_entries().unwrap().is_empty());
@@ -23337,10 +28930,15 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        restarted
-            .try_get_loaded_runtime(agent_id)
-            .await
-            .expect("startup recovery should activate the timer-only owner");
+        assert!(
+            restarted.try_get_loaded_runtime(agent_id).await.is_some(),
+            "startup recovery should activate the timer-only owner; state={:?}; events={:?}",
+            restarted.runtime_db().agent_states().latest(agent_id),
+            restarted
+                .agent_storage(agent_id)
+                .unwrap()
+                .read_recent_events(30),
+        );
         let storage = restarted.agent_storage(agent_id).unwrap();
         let timer = storage
             .latest_timer_record("timer-startup-owner-1")
@@ -23370,24 +28968,31 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_discovers_timer_only_owner_without_wait_records() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-no-wait";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
         let storage = host.agent_storage(agent_id).unwrap();
         let overdue = Utc::now() - chrono::Duration::minutes(5);
-        host.runtime_db()
-            .timers()
-            .upsert(&startup_timer_fixture(
+        crate::runtime::tests::support::persist_timer_creation_for_restart(
+            &host
+                .try_get_loaded_runtime(agent_id)
+                .await
+                .expect("original Timer creation owner must be loaded"),
+            &startup_timer_fixture(
                 "timer-startup-no-wait-1",
                 agent_id,
                 TimerStatus::Active,
                 None,
                 Some(overdue),
-            ))
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
+        host.unload_runtime(agent_id).await;
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23473,6 +29078,7 @@ mod tests {
             recheck_enqueued,
             "startup recovery should emit the deterministic wait recheck"
         );
+        let restarted = restart_fixture_host(restarted).await;
         restarted
             .recover_orphaned_queue_claims_at_startup()
             .await
@@ -23518,8 +29124,9 @@ mod tests {
         let storage = host.agent_storage(agent_id).unwrap();
         let mut state = storage.read_agent().unwrap().unwrap();
         state.status = AgentStatus::Stopped;
-        storage.write_agent(&state).unwrap();
+        storage.write_agent_for_fixture(&state).unwrap();
 
+        let host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23549,25 +29156,32 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_overdue_repeating_timer_fires_once_and_keeps_cadence() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-repeating";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
         let storage = host.agent_storage(agent_id).unwrap();
         // Overdue by five hourly periods; recovery must catch up once, not replay all.
         let overdue = Utc::now() - chrono::Duration::hours(5);
-        host.runtime_db()
-            .timers()
-            .upsert(&startup_timer_fixture(
+        crate::runtime::tests::support::persist_timer_creation_for_restart(
+            &host
+                .try_get_loaded_runtime(agent_id)
+                .await
+                .expect("original Timer creation owner must be loaded"),
+            &startup_timer_fixture(
                 "timer-startup-repeating-1",
                 agent_id,
                 TimerStatus::Active,
                 Some(3_600_000),
                 Some(overdue),
-            ))
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
+        host.unload_runtime(agent_id).await;
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23586,7 +29200,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_keeps_terminal_timer_owner_and_unrelated_agents_unloaded() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let terminal_agent_id = "startup-timer-terminal";
         let unrelated_agent_id = "startup-agent-no-timer";
         for agent_id in [terminal_agent_id, unrelated_agent_id] {
@@ -23616,6 +29230,8 @@ mod tests {
             ))
             .unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23634,14 +29250,14 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_skips_stopped_timer_only_owner() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-stopped";
         host.create_named_agent(agent_id, None).await.unwrap();
         host.unload_runtime(agent_id).await;
         let storage = host.agent_storage(agent_id).unwrap();
         let mut state = storage.read_agent().unwrap().unwrap();
         state.status = AgentStatus::Stopped;
-        storage.write_agent(&state).unwrap();
+        storage.write_agent_for_fixture(&state).unwrap();
         let overdue = Utc::now() - chrono::Duration::minutes(15);
         host.runtime_db()
             .timers()
@@ -23665,8 +29281,10 @@ mod tests {
             })
             .unwrap();
         state.pending = 1;
-        storage.write_agent(&state).unwrap();
+        storage.write_agent_for_fixture(&state).unwrap();
 
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23695,13 +29313,14 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_activates_timer_and_task_owner_once() {
-        let (_home, host) = canonical_test_host();
+        let (_home, mut host) = canonical_test_host();
         let agent_id = "startup-timer-and-task";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
+        let runtime = host.get_public_agent(agent_id).await.unwrap();
         let storage = host.agent_storage(agent_id).unwrap();
-        storage
-            .append_task(&TaskRecord {
+        crate::runtime::tests::support::persist_task_transition(
+            &runtime,
+            &TaskRecord {
                 id: "task-startup-timer-owner".into(),
                 agent_id: agent_id.into(),
                 kind: crate::types::TaskKind::CommandTask,
@@ -23713,21 +29332,34 @@ mod tests {
                 summary: Some("startup timer owner task".into()),
                 detail: None,
                 recovery: None,
-            })
-            .unwrap();
+            },
+            "startup_original_task_fixture",
+        )
+        .await
+        .unwrap();
+        drop(runtime);
+
         let overdue = Utc::now() - chrono::Duration::minutes(10);
-        host.runtime_db()
-            .timers()
-            .upsert(&startup_timer_fixture(
+        crate::runtime::tests::support::persist_timer_creation_for_restart(
+            &host
+                .try_get_loaded_runtime(agent_id)
+                .await
+                .expect("original Timer creation owner must be loaded"),
+            &startup_timer_fixture(
                 "timer-startup-and-task-1",
                 agent_id,
                 TimerStatus::Active,
                 None,
                 Some(overdue),
-            ))
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
+        host.unload_runtime(agent_id).await;
 
         assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        // Startup recovery runs on a new Host before any runtime activation.
+        host = restart_fixture_host(host).await;
         host.recover_orphaned_queue_claims_at_startup()
             .await
             .unwrap();
@@ -23744,7 +29376,12 @@ mod tests {
         assert_eq!(timer.status, TimerStatus::Completed);
         assert_eq!(timer.fire_count, 1);
         assert_startup_timer_tick_count(&storage, "timer-startup-and-task-1", 1);
-        assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
+        assert!(
+            host.try_get_loaded_runtime(agent_id).await.is_some(),
+            "startup owner must remain loaded; state={:?}; events={:?}",
+            storage.read_agent(),
+            storage.read_recent_events(40),
+        );
     }
 
     #[tokio::test]
@@ -23753,19 +29390,25 @@ mod tests {
         let config = host.config().as_ref().clone();
         let agent_id = "startup-timer-once";
         host.create_named_agent(agent_id, None).await.unwrap();
-        host.unload_runtime(agent_id).await;
         let storage = host.agent_storage(agent_id).unwrap();
         let overdue = Utc::now() - chrono::Duration::minutes(20);
-        host.runtime_db()
-            .timers()
-            .upsert(&startup_timer_fixture(
+        crate::runtime::tests::support::persist_timer_creation_for_restart(
+            &host
+                .try_get_loaded_runtime(agent_id)
+                .await
+                .expect("original Timer creation owner must be loaded"),
+            &startup_timer_fixture(
                 "timer-startup-once-1",
                 agent_id,
                 TimerStatus::Active,
                 None,
                 Some(overdue),
-            ))
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
+        host.unload_runtime(agent_id).await;
+
         drop(storage);
         drop(host);
 
@@ -23935,16 +29578,31 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovery_recovers_prior_process_claims_and_settles_completed_sources() {
-        let (_home, host) = test_host();
-        // Isolate persisted recovery from live replay; owner activation is tested separately.
+        use crate::runtime_db::{
+            evidence::{
+                append_message_tx, insert_brief_evidence_tx, insert_delivery_summary_evidence_tx,
+                upsert_agent_state_tx,
+            },
+            migrations::{apply_migration, ensure_migration_table, MIGRATIONS},
+            repositories::{upsert_queue_entry_tx, upsert_turn_record_tx},
+        };
+        // Model actual pre-feature orphaned rows, before the fixed cutover.
+        // Current-schema raw inserts cannot acquire an old unbound seed.
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        std::fs::create_dir_all(config.runtime_db_path().parent().unwrap()).unwrap();
+        let mut connection = rusqlite::Connection::open(config.runtime_db_path()).unwrap();
+        ensure_migration_table(&connection).unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version <= 81)
+        {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        let tx = connection.transaction().unwrap();
         let agent_id = "startup-unregistered-claims".to_string();
-        let runtime_db = host.runtime_db().clone();
-        let storage = AppStorage::new_for_agent(
-            host.agent_data_dir(&agent_id),
-            agent_id.clone(),
-            runtime_db.clone(),
-        )
-        .unwrap();
 
         let make_message = |id: &str| {
             let mut msg = MessageEnvelope::new(
@@ -23974,17 +29632,13 @@ mod tests {
 
         // Orphaned: no activation, no terminal turn
         let msg_a = make_message("msg-orphaned");
-        storage.append_message(&msg_a).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_a, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_a = append_message_tx(&tx, &msg_a).unwrap().0;
+        upsert_queue_entry_tx(&tx, &make_queue_entry(&msg_a, QueueEntryStatus::Dequeued)).unwrap();
 
         // A prior-process execution attempt must be interrupted with its claim.
         let msg_b = make_message("msg-activated");
-        storage.append_message(&msg_b).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_b, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_b = append_message_tx(&tx, &msg_b).unwrap().0;
+        upsert_queue_entry_tx(&tx, &make_queue_entry(&msg_b, QueueEntryStatus::Dequeued)).unwrap();
         let attempt = ExecutionAttempt {
             input_projection: None,
             attempt_id: format!("activation:message:{}", msg_b.id),
@@ -23994,7 +29648,7 @@ mod tests {
                 identity: ExecutionSourceIdentity::QueueMessage {
                     message_id: msg_b.id.clone(),
                 },
-                generation: 1,
+                generation: msg_b.message_seq.unwrap(),
             },
             binding: ExecutionBinding::AgentLifecycle {
                 agent_id: agent_id.clone(),
@@ -24007,7 +29661,7 @@ mod tests {
                 causation_id: None,
             },
             admitted_fences: AdmittedFences {
-                source_revision: 1,
+                source_revision: msg_b.message_seq.unwrap(),
                 work_item_source_revision: None,
                 work_item_generation: None,
                 rejoin: None,
@@ -24015,7 +29669,7 @@ mod tests {
                 host_registry_revision: 1,
             },
             state: ExecutionAttemptState::Open,
-            run_id: None,
+            run_id: Some("prior-process-claim-run".into()),
             turn_id: None,
             recovery_of_attempt_id: None,
             terminal_outcome_id: None,
@@ -24026,19 +29680,19 @@ mod tests {
         let mut execution =
             crate::domain::execution_protocol::ExecutionProtocolState::empty(&agent_id);
         execution.attempts.insert(attempt_id.clone(), attempt);
-        runtime_db
-            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        crate::runtime_db::transitions::persist_state_tx(&tx, &execution)
             .expect("persist execution protocol fixture");
 
         // A legacy activation without a unified attempt no longer protects a claim.
         let msg_legacy = make_message("msg-legacy-activation");
-        storage.append_message(&msg_legacy).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_legacy, QueueEntryStatus::Dequeued))
-            .unwrap();
-        runtime_db
-            .transaction(|tx| {
-                tx.execute(
+        let msg_legacy = append_message_tx(&tx, &msg_legacy).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_legacy, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
+        {
+            tx.execute(
                     "INSERT INTO scheduler_activations
                        (agent_id, activation_id, authority_id, owner_kind, owner_id,
                         work_item_id, admitted_generation, admission_kind,
@@ -24051,17 +29705,13 @@ mod tests {
                         Utc::now().timestamp_millis(),
                         Utc::now().timestamp_millis(),
                     ],
-                )?;
-                Ok(())
-            })
-            .expect("insert legacy activation");
+                ).expect("insert legacy activation");
+        }
 
         // Has terminal turn: completion evidence settles the stale claim.
         let msg_c = make_message("msg-terminal");
-        storage.append_message(&msg_c).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_c, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_c = append_message_tx(&tx, &msg_c).unwrap().0;
+        upsert_queue_entry_tx(&tx, &make_queue_entry(&msg_c, QueueEntryStatus::Dequeued)).unwrap();
         let mut turn = crate::types::TurnRecord::new(&agent_id, "turn-terminal", 0);
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&msg_c));
         turn.terminal = Some(crate::types::TurnTerminalSummary {
@@ -24071,17 +29721,16 @@ mod tests {
             completed_at: Utc::now(),
             duration_ms: 100,
         });
-        runtime_db
-            .turn_records()
-            .upsert(&turn)
-            .expect("upsert turn");
+        upsert_turn_record_tx(&tx, &turn).expect("upsert turn");
 
         // Has a result brief without a terminal turn: should also settle, not replay.
         let msg_result = make_message("msg-result-brief");
-        storage.append_message(&msg_result).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_result, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_result = append_message_tx(&tx, &msg_result).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_result, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
         let result_brief = BriefRecord::new(
             &agent_id,
             BriefKind::Result,
@@ -24089,14 +29738,16 @@ mod tests {
             Some(msg_result.id.clone()),
             None,
         );
-        storage.append_brief(&result_brief).unwrap();
+        insert_brief_evidence_tx(&tx, &result_brief).unwrap();
 
         // Has failure evidence: should settle as aborted, not replay.
         let msg_failure = make_message("msg-failure-brief");
-        storage.append_message(&msg_failure).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_failure, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_failure = append_message_tx(&tx, &msg_failure).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_failure, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
         let failure_brief = BriefRecord::new(
             &agent_id,
             BriefKind::Failure,
@@ -24104,19 +29755,21 @@ mod tests {
             Some(msg_failure.id.clone()),
             None,
         );
-        storage.append_brief(&failure_brief).unwrap();
+        insert_brief_evidence_tx(&tx, &failure_brief).unwrap();
 
         // Has delivery evidence attached to its trigger turn: should settle, not replay.
         let msg_delivery = make_message("msg-delivery");
-        storage.append_message(&msg_delivery).unwrap();
-        storage
-            .append_queue_entry(&make_queue_entry(&msg_delivery, QueueEntryStatus::Dequeued))
-            .unwrap();
+        let msg_delivery = append_message_tx(&tx, &msg_delivery).unwrap().0;
+        upsert_queue_entry_tx(
+            &tx,
+            &make_queue_entry(&msg_delivery, QueueEntryStatus::Dequeued),
+        )
+        .unwrap();
         let mut delivery_turn = crate::types::TurnRecord::new(&agent_id, "turn-delivery", 1);
         delivery_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
             &msg_delivery,
         ));
-        storage.append_turn(&delivery_turn).unwrap();
+        upsert_turn_record_tx(&tx, &delivery_turn).unwrap();
         let mut delivery = DeliverySummaryRecord::new(
             &agent_id,
             "work-delivery",
@@ -24125,7 +29778,26 @@ mod tests {
             None,
         );
         delivery.turn_id = Some(delivery_turn.turn_id);
-        storage.append_delivery_summary(&delivery).unwrap();
+        insert_delivery_summary_evidence_tx(&tx, &delivery).unwrap();
+        // The old process claimed input but had not started a Turn yet.
+        let mut prior_state = AgentState::new(&agent_id);
+        prior_state.status = AgentStatus::AwakeRunning;
+        prior_state.current_run_id = Some("prior-process-claim-run".into());
+        prior_state.pending = 7;
+        prior_state.total_message_count = 7;
+        upsert_agent_state_tx(&tx, &prior_state).unwrap();
+        tx.commit().unwrap();
+        drop(connection);
+
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let runtime_db = host.runtime_db().clone();
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(&agent_id),
+            agent_id.clone(),
+            runtime_db.clone(),
+        )
+        .unwrap();
 
         let recovered = host
             .recover_orphaned_queue_claims_at_startup()
@@ -24197,5 +29869,234 @@ mod tests {
                 && event.data["next_status"] == "aborted"
                 && event.data["reason"] == "terminal_failure_completion_evidence"
         }));
+    }
+    #[tokio::test]
+    async fn host_state_only_commit_preserves_loaded_episode_domain() {
+        let (_home, host) = test_host();
+        host.create_named_agent("state-only-episodes", None)
+            .await
+            .unwrap();
+        let runtime = host.get_public_agent("state-only-episodes").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        let owner = host
+            .bridge()
+            .mutation_owner_for("state-only-episodes", runtime.instance_incarnation())
+            .unwrap();
+        let before_root = owner.capture().unwrap().unwrap();
+        let episodes = before_root.episodes.as_ref().unwrap().clone();
+        let mut reservations = host
+            .reserve_agent_mutations(&["state-only-episodes".into()])
+            .await
+            .unwrap();
+        let before = host
+            .runtime_db()
+            .agent_states()
+            .latest("state-only-episodes")
+            .unwrap()
+            .unwrap();
+        let mut candidate = before.clone();
+        candidate.total_input_tokens += 1;
+        let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+            agent_id: candidate.id.clone(),
+            expected_incarnation: Some(runtime.instance_incarnation()),
+            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(before)),
+                record: Box::new(candidate.clone()),
+            },
+            audit_events: Vec::new(),
+            fault: None,
+        };
+        host.commit_external_agent_states(
+            &mut reservations,
+            vec![candidate.clone()],
+            "fixture-state-only-preserves-episodes".into(),
+            || {
+                host.runtime_db()
+                    .transitions()
+                    .commit_agent_posture(&command)
+            },
+        )
+        .await
+        .unwrap();
+        drop(reservations);
+        let root = owner.capture().unwrap().unwrap();
+        assert_eq!(root.state.as_ref(), &candidate);
+        assert!(Arc::ptr_eq(root.episodes.as_ref().unwrap(), &episodes));
+        assert_eq!(runtime.agent_state().await.unwrap(), candidate);
+        runtime
+            .preview_prompt(
+                "check resident continuity".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        host.shutdown().await.unwrap();
+    }
+
+    fn commit_cold_control_run_fixture(
+        host: &RuntimeHost,
+        agent_id: &str,
+        command_id: &str,
+    ) -> (
+        crate::runtime_db::control_transition::ControlKey,
+        crate::runtime_db::control_transition::ControlCancellationTarget,
+    ) {
+        use crate::runtime_db::control_transition::*;
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap();
+        let mut state = host
+            .runtime_db()
+            .agent_states()
+            .latest(agent_id)
+            .unwrap()
+            .unwrap_or_else(|| AgentState::new(agent_id));
+        state.status = AgentStatus::AwakeRunning;
+        state.current_run_id = Some(format!("cold-run:{command_id}"));
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)
+            .unwrap();
+        let key = ControlKey {
+            agent_id: agent_id.into(),
+            identity_incarnation: identity.incarnation,
+            command_id: command_id.into(),
+        };
+        let target = ControlCancellationTarget {
+            obligation_id: format!("cold-cancel:{command_id}"),
+            target_kind: ControlCancellationKind::Run,
+            target_identity: state.current_run_id.unwrap(),
+            target_generation: serde_json::json!({"activation_id":null,"source_message_id":null,"owner_epoch":1,"runtime_lease_id":null}),
+            target: serde_json::json!({"reason":"agent_stopped"}),
+        };
+        let command = prepare_control(ControlPlanInput {
+            key: key.clone(),
+            invocation: ControlInvocation {
+                action: ControlAction::Stop,
+                source: ControlSource::DirectApi,
+                authority_class: AuthorityClass::OperatorInstruction,
+            },
+            snapshot: host.runtime_db().load_control_snapshot(&key).unwrap(),
+            prepared_at: Utc::now(),
+            task_results: Vec::new(),
+            healthy_running: None,
+            protected_control_attempt: None,
+            protected_control_run_id: None,
+            cancellation_targets: vec![target.clone()],
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+        })
+        .unwrap();
+        host.runtime_db().commit_control(&command).unwrap();
+        (key, target)
+    }
+
+    #[tokio::test]
+    async fn control_startup_recovery_uses_the_real_exclusive_lease_before_activation() {
+        use crate::runtime_db::control_transition::ControlObligationState;
+        let (_home, host) = test_host();
+        // Named-agent creation activates its runtime. Seed the configured
+        // default identity directly to model a genuinely cold restart instead.
+        let identity = host.ensure_default_agent_identity().unwrap();
+        let (key, target) = commit_cold_control_run_fixture(&host, &identity.agent_id, "cold-one");
+        let state = host
+            .runtime_db()
+            .agent_states()
+            .latest(&key.agent_id)
+            .unwrap();
+        assert_eq!(
+            host.reconcile_control_obligations_at_startup()
+                .await
+                .unwrap(),
+            1
+        );
+        let obligation = host
+            .runtime_db()
+            .control_obligation(&key, &target)
+            .unwrap()
+            .unwrap();
+        assert_eq!(obligation.state, ControlObligationState::Completed);
+        assert!(host
+            .inner
+            .runtime_db_maintenance_lock
+            .lock()
+            .unwrap()
+            .is_some());
+        assert!(!host.inner.runtimes.read().await.ever_activated);
+        assert!(host.try_get_loaded_runtime(&key.agent_id).await.is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_states()
+                .latest(&key.agent_id)
+                .unwrap(),
+            state
+        );
+        assert_eq!(
+            host.reconcile_control_obligations_at_startup()
+                .await
+                .unwrap(),
+            0
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn control_startup_proof_cannot_be_reused_after_activation_and_unload() {
+        use crate::runtime_db::control_transition::ControlObligationState;
+        let (_home, host) = test_host();
+        host.create_named_agent("control-after-activation", None)
+            .await
+            .unwrap();
+        let runtime = host
+            .get_public_agent("control-after-activation")
+            .await
+            .unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
+        host.unload_runtime("control-after-activation").await;
+        assert!(host
+            .try_get_loaded_runtime("control-after-activation")
+            .await
+            .is_none());
+        let (key, target) =
+            commit_cold_control_run_fixture(&host, "control-after-activation", "cold-two");
+        let error = host
+            .reconcile_control_obligations_at_startup()
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("never-activated Host"),
+            "{error:#}"
+        );
+        assert_eq!(
+            host.runtime_db()
+                .control_obligation(&key, &target)
+                .unwrap()
+                .unwrap()
+                .state,
+            ControlObligationState::Pending
+        );
+        host.shutdown().await.unwrap();
+    }
+    #[path = "task_stop_phase_tests.rs"]
+    mod task_stop_phase_tests;
+    #[path = "task_stop_supervisor_tests.rs"]
+    mod task_stop_supervisor_tests;
+}
+
+#[cfg(test)]
+impl RuntimeHost {
+    pub(crate) fn set_clock_recovery_dispatch_gate_for_test(
+        &self,
+        agent_id: &str,
+        gate: Arc<tokio::sync::Semaphore>,
+    ) {
+        self.inner
+            .clock_recovery_dispatch_gates
+            .lock()
+            .unwrap()
+            .insert(agent_id.to_owned(), gate);
     }
 }

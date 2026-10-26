@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use axum::Router;
 use holon::{
@@ -90,7 +90,12 @@ pub async fn test_work_item(
     blocked_by: Option<&str>,
 ) -> Result<WorkItemRecord> {
     let mut record = runtime
-        .create_work_item(objective.to_string(), None, None, Vec::new())
+        .create_work_item(
+            objective.to_string(),
+            blocked_by.map(|_| holon::types::WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
         .await?;
     if let Some(blocked_by) = blocked_by {
         record = runtime
@@ -321,6 +326,30 @@ pub async fn attach_default_workspace(host: &RuntimeHost) -> Result<()> {
             None,
         )
         .await?;
+    // Workspace ACK intentionally precedes resource I/O. Wait for the original
+    // observer before exposing routes that require the new instruction source.
+    let ready = async {
+        loop {
+            match runtime.agent_summary().await {
+                Ok(_) => return Ok::<_, anyhow::Error>(()),
+                Err(error)
+                    if error.to_string()
+                        == "context resource source differs from its observation"
+                        || error
+                            .to_string()
+                            .starts_with("context resources are not ready: Dirty") =>
+                {
+                    // Summary reserves the mutation owner. Leave a real gap for
+                    // the observer's non-blocking publication reservation.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), ready)
+        .await
+        .context("workspace resource observer did not publish")??;
     Ok(())
 }
 

@@ -3,6 +3,15 @@ use super::*;
 use crate::domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState};
 use crate::runtime::provider_recovery;
 
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ProviderResultHandoffCommand {
+    pub expected_attempt: ExecutionAttempt,
+    pub expected_turn: TurnRecord,
+    pub at: chrono::DateTime<Utc>,
+    #[serde(skip)]
+    pub fault: Option<TransitionFaultPoint>,
+}
+
 fn message_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<MessageEnvelope>> {
     tx.query_row(
         "SELECT payload_json FROM messages WHERE message_id = ?1",
@@ -26,6 +35,7 @@ fn turn_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<TurnRecord>> {
 }
 
 impl RuntimeTransitionRepository<'_> {
+    #[cfg(test)]
     pub(crate) fn commit_provider_result_handoff(
         &self,
         expected: &ExecutionAttempt,
@@ -33,7 +43,22 @@ impl RuntimeTransitionRepository<'_> {
         now: chrono::DateTime<Utc>,
         fault: Option<TransitionFaultPoint>,
     ) -> Result<TransitionCommit> {
-        self.db.transaction(|tx| {
+        self.db.transaction(|tx| self.commit_provider_result_handoff_tx(
+            tx, None, expected, expected_turn, now, fault, None,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn commit_provider_result_handoff_tx(
+        &self,
+        tx: &Transaction<'_>,
+        input_scope: Option<&InputEvidenceScope>,
+        expected: &ExecutionAttempt,
+        expected_turn: &TurnRecord,
+        now: chrono::DateTime<Utc>,
+        fault: Option<TransitionFaultPoint>,
+        allowed_results: Option<&BTreeSet<crate::runtime::resident_task::TaskKey>>,
+    ) -> Result<TransitionCommit> {
             if !live_input_attachment::canonical_input_binding_matches_tx(tx, expected, expected_turn)? {
                 return Ok(TransitionCommit::default());
             }
@@ -155,15 +180,35 @@ impl RuntimeTransitionRepository<'_> {
                 return Ok(TransitionCommit::default());
             }
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let mut changed_results = BTreeSet::new();
+            for predecessor in &predecessors {
+                let mut query = tx.prepare(
+                    "SELECT result_identity FROM task_result_settlements
+                     WHERE agent_id=?1 AND activation_id=?2 AND state='caller_admitted'
+                     ORDER BY result_identity",
+                )?;
+                for id in query.query_map(params![agent_id, predecessor], |row| row.get::<_, String>(0))? {
+                    let key = crate::runtime::resident_task::TaskKey::new(
+                        crate::runtime::resident_task::TaskFamily::ResultSettlement, id?,
+                    );
+                    if let Some(allowed) = allowed_results {
+                        anyhow::ensure!(
+                            allowed.contains(&key),
+                            "provider Result is outside its original Task proof"
+                        );
+                    }
+                    changed_results.insert(key);
+                }
+            }
             let transferred = crate::runtime_db::task_result_settlement::transfer_provider_admitted_tx(
                 tx, agent_id, &predecessors, &expected.attempt_id, now,
             )?;
-            if transferred.is_empty() && &turn == expected_turn {
+            if changed_results.is_empty() && &turn == expected_turn {
                 return Ok(TransitionCommit { applied: true, ..Default::default() });
             }
             upsert_turn_record_tx(tx, &turn)?;
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            finish_transition_tx(tx, true, agent_id, &[AuditEvent::legacy(
+            finish_transition_tx(tx, input_scope, true, agent_id, &[AuditEvent::legacy(
                 "provider_task_results_transferred",
                 serde_json::json!({
                     "agent_id": agent_id, "activation_id": expected.attempt_id,
@@ -171,7 +216,10 @@ impl RuntimeTransitionRepository<'_> {
                     "source_turn_ids": sources.iter().map(|turn| &turn.turn_id).collect::<Vec<_>>(),
                     "result_identities": transferred.iter().map(|record| &record.result_identity).collect::<Vec<_>>(),
                 }),
-            )], &[], fault, PostCommitEffects::default())
-        })
+            )], &[], fault, PostCommitEffects {
+                turns: vec![turn],
+                task_write_keys: changed_results,
+                ..PostCommitEffects::default()
+            })
     }
 }

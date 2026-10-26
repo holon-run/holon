@@ -7,6 +7,7 @@ mod local_dispatch;
 mod obligation;
 mod recovery_admission;
 mod recovery_budget;
+mod recovery_observation;
 
 fn runtime_db() -> (tempfile::TempDir, RuntimeDb) {
     let dir = tempdir().unwrap();

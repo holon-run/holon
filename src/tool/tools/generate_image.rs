@@ -26,6 +26,10 @@ use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
 pub(crate) const NAME: &str = crate::tool::names::GENERATE_IMAGE;
 
+#[cfg(test)]
+#[path = "generate_image_material_tests.rs"]
+mod material_tests;
+
 const VALID_BACKGROUNDS: &[&str] = &["auto", "transparent", "opaque"];
 const VALID_OUTPUT_FORMATS: &[&str] = &["png", "jpeg", "webp"];
 
@@ -65,7 +69,12 @@ pub(crate) async fn execute(
     _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    let args: GenerateImageArgs = parse_tool_args(NAME, input)?;
+    let acquisition = runtime.context_resource_material()?;
+    let material = crate::provider::ProviderRequestMaterial::scoped(acquisition.clone());
+    let args: GenerateImageArgs = material.read(|| {
+        crate::diagnostics::resource_io::admit_serialized_value(input)?;
+        parse_tool_args(NAME, input)
+    })?;
     let prompt = validate_non_empty(args.prompt, NAME, "prompt")?;
     let size = args.size;
     let background = optional_enum(args.background, "background", VALID_BACKGROUNDS)?;
@@ -75,20 +84,25 @@ pub(crate) async fn execute(
         .map(|value| validate_filename_stem(&value))
         .transpose()?;
 
+    let request = material.read(|| {
+        material.admit_value(&(&prompt, &size, &args.aspect_ratio, &args.resolution, &background, &output_format))?;
+        Ok(ProviderGenerateImageRequest {
+            prompt: prompt.clone(),
+            size: size.clone(),
+            aspect_ratio: args.aspect_ratio.clone(),
+            resolution: args.resolution.clone(),
+            background: background.clone(),
+            output_format: output_format.clone(),
+            material: material.clone(),
+        })
+    })?;
     let execution = runtime
-        .generate_image(
-            args.model.as_deref(),
-            ProviderGenerateImageRequest {
-                prompt: prompt.clone(),
-                size: size.clone(),
-                aspect_ratio: args.aspect_ratio.clone(),
-                resolution: args.resolution.clone(),
-                background: background.clone(),
-                output_format: output_format.clone(),
-            },
-        )
+        .generate_image(args.model.as_deref(), request)
         .await
         .map_err(generate_image_failed)?;
+    material.read(|| {
+        Ok(crate::diagnostics::resource_io::charge_owned_metadata(4096, 32)?)
+    })?;
     let generated_dir = runtime.agent_home().join("media").join("generated");
     fs::create_dir_all(&generated_dir).map_err(|error| {
         ToolError::new(
@@ -105,6 +119,11 @@ pub(crate) async fn execute(
     let mut conversions = Vec::new();
     let mut sources = Vec::new();
     for image in execution.response.images {
+        material.read(|| {
+            crate::diagnostics::resource_io::admit_serialized_value(&(&generated_dir, &name, &workspace_id, &image.mime))?;
+            crate::diagnostics::resource_io::charge_owned_metadata(4096, 32)?;
+            Ok(())
+        })?;
         let source_sha256 = format!("{:x}", Sha256::digest(&image.bytes));
         let source_format = source_format(&image.bytes);
         let stem = name.clone().unwrap_or_else(|| "generated".into());
@@ -133,12 +152,20 @@ pub(crate) async fn execute(
             width: None,
             height: None,
         };
+        material.admit_value(&execution.parameters.delivery_format)?;
         let target = execution.parameters.delivery_format.clone();
-        let delivered = tokio::task::spawn_blocking(move || deliver_image(&image.bytes, &target))
+        let delivery_material = material.clone();
+        let (delivered, _delivery_material) = tokio::task::spawn_blocking(move || {
+            match delivery_material.read(|| Ok(deliver_image(&image.bytes, &target))) {
+                Ok(delivered) => Ok((delivered, delivery_material)),
+                Err(error) => Err(delivery_material.hold_error(error)),
+            }
+        })
             .await
             .map_err(|error| ToolError::new("image_conversion_failed", format!("local delivery worker failed: {error}"))
                 .with_details(json!({"generation_succeeded": true, "source": source, "selection": execution.selection}))
-                .with_recovery_hint("recover the saved original locally; do not regenerate"))?
+                .with_recovery_hint("recover the saved original locally; do not regenerate"))??;
+        let delivered = delivered
             .map_err(|error| ToolError::new(error.code, format!("image generation succeeded; local delivery failed: {error}"))
                 .with_details(json!({"generation_succeeded": true, "source": source, "selection": execution.selection,
                     "requested_parameters": execution.parameters.requested, "delivery_format": execution.parameters.delivery_format,
@@ -210,7 +237,12 @@ pub(crate) async fn execute(
         conversion: conversions,
         summary_text: Some("GenerateImage created one image; original retained".into()),
     };
-    serialize_success(NAME, &payload)
+    material.read(|| {
+        material.admit_value(&payload)?;
+        let mut result = serialize_success(NAME, &payload)?;
+        result.resource_material = Some(acquisition);
+        Ok(result)
+    })
 }
 
 fn write_generated_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
@@ -224,50 +256,73 @@ fn write_generated_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
-    let value = result
-        .envelope
-        .result
-        .as_ref()
-        .ok_or_else(|| anyhow!("GenerateImage success result missing payload"))?;
-    let result: GenerateImageResult = serde_json::from_value(value.clone())?;
-    let mut lines = vec![
-        "GenerateImage result".to_string(),
-        format!("Provider/model: {}/{}", result.provider, result.model),
-        format!("Prompt: {}", result.prompt),
-    ];
-    for image in result.images {
-        lines.push(format!(
-            "Image: {} ({}, {} bytes, sha256 {}, uri {})",
-            image.id, image.mime, image.byte_count, image.sha256, image.uri
-        ));
-        lines.push(format!(
-            "Size: {}",
-            match (image.size.width, image.size.height) {
-                (Some(width), Some(height)) => format!("{width}x{height}"),
-                (Some(width), None) => format!("{width}xunknown"),
-                (None, Some(height)) => format!("unknownx{height}"),
-                (None, None) => "unknown".to_string(),
-            }
-        ));
-    }
-    if let Some(selection) = value.get("selection") {
-        lines.push(format!("Selection: {selection}"));
-    }
-    if let Some(conversion) = value.get("conversion") {
-        lines.push(format!("Delivery: {conversion}"));
-    }
-    if let Some(sources) = value.get("source_images") {
-        lines.push(format!("Retained originals: {sources}"));
-    }
-    if let Some(mapping) = value
-        .get("parameter_mapping")
-        .filter(|mapping| !mapping.is_null())
-    {
-        lines.push(format!(
-            "Size compatibility mapping (not exact pixels): {mapping}"
-        ));
-    }
-    Ok(lines.join("\n"))
+    let material = result
+        .resource_material
+        .clone()
+        .map(crate::provider::ProviderRequestMaterial::scoped)
+        .unwrap_or_default();
+    material.read(|| {
+        let value = result
+            .envelope
+            .result
+            .as_ref()
+            .ok_or_else(|| anyhow!("GenerateImage success result missing payload"))?;
+        crate::diagnostics::resource_io::admit_serialized_value(value)?;
+        let result = GenerateImageResult::deserialize(value)?;
+        crate::diagnostics::resource_io::admit_serialized_value(&result)?;
+        let count = result
+            .images
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("image reference count overflow"))?;
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            u64::try_from(count)?
+                .checked_mul(512)
+                .ok_or_else(|| anyhow!("image reference size overflow"))?,
+            count
+                .checked_mul(8)
+                .ok_or_else(|| anyhow!("image reference count overflow"))?,
+        )?;
+        let mut lines = vec![
+            "GenerateImage result".to_string(),
+            format!("Provider/model: {}/{}", result.provider, result.model),
+            format!("Prompt: {}", result.prompt),
+        ];
+        for image in result.images {
+            lines.push(format!(
+                "Image: {} ({}, {} bytes, sha256 {}, uri {})",
+                image.id, image.mime, image.byte_count, image.sha256, image.uri
+            ));
+            lines.push(format!(
+                "Size: {}",
+                match (image.size.width, image.size.height) {
+                    (Some(width), Some(height)) => format!("{width}x{height}"),
+                    (Some(width), None) => format!("{width}xunknown"),
+                    (None, Some(height)) => format!("unknownx{height}"),
+                    (None, None) => "unknown".to_string(),
+                }
+            ));
+        }
+        if let Some(selection) = value.get("selection") {
+            lines.push(format!("Selection: {selection}"));
+        }
+        if let Some(conversion) = value.get("conversion") {
+            lines.push(format!("Delivery: {conversion}"));
+        }
+        if let Some(sources) = value.get("source_images") {
+            lines.push(format!("Retained originals: {sources}"));
+        }
+        if let Some(mapping) = value
+            .get("parameter_mapping")
+            .filter(|mapping| !mapping.is_null())
+        {
+            lines.push(format!(
+                "Size compatibility mapping (not exact pixels): {mapping}"
+            ));
+        }
+        crate::diagnostics::resource_io::admit_serialized_value(&lines)?;
+        Ok(lines.join("\n"))
+    })
 }
 
 fn optional_enum(value: Option<String>, field: &str, allowed: &[&str]) -> Result<Option<String>> {

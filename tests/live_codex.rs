@@ -127,6 +127,7 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
     let output = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
                 "Use web search if needed. Reply in one short sentence.",
@@ -161,6 +162,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
     let first = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: Some(scope.clone()),
             prompt_frame: frame.clone(),
             conversation: vec![ConversationMessage::UserText(
@@ -180,6 +182,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
     let second = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            material: Default::default(),
             continuation_scope_id: Some(scope),
             prompt_frame: frame,
             conversation: vec![
@@ -242,6 +245,7 @@ async fn live_openai_codex_generates_image_with_responses_tool() -> Result<()> {
     let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_image_model())?;
     let output = provider
         .generate_image(ProviderGenerateImageRequest {
+            material: Default::default(),
             prompt: "Create a simple flat icon of a blue circle on a white background.".into(),
             size: Some("1024x1024".into()),
             aspect_ratio: None,

@@ -1,7 +1,11 @@
 use super::super::*;
 use super::support::*;
 
+use crate::runtime::input_evidence_budget::{
+    serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
+};
 use crate::runtime::workspace_control::{ExistingWorktreePolicy, WorkspaceSwitchTarget};
+use crate::runtime_db::task_snapshot::TaskDomainLoadRequest;
 use crate::types::AgentIdentityRecord;
 
 fn git(repo: &Path, args: &[&str]) -> String {
@@ -102,13 +106,70 @@ async fn worktree_fixture() -> WorktreeFixture {
     }
 }
 
+async fn cleanup_with_original_owner(
+    runtime: &RuntimeHandle,
+    task_id: &str,
+    detail: &mut serde_json::Value,
+) -> worktree::TaskOwnedWorktreeCleanup {
+    let mut owner = runtime.begin_mutation().await.unwrap();
+    let scope = owner.input_evidence_scope();
+    let ledger = &runtime.inner.input_evidence_budget;
+    let limits = ledger.limits();
+    let request = TaskDomainLoadRequest {
+        query: Default::default(),
+        capture: resident_task::TaskCaptureRequest::current(),
+        record_limit: usize::try_from(limits.record_limit).unwrap(),
+        byte_limit: usize::try_from(
+            limits
+                .history_per_agent_bytes
+                .checked_add(limits.pending_per_agent_bytes)
+                .unwrap(),
+        )
+        .unwrap(),
+    };
+    let completion = Arc::new(
+        ledger
+            .reserve_owned_completion(
+                &scope,
+                InputMemoryCategory::Candidate,
+                OwnedBytesEstimate {
+                    payload_bytes: serialized_bytes(detail)
+                        .unwrap()
+                        .checked_add(1024)
+                        .unwrap()
+                        .checked_mul(8)
+                        .unwrap(),
+                    metadata_estimate_bytes: 1024,
+                },
+            )
+            .unwrap(),
+    );
+    let observed = runtime
+        .cleanup_original_control_worktree_in_detail(
+            task_id,
+            detail,
+            "task_stop",
+            completion.clone(),
+            &request,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!observed.audits.is_empty());
+    owner
+        .append_original_audit_events(observed.audits)
+        .await
+        .unwrap();
+    observed.cleanup
+}
+
 #[tokio::test]
 async fn deletion_retention_survives_persistence_and_stale_cleanup_detail() {
     let fixture = worktree_fixture().await;
     let mut task = fixture.task.clone();
     let detail = task.detail.as_mut().unwrap();
-    let cleanup = fixture
-        .runtime
+    let mut owner = fixture.runtime.begin_mutation().await.unwrap();
+    let cleanup = owner
         .retain_task_owned_worktree_for_target_deletion_in_detail(&task.id, detail)
         .await
         .unwrap()
@@ -117,6 +178,7 @@ async fn deletion_retention_survives_persistence_and_stale_cleanup_detail() {
         cleanup.status,
         worktree::TaskOwnedWorktreeCleanupStatus::Retained
     );
+    drop(owner);
     task.status = TaskStatus::Cancelled;
     task.updated_at = Utc::now();
     fixture
@@ -141,16 +203,13 @@ async fn deletion_retention_survives_persistence_and_stale_cleanup_detail() {
     assert_eq!(worktree["auto_cleaned_up"], false);
 
     let mut stale_detail = fixture.task.detail.unwrap();
-    let cleanup = fixture
-        .runtime
-        .cleanup_task_owned_worktree_in_detail(&task.id, &mut stale_detail, "task_stop")
-        .await
-        .unwrap()
-        .unwrap();
+    let cleanup = cleanup_with_original_owner(&fixture.runtime, &task.id, &mut stale_detail).await;
     assert_eq!(
         cleanup.status,
         worktree::TaskOwnedWorktreeCleanupStatus::Retained
     );
+    assert_eq!(stale_detail["worktree"]["cleanup_reason"], "agent_deleted");
+    assert_eq!(stale_detail["worktree"]["cleanup_owner_task_id"], task.id);
     assert!(fixture.root.filesystem_path.exists());
     git(
         &fixture.repo.path().join("repo"),
@@ -197,12 +256,8 @@ async fn persisted_target_deletion_fence_retains_clean_task_worktree() {
     let mut detail = fixture.task.detail.clone().unwrap();
     // The cleanup caller need not carry the target; it is durable task evidence.
     detail.as_object_mut().unwrap().remove("target");
-    let cleanup = fixture
-        .runtime
-        .cleanup_task_owned_worktree_in_detail(&fixture.task.id, &mut detail, "task_stop")
-        .await
-        .unwrap()
-        .unwrap();
+    let cleanup =
+        cleanup_with_original_owner(&fixture.runtime, &fixture.task.id, &mut detail).await;
     assert_eq!(
         cleanup.status,
         worktree::TaskOwnedWorktreeCleanupStatus::Retained

@@ -2,22 +2,77 @@ mod agent_message_delivery;
 mod agent_services;
 mod bootstrap;
 mod callback;
+#[path = "runtime/child_task_producer_actor.rs"]
+mod child_task_producer_actor;
+#[cfg(test)]
+mod child_task_producer_tests;
+mod child_task_terminal;
 mod clock;
 mod closure;
+pub(crate) use child_task_producer_actor::{
+    execute_original_child_terminal, OriginalChildTerminalRead,
+};
+#[cfg(test)]
+pub(crate) use child_task_producer_tests::{
+    child_observer_domains_for_test, continue_child_monitor_for_test,
+    prepare_child_observer_for_test, register_child_monitor_for_test, write_child_task_for_test,
+};
+pub(crate) use child_task_terminal::{
+    FrozenChildTaskTerminal, OriginalChildSpawnNoStart, OriginalChildTaskProducer,
+};
+
 mod command_task;
 mod context_recovery;
+pub(crate) use command_task::{
+    execute_original_command_terminal, FrozenCommandTaskTerminal, OriginalCommandTaskProducer,
+    OriginalCommandTerminalRead,
+};
+pub(crate) use state_mutation::{
+    attach_original_child_terminal_memory_to_owner,
+    attach_original_command_terminal_memory_to_owner,
+};
+pub(crate) mod completion_sources;
+mod context_capture;
 mod continuation;
+mod control;
+#[cfg(test)]
+mod model_material_tests;
+mod task_status_metadata;
+pub(crate) use task_status_metadata::{
+    execute_original_control_metadata, select_original_control_status_head,
+    OriginalControlMetadataCapsule, TaskStatusMetadataRead,
+};
+mod control_cancellation;
+#[cfg(test)]
+mod control_task_generation_tests;
+pub(crate) mod task_generation;
+pub(crate) use control_cancellation::RetiredProducerExit;
+mod agent_summary_read;
+mod control_entry;
+pub(crate) mod control_reconcile;
+pub(crate) mod control_recovery;
 pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
 mod delivery;
+pub(crate) mod ended_dispatch;
+pub(crate) mod episode_recovery;
 pub(crate) mod execution_admission;
 mod failure;
 mod first_run_intro;
 pub(crate) mod input_consumption;
+pub(crate) mod input_evidence_budget;
+mod input_preparation;
+pub(crate) mod input_recovery;
 mod lifecycle;
 pub(crate) mod live_input_consumption;
 mod media;
+mod operator_state;
+pub(crate) use agent_summary_read::active_trigger_summaries;
+pub use agent_summary_read::OwnedAgentSummaryRead;
+pub(crate) use operator_state::StateProjectionMaterial;
 mod message_dispatch;
+pub(crate) mod mutation_owner;
+pub(crate) mod mutation_witness;
 mod operator;
 mod operator_dispatch;
 mod provider_admission;
@@ -27,40 +82,108 @@ mod provider_turn;
 #[cfg(feature = "recovery-acceptance")]
 mod recovery_acceptance;
 mod repair;
+pub(crate) mod resident_input_evidence;
+pub(crate) mod resident_scheduling;
+pub(crate) mod resource_observation;
+mod resource_refresh;
+#[cfg(test)]
+mod resource_runtime_tests;
+mod scheduling_output;
+pub use scheduling_output::{
+    ExternalTriggerRecordLoan, OwnedExternalTriggersRead, OwnedTimerRead, OwnedTimersRead,
+    TimerRecordLoan,
+};
+mod scheduling_reads;
+mod timer_mutation_reads;
+mod timer_producer_reads;
+mod trigger_decision_reads;
+#[cfg(test)]
+pub(crate) use scheduling_output::project_selected_scheduling_records;
+pub(crate) use scheduling_output::{project_cold_scheduling_records, SchedulingReadMaterial};
+pub(crate) use state_mutation::{derive_scheduler_read, ColdSchedulerFacts, SchedulerReadDomains};
+pub(crate) use task_reads::scheduler_task_request;
+pub(crate) mod resident_state;
+pub(crate) mod resident_task;
+pub(crate) mod resident_work;
 mod scheduler;
 mod scheduler_acceptance;
+mod scheduler_audit;
 mod scheduler_continuation;
 pub(crate) mod scheduler_executor;
 mod scoped_projection;
+pub(crate) mod started_dispatch;
+mod state_mutation;
+pub(crate) use state_mutation::{
+    attach_task_stop_phase_memory_to_original_owner, RuntimeMutationFacts,
+};
 mod subagent;
+mod task_monitor_read;
+pub(crate) mod task_reads;
+pub(crate) use task_monitor_read::{ChildMonitorRead, TaskParentTurnRead, TaskParentTurnSession};
+pub(crate) mod current_queries;
+mod input_query_roles;
+pub(crate) mod task_queries;
 mod task_result_recovery;
+mod task_result_routing;
 mod task_state_reducer;
+pub(crate) use scheduler::apply_message_wake_projection as original_task_message_wake_projection;
+pub(crate) use task_result_routing::AcceptedTaskResultSource;
+pub(crate) use task_state_reducer::{
+    is_terminal_task_status as original_task_status_is_terminal,
+    should_ignore_task_update_ref as original_task_update_is_ignored,
+    stable_terminal_task_event_id as original_terminal_task_event_id,
+};
+mod task_stop_effects;
+#[cfg(test)]
+mod task_stop_finished_fixture;
+pub(crate) use task_stop_effects::FinishedOriginalTaskStopAttempt;
+mod task_stop_cold;
+#[path = "runtime/task_stop_current.rs"]
+mod task_stop_current;
+mod task_stop_worker;
+pub(crate) use task_stop_cold::continue_original_task_stop_metadata;
+mod task_stop_intent;
+pub(crate) mod task_stop_join;
 mod task_supervisor;
 mod tasks;
+pub(crate) use tasks::{RunOnceTaskOutputRetention, RunOnceTaskOutputs};
 #[cfg(test)]
 mod test_util;
 mod turn;
 mod unsettled_claim;
 mod waiting;
 mod wake_matching;
+mod work_reads;
+pub use work_reads::OwnedWorkItemsRead;
 pub(crate) mod workspace;
 pub(crate) mod workspace_control;
 mod worktree;
+#[cfg(test)]
+pub(crate) use worktree::cleanup_completion_worktree_for_test;
+pub(crate) use worktree::{
+    cleanup_frozen_worktree, FrozenWorktreeCleanup, ObservedWorktreeCleanup,
+    TaskOwnedWorktreeCleanupStatus,
+};
 
 #[cfg(test)]
 pub(crate) use agent_message_delivery::{
     enable_delivery_checkpoint, release_delivery_checkpoint, wait_for_delivery_checkpoint,
 };
 pub(crate) use agent_message_delivery::{
-    AgentMessageDeliveryService, PreparedAgentMessageDelivery,
+    legacy_cross_agent_caller_bindings_match, AgentMessageDeliveryService,
+    PreparedAgentMessageDelivery,
 };
+pub(crate) use closure::runtime_error_active;
 pub use first_run_intro::maybe_enqueue_first_run_intro;
+pub(crate) use lifecycle::build_child_agent_observability_with_active_tasks;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
 pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
     SchedulerRepairResult,
 };
+pub(crate) use scheduler::include_scheduler_brief_window;
+pub(crate) use scheduler::{SchedulerAgentSnapshot, SchedulerObservations, SchedulerProjection};
 pub use scheduler_acceptance::{
     seed_scheduler_restart_fixture, seed_scheduler_terminal_recovery_fixture,
     SchedulerIngressAdmissionRestartFixture, SchedulerTerminalRecoveryFixture,
@@ -78,7 +201,7 @@ pub(crate) use worktree::format_worktree_task_summary;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
-    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -92,7 +215,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::ArcSwap;
 use bootstrap::ConfigSnapshot;
 pub(crate) use bootstrap::{
-    ViewImageCandidateFailureStatus, VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
+    append_unloaded_audit_event, ViewImageCandidateFailureStatus,
+    VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -111,15 +235,11 @@ use crate::{
     agents_md::load_agents_md,
     brief,
     config::{ModelRouteRef, RuntimeModelCatalog},
-    context::{sync_agent_message_count, ContextConfig},
+    context::ContextConfig,
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
-    memory::{refresh_episode_memory, refresh_working_memory},
-    prompt::{
-        build_effective_prompt_with_apply_patch_surface,
-        build_effective_prompt_with_apply_patch_surface_and_default_external_ingress,
-        EffectivePrompt,
-    },
+    memory::refresh_working_memory,
+    prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{
         provider_attempt_timeline, AgentProvider, ModelBlock, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest,
@@ -129,7 +249,7 @@ use crate::{
         transitions::{
             PostCommitWarning, TransitionApplyResult, TransitionCommit, TransitionFaultPoint,
         },
-        RuntimeDb, RuntimeStateTransitionConflict,
+        RuntimeDb,
     },
     runtime_error::describe_runtime_error,
     runtime_event::RuntimeEventKind,
@@ -143,10 +263,9 @@ use crate::{
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
     tool::{ToolRegistry, ToolResult},
-    types::LoadedAgentMemory,
     types::{
         brief_created_event_for, ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView,
-        AgentKind, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
+        AgentKind, AgentListModelSummary, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
         AgentMessageDeliveryRecord, AgentModelOverrideAuditEvent, AgentModelSource,
         AgentModelState, AgentState, AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent,
         AuthorityClass, BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode,
@@ -154,7 +273,7 @@ use crate::{
         ClosureDecision, ContinuationResolution, ControlAction, ExecCommandBatchItemStatus,
         ExecCommandBatchResult, ExecutionAdmissionProvenance, ExternalTriggerCapability,
         ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, ExternalTriggerSummary,
-        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageLifecycleAuditEvent, MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord,
         QueueEntryStatus, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
         SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
@@ -198,10 +317,19 @@ pub(crate) struct PreparedWorkItemCompletion {
     pub(crate) continuation_expectations: Vec<crate::types::WorkItemContinuationFrame>,
     pub(crate) continuations: Vec<crate::types::WorkItemContinuationFrame>,
     pub(crate) continuation_resumed: Option<WorkItemContinuationSummary>,
+    continuation_resumes: std::collections::BTreeMap<
+        String,
+        (
+            crate::domain::execution_protocol::WorkItemContinuationResumeSource,
+            crate::domain::execution_protocol::WorkItemOutcome,
+        ),
+    >,
     pub(crate) audit_events: Vec<crate::types::AuditEvent>,
     pub(crate) index_changes: Vec<crate::runtime_db::RuntimeIndexChange>,
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) transcript_entries: Vec<crate::types::TranscriptEntry>,
+    _work_read_budget: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
+    pub(crate) plan_preparation: Option<Arc<resource_refresh::WorkPlanPreparation>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,40 +505,263 @@ pub(crate) fn agent_model_state_for_catalog(
     base_context_config: &ContextConfig,
     state: &AgentState,
 ) -> AgentModelState {
-    let effective_model = model_catalog.effective_model(state.model_override.as_ref());
-    let active_model = state
-        .last_requested_model
-        .as_ref()
-        .filter(|requested| *requested == &effective_model)
-        .and_then(|_| state.last_active_model.clone())
-        .unwrap_or_else(|| effective_model.clone());
-    let fallback_active = active_model != effective_model;
-    let effective_chain = model_catalog.provider_chain(state.model_override.as_ref());
-    let resolved_policy =
-        model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref());
+    let summary = agent_model_list_summary_for_catalog(model_catalog, state);
+    model_state_from_summary(
+        summary,
+        model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref()),
+    )
+}
+
+pub(crate) fn try_agent_model_state_for_catalog(
+    model_catalog: &RuntimeModelCatalog,
+    base_context_config: &ContextConfig,
+    state: &AgentState,
+) -> Result<AgentModelState> {
+    try_agent_model_state_for_turn_catalog(model_catalog, base_context_config, state, None)
+}
+
+pub(crate) fn try_agent_model_state_for_turn_catalog(
+    model_catalog: &RuntimeModelCatalog,
+    base_context_config: &ContextConfig,
+    state: &AgentState,
+    fallback_model: Option<&ModelRouteRef>,
+) -> Result<AgentModelState> {
+    let catalog = model_catalog.into();
+    let selection = AgentModelSummarySelection::for_turn(catalog, state, fallback_model);
+    selection.admit_owned_fields()?;
+    let effective_service_tier = match selection.service_tier_lookup_route() {
+        Some(route) => catalog.try_route_service_tier(route)?,
+        None => state.model_override_service_tier,
+    };
+    // Last-active is observability, not a new policy request. Only an explicit
+    // turn fallback changes the policy's route.
+    let policy = model_catalog.try_resolved_model_policy(
+        base_context_config,
+        fallback_model.or(state.model_override.as_ref()),
+    )?;
+    let summary = selection.into_summary_with_tier(effective_service_tier);
+    Ok(model_state_from_summary(summary, policy))
+}
+
+fn model_state_from_summary(
+    summary: AgentListModelSummary,
+    policy: crate::model_catalog::ResolvedRuntimeModelPolicy,
+) -> AgentModelState {
     AgentModelState {
-        source: if state.model_override.is_some() {
-            AgentModelSource::AgentOverride
+        source: summary.source,
+        runtime_default_model: summary.runtime_default_model,
+        effective_model: summary.effective_model,
+        requested_model: summary.requested_model,
+        active_model: summary.active_model,
+        fallback_active: summary.fallback_active,
+        effective_fallback_models: summary.effective_fallback_models,
+        override_model: summary.override_model,
+        override_reasoning_effort: summary.override_reasoning_effort,
+        override_service_tier: summary.override_service_tier,
+        effective_service_tier: summary.effective_service_tier,
+        resolved_policy: policy,
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedAgentModelState {
+    pub(crate) model: AgentModelState,
+    _material: Arc<input_evidence_budget::BudgetViewGuard>,
+}
+
+pub(crate) fn prepare_agent_model_state_for_turn(
+    catalog: &RuntimeModelCatalog,
+    context: &ContextConfig,
+    state: &AgentState,
+    fallback: Option<&ModelRouteRef>,
+    scope: &resident_input_evidence::InputEvidenceScope,
+    material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+) -> Result<Arc<PreparedAgentModelState>> {
+    material.finish()?;
+    anyhow::ensure!(
+        state.id == scope.agent_id && material.matches_scope(scope),
+        "turn model material belongs to another scope"
+    );
+    // Shared model ownership must not retain the independently copied Prompt.
+    // A child view keeps the original cumulative allowance, not its guard.
+    let material = material.transaction()?;
+    let guard = material.guard()?;
+    material.read(|| {
+        crate::diagnostics::resource_io::charge_owned_metadata(
+            (std::mem::size_of::<PreparedAgentModelState>() + 2 * std::mem::size_of::<usize>())
+                as u64,
+            1,
+        )?;
+        let model = try_agent_model_state_for_turn_catalog(catalog, context, state, fallback)?;
+        Ok(Arc::new(PreparedAgentModelState {
+            model,
+            _material: guard,
+        }))
+    })
+}
+
+pub(crate) fn agent_model_list_summary_for_catalog(
+    model_catalog: &RuntimeModelCatalog,
+    state: &AgentState,
+) -> AgentListModelSummary {
+    AgentModelSummarySelection::new(model_catalog.into(), state).into_summary()
+}
+
+pub(crate) fn try_agent_model_list_summary_for_catalog<'a>(
+    model_catalog: impl Into<crate::config::ModelListCatalog<'a>>,
+    state: &AgentState,
+) -> Result<AgentListModelSummary> {
+    let model_catalog = model_catalog.into();
+    let selection = AgentModelSummarySelection::new(model_catalog, state);
+    selection.admit_owned_fields()?;
+    let effective_service_tier = match selection.service_tier_lookup_route() {
+        Some(route) => model_catalog.try_route_service_tier(route)?,
+        None => state.model_override_service_tier,
+    };
+    Ok(selection.into_summary_with_tier(effective_service_tier))
+}
+
+struct AgentModelSummarySelection<'a> {
+    catalog: crate::config::ModelListCatalog<'a>,
+    state: &'a AgentState,
+    effective_model: &'a ModelRouteRef,
+    active_model: &'a ModelRouteRef,
+    turn_fallback: Option<&'a ModelRouteRef>,
+}
+
+impl<'a> AgentModelSummarySelection<'a> {
+    fn new(catalog: crate::config::ModelListCatalog<'a>, state: &'a AgentState) -> Self {
+        let effective_model = state
+            .model_override
+            .as_ref()
+            .unwrap_or(catalog.default_model);
+        let active_model = state
+            .last_requested_model
+            .as_ref()
+            .filter(|requested| *requested == effective_model)
+            .and(state.last_active_model.as_ref())
+            .unwrap_or(effective_model);
+        Self {
+            catalog,
+            state,
+            effective_model,
+            active_model,
+            turn_fallback: None,
+        }
+    }
+
+    fn for_turn(
+        catalog: crate::config::ModelListCatalog<'a>,
+        state: &'a AgentState,
+        fallback: Option<&'a ModelRouteRef>,
+    ) -> Self {
+        let mut selection = Self::new(catalog, state);
+        if let Some(fallback) = fallback {
+            selection.active_model = fallback;
+        }
+        selection.turn_fallback = fallback;
+        selection
+    }
+
+    fn admit_owned_fields(&self) -> Result<()> {
+        use crate::diagnostics::resource_io::charge_owned_metadata;
+        // No owning field or Vec is constructed until the entire selection fits.
+        // Each route includes its three String headers, also the fallback slots.
+        for route in [
+            self.catalog.default_model,
+            self.effective_model,
+            self.effective_model,
+            self.active_model,
+        ]
+        .into_iter()
+        .chain(
+            self.catalog
+                .provider_chain_for_turn_refs(
+                    self.state.model_override.as_ref(),
+                    self.turn_fallback,
+                )
+                .skip(1),
+        )
+        .chain(self.state.model_override.as_ref())
+        {
+            let bytes = route
+                .provider
+                .as_str()
+                .len()
+                .saturating_add(route.endpoint.as_str().len())
+                .saturating_add(route.model.len())
+                .saturating_add(std::mem::size_of::<ModelRouteRef>());
+            charge_owned_metadata(bytes as u64, 3)?;
+        }
+        if let Some(reasoning) = &self.state.model_override_reasoning_effort {
+            charge_owned_metadata(
+                reasoning
+                    .len()
+                    .saturating_add(std::mem::size_of::<String>()) as u64,
+                1,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn into_summary(self) -> AgentListModelSummary {
+        let tier = match self.service_tier_lookup_route() {
+            Some(route) => self.catalog.route_service_tier(route),
+            None => self.state.model_override_service_tier,
+        };
+        self.into_summary_with_tier(tier)
+    }
+
+    fn service_tier_lookup_route(&self) -> Option<&ModelRouteRef> {
+        if self.active_model != self.effective_model {
+            Some(self.active_model)
+        } else if self.state.model_override_service_tier.is_some() {
+            None
         } else {
-            AgentModelSource::RuntimeDefault
-        },
-        runtime_default_model: model_catalog.default_model.clone(),
-        effective_model: effective_model.clone(),
-        requested_model: Some(effective_model.clone()),
-        active_model: Some(active_model.clone()),
-        fallback_active,
-        effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
-        override_model: state.model_override.clone(),
-        override_reasoning_effort: state.model_override_reasoning_effort.clone(),
-        override_service_tier: state.model_override_service_tier,
-        effective_service_tier: if fallback_active {
-            model_catalog.route_service_tier(&active_model)
-        } else {
-            state
-                .model_override_service_tier
-                .or_else(|| model_catalog.route_service_tier(&effective_model))
-        },
-        resolved_policy,
+            Some(self.effective_model)
+        }
+    }
+
+    fn into_summary_with_tier(
+        self,
+        effective_service_tier: Option<crate::config::ServiceTier>,
+    ) -> AgentListModelSummary {
+        let Self {
+            catalog: model_catalog,
+            state,
+            effective_model,
+            active_model,
+            turn_fallback,
+        } = self;
+        let fallback_active = active_model != effective_model;
+        let fallback_count = model_catalog
+            .provider_chain_for_turn_refs(state.model_override.as_ref(), turn_fallback)
+            .skip(1)
+            .count();
+        let mut fallback_models = Vec::with_capacity(fallback_count);
+        fallback_models.extend(
+            model_catalog
+                .provider_chain_for_turn_refs(state.model_override.as_ref(), turn_fallback)
+                .skip(1)
+                .cloned(),
+        );
+        AgentListModelSummary {
+            source: if state.model_override.is_some() {
+                AgentModelSource::AgentOverride
+            } else {
+                AgentModelSource::RuntimeDefault
+            },
+            runtime_default_model: model_catalog.default_model.clone(),
+            effective_model: effective_model.clone(),
+            requested_model: Some(effective_model.clone()),
+            active_model: Some(active_model.clone()),
+            fallback_active,
+            effective_fallback_models: fallback_models,
+            override_model: state.model_override.clone(),
+            override_reasoning_effort: state.model_override_reasoning_effort.clone(),
+            override_service_tier: state.model_override_service_tier,
+            effective_service_tier,
+        }
     }
 }
 
@@ -428,12 +779,20 @@ pub struct RuntimeHandle {
 
 struct RuntimeInner {
     identity_incarnation: u64,
+    mutation_owner: mutation_owner::MutationOwner,
+    input_evidence_budget: input_evidence_budget::InputEvidenceBudgetLedger,
+    standalone_related_mutation_owners: mutation_owner::MutationOwnerRegistry,
     agent: Mutex<RuntimeAgent>,
-    projection_cache: Mutex<AgentRuntimeProjectionCache>,
+    // Fault/cancellation fixtures block the original post-SQL install seam.
+    #[cfg(test)]
+    installation_barrier: Mutex<()>,
+    #[cfg(test)]
+    run_loop_test_gate: RwLock<()>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
     notify: Notify,
     operator_interjection_notify: Notify,
     operator_interjection_revision: Arc<AtomicU64>,
+    provider_cooldown_wait: StdMutex<Option<crate::types::ProviderCooldownWait>>,
     storage: AppStorage,
     runtime_db: RuntimeDb,
     clock: Arc<dyn clock::Clock>,
@@ -442,6 +801,9 @@ struct RuntimeInner {
     turn_fallback_model: RwLock<Option<ModelRouteRef>>,
     turn_provider_admission: StdMutex<Option<Arc<provider_admission::ProviderTurnAdmission>>>,
     context_config: RwLock<ContextConfig>,
+    resources: resource_refresh::RuntimeResources,
+    #[cfg(test)]
+    context_capture_checkpoint: context_capture::ContextCaptureCheckpoint,
     config_snapshot: ArcSwap<ConfigSnapshot>,
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
@@ -454,9 +816,18 @@ struct RuntimeInner {
     default_agent_id: String,
     host_bridge: Option<RuntimeHostBridge>,
     task_handles: Mutex<HashMap<String, ManagedTaskHandle>>,
+    #[cfg(test)]
+    last_child_deletion_rejections_for_test: StdMutex<HashMap<String, String>>,
+    task_stop_effects: task_stop_effects::TaskStopEffectRegistry,
     owned_task_handles: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
-    recovered_tasks: Mutex<Option<Vec<TaskRecord>>>,
-    recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
+    owned_task_drain: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    control_cancellations: control_cancellation::ControlCancellationRegistry,
+    mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
+    task_queries: task_queries::TaskQueryRegistry,
+    input_queries: input_query_roles::InputQueryRegistry,
+    current_queries: current_queries::CurrentQueryRegistry,
+    recovered_tasks: Mutex<Option<bootstrap::BootstrapTaskRecovery>>,
+    recovered_timers: Mutex<Option<resident_scheduling::CapturedScheduling>>,
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
     bootstrap_notify: Notify,
     autonomous_continuation_hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
@@ -466,6 +837,10 @@ struct RuntimeInner {
     shutdown_requested: AtomicBool,
     execution_admission: execution_admission::ExecutionAdmission,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
+    #[cfg(test)]
+    terminal_transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
+    #[cfg(test)]
+    claim_transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
     #[cfg(test)]
     completion_binding_replacement: StdMutex<Option<WorkItemExecutionBinding>>,
     #[cfg(test)]
@@ -576,57 +951,6 @@ mod scheduler_acceptance_gate_tests {
                 .contains(SCHEDULER_ACCEPTANCE_FIXTURES_ENV)
         );
     }
-}
-
-fn work_item_continuation_resume_source(
-    storage: &AppStorage,
-    runtime_db: &RuntimeDb,
-    agent_id: &str,
-    parent_work_item_id: &str,
-    projected_parent: Option<&WorkItemRecord>,
-    projected_wait_conditions: &[WaitConditionRecord],
-) -> Result<(
-    crate::domain::execution_protocol::WorkItemContinuationResumeSource,
-    crate::domain::execution_protocol::WorkItemOutcome,
-)> {
-    use crate::domain::execution_protocol::{
-        continuation_resume_outcome, WorkItemContinuationResumeSource,
-    };
-
-    let durable_parent = runtime_db
-        .work_items()
-        .latest(parent_work_item_id)?
-        .ok_or_else(|| anyhow!("continuation parent WorkItem is missing"))?;
-    let parent = projected_parent
-        .filter(|parent| parent.id == parent_work_item_id)
-        .unwrap_or(&durable_parent);
-    anyhow::ensure!(
-        parent.agent_id == agent_id && parent.state == WorkItemState::Open,
-        "continuation parent WorkItem is not open for this agent"
-    );
-    let mut parent_waits = storage
-        .raw_active_wait_conditions_for_agent(agent_id)?
-        .into_iter()
-        .filter(|wait| wait.work_item_id.as_deref() == Some(parent_work_item_id))
-        .map(|wait| (wait.id.clone(), wait))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    for wait in projected_wait_conditions {
-        parent_waits.remove(&wait.id);
-        if wait.agent_id == agent_id
-            && wait.work_item_id.as_deref() == Some(parent_work_item_id)
-            && wait.status == WaitConditionStatus::Active
-        {
-            parent_waits.insert(wait.id.clone(), wait.clone());
-        }
-    }
-    let source = WorkItemContinuationResumeSource {
-        work_item_revision: parent.revision,
-        blocked_by: parent.blocked_by.clone(),
-        active_wait_ids: parent_waits.into_keys().collect(),
-    };
-    let outcome = continuation_resume_outcome(parent_work_item_id, &source)
-        .map_err(|error| anyhow!(error))?;
-    Ok((source, outcome))
 }
 
 fn execution_protocol_completion_transition_from_prepared(
@@ -809,8 +1133,6 @@ fn execution_protocol_completion_transition_from_prepared(
 }
 
 fn execution_protocol_detached_completion_transition_from_prepared(
-    storage: &AppStorage,
-    runtime_db: &RuntimeDb,
     prepared: &PreparedWorkItemCompletion,
 ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
     use crate::domain::execution_protocol::{
@@ -850,14 +1172,11 @@ fn execution_protocol_detached_completion_transition_from_prepared(
             .work_items
             .get(&continuation.suspended_work_item_id)
             .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
-        let (source, outcome) = work_item_continuation_resume_source(
-            storage,
-            runtime_db,
-            &prepared.record.agent_id,
-            &continuation.suspended_work_item_id,
-            None,
-            &prepared.wait_conditions,
-        )?;
+        let (source, outcome) = prepared
+            .continuation_resumes
+            .get(&continuation.id)
+            .context("prepared completion continuation source missing")?
+            .clone();
         commands.push(ExecutionProtocolCommand::ResumeWorkItemContinuation(
             Box::new(
                 crate::domain::execution_protocol::ResumeWorkItemContinuation {
@@ -1328,6 +1647,11 @@ enum TerminalSettlementDisposition {
     AbortedFallback,
 }
 
+#[derive(Debug, Clone)]
+struct TerminalAgentStateUpdate {
+    last_runtime_failure: Option<RuntimeFailureSummary>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TerminalExecutionSettlementWitness {
     attempt_id: String,
@@ -1458,155 +1782,6 @@ fn execution_attempt_has_task_result_source(
         &attempt.source.identity,
         crate::domain::execution_protocol::ExecutionSourceIdentity::TaskResult { .. }
     )
-}
-
-fn exact_task_result_wait_with_status(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-    work_item_id: &str,
-    status_matches: impl Fn(&WaitConditionStatus) -> bool,
-) -> Result<Option<WaitConditionRecord>> {
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            wait.work_item_id.as_deref() == Some(work_item_id)
-                && status_matches(&wait.status)
-                && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(wait.clone()))
-}
-
-fn exact_triggered_or_resolved_task_result_wait(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-    work_item_id: &str,
-) -> Result<Option<WaitConditionRecord>> {
-    exact_task_result_wait_with_status(storage, message, task_id, work_item_id, |status| {
-        matches!(
-            status,
-            WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-        )
-    })
-}
-
-/// Agent-scope counterpart of [`exact_triggered_or_resolved_task_result_wait`]:
-/// durable evidence that the agent explicitly waited on the exact task whose
-/// result this message carries, without any WorkItem binding.
-fn exact_agent_scope_task_result_wait(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-) -> Result<Option<WaitConditionRecord>> {
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            wait.work_item_id.is_none()
-                && matches!(
-                    wait.status,
-                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-                )
-                && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(wait.clone()))
-}
-
-/// Waiter-agnostic task-result wait evidence (#3124): a task result may
-/// satisfy an exact wait held by any owner inside the same agent. The
-/// task's captured owner is irrelevant to the dependency wake.
-fn exact_task_result_wait_for_any_owner(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    task_id: &str,
-) -> Result<Option<WaitConditionRecord>> {
-    let mut matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            matches!(
-                wait.status,
-                WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-            ) && wait.kind == crate::types::WaitConditionKind::Task
-                && wait.trigger_message_id() == Some(message.id.as_str())
-                && wait.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        crate::types::WakeSource::TaskResult { task_id: expected }
-                            if expected == task_id
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    matching_waits.sort_by(|left, right| {
-        left.created_at
-            .cmp(&right.created_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(matching_waits.into_iter().next())
-}
-
-fn exact_agent_scope_wait_recheck(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-) -> Result<Option<WaitConditionRecord>> {
-    let MessageOrigin::System { subsystem } = &message.origin else {
-        return Ok(None);
-    };
-    if message.kind != MessageKind::SystemTick
-        || subsystem != "wait_condition_recheck"
-        || message.authority_class != AuthorityClass::RuntimeInstruction
-        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
-        || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
-    {
-        return Ok(None);
-    }
-    let Some(wait_id) = message.source_refs.get("wait_id") else {
-        return Ok(None);
-    };
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
-        .into_iter()
-        .filter(|wait| {
-            wait.id == *wait_id
-                && wait.work_item_id.is_none()
-                && matches!(
-                    wait.status,
-                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-                )
-                && wait.trigger_message_id() == Some(message.id.as_str())
-        })
-        .collect::<Vec<_>>();
-    let [wait] = matching_waits.as_slice() else {
-        return Ok(None);
-    };
-    Ok(Some(wait.clone()))
 }
 
 pub(crate) enum TaskResultClaimRecovery {
@@ -2534,6 +2709,7 @@ pub fn apply_scheduler_recovery_plan(
         report,
         SchedulerRecoveryBackupPolicy::Required,
         None,
+        None,
     )
 }
 
@@ -2579,24 +2755,26 @@ pub fn apply_scheduler_recovery_plan_with_backup_policy(
         report,
         backup_policy,
         None,
+        None,
     )
 }
 
-#[cfg(test)]
-fn apply_scheduler_recovery_plan_with_task_result_fault(
+pub fn apply_scheduler_recovery_plan_with_maintenance(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
     agent_id: &str,
     report: &SchedulerRecoveryReport,
-    fault: crate::runtime_db::transitions::TransitionFaultPoint,
+    backup_policy: SchedulerRecoveryBackupPolicy,
+    maintenance: &crate::runtime_db::OfflineInputMaintenance<'_>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
     apply_scheduler_recovery_plan_with_options(
         storage,
         runtime_db,
         agent_id,
         report,
-        SchedulerRecoveryBackupPolicy::SkipApproved,
-        Some(fault),
+        backup_policy,
+        None,
+        Some(maintenance),
     )
 }
 
@@ -2607,6 +2785,7 @@ fn apply_scheduler_recovery_plan_with_options(
     report: &SchedulerRecoveryReport,
     backup_policy: SchedulerRecoveryBackupPolicy,
     task_result_fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    maintenance: Option<&crate::runtime_db::OfflineInputMaintenance<'_>>,
 ) -> Result<(usize, Option<std::path::PathBuf>)> {
     let recoveries = report
         .candidates
@@ -2673,42 +2852,45 @@ fn apply_scheduler_recovery_plan_with_options(
         if &current_entry == proposed_entry && candidate.proposed_commands.is_empty() {
             continue;
         }
-        let commit = runtime_db.transitions().commit_scheduler_recovery(
-            &crate::runtime_db::transitions::QueueTransitionCommand {
-                agent_id: agent_id.to_string(),
-                operation: if proposed_entry.status == QueueEntryStatus::Queued {
-                    crate::runtime_db::transitions::QueueOperation::Requeue
-                } else {
-                    crate::runtime_db::transitions::QueueOperation::Settle
+        let commit = runtime_db
+            .transitions()
+            .commit_scheduler_recovery_with_maintenance(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                        crate::runtime_db::transitions::QueueOperation::Requeue
+                    } else {
+                        crate::runtime_db::transitions::QueueOperation::Settle
+                    },
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected: current_entry,
+                        record: proposed_entry.clone(),
+                    },
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_execution_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": candidate.message_id,
+                            "activation_id": candidate.activation_id,
+                            "work_item_id": candidate.work_item_id,
+                            "reason": candidate.reason,
+                        }),
+                    )],
+                    notify_scheduler: true,
+                    fault: None,
+                    brief_evidence: Vec::new(),
                 },
-                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                    expected: current_entry,
-                    record: proposed_entry.clone(),
+                &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: candidate.proposed_commands.clone(),
                 },
-                scheduler_claim_work_item: None,
-                agent_state: None,
-                message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
-                turn_record: None,
-                audit_events: vec![AuditEvent::legacy(
-                    "scheduler_execution_recovered",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "message_id": candidate.message_id,
-                        "activation_id": candidate.activation_id,
-                        "work_item_id": candidate.work_item_id,
-                        "reason": candidate.reason,
-                    }),
-                )],
-                notify_scheduler: true,
-                fault: None,
-                brief_evidence: Vec::new(),
-            },
-            &crate::runtime_db::transitions::ExecutionProtocolTransition {
-                bootstrap: None,
-                commands: candidate.proposed_commands.clone(),
-            },
-        )?;
+                maintenance,
+            )?;
         applied |= commit.applied;
     }
     for (candidate, expected_entry, proposed_entry, command) in task_result_claim_recovery {
@@ -2732,42 +2914,45 @@ fn apply_scheduler_recovery_plan_with_options(
                 candidate.message_id
             ));
         }
-        let commit = runtime_db.transitions().commit_scheduler_recovery(
-            &crate::runtime_db::transitions::QueueTransitionCommand {
-                agent_id: agent_id.to_string(),
-                operation: if proposed_entry.status == QueueEntryStatus::Queued {
-                    crate::runtime_db::transitions::QueueOperation::Requeue
-                } else {
-                    crate::runtime_db::transitions::QueueOperation::Settle
+        let commit = runtime_db
+            .transitions()
+            .commit_scheduler_recovery_with_maintenance(
+                &crate::runtime_db::transitions::QueueTransitionCommand {
+                    agent_id: agent_id.to_string(),
+                    operation: if proposed_entry.status == QueueEntryStatus::Queued {
+                        crate::runtime_db::transitions::QueueOperation::Requeue
+                    } else {
+                        crate::runtime_db::transitions::QueueOperation::Settle
+                    },
+                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                        expected: expected_entry.clone(),
+                        record: proposed_entry.clone(),
+                    },
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: Vec::new(),
+                    transcript_entries: Vec::new(),
+                    turn_record: None,
+                    audit_events: vec![AuditEvent::legacy(
+                        "scheduler_task_result_claim_recovered",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "message_id": candidate.message_id,
+                            "activation_id": candidate.activation_id,
+                            "work_item_id": candidate.work_item_id,
+                            "reason": candidate.reason,
+                        }),
+                    )],
+                    notify_scheduler: true,
+                    fault: task_result_fault,
+                    brief_evidence: Vec::new(),
                 },
-                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                    expected: expected_entry.clone(),
-                    record: proposed_entry.clone(),
+                &crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: vec![command.clone()],
                 },
-                scheduler_claim_work_item: None,
-                agent_state: None,
-                message_evidence: Vec::new(),
-                transcript_entries: Vec::new(),
-                turn_record: None,
-                audit_events: vec![AuditEvent::legacy(
-                    "scheduler_task_result_claim_recovered",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "message_id": candidate.message_id,
-                        "activation_id": candidate.activation_id,
-                        "work_item_id": candidate.work_item_id,
-                        "reason": candidate.reason,
-                    }),
-                )],
-                notify_scheduler: true,
-                fault: task_result_fault,
-                brief_evidence: Vec::new(),
-            },
-            &crate::runtime_db::transitions::ExecutionProtocolTransition {
-                bootstrap: None,
-                commands: vec![command.clone()],
-            },
-        )?;
+                maintenance,
+            )?;
         applied |= commit.applied;
         if commit.applied {
             crate::diagnostics::record_unsettled_claim_recovery();
@@ -2797,10 +2982,11 @@ fn apply_scheduler_recovery_plan_with_options(
             .collect::<Vec<_>>();
         match runtime_db
             .transitions()
-            .commit_execution_protocol_recovery_plan(
+            .commit_execution_protocol_recovery_plan_with_maintenance(
                 agent_id,
                 &continuation_reconciliation,
                 &audit_events,
+                maintenance,
             )?
         {
             crate::runtime_db::transitions::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome::Applied(
@@ -2815,6 +3001,7 @@ fn apply_scheduler_recovery_plan_with_options(
             }
         }
     }
+    // Offline recovery observation, not an Active-runtime body admission.
     storage.append_event(&AuditEvent::legacy(
         "scheduler_recovery_applied",
         serde_json::json!({
@@ -2847,6 +3034,15 @@ fn runtime_error_queue_settlement(
         });
     if provider_admission::is_parked_dispatch_rejection(error) {
         (QueueEntryStatus::Interrupted, "provider_dispatch_parked")
+    } else if error.chain().any(|source| {
+        source
+            .downcast_ref::<context_capture::ContextPreparationRetryExhausted>()
+            .is_some()
+    }) {
+        (
+            QueueEntryStatus::Interrupted,
+            "context_preparation_retry_exhausted",
+        )
     } else if retry_task_result {
         (
             QueueEntryStatus::Interrupted,
@@ -2857,164 +3053,6 @@ fn runtime_error_queue_settlement(
     } else {
         (QueueEntryStatus::Aborted, "runtime_error")
     }
-}
-
-#[derive(Debug, Clone)]
-struct AgentRuntimeProjectionCache {
-    agent_id: String,
-    tasks: HashMap<String, TaskRecord>,
-    work_items: HashMap<String, crate::types::WorkItemRecord>,
-    timers: HashMap<String, TimerRecord>,
-    external_triggers: HashMap<String, ExternalTriggerRecord>,
-}
-
-impl AgentRuntimeProjectionCache {
-    fn rebuild(
-        agent_id: String,
-        tasks: Vec<TaskRecord>,
-        work_items: Vec<crate::types::WorkItemRecord>,
-        timers: Vec<TimerRecord>,
-        external_triggers: Vec<ExternalTriggerRecord>,
-    ) -> Self {
-        crate::diagnostics::record_runtime_projection_cache_rebuild();
-        let task_agent_id = agent_id.clone();
-        let work_item_agent_id = agent_id.clone();
-        let timer_agent_id = agent_id.clone();
-        let external_trigger_agent_id = agent_id.clone();
-        Self {
-            agent_id,
-            tasks: latest_by(
-                tasks
-                    .into_iter()
-                    .filter(|record| record.agent_id == task_agent_id),
-                |record| record.id.clone(),
-            ),
-            work_items: latest_by(
-                work_items
-                    .into_iter()
-                    .filter(|record| record.agent_id == work_item_agent_id),
-                |record| record.id.clone(),
-            ),
-            timers: latest_by(
-                timers
-                    .into_iter()
-                    .filter(|record| record.agent_id == timer_agent_id),
-                |record| record.id.clone(),
-            ),
-            external_triggers: latest_by(
-                external_triggers
-                    .into_iter()
-                    .filter(|record| record.target_agent_id == external_trigger_agent_id),
-                |record| record.external_trigger_id.clone(),
-            ),
-        }
-    }
-
-    fn upsert_task(&mut self, record: TaskRecord) {
-        if record.agent_id == self.agent_id {
-            self.tasks.insert(record.id.clone(), record);
-        }
-    }
-
-    fn upsert_work_item(&mut self, record: crate::types::WorkItemRecord) {
-        if record.agent_id == self.agent_id {
-            self.work_items.insert(record.id.clone(), record);
-        }
-    }
-
-    fn upsert_timer(&mut self, record: TimerRecord) {
-        if record.agent_id == self.agent_id {
-            self.timers.insert(record.id.clone(), record);
-        }
-    }
-
-    fn upsert_external_trigger(&mut self, record: ExternalTriggerRecord) {
-        if record.target_agent_id == self.agent_id {
-            self.external_triggers
-                .insert(record.external_trigger_id.clone(), record);
-        }
-    }
-
-    fn active_tasks(&self, limit: usize) -> Vec<TaskRecord> {
-        let mut records = self
-            .tasks
-            .values()
-            .filter(|record| {
-                matches!(
-                    record.status,
-                    TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn latest_tasks(&self, limit: usize) -> Vec<TaskRecord> {
-        let mut records = self.tasks.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn latest_work_items(&self, limit: usize) -> Vec<crate::types::WorkItemRecord> {
-        let mut records = self.work_items.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.created_at.cmp(&left.created_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn recent_timers(&self, limit: usize) -> Vec<TimerRecord> {
-        let mut records = self.timers.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .created_at
-                .cmp(&left.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        take_limit(records, limit)
-    }
-
-    fn latest_external_triggers(&self) -> Vec<ExternalTriggerRecord> {
-        let mut records = self.external_triggers.values().cloned().collect::<Vec<_>>();
-        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-        records
-    }
-}
-
-fn latest_by<T, F>(records: impl IntoIterator<Item = T>, key: F) -> HashMap<String, T>
-where
-    F: Fn(&T) -> String,
-{
-    let mut latest = HashMap::new();
-    for record in records {
-        latest.insert(key(&record), record);
-    }
-    latest
-}
-
-fn take_limit<T>(mut records: Vec<T>, limit: usize) -> Vec<T> {
-    if records.len() > limit {
-        records.truncate(limit);
-    }
-    records
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -3063,24 +3101,29 @@ struct BuiltinWebSearchSelection {
     diagnostics: BuiltinWebSearchSelectionDiagnostics,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RuntimeAgent {
+    #[cfg(test)]
+    mutation_owner: mutation_owner::MutationOwner,
     state: AgentState,
     last_persisted_state: AgentState,
     queue: RuntimeQueue,
+    _queue_budget_view: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
     current_run_abort: Option<CurrentRunAbortHandle>,
 }
 
 impl RuntimeAgent {
+    #[cfg(test)]
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
         let started = std::time::Instant::now();
-        // persist_state bypasses OCC (uses upsert, not expected-snapshot
-        // validation). This is intentional for control-plane operations
-        // (Start/Stop/shutdown) that need to force-write agent state.
-        // After a successful write, last_persisted_state is set to
-        // self.state so subsequent commit_queue OCC checks use the
-        // correct baseline. On failure, self.state is reverted.
-        if let Err(error) = storage.write_agent(&self.state) {
+        // Fixture setup bypasses OCC but must not erase pending recovery.
+        if let Err(error) = self.mutation_owner.capture() {
+            self.state = self.last_persisted_state.clone();
+            crate::diagnostics::record_storage_persist_state(started.elapsed());
+            return Err(error.into());
+        }
+        // Keep the fixture's durable baseline aligned with its resident state.
+        if let Err(error) = storage.write_agent_for_fixture(&self.state) {
             self.state = self.last_persisted_state.clone();
             crate::diagnostics::record_storage_persist_state(started.elapsed());
             return Err(error);
@@ -3088,27 +3131,6 @@ impl RuntimeAgent {
         self.last_persisted_state = self.state.clone();
         crate::diagnostics::record_storage_persist_state(started.elapsed());
         Ok(())
-    }
-
-    fn restore_bootstrap_replay_message(
-        &mut self,
-        storage: &AppStorage,
-        message: &MessageEnvelope,
-    ) -> Result<()> {
-        if self
-            .queue
-            .peek_next_matching(|queued| queued.id == message.id)
-            .is_none()
-        {
-            self.queue.push(message.clone());
-        }
-        let queued_messages = self.queue.len();
-        self.state.pending = queued_messages;
-        scheduler_executor::apply_bootstrap_recovered_projection(
-            &mut self.state,
-            scheduler_executor::BootstrapRecoveryFacts { queued_messages },
-        );
-        self.persist_state(storage)
     }
 }
 
@@ -3188,6 +3210,26 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    async fn read_committed_agent<T>(
+        &self,
+        read: impl FnOnce(&RuntimeAgent) -> T + Send,
+    ) -> Result<T> {
+        loop {
+            let lock_wait = crate::diagnostics::attribution::AGENT_LOCK.start();
+            let guard = self.inner.agent.lock().await;
+            drop(lock_wait);
+            match self.inner.mutation_owner.capture() {
+                Ok(_) => return Ok(read(&guard)),
+                Err(mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+            drop(guard);
+            // Wait for normal publication without holding the state lock.
+            // Unknown outcomes remain fenced rather than borrowing a DB row.
+            self.reconcile_posture_observation().await?;
+        }
+    }
+
     pub(super) fn now(&self) -> chrono::DateTime<chrono::Utc> {
         self.inner.clock.now()
     }
@@ -3196,36 +3238,10 @@ impl RuntimeHandle {
         &self,
         tool_name: &str,
     ) -> Result<()> {
-        let (agent_id, turn_id) = {
-            let guard = self.inner.agent.lock().await;
-            (guard.state.id.clone(), guard.state.current_turn_id.clone())
-        };
-        let Some(turn_id) = turn_id else {
-            return Ok(());
-        };
-        let Some(mut turn) = self
-            .inner
-            .runtime_db
-            .turn_records()
-            .by_id(Some(&agent_id), &turn_id)?
-        else {
-            return Ok(());
-        };
-        if turn.terminal.is_some() || turn.external_side_effect_possible {
-            return Ok(());
-        }
-        turn.external_side_effect_possible = true;
-        self.inner.runtime_db.turn_records().upsert(&turn)?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "external_command_no_replay_barrier",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "turn_id": turn_id,
-                "tool_name": tool_name,
-                "recovery_policy": "never_replay_unknown_external_side_effect",
-            }),
-        ))?;
-        Ok(())
+        self.begin_mutation()
+            .await?
+            .set_current_turn_external_side_effect_possible(tool_name, true)
+            .await
     }
 
     pub(crate) async fn clear_current_turn_external_side_effect_possible(
@@ -3244,36 +3260,10 @@ impl RuntimeHandle {
         ) {
             return Ok(());
         }
-        let (agent_id, turn_id) = {
-            let guard = self.inner.agent.lock().await;
-            (guard.state.id.clone(), guard.state.current_turn_id.clone())
-        };
-        let Some(turn_id) = turn_id else {
-            return Ok(());
-        };
-        let Some(mut turn) = self
-            .inner
-            .runtime_db
-            .turn_records()
-            .by_id(Some(&agent_id), &turn_id)?
-        else {
-            return Ok(());
-        };
-        if turn.terminal.is_some() || !turn.external_side_effect_possible {
-            return Ok(());
-        }
-        turn.external_side_effect_possible = false;
-        self.inner.runtime_db.turn_records().upsert(&turn)?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "external_command_checkpoint_durable",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "turn_id": turn_id,
-                "tool_name": tool_name,
-                "recovery_policy": "resume_from_durable_tool_result",
-            }),
-        ))?;
-        Ok(())
+        self.begin_mutation()
+            .await?
+            .set_current_turn_external_side_effect_possible(tool_name, false)
+            .await
     }
 
     fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
@@ -3284,75 +3274,32 @@ impl RuntimeHandle {
             .pop_front()
     }
 
-    pub(super) fn commit_work_item_transition(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.commit_work_item_transition_with_execution(
-            command,
-            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-        )
+    fn take_terminal_transition_fault(&self) -> Option<TransitionFaultPoint> {
+        #[cfg(test)]
+        if let Some(fault) = self
+            .inner
+            .terminal_transition_faults
+            .lock()
+            .expect("terminal transition fault plan lock poisoned")
+            .pop_front()
+        {
+            return Some(fault);
+        }
+        self.take_transition_fault()
     }
 
-    pub(super) fn commit_work_item_transition_with_execution(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemTransitionCommand,
-        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_work_item_with_execution_protocol(command, execution_protocol)
-    }
-
-    pub(super) fn commit_work_item_focus_transition(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.commit_work_item_focus_transition_with_execution(
-            command,
-            &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-        )
-    }
-
-    pub(super) fn commit_work_item_focus_transition_with_execution(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
-        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_work_item_focus_with_execution_protocol(command, execution_protocol)
-    }
-
-    pub(super) fn commit_work_item_focus_transition_with_execution_and_completion_tool(
-        &self,
-        command: &crate::runtime_db::transitions::WorkItemFocusTransitionCommand,
-        execution_protocol: &crate::runtime_db::transitions::ExecutionProtocolTransition,
-        tool_execution: &crate::types::ToolExecutionRecord,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_work_item_focus_with_execution_protocol_and_completion_tool(
-                command,
-                execution_protocol,
-                tool_execution,
-            )
-    }
-
-    pub(super) fn commit_task_transition(
-        &self,
-        command: &crate::runtime_db::transitions::TaskTransitionCommand,
-    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
-        self.inner
-            .runtime_db
-            .transitions()
-            .commit_task_with_execution_protocol(
-                command,
-                &crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-            )
+    fn take_claim_transition_fault(&self) -> Option<TransitionFaultPoint> {
+        #[cfg(test)]
+        if let Some(fault) = self
+            .inner
+            .claim_transition_faults
+            .lock()
+            .expect("claim transition fault plan lock poisoned")
+            .pop_front()
+        {
+            return Some(fault);
+        }
+        self.take_transition_fault()
     }
 
     pub(super) fn inject_next_acceptance_transition_fault(
@@ -3367,6 +3314,34 @@ impl RuntimeHandle {
     pub(crate) fn inject_next_transition_fault(&self, fault: TransitionFaultPoint) {
         self.inject_next_transition_fault_unchecked(fault)
             .expect("a transition fault is already armed for this runtime fixture");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_terminal_transition_fault(&self, fault: TransitionFaultPoint) {
+        let mut faults = self
+            .inner
+            .terminal_transition_faults
+            .lock()
+            .expect("terminal transition fault plan lock poisoned");
+        assert!(
+            faults.is_empty(),
+            "a terminal transition fault is already armed"
+        );
+        faults.push_back(fault);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_claim_transition_fault(&self, fault: TransitionFaultPoint) {
+        let mut faults = self
+            .inner
+            .claim_transition_faults
+            .lock()
+            .expect("claim transition fault plan lock poisoned");
+        assert!(
+            faults.is_empty(),
+            "a claim transition fault is already armed"
+        );
+        faults.push_back(fault);
     }
 
     #[cfg(test)]
@@ -3396,9 +3371,9 @@ impl RuntimeHandle {
         let Some(binding) = replacement else {
             return Ok(());
         };
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         guard.state.current_execution_binding = Some(binding);
-        guard.persist_state(&self.inner.storage)
+        guard.persist_state(&self.inner.storage).await
     }
 
     fn inject_next_transition_fault_unchecked(&self, fault: TransitionFaultPoint) -> Result<()> {
@@ -3488,19 +3463,14 @@ impl RuntimeHandle {
     }
 
     #[cfg(test)]
-    async fn apply_claim_work_item_plan_status_before_commit(&self) -> Result<()> {
-        let injected = self
-            .inner
+    fn take_claim_work_item_plan_status_before_commit(
+        &self,
+    ) -> Option<(String, crate::types::WorkItemPlanStatus)> {
+        self.inner
             .claim_work_item_plan_status_before_commit
             .lock()
             .expect("claim WorkItem mutation lock poisoned")
-            .take();
-        let Some((work_item_id, plan_status)) = injected else {
-            return Ok(());
-        };
-        self.update_work_item_fields(work_item_id, None, Some(plan_status), None, None, None)
-            .await?;
-        Ok(())
+            .take()
     }
 
     pub(super) fn take_transition_warnings(&self) -> Vec<PostCommitWarning> {
@@ -3517,74 +3487,26 @@ impl RuntimeHandle {
         &self,
         commit: TransitionCommit,
     ) -> TransitionApplyResult {
-        // Callers await this inline across the runtime, so the guarded
-        // implementation must not add its future state to every caller.
-        Box::pin(self.apply_transition_commit_with_agent_guard(commit, None)).await
-    }
-
-    async fn apply_transition_commit_with_agent_guard(
-        &self,
-        commit: TransitionCommit,
-        agent_guard: Option<tokio::sync::MutexGuard<'_, RuntimeAgent>>,
-    ) -> TransitionApplyResult {
         if !commit.applied {
             return TransitionApplyResult::default();
         }
-        let effects = commit.effects;
-        let operator_input_changed = effects
-            .queued_messages
-            .iter()
-            .any(scheduler::is_operator_interjection_message);
-        if operator_input_changed {
-            // Fence prepared continuations before yielding for queue projection.
-            self.inner
-                .operator_interjection_revision
-                .fetch_add(1, Ordering::AcqRel);
-        }
+        self.apply_transition_notifications(&commit.effects).await
+    }
+
+    async fn apply_transition_notifications(
+        &self,
+        effects: &crate::runtime_db::transitions::PostCommitEffects,
+    ) -> TransitionApplyResult {
         let mut warnings = Vec::new();
-        // A pause holds this guard from its DB commit through source projection.
-        // Release it before unrelated cache, publication, or scheduler effects.
-        let agent_projected = if let Some(mut guard) = agent_guard {
-            self.apply_transition_agent_projection(&effects, &mut guard, &mut warnings)
-                .await;
-            true
-        } else {
-            false
-        };
-        if effects.fault == Some(TransitionFaultPoint::BeforeCacheUpdate) {
-            warnings.push(PostCommitWarning {
-                effect: "projection_cache_update",
-                message: "injected runtime transition post-commit fault".into(),
-            });
-        } else {
-            let mut cache = self.inner.projection_cache.lock().await;
-            for record in &effects.work_items {
-                cache.upsert_work_item(record.clone());
-            }
-            for record in &effects.tasks {
-                cache.upsert_task(record.clone());
-            }
-        }
-        if !agent_projected
-            && (effects.agent_state.is_some() || !effects.queued_messages.is_empty())
-        {
-            let mut guard = self.inner.agent.lock().await;
-            self.apply_transition_agent_projection(&effects, &mut guard, &mut warnings)
-                .await;
-        }
-        if operator_input_changed {
-            // Closure/scheduler waiters must not consume continuation input wakes.
-            self.inner.operator_interjection_notify.notify_waiters();
-        }
         if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
             warnings.push(PostCommitWarning {
                 effect: "event_publication",
                 message: "injected runtime transition post-commit fault".into(),
             });
         } else {
-            warnings.extend(self.inner.storage.publish_transition_events(&effects));
+            warnings.extend(self.inner.storage.publish_transition_events(effects));
         }
-        warnings.extend(self.inner.storage.notify_transition_memory_index(&effects));
+        warnings.extend(self.inner.storage.notify_transition_memory_index(effects));
         if effects.notify_scheduler {
             if effects.fault == Some(TransitionFaultPoint::BeforeSchedulerNotification) {
                 warnings.push(PostCommitWarning {
@@ -3614,98 +3536,26 @@ impl RuntimeHandle {
         result
     }
 
-    async fn apply_transition_agent_projection(
-        &self,
-        effects: &crate::runtime_db::transitions::PostCommitEffects,
-        guard: &mut RuntimeAgent,
-        warnings: &mut Vec<PostCommitWarning>,
-    ) {
-        if let Some(mutation) = effects.agent_state.as_ref() {
-            if mutation
-                .expected
-                .as_ref()
-                .is_none_or(|expected| guard.state == **expected)
-            {
-                guard.state = mutation.record.as_ref().clone();
-                guard.last_persisted_state = mutation.record.as_ref().clone();
-            } else if let Some(expected) = mutation.expected.as_deref() {
-                match rebase_committed_agent_state(expected, &mutation.record, &guard.state) {
-                    Ok((merged, conflicts)) => {
-                        guard.state = merged;
-                        if let Err(error) = guard.persist_state(&self.inner.storage) {
-                            warnings.push(PostCommitWarning {
-                                effect: "agent_state_projection_update",
-                                message: format!(
-                                    "failed to persist rebased post-commit agent state: {error}"
-                                ),
-                            });
-                        } else if !conflicts.is_empty() {
-                            warnings.push(PostCommitWarning {
-                                effect: "agent_state_projection_update",
-                                message: format!(
-                                    "retained newer in-memory agent state fields after transition commit: {}",
-                                    conflicts.join(",")
-                                ),
-                            });
-                        }
-                    }
-                    Err(error) => warnings.push(PostCommitWarning {
-                        effect: "agent_state_projection_update",
-                        message: format!(
-                            "failed to rebase post-commit agent state; retained newer in-memory state: {error}"
-                        ),
-                    }),
-                }
-            } else {
-                warnings.push(PostCommitWarning {
-                    effect: "agent_state_projection_update",
-                    message: "agent state changed after transition commit; retained newer in-memory state"
-                        .into(),
-                });
-            }
-        }
-        if !effects.queued_messages.is_empty() {
-            #[cfg(test)]
-            {
-                let checkpoint = self
-                    .inner
-                    .queued_message_projection_checkpoint
-                    .lock()
-                    .expect("queue projection checkpoint lock poisoned")
-                    .take();
-                if let Some(checkpoint) = checkpoint {
-                    checkpoint.reached.notify_one();
-                    checkpoint.release.notified().await;
-                }
-            }
-            for message in &effects.queued_messages {
-                if guard
-                    .queue
-                    .peek_next_matching(|queued| queued.id == message.id)
-                    .is_none()
-                {
-                    guard.queue.push(message.clone());
-                }
-            }
-        }
-    }
-
+    #[cfg(test)]
     pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
-        self.inner.storage.append_timer(record)?;
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_timer(record.clone());
+        let mut mutation = self.begin_mutation().await?;
+        let prepared = crate::runtime_db::transitions::PreparedInputTransition::timer(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            record.created_at,
+            crate::runtime_db::transitions::PreparedTimerTransition::create(record.clone(), None),
+        )?;
+        let (commit, outcome) = mutation.commit_prepared_timer_transition(prepared).await?;
+        anyhow::ensure!(
+            matches!(
+                outcome,
+                crate::runtime_db::transitions::TimerMutationOutcome::Created { .. }
+            ),
+            "fixture Timer creation ACK differs"
+        );
+        drop(mutation);
+        self.apply_transition_commit(commit).await;
         Ok(())
-    }
-
-    pub(crate) async fn cache_external_trigger_projection(&self, record: &ExternalTriggerRecord) {
-        self.inner
-            .projection_cache
-            .lock()
-            .await
-            .upsert_external_trigger(record.clone());
     }
 
     pub(crate) fn work_item_written_event(
@@ -3763,9 +3613,9 @@ impl RuntimeHandle {
     where
         F: FnOnce(&mut AgentState) -> Result<()>,
     {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         mutate(&mut guard.state)?;
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         Ok(guard.state.clone())
     }
 
@@ -3785,16 +3635,6 @@ impl RuntimeHandle {
         &self.inner.storage
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_autonomous_continuation_hook_for_test(
-        &mut self,
-        hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
-    ) {
-        Arc::get_mut(&mut self.inner)
-            .expect("test hook must be installed before cloning the runtime")
-            .autonomous_continuation_hook = hook;
-    }
-
     pub(crate) fn runtime_db(&self) -> &crate::runtime_db::RuntimeDb {
         &self.inner.runtime_db
     }
@@ -3811,7 +3651,7 @@ impl RuntimeHandle {
         &self,
         request: CurrentRunAbortRequest,
     ) -> Result<CurrentRunAbortOutcome> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         let agent_id = guard.state.id.clone();
         let Some(handle) = guard.current_run_abort.as_ref().cloned() else {
             return Err(CurrentRunAbortError::NoCurrentRun { agent_id }.into());
@@ -3826,10 +3666,6 @@ impl RuntimeHandle {
             }
         }
 
-        if let Ok(mut reason) = handle.reason.lock() {
-            *reason = "operator_aborted".into();
-        }
-        handle.token.cancel();
         match request.mode {
             CurrentRunAbortMode::StopAfterAbort => {
                 scheduler::apply_stop_projection(&mut guard.state);
@@ -3840,10 +3676,11 @@ impl RuntimeHandle {
                 scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
             }
         }
-        guard.persist_state(&self.inner.storage)?;
+        guard.defer_abort_current_run("operator_aborted");
+        guard.persist_state(&self.inner.storage).await?;
         drop(guard);
 
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "current_run_aborted",
             serde_json::json!({
                 "agent_id": agent_id,
@@ -3851,7 +3688,8 @@ impl RuntimeHandle {
                 "mode": request.mode.as_str(),
                 "reason": "operator_aborted",
             }),
-        ))?;
+        ))
+        .await?;
         self.inner.notify.notify_waiters();
         Ok(CurrentRunAbortOutcome {
             agent_id,
@@ -3885,36 +3723,9 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_task_records_snapshot(&self) -> Result<Vec<TaskRecord>> {
-        let mut tasks_by_id = self
-            .inner
-            .storage
-            .latest_task_records()?
-            .into_iter()
-            .map(|task| (task.id.clone(), task))
-            .collect::<HashMap<_, _>>();
-        for task in self
-            .inner
-            .projection_cache
-            .lock()
-            .await
-            .latest_tasks(usize::MAX)
-        {
-            match tasks_by_id.entry(task.id.clone()) {
-                Entry::Occupied(mut entry) => {
-                    if task_state_reducer::should_ignore_task_update(
-                        Some(entry.get().clone()),
-                        &task,
-                    ) {
-                        continue;
-                    }
-                    entry.insert(task);
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(task);
-                }
-            }
-        }
-        let mut tasks = tasks_by_id.into_values().collect::<Vec<_>>();
+        // Full-history callers still use the explicit durable API until their
+        // session/output selection frontiers join the qualified Task domain.
+        let mut tasks = self.inner.storage.latest_task_records()?;
         tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(tasks)
     }
@@ -4091,7 +3902,13 @@ impl RuntimeHandle {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
-            *state = next_state;
+            state.attached_workspaces = next_state.attached_workspaces;
+            state.active_workspace_entry = next_state.active_workspace_entry;
+            state.worktree_session = next_state.worktree_session;
+            state.execution_profile = next_state.execution_profile;
+            state.model_override = next_state.model_override;
+            state.model_override_reasoning_effort = next_state.model_override_reasoning_effort;
+            state.model_override_service_tier = next_state.model_override_service_tier;
             Ok(())
         })
         .await?;
@@ -4132,7 +3949,13 @@ impl RuntimeHandle {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
-            *state = next_state;
+            state.attached_workspaces = next_state.attached_workspaces;
+            state.active_workspace_entry = next_state.active_workspace_entry;
+            state.worktree_session = next_state.worktree_session;
+            state.execution_profile = next_state.execution_profile;
+            state.model_override = next_state.model_override;
+            state.model_override_reasoning_effort = next_state.model_override_reasoning_effort;
+            state.model_override_service_tier = next_state.model_override_service_tier;
             Ok(())
         })
         .await?;
@@ -4174,7 +3997,13 @@ impl RuntimeHandle {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
-            *state = next_state;
+            state.attached_workspaces = next_state.attached_workspaces;
+            state.active_workspace_entry = next_state.active_workspace_entry;
+            state.worktree_session = next_state.worktree_session;
+            state.execution_profile = next_state.execution_profile;
+            state.model_override = next_state.model_override;
+            state.model_override_reasoning_effort = next_state.model_override_reasoning_effort;
+            state.model_override_service_tier = next_state.model_override_service_tier;
             Ok(())
         })
         .await?;
@@ -4198,6 +4027,7 @@ impl RuntimeHandle {
     /// Registered execution roots for the given workspaces. Used to populate
     /// execution snapshots so historical `workspace://` references with
     /// `?root=` parameters can still be resolved.
+    #[cfg(test)]
     pub(crate) fn execution_root_refs_for_workspaces(
         &self,
         workspace_ids: &[String],
@@ -4222,6 +4052,7 @@ impl RuntimeHandle {
         workspace::workspace_view_from_state(state, self.inner.storage.data_dir().to_path_buf())
     }
 
+    #[cfg(test)]
     fn execution_snapshot_for_view(
         &self,
         profile: crate::system::ExecutionProfile,
@@ -4292,23 +4123,17 @@ impl RuntimeHandle {
             .snapshot())
     }
 
-    pub(crate) async fn loaded_agents_md(&self) -> Result<LoadedAgentsMd> {
+    #[cfg(test)]
+    pub(crate) async fn loaded_agents_md(&self) -> Result<crate::types::LoadedAgentsMd> {
         let guard = self.inner.agent.lock().await;
-        self.loaded_agents_md_for_state(&guard.state)
-    }
-
-    fn loaded_agents_md_for_state(&self, state: &AgentState) -> Result<LoadedAgentsMd> {
         load_agents_md(
             self.user_home().as_deref(),
             self.agent_home().as_path(),
-            self.workspace_anchor_for_state_ref(state),
+            self.workspace_anchor_for_state_ref(&guard.state),
         )
     }
 
-    fn loaded_agent_memory_for_state(&self) -> Result<LoadedAgentMemory> {
-        load_agent_memory(self.agent_home().as_path())
-    }
-
+    #[cfg(test)]
     pub(crate) async fn skills_runtime_view(
         &self,
         identity: &AgentIdentityView,
@@ -4323,6 +4148,16 @@ impl RuntimeHandle {
         state: &AgentState,
         identity: &AgentIdentityView,
     ) -> Result<SkillsRuntimeView> {
+        self.skills_runtime_view_for_state_with_material(state, identity, None)
+            .await
+    }
+
+    async fn skills_runtime_view_for_state_with_material(
+        &self,
+        state: &AgentState,
+        identity: &AgentIdentityView,
+        material: Option<&crate::diagnostics::resource_io::ResourceReadMaterial>,
+    ) -> Result<SkillsRuntimeView> {
         let skill_roots = effective_skill_root_registrations(
             self.skill_visibility(identity),
             self.user_home().as_deref(),
@@ -4336,102 +4171,237 @@ impl RuntimeHandle {
         let mut view = if let Some(bridge) = self.inner.host_bridge.as_ref() {
             let registry = bridge.skills_registry()?;
             let mut registry = registry.write().await;
+            let _resource_io = material.map(|material| material.enter());
             registry.sync_effective_roots(skill_roots.clone())?;
             skills_runtime_view_from_catalog(
                 registry.catalog_for_roots(&skill_roots, None),
                 &skill_roots,
                 &state.active_skills,
-            )
+            )?
         } else {
+            let _resource_io = material.map(|material| material.enter());
             let mut registry = crate::skills::SkillsRegistry::new();
             registry.replace_roots(skill_roots.clone())?;
-            skills_runtime_view_from_catalog(registry.catalog(), &skill_roots, &state.active_skills)
+            skills_runtime_view_from_catalog(
+                registry.catalog(),
+                &skill_roots,
+                &state.active_skills,
+            )?
         };
+        let _resource_io = material.map(|material| material.enter());
         view.agent_templates_catalog = discover_agent_templates_catalog(
             self.user_home().as_deref(),
             self.agent_home().as_path(),
         );
+        if let Some(material) = material {
+            material.finish()?;
+        }
         Ok(view)
     }
 
     pub(crate) async fn sync_effective_skill_roots_for_state(
         &self,
-        state: &AgentState,
+        _state: &AgentState,
     ) -> Result<()> {
-        let Some(bridge) = self.inner.host_bridge.as_ref() else {
-            return Ok(());
-        };
-        let identity = self.agent_identity_view().await?;
-        let skill_roots = effective_skill_root_registrations(
-            self.skill_visibility(&identity),
-            self.user_home().as_deref(),
-            &state.id,
-            self.agent_home().as_path(),
-            state
-                .active_workspace_entry
-                .as_ref()
-                .map(|entry| entry.execution_root.as_path()),
-        );
-        let registry = bridge.skills_registry()?;
-        registry.write().await.sync_effective_roots(skill_roots)?;
+        // Source ACK does not wait for resource I/O or hold its owner for it.
+        self.inner
+            .resources
+            .registry
+            .invalidate(resource_observation::ResourceInvalidation::WorkspaceChange)?;
+        self.inner.resources.notify();
         Ok(())
     }
 
-    async fn begin_interactive_turn_with_provenance(
+    #[inline(never)]
+    fn begin_interactive_turn_with_provenance<'a>(
+        &'a self,
+        message: Option<&'a MessageEnvelope>,
+        operator_binding_id: Option<&'a str>,
+        operator_reply_route_id: Option<&'a str>,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<(String, u64)>> + Send + 'a>>
+    {
+        // The prepared input and private candidate stay on this heap frame,
+        // rather than enlarging every dispatch/recovery caller's stack frame.
+        Box::pin(self.begin_interactive_turn_with_provenance_inner(
+            message,
+            operator_binding_id,
+            operator_reply_route_id,
+            execution_admission_provenance,
+            None,
+        ))
+    }
+
+    #[inline(never)]
+    fn begin_dispatch_turn<'a>(
+        &'a self,
+        message: &'a MessageEnvelope,
+        operator_binding_id: Option<&'a str>,
+        operator_reply_route_id: Option<&'a str>,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
+        prior_closure: &'a ClosureDecision,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<(String, u64)>> + Send + 'a>>
+    {
+        Box::pin(self.begin_interactive_turn_with_provenance_inner(
+            Some(message),
+            operator_binding_id,
+            operator_reply_route_id,
+            execution_admission_provenance,
+            Some(prior_closure),
+        ))
+    }
+
+    async fn begin_interactive_turn_with_provenance_inner(
         &self,
         message: Option<&MessageEnvelope>,
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
         execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
-    ) -> Result<()> {
-        let replay_source = if let Some(message) = message {
-            if let Some(source_turn_id) = message.source_refs.get("replay_source_turn_id") {
-                Some((
-                    source_turn_id.clone(),
-                    self.inner
-                        .runtime_db
-                        .turn_records()
-                        .by_id(Some(&message.agent_id), source_turn_id)?,
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
+        dispatch_prior_closure: Option<&ClosureDecision>,
+    ) -> Result<(String, u64)> {
+        use self::resident_input_evidence::{
+            InputEvidenceFamily as Family, InputEvidenceKey as Key,
         };
-        let terminal_source_turn = if replay_source.is_none() {
-            if let Some(message) = message {
-                if let Some(source_turn_id) = normalized_turn_id(message.turn_id.as_deref()) {
-                    self.inner
-                        .runtime_db
-                        .turn_records()
-                        .by_id(Some(&message.agent_id), &source_turn_id)?
-                        .filter(|turn| turn.terminal.is_some())
-                        .map(|turn| (source_turn_id, turn))
-                } else {
-                    None
+        let mut guard = self.begin_mutation().await?;
+        let mut roots = std::collections::BTreeSet::new();
+        let mut replay_turn_selected = false;
+        if let Some(message) = message {
+            anyhow::ensure!(
+                message.agent_id == guard.state.id,
+                "turn input agent mismatch"
+            );
+            roots.insert(Key::new(Family::Message, &message.id));
+        }
+        if let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) =
+            execution_admission_provenance.as_ref()
+        {
+            roots.insert(Key::new(Family::Attempt, activation_id));
+            if let Some(source_turn_id) =
+                message.and_then(|message| message.source_refs.get("replay_source_turn_id"))
+            {
+                // A claim may reserve this ID before the body exists. Presence
+                // only selects a root; preparation still checks its qualification.
+                replay_turn_selected = self.inner.runtime_db.transaction(|tx| {
+                    crate::runtime_db::input_evidence_snapshot::optional_turn_present_tx(
+                        tx,
+                        &guard.input_evidence_scope(),
+                        source_turn_id,
+                    )
+                })?;
+                if replay_turn_selected {
+                    roots.insert(Key::new(Family::Turn, source_turn_id));
                 }
-            } else {
-                None
             }
+        }
+        guard
+            .prepare_owner_inputs(roots, Default::default())
+            .await?;
+        let inputs = guard.capture_input_evidence()?;
+        let execution = inputs.execution_state_if_initialized()?;
+        // A payload Turn ID is a preallocation/replay hint. Only this captured
+        // canonical assignment grants the previous Turn's body and terminal.
+        let assigned_source_turn = if let Some(message) = message {
+            let assignment = inputs.message_turn_keys.get(&message.id).ok_or_else(|| {
+                self::resident_input_evidence::InputEvidenceReadError::NeedsPreparation(Key::new(
+                    Family::Message,
+                    &message.id,
+                ))
+            })?;
+            assignment
+                .as_deref()
+                .map(|turn_id| {
+                    provider_recovery::captured_turn(&inputs, turn_id)?
+                        .map(|turn| (turn_id.to_owned(), turn))
+                        .ok_or_else(|| anyhow!("assigned turn input source is unavailable"))
+                })
+                .transpose()?
         } else {
             None
         };
+        if dispatch_prior_closure.is_some() {
+            if let Some(message) = message {
+                if let Some(original) = self.retry_started_dispatch(
+                    &guard,
+                    message,
+                    &inputs,
+                    execution_admission_provenance.as_ref(),
+                )? {
+                    let mut request = resident_work::WorkCaptureRequest::current();
+                    request.required_turn_ids.insert(original.0.clone());
+                    request
+                        .required_trigger_message_ids
+                        .insert(message.id.clone());
+                    guard.prepare_owner_work_request(&request).await?;
+                    return Ok(original);
+                }
+            }
+        }
+        let original_claim = if assigned_source_turn
+            .as_ref()
+            .is_some_and(|(_, turn)| turn.terminal.is_none())
+        {
+            let source = message.context("assigned Turn has no actual source")?;
+            anyhow::ensure!(
+                dispatch_prior_closure.is_some(),
+                started_dispatch::StartedDispatchConflict(
+                    "historical assignment reentry requires an actual dispatch"
+                )
+            );
+            Some(self.original_dispatch_claim(
+                &guard,
+                source,
+                &inputs,
+                execution_admission_provenance.as_ref(),
+            )?)
+        } else {
+            None
+        };
+        let canonical_batch_source = match message.filter(|_| replay_turn_selected) {
+            Some(message) => Self::canonical_idle_batch_replay_source(
+                &inputs,
+                execution.as_ref(),
+                message,
+                execution_admission_provenance.as_ref(),
+            )?,
+            None => None,
+        };
+        let replay_source = canonical_batch_source
+            .map(|(id, turn)| (id, Some(turn)))
+            .or_else(|| {
+                message
+                    .and_then(|message| message.source_refs.get("replay_source_turn_id"))
+                    .map(|source_turn_id| {
+                        if let Some((assigned_id, source)) = &assigned_source_turn {
+                            (assigned_id.clone(), Some(source.clone()))
+                        } else {
+                            // Claim-only reentry grants no historical body.
+                            (source_turn_id.clone(), None)
+                        }
+                    })
+            });
+        let terminal_source_turn = replay_source
+            .is_none()
+            .then_some(assigned_source_turn.as_ref())
+            .flatten()
+            .filter(|(_, turn)| turn.terminal.is_some())
+            .cloned();
         #[allow(deprecated)]
         let canonical_execution_binding = match execution_admission_provenance.as_ref() {
             Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) => {
                 let message = message.ok_or_else(|| {
                     anyhow!("canonical execution admission requires a source message")
                 })?;
-                let attempt = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .load_execution_protocol_state_if_initialized(&message.agent_id)?
+                let attempt = execution
+                    .as_ref()
                     .and_then(|state| state.attempts.get(activation_id).cloned())
                     .ok_or_else(|| {
                         anyhow!("canonical execution admission references an unknown attempt")
                     })?;
+                anyhow::ensure!(
+                    attempt.agent_id == message.agent_id
+                        && attempt.source_message_id.as_deref() == Some(message.id.as_str()),
+                    "canonical turn admission source differs from the original claim"
+                );
                 let claimed_work_revision = attempt.admitted_fences.work_item_source_revision;
                 let owner = match attempt.binding {
                     crate::domain::execution_protocol::ExecutionBinding::WorkItem {
@@ -4458,13 +4428,11 @@ impl RuntimeHandle {
         };
         if let Some(message) = message {
             let work_item_id = message.work_item_id.clone().or_else(|| {
-                self.inner.agent.try_lock().ok().and_then(|guard| {
-                    guard
-                        .state
-                        .current_turn_work_item_id
-                        .clone()
-                        .or_else(|| guard.state.current_work_item_id.clone())
-                })
+                guard
+                    .state
+                    .current_turn_work_item_id
+                    .clone()
+                    .or_else(|| guard.state.current_work_item_id.clone())
             });
             let activation_id = scheduler_executor::canonical_activation_id(&message.id);
             let scenario = match message.delivery_surface {
@@ -4479,35 +4447,106 @@ impl RuntimeHandle {
             let authoritative_without_activation = work_item_id.is_some()
                 && message.authority_class == AuthorityClass::RuntimeInstruction
                 && scenario.is_some()
-                && self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .load_execution_protocol_state_if_initialized(&message.agent_id)?
+                && execution
+                    .as_ref()
                     .is_none_or(|state| !state.attempts.contains_key(&activation_id));
             if authoritative_without_activation {
-                self.inner.storage.append_event(&AuditEvent::legacy(
-                    "authoritative_work_item_turn_without_activation",
-                    serde_json::json!({
-                        "agent_id": message.agent_id,
-                        "message_id": message.id,
-                        "work_item_id": work_item_id,
-                        "scenario_class": scenario.map(|scenario| scenario.as_str()),
-                        "delivery_surface": message.delivery_surface,
-                    }),
-                ))?;
+                guard
+                    .append_original_audit_event(AuditEvent::legacy(
+                        "authoritative_work_item_turn_without_activation",
+                        serde_json::json!({
+                            "agent_id": message.agent_id,
+                            "message_id": message.id,
+                            "work_item_id": work_item_id,
+                            "scenario_class": scenario.map(|scenario| scenario.as_str()),
+                            "delivery_surface": message.delivery_surface,
+                        }),
+                    ))
+                    .await?;
+            }
+        }
+        let projected_turn_work_item_id = if let Some((_, owner, _)) = &canonical_execution_binding
+        {
+            owner.work_item_id().map(ToString::to_string)
+        } else if let Some((_, source_turn)) = &replay_source {
+            source_turn
+                .as_ref()
+                .and_then(|turn| turn.current_work_item_id.clone())
+        } else {
+            guard
+                .state
+                .current_turn_work_item_id
+                .clone()
+                .or_else(|| guard.state.current_work_item_id.clone())
+        };
+        let binding_work_item_id = message.and_then(|message| {
+            if canonical_execution_binding.is_some() {
+                projected_turn_work_item_id.clone()
+            } else {
+                message
+                    .work_item_id
+                    .clone()
+                    .or_else(|| projected_turn_work_item_id.clone())
+            }
+        });
+        let fallback_work_revision = if canonical_execution_binding
+            .as_ref()
+            .and_then(|(_, _, revision)| *revision)
+            .is_none()
+        {
+            if let Some(work_item_id) = &binding_work_item_id {
+                let key =
+                    resident_work::WorkKey::new(resident_work::WorkFamily::Work, work_item_id);
+                let mut request = resident_work::WorkCaptureRequest::current();
+                request.include_live = false;
+                request.nonopen_limit = 0;
+                request.mandatory_roots.insert(key.clone());
+                guard.prepare_owner_work_request(&request).await?;
+                let work = guard.capture_work(&request)?;
+                match work.lookup(&key)? {
+                    Some(record) => match &record.record {
+                        resident_work::CanonicalWorkRecord::Work(item) => Some(item.revision),
+                        _ => anyhow::bail!("StartedTurn Work revision has a different family"),
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if canonical_execution_binding.is_none() {
+            if let Some(work_item_id) = &binding_work_item_id {
+                // Earlier Audit ACKs trim roots to the old posture.
+                guard
+                    .prepare_owner_inputs(
+                        std::collections::BTreeSet::from([Key::new(
+                            Family::WorkExecution,
+                            work_item_id,
+                        )]),
+                        Default::default(),
+                    )
+                    .await?;
             }
         }
         let state = {
-            let mut guard = self.inner.agent.lock().await;
-            let mut state = guard.state.clone();
-            let turn_id = if replay_source.is_some() || terminal_source_turn.is_some() {
+            guard.state.turn_index = self
+                .inner
+                .runtime_db
+                .turn_records()
+                .prepare_next_index(&guard.input_evidence_scope(), guard.state.turn_index)?;
+            let turn_id = if assigned_source_turn.is_some()
+                || replay_source.is_some()
+                || terminal_source_turn.is_some()
+            {
                 crate::ids::turn_id()
             } else {
                 message
                     .and_then(|message| normalized_turn_id(message.turn_id.as_deref()))
                     .unwrap_or_else(crate::ids::turn_id)
             };
+            let state = &mut guard.state;
             state.current_turn_id = Some(turn_id.clone());
             state.last_turn_terminal = None;
             if let Some((_, owner, _)) = canonical_execution_binding.as_ref() {
@@ -4533,19 +4572,7 @@ impl RuntimeHandle {
                 let claimed_work_revision = canonical_execution_binding
                     .as_ref()
                     .and_then(|(_, _, claimed_work_revision)| *claimed_work_revision)
-                    .or_else(|| {
-                        work_item_id
-                            .as_deref()
-                            .and_then(|work_item_id| {
-                                self.inner
-                                    .runtime_db
-                                    .work_items()
-                                    .latest(work_item_id)
-                                    .ok()
-                                    .flatten()
-                            })
-                            .map(|work_item| work_item.revision)
-                    });
+                    .or(fallback_work_revision);
                 let activation_id = canonical_execution_binding
                     .as_ref()
                     .map(|(activation_id, _, _)| activation_id.clone());
@@ -4581,14 +4608,82 @@ impl RuntimeHandle {
             state.active_skills.retain(|skill| {
                 matches!(skill.activation_state, SkillActivationState::SessionActive)
             });
-            let state = self.commit_started_turn(&guard.last_persisted_state, &state, message)?;
-            guard.state = state.clone();
-            guard.last_persisted_state = state.clone();
-            state
+            let prior_terminal = terminal_source_turn
+                .as_ref()
+                .map(|(_, turn)| turn)
+                .or_else(|| replay_source.as_ref().and_then(|(_, turn)| turn.as_ref()))
+                .and_then(|turn| turn.terminal.clone());
+            let mut started_turn =
+                Self::build_started_turn_record(&guard.state, message, prior_terminal.clone())?;
+            if let (Some(message), Some((source_id, _))) = (
+                message,
+                replay_source
+                    .as_ref()
+                    .map(|(id, turn)| (id, turn.as_ref()))
+                    .or_else(|| {
+                        terminal_source_turn
+                            .as_ref()
+                            .map(|(id, turn)| (id, Some(turn)))
+                    }),
+            ) {
+                started_turn.replay = Some(crate::types::TurnReplayProvenance {
+                    source_message_id: message.id.clone(),
+                    source_turn_id: source_id.clone(),
+                    reason: "interrupted_queue_claim_reentry".into(),
+                    prior_terminal,
+                });
+            }
+            // The posture, actual input assignment and started Turn publish as
+            // one acknowledged candidate, so no reader sees a dangling binding.
+            if let Some(prior_closure) = dispatch_prior_closure {
+                use crate::runtime_db::{
+                    dispatch_memory::DispatchMemoryStart,
+                    episode_memory::{EpisodeMemoryInvocation, EpisodeMemoryKey},
+                };
+                let source = message.context("dispatch memory requires its actual source")?;
+                let start = DispatchMemoryStart::new(
+                    EpisodeMemoryKey {
+                        agent_id: guard.state.id.clone(),
+                        identity_incarnation: self.inner.identity_incarnation,
+                        actual_dispatch_turn_id: started_turn.turn_id.clone(),
+                    },
+                    EpisodeMemoryInvocation {
+                        message_id: source.id.clone(),
+                        turn_index: started_turn.turn_index,
+                    },
+                    source,
+                    prior_closure.clone(),
+                    guard.last_persisted_state.working_memory.clone(),
+                )?;
+                guard
+                    .persist_started_dispatch(started_turn, start, original_claim)
+                    .await?;
+            } else {
+                guard.persist_state_with_started_turn(started_turn).await?;
+            }
+            guard.state.clone()
         };
-        self.append_state_changed_events(&state)?;
+        {
+            // StartedTurn initializes its complete Turn/trigger Wait relations,
+            // including standalone execution and reducer-only dispatches.
+            let mut request = resident_work::WorkCaptureRequest::current();
+            request.required_turn_ids.insert(
+                state
+                    .current_turn_id
+                    .clone()
+                    .context("started dispatch Turn missing")?,
+            );
+            if let Some(message) = message {
+                request
+                    .required_trigger_message_ids
+                    .insert(message.id.clone());
+            }
+            guard.prepare_owner_work_request(&request).await?;
+        }
+        drop(guard);
+        self.append_state_changed_events(&state).await?;
         if let Some(message) = message {
-            self.inner.storage.append_event(&AuditEvent::legacy(
+            self.append_original_audit_event(AuditEvent::legacy(
                 "turn_started",
                 serde_json::json!({
                     "agent_id": message.agent_id.clone(),
@@ -4598,9 +4693,10 @@ impl RuntimeHandle {
                     "run_id": state.current_run_id,
                     "turn_index": state.turn_index,
                 }),
-            ))?;
+            ))
+            .await?;
             if let Some((source_turn_id, source_turn)) = replay_source {
-                self.inner.storage.append_event(&AuditEvent::legacy(
+                self.append_original_audit_event(AuditEvent::legacy(
                     "turn_replay_started",
                     serde_json::json!({
                         "agent_id": message.agent_id,
@@ -4613,10 +4709,14 @@ impl RuntimeHandle {
                             .and_then(|turn| turn.current_work_item_id.clone()),
                         "prior_terminal": source_turn.and_then(|turn| turn.terminal),
                     }),
-                ))?;
+                ))
+                .await?;
             }
         }
-        Ok(())
+        Ok((
+            state.current_turn_id.expect("started turn identity"),
+            state.turn_index,
+        ))
     }
 
     #[cfg(test)]
@@ -4658,21 +4758,7 @@ impl RuntimeHandle {
             provenance,
         )
         .await
-    }
-
-    #[cfg(test)]
-    async fn begin_interactive_turn_for_test(
-        &self,
-        operator_binding_id: Option<&str>,
-        operator_reply_route_id: Option<&str>,
-    ) -> Result<()> {
-        self.begin_interactive_turn_with_provenance(
-            None,
-            operator_binding_id,
-            operator_reply_route_id,
-            None,
-        )
-        .await
+        .map(|_| ())
     }
 
     fn operator_transport_from_message(
@@ -4701,13 +4787,13 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn promote_turn_active_skills(&self) -> Result<()> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         for skill in &mut guard.state.active_skills {
             if matches!(skill.activation_state, SkillActivationState::TurnActive) {
                 skill.activation_state = SkillActivationState::SessionActive;
             }
         }
-        guard.persist_state(&self.inner.storage)?;
+        guard.persist_state(&self.inner.storage).await?;
         Ok(())
     }
 
@@ -4769,7 +4855,7 @@ impl RuntimeHandle {
         else {
             return Ok(());
         };
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         let turn_index = guard.state.turn_index;
         let agent_id = guard.state.id.clone();
         let run_id = guard.state.current_run_id.clone();
@@ -4800,24 +4886,26 @@ impl RuntimeHandle {
                 });
             false
         };
-        guard.persist_state(&self.inner.storage)?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "skill_activated",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "skill_id": skill.skill_id,
-                "skill_name": skill.name,
-                "path": resolved_path,
-                "entrypoint_path": skill.path,
-                "scope": skill.scope,
-                "activation_source": SkillActivationSource::ImplicitFromCatalog,
-                "activation_state": SkillActivationState::TurnActive,
-                "load_reason": load_reason,
-                "turn_index": turn_index,
-                "run_id": run_id,
-                "repeated": repeated,
-            }),
-        ))?;
+        guard.persist_state(&self.inner.storage).await?;
+        guard
+            .append_original_audit_event(AuditEvent::legacy(
+                "skill_activated",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "skill_id": skill.skill_id,
+                    "skill_name": skill.name,
+                    "path": resolved_path,
+                    "entrypoint_path": skill.path,
+                    "scope": skill.scope,
+                    "activation_source": SkillActivationSource::ImplicitFromCatalog,
+                    "activation_state": SkillActivationState::TurnActive,
+                    "load_reason": load_reason,
+                    "turn_index": turn_index,
+                    "run_id": run_id,
+                    "repeated": repeated,
+                }),
+            ))
+            .await?;
         Ok(())
     }
 
@@ -4834,7 +4922,7 @@ impl RuntimeHandle {
             .skills_runtime_view_for_state(&state_snapshot, &identity)
             .await?;
 
-        for skill in skills.discoverable_skills {
+        for skill in skills.discoverable_skills.iter() {
             if let Some((activation_path, load_reason)) =
                 command_skill_activation(command, &skill, execution.workspace.workspace_anchor())
             {
@@ -4848,7 +4936,7 @@ impl RuntimeHandle {
 
     pub async fn enqueue(&self, message: MessageEnvelope) -> Result<MessageEnvelope> {
         // Keep admission state out of nested provider/dispatch futures.
-        let (message, _) = Box::pin(self.enqueue_internal(message, None, None)).await?;
+        let (message, _) = Box::pin(self.enqueue_internal(message, None, None, None)).await?;
         Ok(message)
     }
 
@@ -4859,7 +4947,7 @@ impl RuntimeHandle {
         child_incarnation: u64,
     ) -> Result<MessageEnvelope> {
         let (message, _) = self
-            .enqueue_internal(message, None, Some((parent_task, child_incarnation)))
+            .enqueue_internal(message, None, Some((parent_task, child_incarnation)), None)
             .await?;
         Ok(message)
     }
@@ -4869,8 +4957,37 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<AgentMessageDeliveryReceipt> {
-        let (_, receipt) = self.enqueue_internal(message, Some(delivery), None).await?;
+        let (_, receipt) = self.enqueue_internal(message, Some(delivery), None, None).await?;
         receipt.context("delivery admission completed without a receipt")
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn enqueue_original_spawn_with_fault_for_test(
+        &self,
+        message: MessageEnvelope,
+        fault: TransitionFaultPoint,
+    ) -> Result<MessageEnvelope> {
+        self.enqueue_internal(message, None, None, Some(fault))
+            .await
+            .map(|value| value.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn enqueue_supervised_invocation_with_fault_for_test(
+        &self,
+        message: MessageEnvelope,
+        parent_task: &TaskRecord,
+        child_incarnation: u64,
+        fault: TransitionFaultPoint,
+    ) -> Result<MessageEnvelope> {
+        self.enqueue_internal(
+            message,
+            None,
+            Some((parent_task, child_incarnation)),
+            Some(fault),
+        )
+        .await
+        .map(|value| value.0)
     }
 
     async fn enqueue_internal(
@@ -4878,6 +4995,7 @@ impl RuntimeHandle {
         mut message: MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
         supervised_invocation: Option<(&TaskRecord, u64)>,
+        mut original_fault: Option<TransitionFaultPoint>,
     ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
         let _admission = self.execution_admission_lease()?;
         if supervised_invocation.is_some() {
@@ -4901,7 +5019,7 @@ impl RuntimeHandle {
         let enqueue_started_at = chrono::Utc::now();
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             match self
-                .enqueue_attempt(&message, delivery, supervised_invocation)
+                .enqueue_attempt(&message, delivery, supervised_invocation, original_fault.take())
                 .await
             {
                 Ok(mut commit) => {
@@ -4976,12 +5094,8 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
         supervised_invocation: Option<(&TaskRecord, u64)>,
+        original_fault: Option<TransitionFaultPoint>,
     ) -> Result<TransitionCommit> {
-        let message_is_new = self
-            .inner
-            .storage
-            .read_message_by_id(&message.id)?
-            .is_none();
         let existing_queue_entry = self.inner.runtime_db.queue_entries().latest(&message.id)?;
         if supervised_invocation.is_none()
             && existing_queue_entry.as_ref().is_some_and(|entry| {
@@ -5018,7 +5132,15 @@ impl RuntimeHandle {
             }),
         )];
         let commit = {
-            let mut guard = self.inner.agent.lock().await;
+            let (mut guard, supervised_parent_scope) =
+                if let Some((parent_task, child_incarnation)) = supervised_invocation {
+                    let (guard, scope) = self
+                        .begin_supervised_invocation_mutation(parent_task, child_incarnation)
+                        .await?;
+                    (guard, Some(scope))
+                } else {
+                    (self.begin_mutation().await?, None)
+                };
             anyhow::ensure!(
                 !self.inner.shutdown_requested.load(Ordering::SeqCst),
                 "runtime_execution_admission_closed"
@@ -5036,14 +5158,15 @@ impl RuntimeHandle {
             {
                 if let Some(owner_key) = message.source_refs.get("task_result_owner_key") {
                     if let Some(existing_id) =
-                        task_result_recovery::outstanding_recovery_message_id(
+                        task_result_recovery::prepare_outstanding_recovery_message_id(
                             self,
-                            &message.agent_id,
+                            &mut guard,
                             message.work_item_id.as_deref(),
                             owner_key,
-                        )?
+                        )
+                        .await?
                     {
-                        if existing_id != message.id {
+                        if existing_id.id() != message.id {
                             return Ok(TransitionCommit::default());
                         }
                     }
@@ -5080,11 +5203,8 @@ impl RuntimeHandle {
                 .len()
                 .saturating_add(usize::from(queue_needs_push && !discard_due_to_stop));
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
-            committed_state.total_message_count = self
-                .inner
-                .storage
-                .count_messages()?
-                .saturating_add(usize::from(message_is_new));
+            // The original transaction returns its actual canonical count.
+            committed_state.total_message_count = guard.state.total_message_count;
             if !discard_due_to_stop
                 && scheduler::apply_message_wake_projection(&mut committed_state)
             {
@@ -5148,54 +5268,25 @@ impl RuntimeHandle {
                 turn_record: None,
                 audit_events,
                 notify_scheduler: queue_status == QueueEntryStatus::Queued,
-                fault: self.take_transition_fault(),
+                fault: original_fault.or_else(|| self.take_transition_fault()),
                 brief_evidence: Vec::new(),
             };
-            let mut commit = if let Some((parent_task, child_incarnation)) = supervised_invocation {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_supervised_invocation_admission(
-                        &command,
-                        parent_task,
+            let mut prepared =
+                crate::runtime_db::transitions::PreparedQueueTransition::new(command);
+            prepared.delivery = delivery.cloned();
+            if let Some((parent_task, child_incarnation)) = supervised_invocation {
+                prepared.supervised_invocation = Some(
+                    crate::runtime_db::transitions::PreparedSupervisedInvocationAdmission {
+                        parent_scope: supervised_parent_scope
+                            .context("supervised invocation has no original parent reservation")?,
+                        parent_task: parent_task.clone(),
                         child_incarnation,
-                    )?
-            } else if let Some(delivery) = delivery {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_delivery_admission(&command, delivery)?
-            } else {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_wait_trigger(&command)?
-            };
-            if supervised_invocation.is_some() && !commit.applied {
-                return Ok(commit);
+                    },
+                );
             }
-            let queue_admitted = commit.delivery_receipt.as_ref().is_none_or(|receipt| {
-                receipt.outcome == AgentMessageDeliveryOutcome::Accepted
-                    && !receipt.idempotent_replay
-            });
-            if queue_admitted && queue_needs_push && queue_status == QueueEntryStatus::Queued {
-                let operator_input = scheduler::is_operator_interjection_message(message);
-                if operator_input {
-                    self.inner
-                        .operator_interjection_revision
-                        .fetch_add(1, Ordering::AcqRel);
-                }
-                guard.queue.push(message.clone());
-                if operator_input {
-                    self.inner.operator_interjection_notify.notify_waiters();
-                }
-            }
-            if queue_admitted {
-                guard.state = committed_state.clone();
-                guard.last_persisted_state = committed_state;
-                commit.effects.agent_state = None;
-            }
-            commit
+            guard
+                .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
+                .await?
         };
         Ok(commit)
     }
@@ -5204,7 +5295,7 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
     ) -> Result<bool> {
-        let mut guard = self.inner.agent.lock().await;
+        let mut guard = self.begin_mutation().await?;
         let Some(latest_persisted_state) = self
             .inner
             .runtime_db
@@ -5222,36 +5313,61 @@ impl RuntimeHandle {
         }
         guard.state = latest_persisted_state.clone();
         guard.last_persisted_state = latest_persisted_state;
+        guard.install_durable_readback().await?;
         Ok(true)
     }
 
-    pub(crate) fn append_audit_event(&self, kind: &str, data: serde_json::Value) -> Result<()> {
-        self.inner
-            .storage
-            .append_event(&AuditEvent::legacy(kind, data))
+    pub(crate) async fn append_audit_event(
+        &self,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        self.append_original_audit_event(AuditEvent::legacy(kind, data))
+            .await
     }
 
-    pub(crate) fn append_decision_advisory_event(
+    /// Integration fixture entrypoint; uses the original Audit transaction and ACK.
+    #[doc(hidden)]
+    pub async fn append_audit_event_for_fixture(&self, event: AuditEvent) -> Result<()> {
+        self.append_original_audit_event(event).await
+    }
+
+    #[inline(never)]
+    pub(crate) fn append_original_audit_event(
+        &self,
+        event: AuditEvent,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + '_>> {
+        // Keep each Audit await site small in the nested provider/tool loop.
+        Box::pin(async move {
+            self.inner.storage.event_log().ensure_writable()?;
+            let mut mutation = self.begin_mutation().await?;
+            mutation.append_original_audit_event(event).await
+        })
+    }
+
+    pub(crate) async fn append_decision_advisory_event(
         &self,
         event: &crate::decision_telemetry::DecisionAdvisoryCompletedEvent,
     ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::typed(
+        self.append_original_audit_event(AuditEvent::typed(
             crate::runtime_event::RuntimeEventKind::DecisionAdvisoryCompleted,
             event,
         )?)
+        .await
     }
 
-    pub(crate) fn append_decision_outcome_event(
+    pub(crate) async fn append_decision_outcome_event(
         &self,
         event: &crate::decision_telemetry::DecisionOutcomeRecordedEvent,
     ) -> Result<()> {
-        self.inner.storage.append_event(&AuditEvent::typed(
+        self.append_original_audit_event(AuditEvent::typed(
             crate::runtime_event::RuntimeEventKind::DecisionOutcomeRecorded,
             event,
         )?)
+        .await
     }
 
-    pub(crate) fn record_decision_outcome_for_task(
+    pub(crate) async fn record_decision_outcome_for_task(
         &self,
         task: &crate::types::TaskRecord,
     ) -> Result<()> {
@@ -5329,7 +5445,7 @@ impl RuntimeHandle {
             baseline_choice,
             recorded_at: Utc::now(),
         };
-        self.append_decision_outcome_event(&event)
+        self.append_decision_outcome_event(&event).await
     }
 
     #[cfg(test)]
@@ -5343,13 +5459,13 @@ impl RuntimeHandle {
             .await
     }
 
-    async fn commit_queue_terminal_settlement(
-        &self,
+    fn commit_queue_terminal_settlement<'a>(
+        &'a self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
-        terminal_transition: Option<&turn::TurnTerminalTransition>,
-    ) -> Result<bool> {
+        terminal_transition: Option<&'a turn::TurnTerminalTransition>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
         self.commit_queue_terminal_settlement_with_evidence(
             record,
             audit_events,
@@ -5360,10 +5476,9 @@ impl RuntimeHandle {
             Vec::new(),
             None,
         )
-        .await
     }
 
-    fn validate_terminal_brief_settlement(
+    async fn validate_terminal_brief_settlement(
         &self,
         transition: &turn::TurnTerminalTransition,
     ) -> Result<()> {
@@ -5395,10 +5510,11 @@ impl RuntimeHandle {
                 "terminal_missing_brief_settlement"
             },
         });
-        self.inner.storage.append_event(&AuditEvent::legacy(
+        self.append_original_audit_event(AuditEvent::legacy(
             "turn_terminal_brief_settlement_failed",
             diagnostic,
-        ))?;
+        ))
+        .await?;
         Err(anyhow!(
             "turn {} cannot settle: expected exactly one of canonical Brief or valid typed NoBrief reason",
             transition.terminal.turn_id
@@ -5481,21 +5597,29 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn commit_terminal_transition(
+    #[inline(never)]
+    fn commit_terminal_transition<'a>(
+        &'a self,
+        terminal_transition: &'a turn::TurnTerminalTransition,
+        audit_events: Vec<AuditEvent>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(self.commit_terminal_transition_inner(terminal_transition, audit_events))
+    }
+
+    async fn commit_terminal_transition_inner(
         &self,
         terminal_transition: &turn::TurnTerminalTransition,
         audit_events: Vec<AuditEvent>,
     ) -> Result<bool> {
-        let mut normalized_transition = terminal_transition.clone();
-        normalized_transition.normalize_brief_settlement();
+        let mut normalized_transition = terminal_transition.try_clone()?;
+        normalized_transition.normalize_brief_settlement()?;
         let terminal_transition = &normalized_transition;
-        self.validate_terminal_brief_settlement(terminal_transition)?;
+        self.validate_terminal_brief_settlement(terminal_transition)
+            .await?;
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            let mut mutation = self.begin_mutation().await?;
             let agent_state = {
-                let mut guard = self.inner.agent.lock().await;
-                // A terminal transition settles any lingering turn-local
-                // cooldown wait; it must not survive the turn.
-                guard.state.provider_cooldown_wait = None;
+                let guard = &mutation;
                 let mut state = guard.state.clone();
                 state.current_turn_id = Some(terminal_transition.terminal.turn_id.clone());
                 state.last_turn_terminal = Some(terminal_transition.terminal.clone());
@@ -5515,17 +5639,16 @@ impl RuntimeHandle {
             let command = crate::runtime_db::transitions::TurnTerminalTransitionCommand {
                 agent_id: terminal_transition.turn_record.agent_id.clone(),
                 agent_state,
-                turn_record: terminal_transition.turn_record.clone(),
+                turn_record: terminal_transition.turn_record.clone_record()?,
                 terminal_tool_executions: terminal_transition.terminal_tool_executions.clone(),
                 audit_events: transition_audit_events,
-                fault: self.take_transition_fault(),
+                fault: self.take_terminal_transition_fault(),
             };
-            match self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_turn_terminal(&command)
-            {
+            let result = mutation
+                .commit_prepared_terminal(crate::ids::audit_event_id(), command)
+                .await;
+            drop(mutation);
+            match result {
                 Ok(commit) => {
                     return Ok(self.apply_transition_commit(commit).await.applied);
                 }
@@ -5550,24 +5673,49 @@ impl RuntimeHandle {
         unreachable!("terminal transition OCC retry loop always returns or errors")
     }
 
-    async fn commit_queue_terminal_settlement_with_evidence(
+    #[inline(never)]
+    fn commit_queue_terminal_settlement_with_evidence<'a>(
+        &'a self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        notify_scheduler: bool,
+        terminal_transition: Option<&'a turn::TurnTerminalTransition>,
+        agent_update: Option<TerminalAgentStateUpdate>,
+        transcript_entries: Vec<TranscriptEntry>,
+        brief_evidence: Vec<BriefRecord>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(self.commit_queue_terminal_settlement_with_evidence_inner(
+            record,
+            audit_events,
+            notify_scheduler,
+            terminal_transition,
+            agent_update,
+            transcript_entries,
+            brief_evidence,
+        ))
+    }
+
+    async fn commit_queue_terminal_settlement_with_evidence_inner(
         &self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         notify_scheduler: bool,
         terminal_transition: Option<&turn::TurnTerminalTransition>,
-        committed_agent_state: Option<AgentState>,
+        agent_update: Option<TerminalAgentStateUpdate>,
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
         provider_pause: Option<&provider_admission::ProviderPauseSettlement<'_>>,
     ) -> Result<bool> {
-        let normalized_terminal_transition = terminal_transition.cloned().map(|mut transition| {
-            transition.normalize_brief_settlement();
-            transition
-        });
+        let normalized_terminal_transition = terminal_transition
+            .map(|transition| -> Result<_> {
+                let mut transition = transition.try_clone()?;
+                transition.normalize_brief_settlement()?;
+                Ok(transition)
+            })
+            .transpose()?;
         let terminal_transition = normalized_terminal_transition.as_ref();
         if let Some(transition) = terminal_transition {
-            self.validate_terminal_brief_settlement(transition)?;
+            self.validate_terminal_brief_settlement(transition).await?;
         }
         let prepared_completion = terminal_transition
             .and_then(|transition| transition.prepared_work_item_completion.as_ref());
@@ -5626,7 +5774,7 @@ impl RuntimeHandle {
                 &self.inner.storage,
                 &self.inner.runtime_db,
                 &record,
-                terminal_transition.map(|transition| &transition.turn_record),
+                terminal_transition.map(|transition| &*transition.turn_record),
             )?
         };
         if let Some(prepared) = prepared_completion {
@@ -5642,14 +5790,11 @@ impl RuntimeHandle {
                     .work_items
                     .get(&continuation.suspended_work_item_id)
                     .ok_or_else(|| anyhow!("completion parent execution state is missing"))?;
-                let (source, outcome) = work_item_continuation_resume_source(
-                    &self.inner.storage,
-                    &self.inner.runtime_db,
-                    &record.agent_id,
-                    &continuation.suspended_work_item_id,
-                    None,
-                    &prepared.wait_conditions,
-                )?;
+                let (source, outcome) = prepared
+                    .continuation_resumes
+                    .get(&continuation.id)
+                    .context("prepared completion continuation source missing")?
+                    .clone();
                 execution_protocol.commands.push(
                         crate::domain::execution_protocol::ExecutionProtocolCommand::ResumeWorkItemContinuation(
                             Box::new(
@@ -5698,7 +5843,9 @@ impl RuntimeHandle {
                         .flat_map(|prepared| prepared.transcript_entries.clone()),
                 )
                 .collect(),
-            turn_record: terminal_transition.map(|transition| transition.turn_record.clone()),
+            turn_record: terminal_transition
+                .map(|transition| transition.turn_record.clone_record())
+                .transpose()?,
             audit_events: audit_events.clone(),
             notify_scheduler,
             fault: None,
@@ -5717,10 +5864,24 @@ impl RuntimeHandle {
                 )
                 .collect(),
         };
+        #[cfg(test)]
+        if provider_pause.is_some() {
+            let checkpoint = self
+                .inner
+                .provider_pause_commit_checkpoint
+                .lock()
+                .expect("provider pause checkpoint lock poisoned")
+                .take();
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.reached.notify_one();
+                checkpoint.release.notified().await;
+            }
+        }
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             // Rebuild guard-dependent fields from the current baseline.
+            let mut mutation = self.begin_mutation().await?;
             let agent_state = {
-                let guard = self.inner.agent.lock().await;
+                let guard = &mutation;
                 let mut state = if provider_pause.is_some() {
                     let mut state = guard.state.clone();
                     if state.status != AgentStatus::Stopped {
@@ -5744,9 +5905,16 @@ impl RuntimeHandle {
                         guard.state.clone()
                     }
                 } else {
-                    committed_agent_state
-                        .clone()
-                        .unwrap_or_else(|| guard.state.clone())
+                    let mut state = guard.state.clone();
+                    if let Some(update) = agent_update.as_ref() {
+                        if state.status != AgentStatus::Stopped {
+                            scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
+                        }
+                        if let Some(failure) = update.last_runtime_failure.as_ref() {
+                            state.last_runtime_failure = Some(failure.clone());
+                        }
+                    }
+                    state
                 };
                 if let Some(settlement) = provider_pause {
                     state.pending = guard.queue.len()
@@ -5772,6 +5940,21 @@ impl RuntimeHandle {
                     scheduler::apply_message_wake_projection(&mut state);
                 }
                 let agent_state = if let Some(transition) = terminal_transition {
+                    if state.current_run_id.is_some()
+                        && state.current_run_id == transition.turn_record.run_id
+                        && state.current_turn_id.as_deref()
+                            == Some(transition.terminal.turn_id.as_str())
+                        && state.turn_index == transition.terminal.turn_index
+                        && state
+                            .current_execution_binding
+                            .as_ref()
+                            .is_some_and(|binding| {
+                                binding.turn_id == transition.terminal.turn_id
+                                    && binding.source_message_id == record.message_id
+                            })
+                    {
+                        state.current_run_id = None;
+                    }
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
                     Some(crate::runtime_db::transitions::AgentStateMutation {
@@ -5823,33 +6006,13 @@ impl RuntimeHandle {
                     )?;
                 }
             }
-            command.fault = self.take_transition_fault();
-            #[cfg(test)]
-            if provider_pause.is_some() {
-                let checkpoint = self
-                    .inner
-                    .provider_pause_commit_checkpoint
-                    .lock()
-                    .expect("provider pause checkpoint lock poisoned")
-                    .take();
-                if let Some(checkpoint) = checkpoint {
-                    checkpoint.reached.notify_one();
-                    checkpoint.release.notified().await;
-                }
-            }
-            let agent_guard = if provider_pause.is_some() {
-                Some(self.inner.agent.lock().await)
-            } else {
-                None
-            };
-            let commit = if let Some(prepared) = prepared_completion {
-                let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
-                    anyhow!("completion commit is missing tool execution evidence")
-                })?;
-                self.inner.runtime_db.transitions().commit_queue_terminal(
-                    &command,
-                    &execution_protocol,
-                    Some(&crate::runtime_db::transitions::CompletionTransition {
+            command.fault = self.take_terminal_transition_fault();
+            let completion = prepared_completion
+                .map(|prepared| {
+                    let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
+                        anyhow!("completion commit is missing tool execution evidence")
+                    })?;
+                    Ok::<_, anyhow::Error>(crate::runtime_db::transitions::CompletionTransition {
                         requires_execution_continuation: true,
                         work_items: vec![
                             crate::runtime_db::transitions::WorkItemMutation::Update {
@@ -5862,12 +6025,20 @@ impl RuntimeHandle {
                         continuations: prepared.continuations.clone(),
                         tool_execution,
                         index_changes: prepared.index_changes.clone(),
-                    }),
-                    &[],
-                    task_result_settlement.as_ref(),
-                )
-            } else if let Some(prepared) = prepared_wait.as_deref() {
-                let terminal_tool_executions = prepared
+                    })
+                })
+                .transpose()?;
+            let mut prepared =
+                crate::runtime_db::transitions::PreparedQueueTransition::new(command.clone());
+            prepared.execution_protocol = execution_protocol.clone();
+            prepared.task_result_settlement = task_result_settlement.clone();
+            if let Some(completion) = completion {
+                prepared.completion = Some(completion);
+            } else if let Some(wait) = prepared_wait.as_deref() {
+                prepared.wait_registration = Some(wait.command.clone());
+                prepared.task_expectation = wait.expected_task.clone();
+                prepared.timer_wake_claim = wait.command.timer_wake.clone();
+                prepared.terminal_tool_executions = wait
                     .tool_execution
                     .as_ref()
                     .into_iter()
@@ -5877,58 +6048,28 @@ impl RuntimeHandle {
                             .flat_map(|transition| &transition.terminal_tool_executions),
                     )
                     .cloned()
-                    .collect::<Vec<_>>();
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_terminal_with_wait(
-                        &command,
-                        &execution_protocol,
-                        &prepared.command,
-                        prepared.expected_task.as_ref(),
-                        &terminal_tool_executions,
-                        task_result_settlement.as_ref(),
-                    )
-            } else if terminal_transition
-                .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
+                    .collect();
+            } else if let Some(terminal) = terminal_transition {
+                prepared.terminal_tool_executions = terminal.terminal_tool_executions.clone();
+            }
+            if let Some(preparation) =
+                prepared_completion.and_then(|value| value.plan_preparation.as_ref())
             {
-                self.inner.runtime_db.transitions().commit_queue_terminal(
-                    &command,
-                    &execution_protocol,
-                    None,
-                    &terminal_transition
-                        .expect("terminal tool executions require a terminal transition")
-                        .terminal_tool_executions,
-                    task_result_settlement.as_ref(),
-                )
-            } else {
-                self.inner.runtime_db.transitions().commit_queue_terminal(
-                    &command,
-                    &execution_protocol,
-                    None,
-                    &[],
-                    task_result_settlement.as_ref(),
-                )
-            };
+                mutation.attach_plan_preparation(preparation.clone())?;
+            }
+            let commit = mutation
+                .commit_prepared_queue(crate::ids::audit_event_id(), prepared)
+                .await;
+            drop(mutation);
             match commit {
                 Ok(commit) => {
-                    return Ok(Box::pin(
-                        self.apply_transition_commit_with_agent_guard(commit, agent_guard),
-                    )
-                    .await
-                    .applied);
+                    return Ok(self.apply_transition_commit(commit).await.applied);
                 }
                 Err(error) => {
-                    drop(agent_guard);
                     let wait_conflict = prepared_wait.is_some()
-                        && error
-                            .downcast_ref::<RuntimeStateTransitionConflict>()
+                        && crate::runtime_db::retryable_state_transition_conflict(&error)
                             .is_some_and(|conflict| {
-                                conflict.retryable()
-                                    && matches!(
-                                        conflict.domain(),
-                                        "task_wait" | "task_result_admission"
-                                    )
+                                matches!(conflict.domain(), "task_wait" | "task_result_admission")
                             });
                     if wait_conflict && attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
                         let previous = prepared_wait.as_deref().expect("prepared wait conflict");
@@ -6127,12 +6268,36 @@ impl RuntimeHandle {
         Ok(TerminalSettlementReadback::Ambiguous)
     }
 
-    async fn commit_queue_terminal_settlement_resilient(
+    #[inline(never)]
+    fn commit_queue_terminal_settlement_resilient<'a>(
+        &'a self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        terminal_transition: &'a turn::TurnTerminalTransition,
+        agent_update: Option<TerminalAgentStateUpdate>,
+        transcript_entries: Vec<TranscriptEntry>,
+        brief_evidence: Vec<BriefRecord>,
+        duration_ms: u64,
+    ) -> std::pin::Pin<
+        Box<impl std::future::Future<Output = Result<TerminalSettlementDisposition>> + Send + 'a>,
+    > {
+        Box::pin(self.commit_queue_terminal_settlement_resilient_inner(
+            record,
+            audit_events,
+            terminal_transition,
+            agent_update,
+            transcript_entries,
+            brief_evidence,
+            duration_ms,
+        ))
+    }
+
+    async fn commit_queue_terminal_settlement_resilient_inner(
         &self,
         record: QueueEntryRecord,
         audit_events: Vec<AuditEvent>,
         terminal_transition: &turn::TurnTerminalTransition,
-        committed_agent_state: Option<AgentState>,
+        agent_update: Option<TerminalAgentStateUpdate>,
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
         duration_ms: u64,
@@ -6157,7 +6322,7 @@ impl RuntimeHandle {
                         audit_events.clone(),
                         true,
                         Some(terminal_transition),
-                        committed_agent_state.clone(),
+                        agent_update.clone(),
                         transcript_entries.clone(),
                         brief_evidence.clone(),
                         None,
@@ -6207,7 +6372,7 @@ impl RuntimeHandle {
                 audit_events,
                 true,
                 Some(terminal_transition),
-                committed_agent_state,
+                agent_update,
                 transcript_entries,
                 brief_evidence,
                 None,
@@ -6239,9 +6404,7 @@ impl RuntimeHandle {
         if !fallback_turn.produced_brief_ids.is_empty() {
             fallback_terminal.no_brief_reason = None;
         }
-        fallback_turn.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
-            &fallback_terminal,
-        ));
+        fallback_turn.set_terminal(&fallback_terminal)?;
         let fallback_transition = turn::TurnTerminalTransition {
             terminal: fallback_terminal,
             turn_record: fallback_turn,
@@ -6249,13 +6412,8 @@ impl RuntimeHandle {
             prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         };
-        let fallback_state = {
-            let guard = self.inner.agent.lock().await;
-            let mut state = guard.state.clone();
-            if !matches!(state.status, AgentStatus::Stopped) {
-                scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
-            }
-            state.last_runtime_failure = Some(RuntimeFailureSummary {
+        let fallback_state = TerminalAgentStateUpdate {
+            last_runtime_failure: Some(RuntimeFailureSummary {
                 occurred_at: Utc::now(),
                 summary: failure_summary.clone(),
                 phase: RuntimeFailurePhase::RuntimeTurn,
@@ -6263,8 +6421,7 @@ impl RuntimeHandle {
                     "the intended terminal settlement was replaced by a fenced abort".into(),
                 ),
                 failure_artifact: None,
-            });
-            state
+            }),
         };
         self.commit_queue_terminal_settlement_with_evidence(
             QueueEntryRecord {
@@ -6330,33 +6487,25 @@ impl RuntimeHandle {
             return Ok(0);
         }
 
+        let queued = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .queued_internal_followups_for_agent(&superseding_message.agent_id)?
+            .into_iter()
+            .filter(|(entry, _)| entry.message_id != superseding_message.id)
+            .collect::<Vec<_>>();
+        if queued.is_empty() {
+            return Ok(0);
+        }
         let turns = self
             .inner
             .runtime_db
             .turn_records()
             .recent_for_agent(&superseding_message.agent_id, usize::MAX)?;
-        let queued = self
-            .inner
-            .runtime_db
-            .queue_entries()
-            .latest_all()?
-            .into_iter()
-            .filter(|entry| {
-                entry.agent_id == superseding_message.agent_id
-                    && entry.status == QueueEntryStatus::Queued
-                    && entry.message_id != superseding_message.id
-            })
-            .collect::<Vec<_>>();
         let mut superseded = 0;
 
-        for expected in queued {
-            let Some(recovery_message) = self
-                .inner
-                .storage
-                .read_message_by_id(&expected.message_id)?
-            else {
-                continue;
-            };
+        for (expected, recovery_message) in queued {
             let Ok(selection) = turn::TurnModelSelection::from_message(&recovery_message) else {
                 continue;
             };
@@ -6376,7 +6525,7 @@ impl RuntimeHandle {
             let mut dropped = expected.clone();
             dropped.status = QueueEntryStatus::Dropped;
             dropped.updated_at = self.now();
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             if guard
                 .queue
                 .peek_next_matching(|message| message.id == recovery_message.id)
@@ -6386,60 +6535,60 @@ impl RuntimeHandle {
             }
             let mut next_state = guard.state.clone();
             next_state.pending = guard.queue.len().saturating_sub(1);
-            let mut commit = self.inner.runtime_db.transitions().commit_queue(
-                &crate::runtime_db::transitions::QueueTransitionCommand {
-                    agent_id: recovery_message.agent_id.clone(),
-                    operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                    mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                        expected,
-                        record: dropped,
-                    },
-                    scheduler_claim_work_item: None,
-                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(guard.last_persisted_state.clone())),
-                        record: Box::new(next_state.clone()),
-                    }),
-                    message_evidence: Vec::new(),
-                    transcript_entries: Vec::new(),
-                    turn_record: None,
-                    audit_events: vec![
-                        AuditEvent::legacy(
-                            "recovery_superseded",
-                            serde_json::json!({
-                                "agent_id": recovery_message.agent_id,
-                                "recovery_message_id": recovery_message.id,
-                                "fallback_model_ref": recovery.fallback_model_ref,
-                                "source_turn_id": recovery.source_turn_id,
-                                "source_message_id": recovery.source_message_id,
-                                "superseding_message_id": superseding_message.id,
-                                "superseding_turn_id": turn_record.turn_id,
-                                "work_item_id": turn_record.current_work_item_id,
-                            }),
-                        ),
-                        AuditEvent::legacy(
-                            "queue_entry_settled",
-                            serde_json::json!({
-                                "message_id": recovery_message.id,
-                                "message_kind": recovery_message.kind,
-                                "status": QueueEntryStatus::Dropped,
-                                "reason": "provider_recovery_superseded",
-                            }),
-                        ),
-                    ],
-                    notify_scheduler: true,
-                    fault: self.take_transition_fault(),
-                    brief_evidence: Vec::new(),
+            let command = &crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: recovery_message.agent_id.clone(),
+                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                    expected,
+                    record: dropped,
                 },
-            )?;
+                scheduler_claim_work_item: None,
+                agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(guard.last_persisted_state.clone())),
+                    record: Box::new(next_state.clone()),
+                }),
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: vec![
+                    AuditEvent::legacy(
+                        "recovery_superseded",
+                        serde_json::json!({
+                            "agent_id": recovery_message.agent_id,
+                            "recovery_message_id": recovery_message.id,
+                            "fallback_model_ref": recovery.fallback_model_ref,
+                            "source_turn_id": recovery.source_turn_id,
+                            "source_message_id": recovery.source_message_id,
+                            "superseding_message_id": superseding_message.id,
+                            "superseding_turn_id": turn_record.turn_id,
+                            "work_item_id": turn_record.current_work_item_id,
+                        }),
+                    ),
+                    AuditEvent::legacy(
+                        "queue_entry_settled",
+                        serde_json::json!({
+                            "message_id": recovery_message.id,
+                            "message_kind": recovery_message.kind,
+                            "status": QueueEntryStatus::Dropped,
+                            "reason": "provider_recovery_superseded",
+                        }),
+                    ),
+                ],
+                notify_scheduler: true,
+                fault: self.take_transition_fault(),
+                brief_evidence: Vec::new(),
+            };
+            let commit = guard
+                .commit_prepared_queue(
+                    crate::ids::audit_event_id(),
+                    crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(
+                        command,
+                    )),
+                )
+                .await?;
             if !commit.applied {
                 continue;
             }
-            let _ = guard
-                .queue
-                .pop_next_matching(|message| message.id == recovery_message.id);
-            guard.state = next_state.clone();
-            guard.last_persisted_state = next_state;
-            commit.effects.agent_state = None;
             drop(guard);
             self.apply_transition_commit(commit).await;
             superseded += 1;
@@ -6448,34 +6597,44 @@ impl RuntimeHandle {
         Ok(superseded)
     }
 
-    pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.inner.storage.append_transcript_entry(entry)?;
-        self.inner.notify.notify_one();
-        Ok(())
+    pub(crate) async fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
+        self.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::Transcript(
+                entry.clone(),
+            ),
+        )
+        .await
     }
 
-    pub(crate) fn persist_tool_execution_evidence(
+    pub(crate) async fn persist_tool_execution_evidence(
         &self,
         record: &ToolExecutionRecord,
     ) -> Result<()> {
-        self.inner.storage.append_tool_execution(record)?;
-        self.inner.notify.notify_one();
-        Ok(())
+        self.persist_prepared_evidence(
+            crate::runtime_db::prepared_input_evidence::InputEvidenceWrite::Tool(record.clone()),
+        )
+        .await
     }
 
-    pub fn run(self) -> impl std::future::Future<Output = Result<()>> {
-        // Do not wrap the large run future in another inline async frame.
-        self.run_with_startup_observation(None)
+    #[inline(never)]
+    pub fn run(self) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send>> {
+        Box::pin(self.run_with_startup_observation(None))
     }
 
     pub(crate) async fn run_with_startup_observation(
         self,
         observation: Option<crate::startup::StartupObservation>,
     ) -> Result<()> {
-        self.bootstrap_with_startup_observation(observation.as_ref())
-            .await?;
+        self.bootstrap_with_startup_observation(observation.as_ref()).await?;
 
         loop {
+            #[cfg(test)]
+            let loop_gate = self.inner.run_loop_test_gate.read().await;
+            // Original processing and terminal ACK finish before this boundary.
+            // A retired instance cannot plan another activation or idle wake.
+            if !self.accepts_execution_admission() {
+                return Ok(());
+            }
             if self.emit_due_task_result_recovery().await? {
                 continue;
             }
@@ -6488,29 +6647,24 @@ impl RuntimeHandle {
 
             let scheduled = match poll {
                 scheduler_executor::RunLoopPoll::Shutdown => return Ok(()),
-                scheduler_executor::RunLoopPoll::Stopped(state, queue_len) => {
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                        &self.inner.storage,
-                        &state,
-                        queue_len,
-                        self.now(),
-                    )?;
-                    let decision = scheduler::decide_next_action(
-                        &projection,
-                        scheduler::SchedulerBoundary::RunLoop,
-                        scheduler::SchedulerInput::Idle,
-                    );
-                    scheduler::append_scheduler_decision(
-                        &self.inner.storage,
-                        &self.inner.default_agent_id,
-                        &decision,
-                    )?;
+                scheduler_executor::RunLoopPoll::Stopped(state, _queue_len) => {
+                    // Stop depends only on the observed lifecycle State.
+                    let decision = scheduler::SchedulerDecision::new(
+                        scheduler::SchedulerDecisionKind::Stop,
+                        "stopped",
+                    )
+                    .boundary(scheduler::SchedulerBoundary::RunLoop.as_str())
+                    .liveness_only(true)
+                    .evidence(format!("status={:?}", state.status));
+                    self.append_scheduler_decision(&decision).await?;
                     return Ok(());
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
                 scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                     let retry_at =
                         self.now() + chrono::Duration::seconds(AUTHORITY_BLOCKED_RETRY_SECONDS);
+                    #[cfg(test)]
+                    drop(loop_gate);
                     tokio::select! {
                         _ = self.inner.notify.notified() => {}
                         _ = self.inner.clock.sleep_until(retry_at) => {}
@@ -6524,33 +6678,11 @@ impl RuntimeHandle {
                     if self.maybe_emit_pending_system_tick(None).await? {
                         continue;
                     }
-                    let idle_snapshot = {
-                        let guard = self.inner.agent.lock().await;
-                        (
-                            guard.state.clone(),
-                            guard.queue.len(),
-                            guard
-                                .queue
-                                .peek()
-                                .map(|head| (head.agent_id.clone(), head.id.clone())),
-                        )
+                    let Some(idle_read) = self.prepare_idle_scheduler_projection().await? else {
+                        continue;
                     };
-                    if let Some((head_agent_id, head_message_id)) = idle_snapshot.2.as_ref() {
-                        scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                            .append_queue_head_starved_advisory_if_due(
-                                head_agent_id,
-                                head_message_id,
-                                idle_snapshot.1,
-                            )?;
-                    }
-                    let projection = scheduler::SchedulerProjection::from_state_with_queue_len_at(
-                        &self.inner.storage,
-                        &idle_snapshot.0,
-                        idle_snapshot.1,
-                        self.now(),
-                    )?;
                     let decision = scheduler::decide_next_action(
-                        &projection,
+                        &idle_read.projection,
                         scheduler::SchedulerBoundary::RunLoopIdle,
                         scheduler::SchedulerInput::Idle,
                     );
@@ -6559,38 +6691,26 @@ impl RuntimeHandle {
                         scheduler::SchedulerDecisionKind::Sleep
                             | scheduler::SchedulerDecisionKind::StayIdle
                     ) {
-                        scheduler::append_scheduler_decision(
-                            &self.inner.storage,
-                            &self.inner.default_agent_id,
-                            &decision,
-                        )?;
+                        self.append_scheduler_decision(&decision).await?;
                     }
                     let next_recheck_at = [
-                        self.inner
-                            .runtime_db
-                            .next_provider_queue_recheck_at(&idle_snapshot.0.id)?,
-                        self.next_blocked_work_item_recheck_at().await?,
-                        self.next_agent_wait_recheck_at().await?,
-                        if idle_snapshot.1 == 0 {
-                            self.next_queued_available_retry_at(
-                                &projection.queued_runnable_work_items,
-                            )?
-                        } else {
-                            None
-                        },
+                        self.inner.runtime_db.next_provider_queue_recheck_at(&idle_read.state.id)?,
+                        idle_read.work.next_work_recheck_at()?,
+                        idle_read.work.next_agent_wait_recheck_at()?,
+                        self.next_queued_available_retry_at(
+                            &idle_read.projection.queued_runnable_work_items,
+                        )?,
                     ]
                     .into_iter()
                     .flatten()
                     .min();
-                    let result_recheck_at = self
-                        .inner
-                        .runtime_db
-                        .task_result_settlements()
-                        .next_recheck_at(&idle_snapshot.0.id)?;
+                    let result_recheck_at = idle_read.tasks.next_recheck_at()?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
                     };
+                    // A sleeping loop retains deadlines, not owned Work bodies or Pins.
+                    drop(idle_read);
                     let idle_transition = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                         .transition_run_loop_idle_to_sleep(next_recheck_at)
                         .await?;
@@ -6598,8 +6718,11 @@ impl RuntimeHandle {
                         continue;
                     };
                     if idle_transition.posture_changed {
-                        self.append_state_changed_events(&idle_transition.state)?;
+                        self.append_state_changed_events(&idle_transition.state)
+                            .await?;
                     }
+                    #[cfg(test)]
+                    drop(loop_gate);
                     // Only the explicitly marked acceptance binary services private
                     // controls while otherwise idle, without changing policy deadlines.
                     #[cfg(feature = "recovery-acceptance")]
@@ -6628,6 +6751,11 @@ impl RuntimeHandle {
             };
 
             let message = scheduled.message.clone();
+            let original_run_id = scheduled
+                .running_state
+                .current_run_id
+                .clone()
+                .context("scheduled message has no original run identity")?;
             #[cfg(test)]
             if self
                 .inner
@@ -6653,7 +6781,8 @@ impl RuntimeHandle {
                     "injected non-retryable agent runtime loop failure after queue claim",
                 )));
             }
-            self.append_state_changed_events(&scheduled.running_state)?;
+            self.append_state_changed_events(&scheduled.running_state)
+                .await?;
 
             let queue_wait = self
                 .now()
@@ -6676,306 +6805,404 @@ impl RuntimeHandle {
 
             // Cancellation and setup failures can bypass the provider's turn timer.
             let processing_started = std::time::Instant::now();
-            let result = self
+            let original_completion = scheduled.run_completion.lease();
+            let processing_result = self
                 .process_message_with_plan_deferred(
                     scheduled.message,
                     scheduled.dispatch_plan,
                     &scheduled.scheduler_decision,
                 )
                 .await;
-            self.settle_processed_message(message, result, processing_started)
+            let settlement = self
+                .finish_scheduled_message_processing(
+                    &message,
+                    &original_run_id,
+                    processing_started,
+                    processing_result,
+                )
+                .await;
+            drop(scheduled.run_completion);
+            self.finish_original_stopped_dispatch(original_completion)
                 .await?;
+            settlement?;
         }
     }
 
-    fn settle_processed_message(
-        &self,
-        message: MessageEnvelope,
-        result: Result<turn::TurnTerminalTransition>,
+    #[inline(never)]
+    fn finish_scheduled_message_processing<'a>(
+        &'a self,
+        message: &'a MessageEnvelope,
+        original_run_id: &'a str,
         processing_started: std::time::Instant,
-    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + '_>> {
-        // Keep terminal construction and settlement frames off provider callbacks.
-        Box::pin(async move {
-            let terminal_transition = match result {
-                Ok(transition) => transition,
-                Err(err) => {
-                    if let Some(pause) = provider_admission::dispatch_pause(&err) {
-                        return self
-                            .settle_provider_dispatch_pause(
-                                &message,
-                                &err,
-                                pause,
-                                u64::try_from(processing_started.elapsed().as_millis())
-                                    .unwrap_or(u64::MAX),
-                            )
-                            .await;
-                    }
-                    let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
-                    let (terminal, queue_status, mut audit_events, failure_artifacts) =
-                        if let Some(aborted) = aborted.as_ref() {
-                            (
-                                self.build_turn_interrupted_record(
-                                    &aborted.reason,
-                                    None,
-                                    u64::try_from(processing_started.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
-                                )
-                                .await,
-                                QueueEntryStatus::Interrupted,
-                                vec![AuditEvent::legacy(
-                                    "message_processing_aborted",
-                                    serde_json::json!({
-                                        "message_id": message.id.clone(),
-                                        "message_kind": message.kind.clone(),
-                                        "run_id": aborted.run_id.clone(),
-                                        "reason": aborted.reason.clone(),
-                                    }),
-                                )],
-                                None,
-                            )
-                        } else {
-                            let descriptor = describe_runtime_error(&err);
-                            let (queue_status, settlement_reason) =
-                                runtime_error_queue_settlement(&message.kind, &err);
-                            let terminal = if matches!(&queue_status, QueueEntryStatus::Interrupted)
-                            {
-                                self.build_turn_interrupted_record(
-                                    settlement_reason,
-                                    None,
-                                    u64::try_from(processing_started.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
-                                )
-                                .await
-                            } else {
-                                self.build_turn_aborted_record(
-                                    if err.is::<crate::runtime_error::IdleInputRecoveryRejection>()
-                                    {
-                                        "idle_input_recovery_rejected"
-                                    } else {
-                                        "runtime_error"
-                                    },
-                                    None,
-                                    u64::try_from(processing_started.elapsed().as_millis())
-                                        .unwrap_or(u64::MAX),
-                                )
-                                .await
-                            };
-                            error!(
-                                message_id = %message.id,
-                                turn_id = %terminal.turn_id,
-                                domain = ?descriptor.domain,
-                                code = %descriptor.code,
-                                retryable = descriptor.retryable,
-                                error = %descriptor.operator_message,
-                                safe_context = ?descriptor.safe_context,
-                                "failed to process message"
-                            );
-                            let artifacts = self
-                                .build_runtime_failure_artifacts(&message, &err, &terminal)
-                                .await?;
-                            let terminal_turn_id = terminal.turn_id.clone();
-                            (
-                                terminal,
-                                queue_status.clone(),
-                                vec![
-                                    AuditEvent::legacy(
-                                        "runtime_error",
-                                        serde_json::json!({
-                                            "message_id": message.id.clone(),
-                                            "turn_id": terminal_turn_id,
-                                            "message_kind": message.kind.clone(),
-                                            "domain": descriptor.domain,
-                                            "code": descriptor.code,
-                                            "retryable": descriptor.retryable,
-                                            "error": descriptor.operator_message,
-                                            "recovery_hint": descriptor.recovery_hint,
-                                            "safe_context": descriptor.safe_context,
-                                            "recovery_processing": err.is::<crate::runtime_error::IdleInputRecoveryRejection>().then(|| serde_json::json!({
-                                                "queue_status": queue_status,
-                                                "turn_status": "aborted",
-                                                "attempt_status": "interrupted",
-                                            })),
-                                            "source_chain": descriptor.source_chain,
-                                            "token_usage": provider_attempt_timeline(&err)
-                                                .and_then(|timeline| timeline.aggregated_token_usage.clone()),
-                                            "provider_attempt_timeline": provider_attempt_timeline(&err),
-                                        }),
-                                    ),
-                                    AuditEvent::legacy(
-                                        "queue_entry_settled",
-                                        serde_json::json!({
-                                            "message_id": message.id.clone(),
-                                            "message_kind": message.kind.clone(),
-                                            "status": queue_status,
-                                            "reason": settlement_reason,
-                                            "rejection_code": err.is::<crate::runtime_error::IdleInputRecoveryRejection>().then_some(&descriptor.code),
-                                            "rejection_field": err.downcast_ref::<crate::runtime_error::IdleInputRecoveryRejection>().map(|rejection| rejection.field),
-                                        }),
-                                    ),
-                                ],
-                                Some(artifacts),
-                            )
-                        };
-                    if let Some(aborted) = aborted.as_ref() {
-                        audit_events.push(AuditEvent::legacy(
-                            "turn_terminal_aborted",
-                            serde_json::json!({
-                                "run_id": aborted.run_id,
-                                "reason": aborted.reason,
-                                "turn_id": terminal.turn_id,
-                                "turn_index": terminal.turn_index,
-                                "kind": terminal.kind,
-                                "completed_at": terminal.completed_at,
-                                "duration_ms": terminal.duration_ms,
-                            }),
-                        ));
-                    }
-                    let mut turn_record = self.build_turn_record(&terminal).await?;
-                    if let Some(artifacts) = failure_artifacts.as_ref() {
-                        turn_record.runtime_failure = Some(artifacts.descriptor.clone());
-                        if !turn_record.produced_brief_ids.contains(&artifacts.brief.id) {
-                            turn_record
-                                .produced_brief_ids
-                                .push(artifacts.brief.id.clone());
-                        }
-                    }
-                    let mut terminal = terminal;
-                    if failure_artifacts.is_some() {
-                        terminal.no_brief_reason = None;
-                        turn_record.terminal =
-                            Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
-                    }
-                    let terminal_transition = turn::TurnTerminalTransition {
-                        terminal,
-                        turn_record,
-                        prepared_work_item_completion: None,
-                        prepared_wait_for: None,
-                        terminal_tool_executions: Vec::new(),
-                    };
-                    let committed_state = {
-                        let guard = self.inner.agent.lock().await;
-                        let mut state = guard.state.clone();
-                        if !matches!(state.status, AgentStatus::Stopped) {
-                            scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
-                        }
-                        if let Some(artifacts) = failure_artifacts.as_ref() {
-                            state.last_runtime_failure = Some(artifacts.failure_summary.clone());
-                        }
-                        state
-                    };
-                    let settlement = self
-                        .commit_queue_terminal_settlement_resilient(
-                            QueueEntryRecord {
-                                message_id: message.id.clone(),
-                                agent_id: message.agent_id.clone(),
-                                priority: message.priority.clone(),
-                                status: queue_status,
-                                created_at: message.created_at,
-                                updated_at: Utc::now(),
-                            },
-                            audit_events,
-                            &terminal_transition,
-                            Some(committed_state),
-                            failure_artifacts
-                                .as_ref()
-                                .map(|artifacts| vec![artifacts.transcript.clone()])
-                                .unwrap_or_default(),
-                            failure_artifacts
-                                .as_ref()
-                                .map(|artifacts| vec![artifacts.brief.clone()])
-                                .unwrap_or_default(),
+        processing_result: Result<turn::TurnTerminalTransition>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.finish_scheduled_message_processing_inner(
+            message,
+            original_run_id,
+            processing_started,
+            processing_result,
+        ))
+    }
+
+    async fn finish_scheduled_message_processing_inner(
+        &self,
+        message: &MessageEnvelope,
+        original_run_id: &str,
+        processing_started: std::time::Instant,
+        processing_result: Result<turn::TurnTerminalTransition>,
+    ) -> Result<()> {
+        if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
+            // The caller retains the original completion guard across this
+            // helper, then drops it before attempting ended memory recovery.
+            return Ok(());
+        }
+        let terminal_transition = match processing_result {
+            Ok(transition) => transition,
+            Err(err) => {
+                if let Some(pause) = provider_admission::dispatch_pause(&err) {
+                    return self
+                        .settle_provider_dispatch_pause(
+                            message,
+                            &err,
+                            pause,
                             u64::try_from(processing_started.elapsed().as_millis())
                                 .unwrap_or(u64::MAX),
                         )
                         .await;
-                    match settlement {
-                        Ok(_) => {}
-                        Err(error) => {
-                            if execution_settlement_conflict(&error) {
-                                crate::diagnostics::record_missing_terminal_turn_detected();
-                                if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                    return Ok(());
-                                }
-                            }
-                            return Err(error);
-                        }
-                    }
-                    let failed_state = {
-                        let mut guard = self.inner.agent.lock().await;
-                        guard.current_run_abort = None;
-                        guard.state.provider_cooldown_wait = None;
-                        guard.state.clone()
-                    };
-                    self.append_state_changed_events(&failed_state)?;
-                    self.maybe_commit_turn_end_work_item_transition().await?;
-                    self.record_closure_decision_event(Some(true)).await?;
-                    self.maybe_emit_pending_system_tick(None).await?;
-                    return Ok(());
                 }
-            };
-            {
-                let processed_state = {
-                    let mut guard = self.inner.agent.lock().await;
-                    guard.current_run_abort = None;
-                    guard.state.provider_cooldown_wait = None;
-                    guard.state.clone()
+                let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
+                let (terminal, queue_status, mut audit_events, failure_artifacts) = if let Some(
+                    aborted,
+                ) =
+                    aborted.as_ref()
+                {
+                    (
+                        self.build_turn_interrupted_record(
+                            &aborted.reason,
+                            None,
+                            u64::try_from(processing_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                        )
+                        .await,
+                        QueueEntryStatus::Interrupted,
+                        vec![AuditEvent::legacy(
+                            "message_processing_aborted",
+                            serde_json::json!({
+                                "message_id": message.id.clone(),
+                                "message_kind": message.kind.clone(),
+                                "run_id": aborted.run_id.clone(),
+                                "reason": aborted.reason.clone(),
+                            }),
+                        )],
+                        None,
+                    )
+                } else {
+                    let descriptor = describe_runtime_error(&err);
+                    let (queue_status, settlement_reason) =
+                        runtime_error_queue_settlement(&message.kind, &err);
+                    let duration_ms =
+                        u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let terminal = if matches!(&queue_status, QueueEntryStatus::Interrupted) {
+                        self.build_turn_interrupted_record(settlement_reason, None, duration_ms)
+                            .await
+                    } else {
+                        self.build_turn_aborted_record(
+                            if err.is::<crate::runtime_error::IdleInputRecoveryRejection>() {
+                                "idle_input_recovery_rejected"
+                            } else {
+                                "runtime_error"
+                            },
+                            None,
+                            duration_ms,
+                        )
+                        .await
+                    };
+                    error!(
+                        message_id = %message.id,
+                        turn_id = %terminal.turn_id,
+                        domain = ?descriptor.domain,
+                        code = %descriptor.code,
+                        retryable = descriptor.retryable,
+                        error = %descriptor.operator_message,
+                        safe_context = ?descriptor.safe_context,
+                        "failed to process message"
+                    );
+                    let artifacts = self
+                        .build_runtime_failure_artifacts(&message, &err, &terminal)
+                        .await?;
+                    let terminal_turn_id = terminal.turn_id.clone();
+                    (
+                        terminal,
+                        queue_status.clone(),
+                        vec![
+                            AuditEvent::legacy(
+                                "runtime_error",
+                                serde_json::json!({
+                                    "message_id": message.id.clone(),
+                                    "turn_id": terminal_turn_id,
+                                    "message_kind": message.kind.clone(),
+                                    "domain": descriptor.domain,
+                                    "code": descriptor.code,
+                                    "retryable": descriptor.retryable,
+                                    "error": descriptor.operator_message,
+                                    "recovery_hint": descriptor.recovery_hint,
+                                    "safe_context": descriptor.safe_context,
+                                    "recovery_processing": err.is::<crate::runtime_error::IdleInputRecoveryRejection>().then(|| serde_json::json!({
+                                        "queue_status": queue_status,
+                                        "turn_status": "aborted",
+                                        "attempt_status": "interrupted",
+                                    })),
+                                    "source_chain": descriptor.source_chain,
+                                    "token_usage": provider_attempt_timeline(&err)
+                                        .and_then(|timeline| timeline.aggregated_token_usage.clone()),
+                                    "provider_attempt_timeline": provider_attempt_timeline(&err),
+                                }),
+                            ),
+                            AuditEvent::legacy(
+                                "queue_entry_settled",
+                                serde_json::json!({
+                                    "message_id": message.id.clone(),
+                                    "message_kind": message.kind.clone(),
+                                    "status": queue_status,
+                                    "reason": settlement_reason,
+                                    "rejection_code": err.is::<crate::runtime_error::IdleInputRecoveryRejection>().then_some(&descriptor.code),
+                                    "rejection_field": err.downcast_ref::<crate::runtime_error::IdleInputRecoveryRejection>().map(|rejection| rejection.field),
+                                }),
+                            ),
+                        ],
+                        Some(artifacts),
+                    )
                 };
-                self.append_state_changed_events(&processed_state)?;
+                if let Some(aborted) = aborted.as_ref() {
+                    audit_events.push(AuditEvent::legacy(
+                        "turn_terminal_aborted",
+                        serde_json::json!({
+                            "run_id": aborted.run_id,
+                            "reason": aborted.reason,
+                            "turn_id": terminal.turn_id,
+                            "turn_index": terminal.turn_index,
+                            "kind": terminal.kind,
+                            "completed_at": terminal.completed_at,
+                            "duration_ms": terminal.duration_ms,
+                        }),
+                    ));
+                }
+                // Setup can fail after Claim and before StartedTurn. This
+                // admitted settlement owns preparation for its fallback Turn.
+                {
+                    let mut request = resident_work::WorkCaptureRequest::current();
+                    request.include_live = false;
+                    request.nonopen_limit = 0;
+                    request.required_turn_ids.insert(terminal.turn_id.clone());
+                    let mut mutation = self.begin_mutation().await?;
+                    mutation.prepare_owner_work_request(&request).await?;
+                }
+                let mut turn_record = self.build_turn_record(&terminal).await?;
+                if let Some(artifacts) = failure_artifacts.as_ref() {
+                    turn_record.set_runtime_failure(&artifacts.descriptor)?;
+                    turn_record.include_brief(&artifacts.brief.id)?;
+                }
+                let mut terminal = terminal;
+                if failure_artifacts.is_some() {
+                    terminal.no_brief_reason = None;
+                    turn_record.set_terminal(&terminal)?;
+                }
+                let terminal_transition = turn::TurnTerminalTransition {
+                    terminal,
+                    turn_record,
+                    prepared_work_item_completion: None,
+                    prepared_wait_for: None,
+                    terminal_tool_executions: Vec::new(),
+                };
+                let committed_state = TerminalAgentStateUpdate {
+                    last_runtime_failure: failure_artifacts
+                        .as_ref()
+                        .map(|artifacts| artifacts.failure_summary.clone()),
+                };
                 let settlement = self
                     .commit_queue_terminal_settlement_resilient(
                         QueueEntryRecord {
                             message_id: message.id.clone(),
                             agent_id: message.agent_id.clone(),
                             priority: message.priority.clone(),
-                            status: QueueEntryStatus::Processed,
+                            status: queue_status,
                             created_at: message.created_at,
                             updated_at: Utc::now(),
                         },
-                        vec![AuditEvent::legacy(
-                            "queue_entry_settled",
-                            serde_json::json!({
-                                "message_id": message.id,
-                                "message_kind": message.kind,
-                                "status": QueueEntryStatus::Processed,
-                            }),
-                        )],
+                        audit_events,
                         &terminal_transition,
-                        None,
-                        Vec::new(),
-                        Vec::new(),
+                        Some(committed_state),
+                        failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| vec![artifacts.transcript.clone()])
+                            .unwrap_or_default(),
+                        failure_artifacts
+                            .as_ref()
+                            .map(|artifacts| vec![artifacts.brief.clone()])
+                            .unwrap_or_default(),
                         u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     )
                     .await;
-                match settlement {
-                    Ok(TerminalSettlementDisposition::Intended) => {}
-                    Ok(TerminalSettlementDisposition::AbortedFallback) => {
-                        let failed_state = {
-                            let mut guard = self.inner.agent.lock().await;
-                            guard.current_run_abort = None;
-                            guard.state.provider_cooldown_wait = None;
-                            guard.state.clone()
-                        };
-                        self.append_state_changed_events(&failed_state)?;
-                        self.maybe_commit_turn_end_work_item_transition().await?;
-                        self.record_closure_decision_event(Some(true)).await?;
-                        self.maybe_emit_pending_system_tick(None).await?;
+                if matches!(&settlement, Ok(TerminalSettlementDisposition::Intended))
+                    && provider_admission::is_parked_dispatch_rejection(&err)
+                {
+                    self.restore_parked_provider_source(&message.id).await?;
+                }
+                if let Err(error) = settlement {
+                    if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
                         return Ok(());
                     }
-                    Err(error) => {
-                        if execution_settlement_conflict(&error) {
-                            crate::diagnostics::record_missing_terminal_turn_detected();
-                            if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                                return Ok(());
-                            }
+                    if execution_settlement_conflict(&error) {
+                        crate::diagnostics::record_missing_terminal_turn_detected();
+                        if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                            return Ok(());
                         }
-                        return Err(error);
                     }
+                    return Err(error);
                 }
-                self.maybe_supersede_queued_provider_recovery(&message, Some(&terminal_transition))
-                    .await?;
+                let failed_state = {
+                    let mut guard = self.begin_mutation().await?;
+                    if guard
+                        .current_run_abort
+                        .as_ref()
+                        .is_some_and(|handle| handle.run_id == original_run_id)
+                    {
+                        guard.current_run_abort = None;
+                    }
+                    guard.install_transient().await?;
+                    guard.state.clone()
+                };
+                self.append_state_changed_events(&failed_state).await?;
+                if !self.accepts_execution_admission() {
+                    return Ok(());
+                }
+                self.maybe_commit_turn_end_work_item_transition().await?;
+                self.record_closure_decision_event(Some(true)).await?;
+                self.maybe_emit_pending_system_tick(None).await?;
+                return Ok(());
             }
-            Ok(())
-        })
+        };
+        {
+            let settlement = self
+                .commit_queue_terminal_settlement_resilient(
+                    QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    },
+                    vec![AuditEvent::legacy(
+                        "queue_entry_settled",
+                        serde_json::json!({
+                            "message_id": message.id,
+                            "message_kind": message.kind,
+                            "status": QueueEntryStatus::Processed,
+                        }),
+                    )],
+                    &terminal_transition,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                )
+                .await;
+            match settlement {
+                Ok(TerminalSettlementDisposition::Intended) => {}
+                Ok(TerminalSettlementDisposition::AbortedFallback) => {
+                    let failed_state = {
+                        let mut guard = self.begin_mutation().await?;
+                        if guard
+                            .current_run_abort
+                            .as_ref()
+                            .is_some_and(|handle| handle.run_id == original_run_id)
+                        {
+                            guard.current_run_abort = None;
+                        }
+                        guard.install_transient().await?;
+                        guard.state.clone()
+                    };
+                    self.append_state_changed_events(&failed_state).await?;
+                    if !self.accepts_execution_admission() {
+                        return Ok(());
+                    }
+                    self.maybe_commit_turn_end_work_item_transition().await?;
+                    self.record_closure_decision_event(Some(true)).await?;
+                    self.maybe_emit_pending_system_tick(None).await?;
+                    return Ok(());
+                }
+                Err(error) => {
+                    if self.original_run_was_settled_by_control_stop(message, original_run_id)? {
+                        return Ok(());
+                    }
+                    if execution_settlement_conflict(&error) {
+                        crate::diagnostics::record_missing_terminal_turn_detected();
+                        if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                            return Ok(());
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+            let processed_state = {
+                let mut guard = self.begin_mutation().await?;
+                if guard
+                    .current_run_abort
+                    .as_ref()
+                    .is_some_and(|handle| handle.run_id == original_run_id)
+                {
+                    guard.current_run_abort = None;
+                }
+                guard.install_transient().await?;
+                guard.state.clone()
+            };
+            self.append_state_changed_events(&processed_state).await?;
+            if !self.accepts_execution_admission() {
+                return Ok(());
+            }
+            self.maybe_supersede_queued_provider_recovery(message, Some(&terminal_transition))
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn original_run_was_settled_by_control_stop(
+        &self,
+        source: &MessageEnvelope,
+        run_id: &str,
+    ) -> Result<bool> {
+        // The normal running path needs no extra SQLite read. An unresolved
+        // gate may still have an immutable Stop receipt; reading it is not ACK
+        // recovery and must not reopen that gate or install historical State.
+        if self
+            .inner
+            .mutation_owner
+            .capture()
+            .ok()
+            .flatten()
+            .is_some_and(|root| root.state.current_run_id.as_deref() == Some(run_id))
+        {
+            return Ok(false);
+        }
+        let Some(lease) = self.inner.control_cancellations.run_for(run_id) else {
+            return Ok(false);
+        };
+        anyhow::ensure!(
+            lease.source_message_id() == source.id,
+            "original run source lease changed"
+        );
+        self.inner.runtime_db.committed_control_stop_for_run(
+            &crate::runtime_db::control_transition::ControlStoppedRun {
+                agent_id: &source.agent_id,
+                identity_incarnation: self.inner.identity_incarnation,
+                owner_epoch: self.inner.mutation_owner.owner_epoch(),
+                run_id,
+                runtime_lease_id: lease.lease_id(),
+                activation_id: lease.activation_id(),
+                source,
+            },
+        )
     }
 
     pub(crate) async fn record_runtime_loop_failure(&self, error: &anyhow::Error) {
@@ -6993,28 +7220,40 @@ impl RuntimeHandle {
             error = %error,
             "agent runtime loop failed"
         );
-        if let Err(persist_error) = self.inner.storage.append_event(&AuditEvent::legacy(
-            "agent_runtime_loop_failed",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "error": summary,
-                "domain": descriptor.domain,
-                "code": descriptor.code,
-                "retryable": descriptor.retryable,
-                "recovery_hint": descriptor.recovery_hint,
-                "safe_context": descriptor.safe_context,
-                "source_chain": descriptor.source_chain,
-                "recovery": "bounded_restart",
-                "released_claims": released_claims,
-            }),
-        )) {
+        if let Err(persist_error) = self
+            .append_original_audit_event(AuditEvent::legacy(
+                "agent_runtime_loop_failed",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "error": summary,
+                    "domain": descriptor.domain,
+                    "code": descriptor.code,
+                    "retryable": descriptor.retryable,
+                    "recovery_hint": descriptor.recovery_hint,
+                    "safe_context": descriptor.safe_context,
+                    "source_chain": descriptor.source_chain,
+                    "recovery": "bounded_restart",
+                    "released_claims": released_claims,
+                }),
+            ))
+            .await
+        {
             tracing::error!(
                 agent_id = %agent_id,
                 error = %persist_error,
                 "failed to persist agent runtime loop failure audit event"
             );
         }
-        let mut guard = self.inner.agent.lock().await;
+        // Failure cleanup is still a legacy whole-row writer. It must never
+        // overwrite a committed posture with the pre-publication memory copy.
+        let mut guard = match self.begin_mutation().await {
+            Ok(guard) => guard,
+            Err(owner_error) => {
+                tracing::warn!(agent_id = %agent_id, error = %owner_error,
+                    "skipped runtime failure state write while mutation owner is unavailable");
+                return;
+            }
+        };
         guard.state.current_run_id = None;
         guard.current_run_abort = None;
         guard.state.last_runtime_failure = Some(RuntimeFailureSummary {
@@ -7024,7 +7263,7 @@ impl RuntimeHandle {
             detail_hint: Some("the next host access will rebuild the runtime loop".into()),
             failure_artifact: None,
         });
-        if let Err(persist_error) = guard.persist_state(&self.inner.storage) {
+        if let Err(persist_error) = guard.persist_state(&self.inner.storage).await {
             tracing::error!(
                 agent_id = %agent_id,
                 error = %persist_error,
@@ -7044,7 +7283,7 @@ impl RuntimeHandle {
             .inner
             .runtime_db
             .queue_entries()
-            .recent(Some(&agent_id), usize::MAX)?
+            .recent_for_preparation(Some(&agent_id), usize::MAX)?
             .into_iter()
             .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
             .collect::<Vec<_>>();
@@ -7052,11 +7291,11 @@ impl RuntimeHandle {
             .inner
             .runtime_db
             .turn_records()
-            .recent_for_agent(&agent_id, usize::MAX)?;
+            .recent_for_agent_for_preparation(&agent_id, usize::MAX)?;
         let mut recovered = 0;
 
         for mut entry in claimed {
-            let mut guard = self.inner.agent.lock().await;
+            let mut guard = self.begin_mutation().await?;
             let expected_entry = entry.clone();
             let Some(message) = self.inner.storage.read_message_by_id(&entry.message_id)? else {
                 continue;
@@ -7274,45 +7513,40 @@ impl RuntimeHandle {
                 let message_id = entry.message_id.clone();
                 let execution_protocol =
                     crate::runtime_db::transitions::ExecutionProtocolTransition::default();
-                let commit = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
-                            agent_id: agent_id.clone(),
-                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                            mutation:
-                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                                    expected: expected_entry,
-                                    record: entry,
-                                },
-                            scheduler_claim_work_item: None,
-                            agent_state: None,
-                            message_evidence: Vec::new(),
-                            transcript_entries: Vec::new(),
-                            turn_record: terminal_turn.cloned(),
-                            audit_events: vec![AuditEvent::legacy(
-                                "unsettled_claim_reconciled",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "message_id": message_id,
-                                    "activation_id": activation_id,
-                                    "work_item_id": work_item_id,
-                                    "decision": "quarantine_settled",
-                                    "reason": reason,
-                                    "recovery_generation": u32::from(
-                                        attempt.recovery_of_attempt_id.is_some()
-                                    ),
-                                    "provenance": "bootstrap_reconciliation",
-                                }),
-                            )],
-                            notify_scheduler: true,
-                            fault: self.take_transition_fault(),
-                            brief_evidence: Vec::new(),
-                        },
-                        &execution_protocol,
-                    )?;
+                let commit = guard
+                    .commit_prepared_queue(crate::ids::audit_event_id(), { let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
+                                agent_id: agent_id.clone(),
+                                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                                mutation:
+                                    crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                        expected: expected_entry,
+                                        record: entry,
+                                    },
+                                scheduler_claim_work_item: None,
+                                agent_state: None,
+                                message_evidence: Vec::new(),
+                                transcript_entries: Vec::new(),
+                                turn_record: terminal_turn.cloned(),
+                                audit_events: vec![AuditEvent::legacy(
+                                    "unsettled_claim_reconciled",
+                                    serde_json::json!({
+                                        "agent_id": agent_id,
+                                        "message_id": message_id,
+                                        "activation_id": activation_id,
+                                        "work_item_id": work_item_id,
+                                        "decision": "quarantine_settled",
+                                        "reason": reason,
+                                        "recovery_generation": u32::from(
+                                            attempt.recovery_of_attempt_id.is_some()
+                                        ),
+                                        "provenance": "bootstrap_reconciliation",
+                                    }),
+                                )],
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                                brief_evidence: Vec::new(),
+                            })); prepared.execution_protocol = Clone::clone(&execution_protocol); prepared })
+                    .await?;
                 if commit.applied {
                     recovered += 1;
                     crate::diagnostics::record_unsettled_claim_recovery();
@@ -7345,45 +7579,40 @@ impl RuntimeHandle {
                             ),
                         ],
                     };
-                let commit = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
-                            agent_id: agent_id.clone(),
-                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                            mutation:
-                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                                    expected: expected_entry,
-                                    record: entry,
-                                },
-                            scheduler_claim_work_item: None,
-                            agent_state: None,
-                            message_evidence: Vec::new(),
-                            transcript_entries: Vec::new(),
-                            turn_record: terminal_turn.cloned(),
-                            audit_events: vec![AuditEvent::legacy(
-                                "unsettled_claim_reconciled",
-                                serde_json::json!({
-                                    "agent_id": agent_id,
-                                    "message_id": message_id,
-                                    "activation_id": activation_id,
-                                    "work_item_id": work_item_id,
-                                    "decision": "interrupt_and_quarantine",
-                                    "reason": reason,
-                                    "recovery_generation": u32::from(
-                                        attempt.recovery_of_attempt_id.is_some()
-                                    ),
-                                    "provenance": "bootstrap_reconciliation",
-                                }),
-                            )],
-                            notify_scheduler: true,
-                            fault: self.take_transition_fault(),
-                            brief_evidence: Vec::new(),
-                        },
-                        &execution_protocol,
-                    )?;
+                let commit = guard
+                    .commit_prepared_queue(crate::ids::audit_event_id(), { let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
+                                agent_id: agent_id.clone(),
+                                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                                mutation:
+                                    crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                        expected: expected_entry,
+                                        record: entry,
+                                    },
+                                scheduler_claim_work_item: None,
+                                agent_state: None,
+                                message_evidence: Vec::new(),
+                                transcript_entries: Vec::new(),
+                                turn_record: terminal_turn.cloned(),
+                                audit_events: vec![AuditEvent::legacy(
+                                    "unsettled_claim_reconciled",
+                                    serde_json::json!({
+                                        "agent_id": agent_id,
+                                        "message_id": message_id,
+                                        "activation_id": activation_id,
+                                        "work_item_id": work_item_id,
+                                        "decision": "interrupt_and_quarantine",
+                                        "reason": reason,
+                                        "recovery_generation": u32::from(
+                                            attempt.recovery_of_attempt_id.is_some()
+                                        ),
+                                        "provenance": "bootstrap_reconciliation",
+                                    }),
+                                )],
+                                notify_scheduler: true,
+                                fault: self.take_transition_fault(),
+                                brief_evidence: Vec::new(),
+                            })); prepared.execution_protocol = Clone::clone(&execution_protocol); prepared })
+                    .await?;
                 if commit.applied {
                     recovered += 1;
                     crate::diagnostics::record_unsettled_claim_recovery();
@@ -7402,12 +7631,8 @@ impl RuntimeHandle {
                 let message_id = entry.message_id.clone();
                 let execution_protocol =
                     task_result_recovery.expect("TaskResult recovery was checked");
-                let commit = self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(
-                        &crate::runtime_db::transitions::QueueTransitionCommand {
+                let commit = guard
+                    .commit_prepared_queue(crate::ids::audit_event_id(), { let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                             agent_id: agent_id.clone(),
                             operation: crate::runtime_db::transitions::QueueOperation::Requeue,
                             mutation:
@@ -7435,13 +7660,14 @@ impl RuntimeHandle {
                             notify_scheduler: true,
                             fault: self.take_transition_fault(),
                             brief_evidence: Vec::new(),
-                        },
-                        &execution_protocol,
-                    )?;
+                        })); prepared.execution_protocol = Clone::clone(&execution_protocol); prepared })
+                    .await?;
                 if commit.applied {
                     recovered += 1;
                     crate::diagnostics::record_unsettled_claim_recovery();
-                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                    guard
+                        .restore_bootstrap_replay_message(&self.inner.storage, &message)
+                        .await?;
                 }
                 drop(guard);
                 self.apply_transition_commit(commit).await;
@@ -7458,8 +7684,7 @@ impl RuntimeHandle {
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
                 let queue_status = entry.status.clone();
-                let commit = self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                let commit = guard.commit_prepared_queue(crate::ids::audit_event_id(), crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Settle,
                         mutation:
@@ -7488,8 +7713,7 @@ impl RuntimeHandle {
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
-                    },
-                )?;
+                    }))).await?;
                 if commit.applied {
                     recovered += 1;
                 }
@@ -7505,8 +7729,7 @@ impl RuntimeHandle {
                 entry.status = QueueEntryStatus::Interrupted;
                 entry.updated_at = self.now();
                 let message_id = entry.message_id.clone();
-                let commit = self.inner.runtime_db.transitions().commit_queue(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
+                let commit = guard.commit_prepared_queue(crate::ids::audit_event_id(), crate::runtime_db::transitions::PreparedQueueTransition::new(Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
                         agent_id: agent_id.clone(),
                         operation: crate::runtime_db::transitions::QueueOperation::Settle,
                         mutation:
@@ -7535,11 +7758,12 @@ impl RuntimeHandle {
                         notify_scheduler: true,
                         fault: self.take_transition_fault(),
                         brief_evidence: Vec::new(),
-                    },
-                )?;
+                    }))).await?;
                 if commit.applied {
                     recovered += 1;
-                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                    guard
+                        .restore_bootstrap_replay_message(&self.inner.storage, &message)
+                        .await?;
                 }
                 drop(guard);
                 self.apply_transition_commit(commit).await;
@@ -7565,46 +7789,50 @@ impl RuntimeHandle {
                 &entry,
                 terminal_turn,
             )?;
-            let commit = self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue_with_execution_protocol(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Settle,
-                        mutation: crate::runtime_db::transitions::QueueMutation::CompareAndSet {
-                            expected: expected_entry,
-                            record: entry,
-                        },
-                        scheduler_claim_work_item: None,
-                        agent_state: None,
-                        message_evidence: Vec::new(),
-                        transcript_entries: Vec::new(),
-                        turn_record: terminal_turn.cloned().or(interrupted_attachment),
-                        audit_events: vec![AuditEvent::legacy(
-                            "scheduler_bootstrap_claim_recovered",
-                            serde_json::json!({
-                                "agent_id": agent_id,
-                                "message_id": message_id,
-                                "activation_id": activation_id,
-                                "work_item_id": work_item_id,
-                                "queue_status": queue_status,
-                                "recovery_outcome": recovery_outcome,
-                                "terminal_turn_id": terminal_turn_id,
-                                "provenance": "bootstrap_reconciliation",
-                            }),
-                        )],
-                        notify_scheduler: true,
-                        fault: self.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                    &execution_protocol,
-                )?;
+            let commit = guard
+                .commit_prepared_queue(crate::ids::audit_event_id(), {
+                    let mut prepared = crate::runtime_db::transitions::PreparedQueueTransition::new(
+                        Clone::clone(&crate::runtime_db::transitions::QueueTransitionCommand {
+                            agent_id: agent_id.clone(),
+                            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                            mutation:
+                                crate::runtime_db::transitions::QueueMutation::CompareAndSet {
+                                    expected: expected_entry,
+                                    record: entry,
+                                },
+                            scheduler_claim_work_item: None,
+                            agent_state: None,
+                            message_evidence: Vec::new(),
+                            transcript_entries: Vec::new(),
+                            turn_record: terminal_turn.cloned().or(interrupted_attachment),
+                            audit_events: vec![AuditEvent::legacy(
+                                "scheduler_bootstrap_claim_recovered",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "message_id": message_id,
+                                    "activation_id": activation_id,
+                                    "work_item_id": work_item_id,
+                                    "queue_status": queue_status,
+                                    "recovery_outcome": recovery_outcome,
+                                    "terminal_turn_id": terminal_turn_id,
+                                    "provenance": "bootstrap_reconciliation",
+                                }),
+                            )],
+                            notify_scheduler: true,
+                            fault: self.take_transition_fault(),
+                            brief_evidence: Vec::new(),
+                        }),
+                    );
+                    prepared.execution_protocol = Clone::clone(&execution_protocol);
+                    prepared
+                })
+                .await?;
             if commit.applied {
                 recovered += 1;
                 if !terminal_is_completed {
-                    guard.restore_bootstrap_replay_message(&self.inner.storage, &message)?;
+                    guard
+                        .restore_bootstrap_replay_message(&self.inner.storage, &message)
+                        .await?;
                 }
             }
             drop(guard);
@@ -7628,6 +7856,8 @@ impl RuntimeHandle {
                 .await?;
             }
             let bootstrap = observe_startup_phase(observation, "runtime.bootstrap", async {
+                self.reconcile_posture_observation().await?;
+                self.reconcile_loaded_control_obligations().await?;
                 self.bootstrap_recovery(observation).await?;
                 observe_startup_phase(
                     observation,
@@ -7655,6 +7885,8 @@ impl RuntimeHandle {
     ) -> Result<()> {
         observe_startup_phase(observation, "runtime.bootstrap.tasks", async {
             if let Some(tasks) = self.inner.recovered_tasks.lock().await.take() {
+                let (tasks, _original_task_material) =
+                    tasks.into_records(&self.inner.input_evidence_budget)?;
                 let tasks = self.settle_deleted_task_targets(tasks).await?;
                 if self.agent_state().await?.status == AgentStatus::Stopped {
                     self.interrupt_active_tasks_for_lifecycle_stop(tasks)
@@ -7664,13 +7896,13 @@ impl RuntimeHandle {
                         self.recover_supervised_child_tasks(tasks).await?;
                     let interrupted = self.interrupt_active_tasks(interrupted_tasks).await?;
                     if !reattached.is_empty() {
-                        self.inner.storage.append_event(&AuditEvent::legacy(
+                        self.append_original_audit_event(AuditEvent::legacy(
                             "supervised_child_task_monitor_reattached",
                             serde_json::json!({
                                 "agent_id": self.agent_id().await?,
                                 "task_ids": reattached.iter().map(|task| task.id.clone()).collect::<Vec<_>>(),
                             }),
-                        ))?;
+                        )).await?;
                     }
                     drop(interrupted);
                 }
@@ -7880,16 +8112,27 @@ fn normalized_turn_id(turn_id: Option<&str>) -> Option<String> {
 }
 
 pub(crate) fn retryable_enqueue_conflict(error: &anyhow::Error, agent_id: &str) -> bool {
-    error.chain().any(|source| {
-        source
-            .downcast_ref::<RuntimeStateTransitionConflict>()
-            .is_some_and(|conflict| {
-                conflict.retryable()
-                    && ((conflict.domain() == "agent_state" && conflict.record_id() == agent_id)
-                        || conflict.domain() == "wait_condition_trigger")
-            })
+    crate::runtime_db::retryable_state_transition_conflict(error).is_some_and(|conflict| {
+        (conflict.domain() == "agent_state" && conflict.record_id() == agent_id)
+            || conflict.domain() == "wait_condition_trigger"
     })
 }
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "runtime/state_mutation_2b_tests.rs"]
+mod state_mutation_2b_tests;
+
+#[cfg(test)]
+#[path = "runtime/tests/control_stop_settlement.rs"]
+mod control_stop_settlement_tests;
+
+#[cfg(test)]
+#[path = "runtime/begin_turn_input_tests.rs"]
+mod begin_turn_input_tests;
+
+#[cfg(test)]
+#[path = "runtime/dispatch_run_projection_tests.rs"]
+mod dispatch_run_projection_tests;

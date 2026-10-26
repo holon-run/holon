@@ -15,6 +15,8 @@ use crate::runtime_db::migrations::{
     RELEASE_BASELINE_TARGET, TURN_REPLAY_SOURCE_INDEX_VERSION,
 };
 #[cfg(test)]
+use crate::runtime_db::repositories::{upsert_queue_entry_tx, upsert_wait_condition_tx};
+#[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
 #[cfg(test)]
 use crate::runtime_db::{
@@ -27,9 +29,8 @@ use crate::types::{
     AgentBootstrapStepStatus, AgentIdentityRecord, AgentState, AuditEvent, BriefRecord,
     CallbackDeliveryMode, ExecutionRootEntry, ExternalTriggerRecord, ExternalTriggerScope,
     ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-    TaskStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TurnOwner, TurnRecord,
-    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemState,
-    WorkspaceEntry, WorkspaceOccupancyRecord,
+    TaskStatus, TranscriptEntry, TranscriptEntryKind, TurnOwner, TurnRecord, WaitConditionKind,
+    WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemState,
 };
 #[cfg(test)]
 use anyhow::{anyhow, bail, Context, Result};
@@ -122,6 +123,258 @@ mod tests {
         let db_path = temp_dir.path().join("state/runtime.sqlite");
         let lock_path = temp_dir.path().join("state/runtime.lock");
         Ok((temp_dir, db_path, lock_path))
+    }
+
+    fn cold_fixture_database_rows(db: &RuntimeDb) -> Result<Vec<(String, Vec<String>)>> {
+        let connection = db.connection()?;
+        let tables = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut snapshot = Vec::new();
+        for table in tables {
+            let mut statement =
+                connection.prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))?;
+            let columns = statement.column_count();
+            let mut rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map(|values| format!("{values:?}"))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.sort();
+            snapshot.push((table, rows));
+        }
+        Ok(snapshot)
+    }
+
+    #[test]
+    fn cold_fixture_initialization_qualifies_state_and_scheduling_together() -> Result<()> {
+        use crate::runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger,
+            resident_input_evidence::InputEvidenceScope,
+            resident_scheduling::SchedulingCaptureRequest,
+        };
+        use crate::runtime_db::scheduling_snapshot::{
+            load_scheduling_domain_snapshot_tx, SchedulingDomainLoadRequest,
+        };
+        let (_home, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("cold-fixture", 0);
+        db.agent_identities().upsert(&identity)?;
+        let mut state = AgentState::new(&identity.agent_id);
+        state.status = AgentStatus::Asleep;
+        db.agent_states()
+            .initialize_cold_for_fixture(&state, identity.incarnation)?;
+        assert_eq!(
+            db.agent_states().latest(&identity.agent_id)?,
+            Some(state.clone())
+        );
+        let before = cold_fixture_database_rows(&db)?;
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let scope = InputEvidenceScope {
+            agent_id: identity.agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        };
+        let snapshot = db.transaction(|tx| {
+            load_scheduling_domain_snapshot_tx(
+                tx,
+                &scope,
+                &SchedulingDomainLoadRequest {
+                    capture: SchedulingCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+                &ledger,
+            )?
+            .require_current()
+        })?;
+        assert_eq!(snapshot.facts.state.as_deref(), Some(&state));
+        assert_eq!(snapshot.facts.identity, Some(identity));
+        assert_eq!(
+            cold_fixture_database_rows(&db)?,
+            before,
+            "selected read must not prepare"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cold_fixture_initialization_rejects_existing_or_retired_scopes_without_changes() -> Result<()>
+    {
+        for case in [
+            "state",
+            "current",
+            "record",
+            "manifest",
+            "inventory",
+            "wrong_incarnation",
+            "zero_incarnation",
+            "missing_identity",
+            "deleting",
+            "deleted",
+            "identity_projection",
+        ] {
+            let (_home, db_path, lock_path) = temp_paths()?;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            let mut identity = agent_identity("cold-fixture", 0);
+            if case == "deleting" {
+                identity.status = AgentRegistryStatus::Deleting;
+            } else if case == "deleted" {
+                identity.status = AgentRegistryStatus::Deleted;
+            }
+            if case != "missing_identity" {
+                db.agent_identities().upsert(&identity)?;
+            }
+            let state = AgentState::new(&identity.agent_id);
+            match case {
+                "state" => db.agent_states().upsert_for_fixture(&state)?,
+                "current" => {
+                    db.agent_states().initialize_cold_for_fixture(&state, identity.incarnation)?;
+                    db.transaction(|tx| {
+                        tx.execute("DELETE FROM agent_states WHERE agent_id=?1", [&state.id])?;
+                        Ok(())
+                    })?;
+                }
+                "record" => db.transaction(|tx| {
+                    tx.execute("INSERT INTO scheduling_domain_records(agent_id,identity_incarnation,family,record_id,revision,availability) VALUES(?1,?2,'timer','old',1,'absent')", params![state.id, identity.incarnation])?;
+                    Ok(())
+                })?,
+                "manifest" => db.transaction(|tx| {
+                    tx.execute("INSERT INTO scheduling_fixed_manifests(inventory_id,agent_id,tables_json,member_count,metadata_bytes,content_digest,sealed) VALUES('old',?1,'[]',0,0,?2,1)", params![state.id, "a".repeat(64)])?;
+                    Ok(())
+                })?,
+                "inventory" => db.transaction(|tx| {
+                    tx.execute("INSERT INTO scheduling_import_inventory(agent_id,family,record_id,received_digest,content_digest,projection_digest) VALUES(?1,'timer','old',?2,?2,?2)", params![state.id, "a".repeat(64)])?;
+                    Ok(())
+                })?,
+                "identity_projection" => db.transaction(|tx| {
+                    tx.execute("UPDATE agent_identities SET status='deleted' WHERE agent_id=?1", [&state.id])?;
+                    Ok(())
+                })?,
+                _ => {}
+            }
+            let incarnation = match case {
+                "wrong_incarnation" => identity.incarnation + 1,
+                "zero_incarnation" => 0,
+                _ => identity.incarnation,
+            };
+            let before = cold_fixture_database_rows(&db)?;
+            assert!(
+                db.agent_states()
+                    .initialize_cold_for_fixture(&state, incarnation)
+                    .is_err(),
+                "{case}"
+            );
+            assert_eq!(
+                cold_fixture_database_rows(&db)?,
+                before,
+                "{case} changed durable rows"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cold_fixture_initialization_rolls_back_state_when_scheduling_fails() -> Result<()> {
+        let (_home, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("cold-fixture", 0);
+        db.agent_identities().upsert(&identity)?;
+        db.connection()?.execute_batch(
+            "CREATE TRIGGER reject_fixture_scheduling BEFORE INSERT ON scheduling_domain_current
+             BEGIN SELECT RAISE(ABORT,'fixture scheduling failure'); END;",
+        )?;
+        let before = cold_fixture_database_rows(&db)?;
+        let error = db
+            .agent_states()
+            .initialize_cold_for_fixture(&AgentState::new(&identity.agent_id), identity.incarnation)
+            .expect_err("Scheduling write must fail after State insertion");
+        assert!(
+            error.to_string().contains("fixture scheduling failure"),
+            "{error:#}"
+        );
+        assert_eq!(cold_fixture_database_rows(&db)?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_mutation_scopes_use_real_schema_owner_columns_for_orphan_rows() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db.agent_states().startup_mutation_agent_ids()?.is_empty());
+
+        // Inventory uses each table's scope column even without a corresponding
+        // identity or a decodable domain payload.
+        let orphan_rows = [
+            (
+                "orphan-a-identity",
+                "INSERT INTO agent_identities (agent_id, kind, visibility, status, created_at, updated_at, payload_json)
+                 VALUES (?1, 'named', 'public', 'active', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-b-state",
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES (?1, 'stopped', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-c-queue",
+                "INSERT INTO queue_entries (message_id, agent_id, priority, status, created_at, updated_at, payload_json)
+                 VALUES ('orphan-queue-message', ?1, 'normal', 'dequeued', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-d-turn",
+                "INSERT INTO turn_records (turn_id, turn_index, agent_id, created_at, payload_json)
+                 VALUES ('orphan-turn', 1, ?1, '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-e-execution",
+                "INSERT INTO execution_protocol_attempts (agent_id, attempt_id, lifecycle_state, source_identity_json, source_generation, payload_json)
+                 VALUES (?1, 'orphan-attempt', 'open', '{}', 1, '{}')",
+            ),
+            (
+                "orphan-f-wait",
+                "INSERT INTO wait_conditions (wait_condition_id, agent_id, status, kind, waiting_for, created_at, updated_at, payload_json)
+                 VALUES ('orphan-wait', ?1, 'active', 'task_result', 'orphan task', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-g-task-owner",
+                "INSERT INTO tasks (task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status, revision, created_at, updated_at, payload_json)
+                 VALUES ('orphan-task', ?1, 'not-the-task-owner-parent', 'not-the-task-owner-child', 'command_task', 'running', 1, '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-h-timer",
+                "INSERT INTO timers (timer_id, agent_id, status, created_at, duration_ms, updated_at, payload_json)
+                 VALUES ('orphan-timer', ?1, 'active', '2026-10-12T00:00:00Z', 1000, '2026-10-12T00:00:00Z', '{}')",
+            ),
+            (
+                "orphan-i-external-target",
+                "INSERT INTO external_triggers (external_trigger_id, target_agent_id, token_hash, status, created_at, payload_json)
+                 VALUES ('orphan-trigger', ?1, 'orphan-token-hash', 'active', '2026-10-12T00:00:00Z', '{}')",
+            ),
+        ];
+        db.transaction(|tx| {
+            for (agent_id, sql) in &orphan_rows {
+                tx.execute(sql, [agent_id])?;
+            }
+            // Repeated ownership across families must reserve one scope.
+            tx.execute(
+                "INSERT INTO agent_states (agent_id, status, updated_at, payload_json)
+                 VALUES (?1, 'stopped', '2026-10-12T00:00:00Z', '{}')",
+                [orphan_rows[0].0],
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(
+            db.agent_states().startup_mutation_agent_ids()?,
+            orphan_rows
+                .iter()
+                .map(|(agent_id, _)| agent_id.to_string())
+                .collect::<Vec<_>>()
+        );
+        Ok(())
     }
 
     fn wait_until(mut condition: impl FnMut() -> Result<bool>, label: &str) -> Result<()> {
@@ -650,35 +903,6 @@ mod tests {
         }
     }
 
-    fn workspace_entry(id: &str, updated_offset: i64) -> WorkspaceEntry {
-        let created_at = Utc::now();
-        let mut entry = WorkspaceEntry::new(
-            id,
-            PathBuf::from(format!("/tmp/{id}")),
-            Some(format!("repo-{id}")),
-        );
-        entry.workspace_alias = Some(format!("alias-{id}"));
-        entry.workspace_kind = Some("project".into());
-        entry.owner_agent_id = Some("agent-a".into());
-        entry.created_at = created_at;
-        entry.updated_at = created_at + chrono::Duration::seconds(updated_offset);
-        entry
-    }
-
-    fn workspace_occupancy(id: &str, released_offset: Option<i64>) -> WorkspaceOccupancyRecord {
-        let acquired_at = Utc::now();
-        WorkspaceOccupancyRecord {
-            occupancy_id: id.into(),
-            execution_root_id: format!("exec-{id}"),
-            workspace_id: format!("ws-{id}"),
-            holder_agent_id: "agent-a".into(),
-            access_mode: WorkspaceAccessMode::ExclusiveWrite,
-            acquired_at,
-            released_at: released_offset
-                .map(|offset| acquired_at + chrono::Duration::seconds(offset)),
-        }
-    }
-
     fn agent_identity(agent_id: &str, updated_offset: i64) -> AgentIdentityRecord {
         let mut identity = AgentIdentityRecord::new(
             agent_id,
@@ -961,7 +1185,8 @@ mod tests {
         message_id: &str,
         activation_id: &str,
     ) -> Result<()> {
-        db.agent_states().upsert(&AgentState::new(agent_id))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new(agent_id))?;
         db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
 
         let mut work = WorkItemRecord::new(agent_id, "migration claim", WorkItemState::Open);
@@ -1055,7 +1280,52 @@ mod tests {
     fn downgrade_before_execution_protocol(db_path: &std::path::Path) -> Result<()> {
         let connection = open_connection(db_path)?;
         connection.execute_batch(
-            "DELETE FROM schema_migrations WHERE version >= 41;
+            "DROP TABLE current_read_qualification;
+             DROP TABLE current_read_revisions;
+             DROP TABLE input_query_birth_members;
+             DROP TABLE input_query_birth_cursors;
+             DROP INDEX input_native_known_current;
+             DROP INDEX input_native_known_fixed;
+             DROP INDEX input_native_known_recovery;
+             DROP TABLE scheduling_import_inventory;
+             DROP TABLE scheduling_domain_captures;
+             DROP TABLE scheduling_domain_records;
+             DROP TABLE scheduling_domain_current;
+             DROP TABLE scheduling_fixed_members;
+             DROP TABLE scheduling_fixed_manifests;
+             DROP TABLE task_stop_effects;
+             DROP TABLE task_status_child_observers;
+             DROP TABLE task_status_fixed_delegations;
+             DROP TABLE task_status_fixed_controls;
+             DROP TABLE task_status_source_inventory;
+             DROP TABLE task_status_delegation_sources;
+             DROP TABLE task_status_control_sources;
+             DROP TABLE task_query_task_members;
+             DROP TABLE task_query_task_births;
+             DROP TABLE task_query_birth_cursors;
+             DROP TABLE task_query_task_inventory;
+             DROP TABLE task_message_order_headers;
+             DROP TABLE task_message_sources;
+             DROP TABLE task_message_source_inventory;
+             DROP TABLE task_domain_seed_recovery_current;
+             DROP TABLE task_domain_import_inventory;
+             DROP TABLE task_domain_records;
+             DROP TABLE task_domain_current;
+             DROP TABLE task_domain_eligibility;
+             DROP TABLE task_domain_captures;
+             DROP TABLE dispatch_memory_retired_handoffs;
+             DROP TABLE dispatch_memory_auto_commands;
+             DROP TABLE dispatch_memory_checkpoints;
+             DROP TABLE dispatch_memory_legacy_dispatches;
+             DROP TABLE work_domain_seed_recovery_current;
+             DROP TABLE work_domain_wait_edges;
+             DROP TABLE work_domain_result_heads;
+             DROP TABLE work_domain_records;
+             DROP TABLE work_domain_current;
+             DROP TABLE work_domain_eligibility;
+             DROP TABLE work_domain_captures;
+             DELETE FROM schema_migrations WHERE version >= 41;
+             DELETE FROM schema_migrations WHERE version >= 41;
              DROP TABLE agent_message_wait_outcomes;
              DROP TABLE provider_queue_parking;
              DROP TABLE provider_recovery_requests;
@@ -2889,11 +3159,88 @@ INSERT INTO scheduler_rollout_command_results (
                 "dequeued_queue_entries=1",
             ),
         ] {
+            // Later migrations read canonical domain payloads, so the fixture
+            // must keep its normalized recovery status and typed bytes aligned.
+            let (table, active_payload, recovered_payload) = match expected_count {
+                "open_execution_attempts=1" => {
+                    let attempt: ExecutionAttempt = serde_json::from_value(serde_json::json!({
+                        "attempt_id":"attempt-a", "agent_id":"agent-a",
+                        "source":{"identity":{"kind":"runtime_recovery","recovery_id":"recovery-a"},"generation":1},
+                        "binding":{"kind":"agent_lifecycle","agent_id":"agent-a"},
+                        "provenance":{"origin":"runtime_recovery","trust":"runtime_instruction","priority":"normal"},
+                        "admitted_fences":{"source_revision":1,"agent_control_revision":1,"host_registry_revision":1},
+                        "state":"open", "admitted_at":"2026-08-16T00:00:00Z"
+                    }))?;
+                    let mut recovered = attempt.clone();
+                    recovered.state =
+                        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted;
+                    (
+                        "execution_protocol_attempts",
+                        serde_json::to_string(&attempt)?,
+                        serde_json::to_string(&recovered)?,
+                    )
+                }
+                "in_flight_execution_work_items=1" => {
+                    let record = WorkItemExecutionRecord {
+                        source_revision: 1,
+                        state: WorkItemExecutionState::InFlight {
+                            generation: 1,
+                            attempt_id: "attempt-a".into(),
+                        },
+                    };
+                    let recovered = WorkItemExecutionRecord {
+                        source_revision: 1,
+                        state: WorkItemExecutionState::Paused {
+                            generation: 1,
+                            reason: "recovered".into(),
+                        },
+                    };
+                    (
+                        "execution_protocol_work_items",
+                        serde_json::to_string(&record)?,
+                        serde_json::to_string(&recovered)?,
+                    )
+                }
+                "dequeued_queue_entries=1" => {
+                    let at = "2026-08-16T00:00:00Z".parse()?;
+                    let record = QueueEntryRecord {
+                        message_id: "message-a".into(),
+                        agent_id: "agent-a".into(),
+                        priority: crate::types::Priority::Normal,
+                        status: QueueEntryStatus::Dequeued,
+                        created_at: at,
+                        updated_at: at,
+                    };
+                    let mut recovered = record.clone();
+                    recovered.status = QueueEntryStatus::Processed;
+                    recovered.updated_at = "2026-08-16T00:01:00Z".parse()?;
+                    (
+                        "queue_entries",
+                        serde_json::to_string(&record)?,
+                        serde_json::to_string(&recovered)?,
+                    )
+                }
+                _ => unreachable!(),
+            };
             let (_temp_dir, db_path, lock_path) = temp_paths()?;
             {
                 let mut connection = open_connection(&db_path)?;
                 migrate_through(&mut connection, 46)?;
                 connection.execute(active_state_sql, [])?;
+                connection.execute(
+                    &format!("UPDATE {table} SET payload_json=?1"),
+                    [&active_payload],
+                )?;
+                if table == "execution_protocol_attempts" {
+                    connection.execute(
+                        "UPDATE execution_protocol_attempts SET source_identity_json=?1",
+                        [serde_json::to_string(
+                            &serde_json::from_str::<ExecutionAttempt>(&active_payload)?
+                                .source
+                                .identity,
+                        )?],
+                    )?;
+                }
             }
 
             let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
@@ -2910,7 +3257,7 @@ INSERT INTO scheduler_rollout_command_results (
                 "{error:#}"
             );
 
-            let connection = open_connection(&db_path)?;
+            let mut connection = open_connection(&db_path)?;
             assert_eq!(current_schema_version(&connection)?, 46);
             for table in RETIRED_SCHEDULER_TABLES {
                 assert!(
@@ -2919,6 +3266,118 @@ INSERT INTO scheduler_rollout_command_results (
                 );
             }
             connection.execute(recovery_sql, [])?;
+            connection.execute(
+                &format!("UPDATE {table} SET payload_json=?1"),
+                [&recovered_payload],
+            )?;
+            if table == "execution_protocol_attempts" {
+                // v47's status fence is the subject above. Before the later
+                // fixed input cutover, model a real recovered legacy execution,
+                // not an Interrupted row with no source/Turn/terminal outcome.
+                migrate_through(&mut connection, 81)?;
+                let tx = connection.transaction()?;
+                let mut source = MessageEnvelope::new(
+                    "agent-a",
+                    crate::types::MessageKind::InternalFollowup,
+                    crate::types::MessageOrigin::System {
+                        subsystem: "migration47_fixture".into(),
+                    },
+                    crate::types::AuthorityClass::RuntimeInstruction,
+                    crate::types::Priority::Normal,
+                    crate::types::MessageBody::Text {
+                        text: "recovered original input".into(),
+                    },
+                );
+                source.id = "recovery-a".into();
+                source.turn_id = Some("recovered-turn-a".into());
+                source.created_at = "2026-08-16T00:00:00Z".parse()?;
+                let source = crate::runtime_db::evidence::append_message_tx(&tx, &source)?.0;
+                let mut original: ExecutionAttempt = serde_json::from_str(&active_payload)?;
+                original.source_message_id = Some(source.id.clone());
+                original.source.generation = source.message_seq.unwrap();
+                original.admitted_fences.source_revision = source.message_seq.unwrap();
+                original.turn_id = source.turn_id.clone();
+                let mut predecessor_source = source.clone();
+                predecessor_source.id = "predecessor-source-a".into();
+                predecessor_source.message_seq = None;
+                predecessor_source.turn_id = Some("predecessor-turn-a".into());
+                predecessor_source.created_at = "2026-08-15T23:59:00Z".parse()?;
+                let predecessor_source =
+                    crate::runtime_db::evidence::append_message_tx(&tx, &predecessor_source)?.0;
+                let mut predecessor = original.clone();
+                predecessor.attempt_id = "predecessor-attempt-a".into();
+                predecessor.source_message_id = Some(predecessor_source.id.clone());
+                predecessor.source.identity =
+                    crate::domain::execution_protocol::ExecutionSourceIdentity::InternalFollowup {
+                        message_id: predecessor_source.id.clone(),
+                    };
+                predecessor.source.generation = predecessor_source.message_seq.unwrap();
+                predecessor.admitted_fences.source_revision = predecessor.source.generation;
+                predecessor.provenance.origin =
+                    crate::domain::execution_protocol::ExecutionOrigin::System;
+                predecessor.turn_id = predecessor_source.turn_id.clone();
+                predecessor.admitted_at = "2026-08-15T23:59:00Z".into();
+                let predecessor = crate::domain::execution_protocol::admit_execution(
+                    &crate::domain::execution_protocol::ExecutionProtocolState::empty("agent-a"),
+                    &crate::domain::execution_protocol::AdmitExecution {
+                        attempt: predecessor,
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                let predecessor = crate::domain::execution_protocol::interrupt_execution(
+                    &predecessor.state,
+                    &crate::domain::execution_protocol::InterruptExecution {
+                        attempt_id: "predecessor-attempt-a".into(),
+                        outcome_id: "predecessor-outcome-a".into(),
+                        reason: "original interrupted input".into(),
+                        interrupted_at: "2026-08-15T23:59:30Z".into(),
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                original.recovery_of_attempt_id = Some("predecessor-attempt-a".into());
+                let admitted = crate::domain::execution_protocol::admit_execution(
+                    &predecessor.state,
+                    &crate::domain::execution_protocol::AdmitExecution { attempt: original },
+                )
+                .map_err(anyhow::Error::msg)?;
+                let interrupted = crate::domain::execution_protocol::interrupt_execution(
+                    &admitted.state,
+                    &crate::domain::execution_protocol::InterruptExecution {
+                        attempt_id: "attempt-a".into(),
+                        outcome_id: "recovered-outcome-a".into(),
+                        reason: "recovered".into(),
+                        interrupted_at: "2026-08-16T00:01:00Z".into(),
+                    },
+                )
+                .map_err(anyhow::Error::msg)?;
+                crate::runtime_db::transitions::persist_state_tx(&tx, &interrupted.state)?;
+                for (source, turn_id, turn_index, completed_at) in [
+                    (
+                        predecessor_source,
+                        "predecessor-turn-a",
+                        1,
+                        "2026-08-15T23:59:30Z",
+                    ),
+                    (source, "recovered-turn-a", 2, "2026-08-16T00:01:00Z"),
+                ] {
+                    let mut turn = TurnRecord::new("agent-a", turn_id, turn_index);
+                    turn.created_at = source.created_at;
+                    turn.owner = Some(TurnOwner::AgentLifecycle {
+                        agent_id: "agent-a".into(),
+                    });
+                    turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
+                    turn.input_message_ids = vec![source.id];
+                    turn.terminal = Some(crate::types::TurnTerminalSummary {
+                        kind: crate::types::TurnTerminalKind::Interrupted,
+                        reason: Some("recovered".into()),
+                        no_brief_reason: None,
+                        completed_at: completed_at.parse()?,
+                        duration_ms: 0,
+                    });
+                    crate::runtime_db::repositories::upsert_turn_record_tx(&tx, &turn)?;
+                }
+                tx.commit()?;
+            }
             drop(connection);
 
             RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -3818,7 +4277,8 @@ INSERT INTO scheduler_rollout_command_results (
         let mut work = WorkItemRecord::new("agent-a", "legacy focus", WorkItemState::Open);
         work.id = "work-legacy-focus".into();
         db.work_items().insert_new(&work)?;
-        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("agent-a"))?;
         {
             let connection = open_connection(&db_path)?;
             connection.execute_batch(
@@ -3866,7 +4326,7 @@ INSERT INTO scheduler_rollout_command_results (
         db.work_items().insert_new(&legacy)?;
         let mut state = AgentState::new("agent-a");
         state.current_work_item_id = Some(canonical.id.clone());
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
         {
             let connection = open_connection(&db_path)?;
             connection.execute_batch(
@@ -3903,11 +4363,11 @@ INSERT INTO scheduler_rollout_command_results (
         db.work_items().insert_new(&foreign)?;
         let mut state = AgentState::new("agent-a");
         state.current_work_item_id = Some(foreign.id.clone());
-        assert!(db.agent_states().upsert(&state).is_err());
+        assert!(db.agent_states().upsert_for_fixture(&state).is_err());
         state.current_work_item_id = Some("work-missing".into());
-        assert!(db.agent_states().upsert(&state).is_err());
+        assert!(db.agent_states().upsert_for_fixture(&state).is_err());
         state.current_work_item_id = Some(own.id.clone());
-        db.agent_states().upsert(&state)?;
+        db.agent_states().upsert_for_fixture(&state)?;
 
         let mut completed = own.clone();
         completed.revision = 2;
@@ -4593,6 +5053,158 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn queued_internal_followups_preserve_canonical_scope_status_and_order() -> Result<()> {
+        use crate::types::{AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority};
+
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        for (id, message_agent, queue_agent, kind, status) in [
+            (
+                "keep-a",
+                "agent-a",
+                "agent-a",
+                MessageKind::InternalFollowup,
+                QueueEntryStatus::Queued,
+            ),
+            (
+                "keep-b",
+                "agent-a",
+                "agent-a",
+                MessageKind::InternalFollowup,
+                QueueEntryStatus::Queued,
+            ),
+            (
+                "foreign",
+                "agent-b",
+                "agent-b",
+                MessageKind::InternalFollowup,
+                QueueEntryStatus::Queued,
+            ),
+            (
+                "mismatched",
+                "agent-b",
+                "agent-a",
+                MessageKind::InternalFollowup,
+                QueueEntryStatus::Queued,
+            ),
+            (
+                "ordinary",
+                "agent-a",
+                "agent-a",
+                MessageKind::OperatorPrompt,
+                QueueEntryStatus::Queued,
+            ),
+            (
+                "interrupted",
+                "agent-a",
+                "agent-a",
+                MessageKind::InternalFollowup,
+                QueueEntryStatus::Interrupted,
+            ),
+            (
+                "processed",
+                "agent-a",
+                "agent-a",
+                MessageKind::InternalFollowup,
+                QueueEntryStatus::Processed,
+            ),
+        ] {
+            let mut message = MessageEnvelope::new(
+                message_agent,
+                kind,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text { text: id.into() },
+            );
+            message.id = id.into();
+            db.messages().upsert(&message)?;
+            let entry = QueueEntryRecord {
+                message_id: id.into(),
+                agent_id: queue_agent.into(),
+                priority: Priority::Normal,
+                status,
+                created_at: now,
+                updated_at: now,
+            };
+            if message_agent == queue_agent {
+                db.queue_entries().upsert(&entry)?;
+            } else {
+                let error = db.queue_entries().upsert(&entry).unwrap_err();
+                assert!(format!("{error:#}").contains("conversation source identity changed agent"));
+                assert!(db.queue_entries().latest(id)?.is_none());
+                // Inject corrupt scope only after proving the canonical writer rejects it.
+                db.transaction(|tx| {
+                    let inserted = tx.execute(
+                        "INSERT INTO queue_entries (
+                            message_id, agent_id, priority, status,
+                            created_at, updated_at, payload_json
+                         ) VALUES (?1, ?2, 'normal', 'queued', ?3, ?3, ?4)",
+                        params![
+                            entry.message_id,
+                            entry.agent_id,
+                            now.to_rfc3339(),
+                            serde_json::to_string(&entry)?,
+                        ],
+                    )?;
+                    assert_eq!(inserted, 1);
+                    Ok(())
+                })?;
+            }
+        }
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: "missing".into(),
+            agent_id: "agent-a".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        })?;
+        let mut expected = Vec::new();
+        for entry in db.queue_entries().latest_all()? {
+            if entry.agent_id != "agent-a" || entry.status != QueueEntryStatus::Queued {
+                continue;
+            }
+            if let Some(message) = db.messages().by_id(Some("agent-a"), &entry.message_id)? {
+                if message.kind == MessageKind::InternalFollowup {
+                    expected.push((entry, message));
+                }
+            }
+        }
+        let selected = db
+            .queue_entries()
+            .queued_internal_followups_for_agent("agent-a")?;
+        assert_eq!(selected.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&selected)?,
+            serde_json::to_value(expected)?
+        );
+        let mut processed = selected[0].0.clone();
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = now + chrono::Duration::seconds(1);
+        db.queue_entries().upsert(&processed)?;
+        let remaining = db
+            .queue_entries()
+            .queued_internal_followups_for_agent("agent-a")?;
+        assert_eq!(remaining.len(), 1);
+        assert_ne!(remaining[0].0.message_id, processed.message_id);
+        let foreign = db
+            .queue_entries()
+            .queued_internal_followups_for_agent("agent-b")?;
+        assert_eq!(foreign.len(), 1);
+        assert_eq!(foreign[0].0.message_id, "foreign");
+        assert!(db
+            .queue_entries()
+            .queued_internal_followups_for_agent("absent")?
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn queue_claim_allows_only_one_consumer_for_queued_message() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -4796,7 +5408,7 @@ CREATE TABLE working_memory_deltas (
         let mut terminal_state = current_state.clone();
         terminal_state.pending = 0;
         db.queue_entries().upsert(&queued)?;
-        db.agent_states().upsert(&current_state)?;
+        db.agent_states().upsert_for_fixture(&current_state)?;
 
         let command = |fault| QueueHeadNoProgressCommand {
             agent_id: "agent-a".into(),
@@ -5769,7 +6381,7 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn queue_and_wait_legacy_import_reject_terminal_regressions() -> Result<()> {
+    fn queue_and_wait_transactions_reject_terminal_regressions() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let now = Utc::now();
@@ -5785,8 +6397,11 @@ CREATE TABLE working_memory_deltas (
         queue_late.status = QueueEntryStatus::Queued;
         queue_late.updated_at = now + chrono::Duration::seconds(1);
         assert!(db
-            .queue_entries()
-            .import_legacy(vec![queue_terminal.clone(), queue_late])
+            .transaction(|tx| {
+                upsert_queue_entry_tx(tx, &queue_terminal)?;
+                upsert_queue_entry_tx(tx, &queue_late)?;
+                Ok(())
+            })
             .unwrap_err()
             .downcast_ref::<RuntimeStateTransitionConflict>()
             .is_some());
@@ -5794,8 +6409,11 @@ CREATE TABLE working_memory_deltas (
 
         let mut queue_retry = queue_terminal.clone();
         queue_retry.updated_at = now + chrono::Duration::seconds(2);
-        db.queue_entries()
-            .import_legacy(vec![queue_terminal.clone(), queue_retry])?;
+        db.transaction(|tx| {
+            upsert_queue_entry_tx(tx, &queue_terminal)?;
+            upsert_queue_entry_tx(tx, &queue_retry)?;
+            Ok(())
+        })?;
         assert_eq!(db.queue_entries().latest_all()?, vec![queue_terminal]);
 
         let wait_terminal = WaitConditionRecord {
@@ -5823,8 +6441,11 @@ CREATE TABLE working_memory_deltas (
         wait_late.updated_at = now + chrono::Duration::seconds(1);
         wait_late.cancelled_at = None;
         assert!(db
-            .wait_conditions()
-            .import_legacy(vec![wait_terminal.clone(), wait_late])
+            .transaction(|tx| {
+                upsert_wait_condition_tx(tx, &wait_terminal)?;
+                upsert_wait_condition_tx(tx, &wait_late)?;
+                Ok(())
+            })
             .unwrap_err()
             .downcast_ref::<RuntimeStateTransitionConflict>()
             .is_some());
@@ -5832,8 +6453,11 @@ CREATE TABLE working_memory_deltas (
 
         let mut wait_retry = wait_terminal.clone();
         wait_retry.updated_at = now + chrono::Duration::seconds(2);
-        db.wait_conditions()
-            .import_legacy(vec![wait_terminal, wait_retry])?;
+        db.transaction(|tx| {
+            upsert_wait_condition_tx(tx, &wait_terminal)?;
+            upsert_wait_condition_tx(tx, &wait_retry)?;
+            Ok(())
+        })?;
         let imported_waits = db.wait_conditions().latest_all()?;
         assert_eq!(imported_waits.len(), 1);
         assert_eq!(imported_waits[0].status, WaitConditionStatus::Cancelled);
@@ -6347,13 +6971,13 @@ CREATE TABLE working_memory_deltas (
         current.status = AgentStatus::AwakeIdle;
         current.turn_index = 3;
         current.current_work_item_id = Some("work-current".into());
-        db.agent_states().import_legacy(Some(current.clone()))?;
+        db.agent_states().upsert_for_fixture(&current)?;
 
         let mut stale = current.clone();
         stale.status = AgentStatus::Stopped;
         stale.turn_index = 2;
         stale.current_work_item_id = Some("work-stale".into());
-        db.agent_states().upsert(&stale)?;
+        db.agent_states().upsert_for_fixture(&stale)?;
 
         let persisted = db.agent_states().latest("agent-a")?.expect("agent state");
         assert_eq!(persisted.status, AgentStatus::AwakeIdle);
@@ -6366,57 +6990,252 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn workspace_entry_import_is_idempotent_and_keeps_latest_update() -> Result<()> {
+    fn preparation_read_reuses_connection_but_not_canonical_snapshot() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let older = workspace_entry("ws-a", 1);
-        let mut newer = workspace_entry("ws-a", 5);
-        newer.workspace_alias = Some("alias-newer".into());
-
-        db.workspace_entries()
-            .import_legacy(vec![older.clone(), newer.clone()])?;
-        db.workspace_entries().import_legacy(vec![older, newer])?;
-
-        let entries = db.workspace_entries().latest_all()?;
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].workspace_id, "ws-a");
-        assert_eq!(entries[0].workspace_alias.as_deref(), Some("alias-newer"));
-        let rows: i64 =
-            db.connection()?
-                .query_row("SELECT COUNT(*) FROM workspace_entries", [], |row| {
+        let other = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let independent = other.connection()?;
+        independent.busy_timeout(std::time::Duration::from_millis(100))?;
+        db.transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TEMP TABLE preparation_connection_marker(value INTEGER);
+                 INSERT INTO preparation_connection_marker VALUES (7);
+                 CREATE TABLE preparation_read_values(value INTEGER);
+                 INSERT INTO preparation_read_values VALUES (0);",
+            )?;
+            Ok(())
+        })?;
+        let clone = db.clone();
+        for reader in [&db, &clone] {
+            let marker: i64 = reader.read_for_preparation(|tx| {
+                assert!(!tx.is_autocommit());
+                Ok(tx.query_row(
+                    "SELECT value FROM preparation_connection_marker",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })?;
+            assert_eq!(marker, 7);
+        }
+        db.read_for_preparation(|tx| {
+            let before: i64 =
+                tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
                     row.get(0)
                 })?;
-        assert_eq!(rows, 1);
+            // Runtime writers share the path's FIFO; use an independent SQLite
+            // writer here rather than reenter that queue while holding its turn.
+            independent.execute("UPDATE preparation_read_values SET value = 1", [])?;
+            let after: i64 =
+                tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!((before, after), (0, 0));
+            Ok(())
+        })?;
+        let next: i64 = db.read_for_preparation(|tx| {
+            Ok(
+                tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })?;
+        assert_eq!(next, 1);
+        other.transaction(|tx| {
+            tx.execute("UPDATE preparation_read_values SET value = 2", [])?;
+            Ok(())
+        })?;
+        let next: i64 = db.read_for_preparation(|tx| {
+            Ok(
+                tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })?;
+        assert_eq!(next, 2);
+        assert!(db
+            .read_for_preparation::<()>(|_| anyhow::bail!("injected read error"))
+            .is_err());
+        let next = db.transaction(|tx| {
+            Ok(
+                tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+            )
+        })?;
+        assert_eq!(next, 2);
         Ok(())
     }
 
     #[test]
-    fn workspace_occupancy_import_is_idempotent_and_keeps_released_record() -> Result<()> {
+    fn preparation_repository_reads_preserve_results_and_failures() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let active = workspace_occupancy("occ-a", None);
-        let released = workspace_occupancy("occ-a", Some(10));
-
-        db.workspace_occupancies()
-            .import_legacy(vec![active.clone(), released.clone()])?;
-        db.workspace_occupancies()
-            .import_legacy(vec![active, released])?;
-
-        let occupancies = db.workspace_occupancies().latest_all()?;
-        assert_eq!(occupancies.len(), 1);
-        assert_eq!(occupancies[0].occupancy_id, "occ-a");
-        assert!(occupancies[0].released_at.is_some());
-        let rows: i64 = db.connection()?.query_row(
-            "SELECT COUNT(*) FROM workspace_occupancies",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(rows, 1);
+        let other = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let root_id = "git_worktree_root:workspace:/tmp/preparation";
+        for (index, writer) in [&db, &other].into_iter().enumerate() {
+            let agent_id = format!("agent-{index}");
+            let message_id = format!("message-{index}");
+            let now = Utc::now() + chrono::Duration::seconds(index as i64);
+            writer
+                .workspace_entries()
+                .upsert(&crate::types::WorkspaceEntry::new(
+                    format!("workspace-{index}"),
+                    PathBuf::from(format!("/tmp/preparation-{index}")),
+                    None,
+                ))?;
+            writer
+                .execution_root_entries()
+                .upsert(&ExecutionRootEntry {
+                    execution_root_id: root_id.into(),
+                    workspace_id: format!("workspace-{index}"),
+                    filesystem_path: PathBuf::from(format!("/tmp/preparation-{index}")),
+                    root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+                    worktree: None,
+                    created_at: now,
+                    removed_at: None,
+                })?;
+            let message = anchor_candidate_message(
+                &message_id,
+                &agent_id,
+                None,
+                index as i64,
+                crate::types::MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                crate::types::AuthorityClass::OperatorInstruction,
+            );
+            writer.messages().upsert_many(&[message])?;
+            writer.queue_entries().upsert(&QueueEntryRecord {
+                message_id,
+                agent_id: agent_id.clone(),
+                priority: crate::types::Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            })?;
+            writer.turn_records().upsert(&TurnRecord::new(
+                &agent_id,
+                format!("turn-{index}"),
+                index as u64 + 1,
+            ))?;
+            assert_eq!(
+                serde_json::to_value(db.workspace_entries().latest_all_for_preparation()?)?,
+                serde_json::to_value(db.workspace_entries().latest_all()?)?,
+            );
+            assert_eq!(
+                db.workspace_entries().latest_all_for_preparation()?.len(),
+                index + 1
+            );
+            for id in [root_id, "missing"] {
+                assert_eq!(
+                    serde_json::to_value(db.execution_root_entries().get_for_preparation(id)?)?,
+                    serde_json::to_value(db.execution_root_entries().get(id)?)?,
+                );
+            }
+            assert_eq!(
+                db.execution_root_entries()
+                    .get_for_preparation(root_id)?
+                    .unwrap()
+                    .workspace_id,
+                format!("workspace-{index}"),
+            );
+            for agent in [None, Some("agent-0"), Some("agent-1"), Some("missing")] {
+                assert_eq!(
+                    db.messages().count_for_preparation(agent)?,
+                    db.messages().count(agent)?,
+                );
+                for limit in [0, 1, usize::MAX] {
+                    assert_eq!(
+                        serde_json::to_value(
+                            db.queue_entries().recent_for_preparation(agent, limit)?
+                        )?,
+                        serde_json::to_value(db.queue_entries().recent(agent, limit)?)?,
+                    );
+                    if let Some(agent) = agent {
+                        assert_eq!(
+                            serde_json::to_value(
+                                db.turn_records()
+                                    .recent_for_agent_for_preparation(agent, limit)?
+                            )?,
+                            serde_json::to_value(
+                                db.turn_records().recent_for_agent(agent, limit)?
+                            )?,
+                        );
+                    }
+                }
+            }
+            assert_eq!(db.messages().count_for_preparation(None)?, index + 1);
+        }
+        other.transaction(|tx| {
+            tx.execute("UPDATE queue_entries SET payload_json = '{}'", [])?;
+            tx.execute("UPDATE execution_root_entries SET payload_json = '{}'", [])?;
+            Ok(())
+        })?;
+        assert!(db.queue_entries().recent(None, 1).is_err());
+        assert!(db.queue_entries().recent_for_preparation(None, 1).is_err());
+        assert!(db.execution_root_entries().get(root_id).is_err());
+        assert!(db
+            .execution_root_entries()
+            .get_for_preparation(root_id)
+            .is_err());
+        // A failed decode must end its Deferred view and leave the writer usable.
+        assert_eq!(db.messages().count_for_preparation(None)?, 2);
         Ok(())
     }
 
     #[test]
-    fn agent_identity_repository_imports_latest_and_reads_by_agent() -> Result<()> {
+    fn mutation_identity_read_observes_other_writer_without_a_cached_identity() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let other = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db
+            .agent_identities()
+            .latest_for_mutation("agent-a")?
+            .is_none());
+        let mut identity = agent_identity("agent-a", 1);
+        other.agent_identities().upsert(&identity)?;
+        for _ in 0..3 {
+            assert_eq!(
+                db.agent_identities().latest_for_mutation("agent-a")?,
+                Some(identity.clone())
+            );
+        }
+        identity.incarnation += 1;
+        identity.revision += 1;
+        other.agent_identities().upsert(&identity)?;
+        assert_eq!(
+            db.agent_identities().latest_for_mutation("agent-a")?,
+            Some(identity.clone())
+        );
+        identity.status = AgentRegistryStatus::Deleted;
+        identity.deleted_at = Some(identity.updated_at);
+        other.agent_identities().upsert(&identity)?;
+        assert_eq!(
+            db.agent_identities().latest_for_mutation("agent-a")?,
+            Some(identity.clone())
+        );
+        let mut recreated = identity.clone();
+        recreated.incarnation += 1;
+        recreated.revision += 1;
+        recreated.status = AgentRegistryStatus::Active;
+        recreated.deleted_at = None;
+        let error = other
+            .agent_identities()
+            .upsert(&recreated)
+            .expect_err("retired identity cannot become active again");
+        assert!(error
+            .to_string()
+            .contains("retired agent ids are never reused"));
+        assert_eq!(
+            db.agent_identities().latest_for_mutation("agent-a")?,
+            Some(identity)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agent_identity_repository_upserts_latest_and_reads_by_agent() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let older = agent_identity("agent-a", 1);
@@ -6424,9 +7243,9 @@ CREATE TABLE working_memory_deltas (
         newer.status = AgentRegistryStatus::Deleted;
         newer.deleted_at = Some(newer.updated_at);
 
-        db.agent_identities()
-            .import_legacy(vec![older.clone(), newer.clone()])?;
-        db.agent_identities().import_legacy(vec![older, newer])?;
+        db.agent_identities().upsert(&older)?;
+        db.agent_identities().upsert(&newer)?;
+        db.agent_identities().upsert(&newer)?;
 
         let identity = db
             .agent_identities()
@@ -7192,7 +8011,8 @@ CREATE TABLE working_memory_deltas (
 
         // Late private history invalidates the cleanup proof and must block
         // reincarnation until it is purged again.
-        db.agent_states().upsert(&AgentState::new("reborn"))?;
+        db.agent_states()
+            .upsert_for_fixture(&AgentState::new("reborn"))?;
         let error = db
             .agent_identities()
             .reincarnate_with_bootstrap_and_relations("reborn", "operator:test", fresh_incarnation)
@@ -7588,91 +8408,6 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn storage_domain_import_failure_is_visible_and_retryable() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-
-        let error = db
-            .evidence()
-            .import_legacy(
-                vec![serde_json::json!({ "turn_index": 1 })],
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            )
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("importing legacy storage domain evidence"));
-        let failed = db
-            .storage_domain("evidence")?
-            .expect("failed storage domain row");
-        assert_eq!(failed.import_status, "failed");
-        assert_eq!(failed.canonical_source, "jsonl");
-        assert!(failed
-            .source_checkpoint_json
-            .as_deref()
-            .is_some_and(|checkpoint| checkpoint.contains("restart runtime to retry")));
-
-        db.run_storage_domain_import("evidence", "jsonl", "db", |tx| {
-            let checkpoint: Option<String> = tx.query_row(
-                "SELECT source_checkpoint_json FROM storage_domains WHERE domain = 'evidence'",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(checkpoint, failed.source_checkpoint_json);
-            Ok(serde_json::json!({ "imported_records": 0 }))
-        })?;
-        let complete = db
-            .storage_domain("evidence")?
-            .expect("complete storage domain row");
-        assert_eq!(complete.import_status, "complete");
-        assert_eq!(complete.canonical_source, "db");
-        Ok(())
-    }
-
-    #[test]
-    fn audit_event_import_failure_is_retryable_and_idempotent() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let mut invalid = AuditEvent::legacy("legacy_audit", serde_json::json!({ "n": 1 }));
-        invalid.id = "audit-1".into();
-        invalid.event_seq = u64::MAX;
-
-        let error = db
-            .audit_events()
-            .import_legacy(Some("agent-a"), vec![invalid])
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("importing legacy storage domain audit_events"));
-        let failed = db
-            .storage_domain("audit_events")?
-            .expect("failed storage domain row");
-        assert_eq!(failed.import_status, "failed");
-
-        let mut valid = AuditEvent::legacy("legacy_audit", serde_json::json!({ "n": 1 }));
-        valid.id = "audit-1".into();
-        valid.event_seq = 7;
-        db.audit_events()
-            .import_legacy(Some("agent-a"), vec![valid.clone()])?;
-        db.audit_events()
-            .import_legacy(Some("agent-a"), vec![valid])?;
-
-        let complete = db
-            .storage_domain("audit_events")?
-            .expect("complete storage domain row");
-        assert_eq!(complete.import_status, "complete");
-        assert_eq!(complete.canonical_source, "db");
-        let imported = db.audit_events().recent(Some("agent-a"), 10)?;
-        assert_eq!(imported.len(), 1);
-        assert_eq!(imported[0].id, "audit-1");
-        assert_eq!(imported[0].event_seq, 7);
-        Ok(())
-    }
-
-    #[test]
     fn cutover_diagnostics_detect_missing_failed_and_mixed_sources() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -7712,134 +8447,6 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn turn_record_repository_imports_legacy_evidence_without_turns_jsonl() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let mut message = MessageEnvelope::new(
-            "agent-a",
-            crate::types::MessageKind::OperatorPrompt,
-            crate::types::MessageOrigin::Operator {
-                actor_id: Some("operator:test".into()),
-                actor_display_name: None,
-            },
-            crate::types::AuthorityClass::OperatorInstruction,
-            crate::types::Priority::Normal,
-            crate::types::MessageBody::Text {
-                text: "derive a turn record".into(),
-            },
-        );
-        message.id = "msg-1".into();
-        message.message_seq = Some(7);
-        message.turn_id = Some("turn-a".into());
-        let mut brief = BriefRecord::new(
-            "agent-a",
-            crate::types::BriefKind::Result,
-            "derived result",
-            Some("msg-1".into()),
-            None,
-        );
-        brief.id = "brief-1".into();
-        brief.turn_id = Some("turn-a".into());
-        brief.turn_index = Some(7);
-        let tool = ToolExecutionRecord {
-            id: "tool-1".into(),
-            agent_id: "agent-a".into(),
-            work_item_id: Some("work-1".into()),
-            turn_index: 7,
-            turn_id: Some("turn-a".into()),
-            tool_name: "ExecCommand".into(),
-            created_at: Utc::now(),
-            completed_at: Some(Utc::now()),
-            duration_ms: 1,
-            authority_class: crate::types::AuthorityClass::RuntimeInstruction,
-            status: crate::types::ToolExecutionStatus::Success,
-            input: serde_json::json!({ "cmd": "true" }),
-            output: serde_json::json!({ "exit": 0 }),
-            summary: "Run command: true".into(),
-            invocation_surface: None,
-        };
-
-        db.turn_records().import_legacy(
-            vec![serde_json::to_value(&message)?],
-            vec![tool],
-            vec![brief],
-            Vec::new(),
-            Vec::new(),
-        )?;
-
-        let records = db.turn_records().recent_for_agent("agent-a", 10)?;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].turn_id, "turn-a");
-        assert_eq!(records[0].turn_index, 7);
-        assert_eq!(records[0].input_message_ids, vec!["msg-1"]);
-        assert_eq!(records[0].produced_brief_ids, vec!["brief-1"]);
-        assert_eq!(records[0].tool_execution_ids, vec!["tool-1"]);
-        assert_eq!(records[0].current_work_item_id.as_deref(), Some("work-1"));
-        assert_eq!(
-            db.turn_records()
-                .by_id(Some("agent-a"), "turn-a")?
-                .expect("turn should be addressable directly")
-                .turn_index,
-            7
-        );
-        assert!(db
-            .turn_records()
-            .by_id(Some("agent-b"), "turn-a")?
-            .is_none());
-        let domain = db
-            .storage_domain("turn_records")?
-            .expect("turn_records domain");
-        assert_eq!(domain.canonical_source, "db");
-        assert!(domain
-            .source_checkpoint_json
-            .as_deref()
-            .is_some_and(|checkpoint| checkpoint.contains("turns.jsonl")));
-        Ok(())
-    }
-
-    #[test]
-    fn turn_record_legacy_import_preserves_existing_identity() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let mut canonical = crate::types::TurnRecord::new("agent-a", "turn-a", 11);
-        canonical.current_work_item_id = Some("work-current".into());
-        canonical.created_at = Utc::now() - chrono::Duration::seconds(5);
-        db.turn_records().upsert(&canonical)?;
-
-        let mut delivery = crate::types::DeliverySummaryRecord::new(
-            "agent-a",
-            "work-legacy",
-            "legacy delivery",
-            Some(7),
-            None,
-        );
-        delivery.id = "delivery-legacy".into();
-        delivery.turn_id = Some("turn-a".into());
-
-        db.turn_records().import_legacy(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            vec![delivery],
-            Vec::new(),
-        )?;
-
-        let imported = db
-            .turn_records()
-            .by_id(Some("agent-a"), "turn-a")?
-            .expect("existing turn should remain");
-        assert_eq!(imported.turn_index, 11);
-        assert_eq!(
-            imported.current_work_item_id.as_deref(),
-            Some("work-current")
-        );
-        assert_eq!(imported.created_at, canonical.created_at);
-        assert_eq!(imported.delivery_summary_ids, vec!["delivery-legacy"]);
-        assert_eq!(imported.completed_work_item_ids, vec!["work-legacy"]);
-        Ok(())
-    }
-
-    #[test]
     fn runtime_db_temp_helper_uses_isolated_state_dir() -> Result<()> {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));
@@ -7852,7 +8459,7 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn external_trigger_import_normalizes_to_one_default_active_per_agent() -> Result<()> {
+    fn external_trigger_rotation_preserves_one_default_active_per_agent() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let older =
@@ -7864,10 +8471,34 @@ CREATE TABLE working_memory_deltas (
             10,
         );
 
-        db.external_triggers()
-            .import_legacy(vec![older.clone(), newer.clone()])?;
-        db.external_triggers()
-            .import_legacy(vec![older.clone(), newer.clone()])?;
+        db.external_triggers().upsert(&older)?;
+        let error = db.external_triggers().upsert(&newer).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<rusqlite::Error>()
+                .and_then(rusqlite::Error::sqlite_error_code),
+            Some(ErrorCode::ConstraintViolation)
+        );
+        assert!(db.external_triggers().latest("trigger-newer")?.is_none());
+        assert_eq!(
+            db.external_triggers()
+                .active_default_for_agent("agent-a")?
+                .expect("rejected upsert preserves active trigger"),
+            older
+        );
+
+        let (newer, revoked) = db.external_triggers().reset_default_for_agent(
+            "agent-a",
+            CallbackDeliveryMode::WakeHint,
+            newer.created_at,
+            newer.external_trigger_id,
+            newer.token.expect("new trigger URL"),
+        )?;
+        let revoked = revoked.expect("previous active trigger revoked");
+        assert_eq!(revoked.external_trigger_id, "trigger-older");
+        assert_eq!(revoked.status, ExternalTriggerStatus::Revoked);
+        assert_eq!(revoked.revoked_at, Some(newer.created_at));
+        db.external_triggers().upsert(&newer)?;
 
         let active = db
             .external_triggers()
@@ -7892,7 +8523,6 @@ CREATE TABLE working_memory_deltas (
     fn external_trigger_latest_for_agent_limit_uses_bounded_recent_results() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.external_triggers().import_legacy(Vec::new())?;
 
         for index in 0..4 {
             db.external_triggers().upsert(&external_trigger_record(
@@ -7930,7 +8560,7 @@ CREATE TABLE working_memory_deltas (
     fn external_trigger_upsert_tracks_delivery_and_token_lookup() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.external_triggers().import_legacy(Vec::new())?;
+
         let mut trigger = external_trigger_record(
             "trigger-active",
             "agent-a",
@@ -7957,7 +8587,7 @@ CREATE TABLE working_memory_deltas (
     fn external_trigger_upsert_does_not_revert_newer_revocation() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.external_triggers().import_legacy(Vec::new())?;
+
         let active = external_trigger_record(
             "trigger-active",
             "agent-a",
@@ -7982,47 +8612,10 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn work_item_import_is_idempotent_and_preserves_latest_revision() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let mut older = WorkItemRecord::new("agent-a", "older objective", WorkItemState::Open);
-        older.id = "work-test".into();
-        older.revision = 1;
-        older.updated_at = older.created_at;
-        let mut newer = older.clone();
-        newer.objective = "newer objective".into();
-        newer.revision = 3;
-        newer.updated_at = older.updated_at + chrono::Duration::seconds(10);
-
-        db.work_items()
-            .import_legacy(vec![older.clone(), newer.clone()])?;
-        db.work_items()
-            .import_legacy(vec![older.clone(), newer.clone()])?;
-
-        let imported = db
-            .work_items()
-            .latest("work-test")?
-            .expect("work item imported");
-        assert_eq!(imported.revision, 3);
-        assert_eq!(imported.objective, "newer objective");
-        let connection = db.connection()?;
-        let rows: i64 =
-            connection.query_row("SELECT COUNT(*) FROM work_items", [], |row| row.get(0))?;
-        assert_eq!(rows, 1);
-        let current_focus: i64 = connection.query_row(
-            "SELECT current_focus FROM work_items WHERE work_item_id = 'work-test'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(current_focus, 0);
-        Ok(())
-    }
-
-    #[test]
     fn work_item_upsert_rejects_revision_rollback() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.work_items().import_legacy(Vec::new())?;
+
         let mut current = WorkItemRecord::new("agent-a", "current", WorkItemState::Open);
         current.id = "work-revision".into();
         db.work_items().insert_new(&current)?;
@@ -8122,7 +8715,7 @@ CREATE TABLE working_memory_deltas (
     fn work_item_listing_is_partitioned_by_agent() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.work_items().import_legacy(Vec::new())?;
+
         let mut first = WorkItemRecord::new("agent-a", "first", WorkItemState::Open);
         first.id = "work-first".into();
         let mut second = WorkItemRecord::new("agent-b", "second", WorkItemState::Open);
@@ -8133,131 +8726,6 @@ CREATE TABLE working_memory_deltas (
         let agent_items = db.work_items().latest_for_agent("agent-a", 20)?;
         assert_eq!(agent_items.len(), 1);
         assert_eq!(agent_items[0].id, "work-first");
-        Ok(())
-    }
-
-    #[test]
-    fn task_import_is_idempotent_and_preserves_latest_lifecycle_state() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let queued = task_record("task-import", "agent-a", TaskStatus::Queued, 0);
-        let completed = task_record("task-import", "agent-a", TaskStatus::Completed, 10);
-
-        db.tasks()
-            .import_legacy(vec![queued.clone(), completed.clone()])?;
-        db.tasks().import_legacy(vec![queued, completed])?;
-
-        let imported = db.tasks().latest("task-import")?.expect("task imported");
-        assert_eq!(imported.status, TaskStatus::Completed);
-        assert_eq!(
-            imported
-                .detail
-                .as_ref()
-                .and_then(|detail| detail.get("output_path"))
-                .and_then(serde_json::Value::as_str),
-            Some("/tmp/task-import.log")
-        );
-        let connection = db.connection()?;
-        let rows: i64 = connection.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
-        assert_eq!(rows, 1);
-        let terminal_rows: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'completed' AND completed_at IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(terminal_rows, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn task_import_merges_legacy_metadata_when_latest_update_is_sparse() -> Result<()> {
-        let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let queued = task_record("task-sparse", "agent-a", TaskStatus::Queued, 0);
-        let mut completed = task_record("task-sparse", "agent-a", TaskStatus::Completed, 10);
-        completed.summary = None;
-        completed.detail = None;
-        completed.recovery = None;
-
-        db.tasks().import_legacy(vec![queued, completed])?;
-
-        let imported = db.tasks().latest("task-sparse")?.expect("task imported");
-        assert_eq!(imported.status, TaskStatus::Completed);
-        assert_eq!(imported.summary.as_deref(), Some("task-sparse"));
-        assert_eq!(
-            imported
-                .detail
-                .as_ref()
-                .and_then(|detail| detail.get("output_path"))
-                .and_then(serde_json::Value::as_str),
-            Some("/tmp/task-sparse.log")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn task_non_terminal_phase_cannot_regress_with_a_newer_timestamp() -> Result<()> {
-        for (existing_status, incoming_status) in [
-            (TaskStatus::Running, TaskStatus::Queued),
-            (TaskStatus::Cancelling, TaskStatus::Queued),
-            (TaskStatus::Cancelling, TaskStatus::Running),
-        ] {
-            for offset in [-1, 0, 1] {
-                let (_temp_dir, db_path, lock_path) = temp_paths()?;
-                let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-                let existing = task_record("task-monotonic", "agent-a", existing_status.clone(), 0);
-                db.tasks().upsert(&existing)?;
-                let mut incoming = existing.clone();
-                incoming.status = incoming_status.clone();
-                incoming.updated_at += chrono::Duration::seconds(offset);
-                assert_eq!(
-                    crate::runtime_db::repositories::task_transition(&existing, &incoming)?,
-                    crate::runtime_db::repositories::StateTransitionOutcome::Idempotent
-                );
-                db.tasks().upsert(&incoming)?;
-                assert_eq!(db.tasks().latest(&existing.id)?, Some(existing));
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn task_non_terminal_phase_allows_fresh_same_or_forward_updates() -> Result<()> {
-        for existing_status in [
-            TaskStatus::Queued,
-            TaskStatus::Running,
-            TaskStatus::Cancelling,
-        ] {
-            for incoming_status in [
-                TaskStatus::Queued,
-                TaskStatus::Running,
-                TaskStatus::Cancelling,
-                TaskStatus::Completed,
-                TaskStatus::Failed,
-                TaskStatus::Cancelled,
-                TaskStatus::Interrupted,
-            ] {
-                if crate::runtime_db::repositories::task_status_phase(&incoming_status)
-                    < crate::runtime_db::repositories::task_status_phase(&existing_status)
-                {
-                    continue;
-                }
-                for offset in [-1, 0, 1] {
-                    let (_temp_dir, db_path, lock_path) = temp_paths()?;
-                    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-                    let existing =
-                        task_record("task-monotonic", "agent-a", existing_status.clone(), 0);
-                    db.tasks().upsert(&existing)?;
-                    let mut incoming = existing.clone();
-                    incoming.status = incoming_status.clone();
-                    incoming.summary = Some("fresh task metadata".into());
-                    incoming.updated_at += chrono::Duration::seconds(offset);
-                    db.tasks().upsert(&incoming)?;
-                    let expected = if offset < 0 { existing } else { incoming };
-                    assert_eq!(db.tasks().latest(&expected.id)?, Some(expected));
-                }
-            }
-        }
         Ok(())
     }
 
@@ -8466,7 +8934,7 @@ CREATE TABLE working_memory_deltas (
     fn task_active_listing_is_partitioned_by_agent_and_excludes_terminal() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        db.tasks().import_legacy(Vec::new())?;
+
         db.tasks().upsert(&task_record(
             "agent-a-running",
             "agent-a",
@@ -9529,7 +9997,7 @@ CREATE TABLE working_memory_deltas (
         )?;
 
         db.agent_states()
-            .upsert(&crate::types::AgentState::new("member-public"))?;
+            .upsert_for_fixture(&crate::types::AgentState::new("member-public"))?;
 
         let snapshot = db.agent_roster_snapshot_rows()?;
         assert_eq!(snapshot.runtime_id, db.runtime_id()?);
@@ -9633,7 +10101,7 @@ CREATE TABLE working_memory_deltas (
             assert!(db.observer_sync_foundations()?.roster_snapshot_verified);
             db.agent_identities().upsert(&agent_identity("member", 0))?;
             db.agent_states()
-                .upsert(&crate::types::AgentState::new("member"))?;
+                .upsert_for_fixture(&crate::types::AgentState::new("member"))?;
             db.connection()?.execute(
                 "UPDATE agent_states SET payload_json = '{not json' WHERE agent_id = 'member'",
                 [],
@@ -9742,7 +10210,7 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         db.agent_identities().upsert(&agent_identity("member", 0))?;
         db.agent_states()
-            .upsert(&crate::types::AgentState::new("member"))?;
+            .upsert_for_fixture(&crate::types::AgentState::new("member"))?;
         for index in 1..=3 {
             let event = crate::types::AuditEvent::legacy(
                 format!("projection_event_{index}"),
@@ -9944,7 +10412,7 @@ CREATE TABLE working_memory_deltas (
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         db.agent_identities().upsert(&agent_identity("member", 0))?;
         db.agent_states()
-            .upsert(&crate::types::AgentState::new("member"))?;
+            .upsert_for_fixture(&crate::types::AgentState::new("member"))?;
         db.audit_events().append(
             Some("member"),
             &crate::types::AuditEvent::legacy("healthy", serde_json::json!({})),
@@ -9983,7 +10451,7 @@ CREATE TABLE working_memory_deltas (
             db.agent_identities()
                 .upsert(&agent_identity("agent-state-shape", 0))?;
             db.agent_states()
-                .upsert(&AgentState::new("agent-state-shape"))?;
+                .upsert_for_fixture(&AgentState::new("agent-state-shape"))?;
         }
 
         let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -10063,6 +10531,16 @@ CREATE TABLE working_memory_deltas (
             let mut connection = open_connection(&db_path)?;
             migrate_through(&mut connection, 47)?;
             let now = "2026-01-01T00:00:00.000Z";
+            let identity_payload = |id: &str, deleted: bool, deleted_at: bool| -> Result<String> {
+                let mut identity = agent_identity(id, 0);
+                identity.created_at = now.parse()?;
+                identity.updated_at = identity.created_at;
+                if deleted {
+                    identity.status = AgentRegistryStatus::Deleted;
+                }
+                identity.deleted_at = deleted_at.then_some(identity.created_at);
+                Ok(serde_json::to_string(&identity)?)
+            };
             connection.execute(
                 "INSERT INTO agent_identities (
                     agent_id, kind, visibility, ownership, profile_preset, status,
@@ -10070,17 +10548,25 @@ CREATE TABLE working_memory_deltas (
                     created_at, updated_at, archived_at, payload_json
                  ) VALUES
                     ('agent-keep', 'named', 'public', 'self_owned', 'public_named', 'active',
-                     NULL, NULL, NULL, ?1, ?1, NULL, '{}'),
+                     NULL, NULL, NULL, ?1, ?1, NULL, ?2),
                     ('agent-gone', 'named', 'public', 'self_owned', 'public_named', 'deleted',
-                     NULL, NULL, NULL, ?1, ?1, ?1, '{}'),
+                     NULL, NULL, NULL, ?1, ?1, ?1, ?3),
                     ('agent-del-only', 'named', 'public', 'self_owned', 'public_named', 'deleted',
-                     NULL, NULL, NULL, ?1, ?1, NULL, '{}')",
-                [now],
+                     NULL, NULL, NULL, ?1, ?1, NULL, ?4)",
+                params![
+                    now,
+                    identity_payload("agent-keep", false, false)?,
+                    identity_payload("agent-gone", true, true)?,
+                    identity_payload("agent-del-only", true, false)?
+                ],
             )?;
             connection.execute(
                 "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
-                    ('agent-state-only', 'idle', ?1, '{\"id\":\"agent-state-only\"}')",
-                [now],
+                    ('agent-state-only', 'idle', ?1, ?2)",
+                params![
+                    now,
+                    serde_json::to_string(&AgentState::new("agent-state-only"))?
+                ],
             )?;
             connection.execute(
                 "INSERT INTO audit_events (audit_event_id, agent_id, kind, created_at, data_json)
@@ -10228,8 +10714,8 @@ DELETE FROM schema_migrations WHERE version = 67;
             let now = "2026-01-01T00:00:00.000Z";
             connection.execute(
                 "INSERT INTO agent_states (agent_id, status, updated_at, payload_json) VALUES
-                    ('agent-broken', 'idle', ?1, '{\"id\":\"agent-other\"}')",
-                [now],
+                    ('agent-broken', 'idle', ?1, ?2)",
+                params![now, serde_json::to_string(&AgentState::new("agent-other"))?],
             )?;
             connection.execute(
                 "INSERT INTO agent_identities (
@@ -10237,8 +10723,11 @@ DELETE FROM schema_migrations WHERE version = 67;
                     parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
                     created_at, updated_at, archived_at, payload_json
                  ) VALUES ('agent-reused', 'named', 'public', 'self_owned', 'public_named',
-                     'active', NULL, NULL, NULL, ?1, ?1, NULL, '{}')",
-                [now],
+                     'active', NULL, NULL, NULL, ?1, ?1, NULL, ?2)",
+                params![
+                    now,
+                    serde_json::to_string(&agent_identity("agent-reused", 0))?
+                ],
             )?;
             connection.execute(
                 "INSERT INTO agent_deletion_jobs (
@@ -10249,11 +10738,32 @@ DELETE FROM schema_migrations WHERE version = 67;
             )?;
         }
 
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        let foundations = db.observer_sync_foundations()?;
-        assert!(foundations.runtime_identity_stable);
-        assert!(!foundations.agent_identity_reserved);
-        let detail: String = db.connection()?.query_row(
+        // Preserve the exact v48 migration-backfill contract before checking
+        // the latest verifier and v82's stricter canonical adoption boundary.
+        let mut connection = open_connection(&db_path)?;
+        migrate_through(&mut connection, 48)?;
+        let (backfill_verified, backfill_detail): (bool, String) = connection.query_row(
+            "SELECT verified, detail FROM observer_sync_capability_verifications WHERE capability='agent_identity_reserved'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert!(!backfill_verified);
+        assert!(backfill_detail.contains("migration-backfill"));
+        assert!(backfill_detail.contains("agent_state_identity_mismatch"));
+        assert!(backfill_detail.contains("completed_deletion_with_available_registry"));
+        assert_eq!(current_schema_version(&connection)?, 48);
+        migrate_through(&mut connection, 81)?;
+        crate::runtime_db::ensure_runtime_identity_metadata(&connection)?;
+        crate::runtime_db::observer_sync::verify_observer_sync_foundations(&mut connection)?;
+        let verified = |capability: &str| -> Result<bool> {
+            Ok(connection.query_row(
+                "SELECT verified FROM observer_sync_capability_verifications WHERE capability=?1",
+                [capability],
+                |row| row.get(0),
+            )?)
+        };
+        assert!(verified("runtime_identity_stable")?);
+        assert!(!verified("agent_identity_reserved")?);
+        let detail: String = connection.query_row(
             "SELECT detail FROM observer_sync_capability_verifications
              WHERE capability = 'agent_identity_reserved'",
             [],
@@ -10261,6 +10771,19 @@ DELETE FROM schema_migrations WHERE version = 67;
         )?;
         assert!(detail.contains("agent_state_identity_mismatch"));
         assert!(detail.contains("completed_deletion_with_available_registry"));
+        drop(connection);
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("State projection and payload disagree"),
+            "{error:#}"
+        );
+        let connection = open_connection(&db_path)?;
+        assert_eq!(current_schema_version(&connection)?, 89);
+        assert!(!table_exists(&connection, "episode_continuity_seeds")?);
+        let boundary_count:i64 = connection.query_row("SELECT COUNT(*) FROM runtime_metadata WHERE key='episode_continuity/v1/upgrade_boundary'", [], |row|row.get(0))?;
+        assert_eq!(boundary_count, 0);
         Ok(())
     }
 

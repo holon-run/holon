@@ -93,7 +93,8 @@ pub(crate) async fn execute(
                 "",
                 fingerprint.clone(),
             ),
-        );
+        )
+        .await;
     }
     if let Some(max_calls) = max_calls {
         let call_index = context
@@ -112,7 +113,8 @@ pub(crate) async fn execute(
                     "",
                     fingerprint.clone(),
                 ),
-            );
+            )
+            .await;
         }
     }
 
@@ -151,7 +153,8 @@ pub(crate) async fn execute(
                     "",
                     fingerprint.clone(),
                 ),
-            );
+            )
+            .await;
         }
         Err(_) => {
             return finish_result(
@@ -166,7 +169,8 @@ pub(crate) async fn execute(
                     "",
                     fingerprint.clone(),
                 ),
-            );
+            )
+            .await;
         }
     };
     let (response, provider, model) = response;
@@ -190,7 +194,8 @@ pub(crate) async fn execute(
                 Vec::new(),
                 fingerprint.clone(),
             ),
-        );
+        )
+        .await;
     }
     let confidence = response.confidence;
     let evidence = response
@@ -309,7 +314,7 @@ pub(crate) async fn execute(
             fingerprint.clone(),
         ),
     };
-    finish_result(runtime, agent_id, context, &args, &fingerprint, result)
+    finish_result(runtime, agent_id, context, &args, &fingerprint, result).await
 }
 
 fn ensure_authority(authority_class: &AuthorityClass) -> Result<()> {
@@ -447,7 +452,7 @@ fn contains_sensitive_state_marker(value: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
-fn finish_result(
+async fn finish_result(
     runtime: &RuntimeHandle,
     agent_id: &str,
     context: &ToolExecutionContext,
@@ -492,7 +497,7 @@ fn finish_result(
         evidence: result.evidence.clone(),
         recorded_at: chrono::Utc::now(),
     };
-    if let Err(error) = runtime.append_decision_advisory_event(&event) {
+    if let Err(error) = runtime.append_decision_advisory_event(&event).await {
         tracing::warn!(error = %error, "failed to append decision advisory telemetry");
     }
     let audit = json!({
@@ -514,7 +519,10 @@ fn finish_result(
         "state_policy": "truncated_redacted_not_recorded",
         "question_chars": args.question.chars().count(),
     });
-    if let Err(error) = runtime.append_audit_event("advisory_decision_tool", audit) {
+    if let Err(error) = runtime
+        .append_audit_event("advisory_decision_tool", audit)
+        .await
+    {
         tracing::warn!(error = %error, "failed to append advisory decision audit event");
     }
     Ok(serialize_success(NAME, &result)?)

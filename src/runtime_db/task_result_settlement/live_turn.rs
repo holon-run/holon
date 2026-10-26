@@ -136,99 +136,7 @@ impl TaskResultSettlementRepository<'_> {
         message_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<String>> {
-        self.db.transaction(|tx| {
-            let Some(record) = super::latest_for_message_tx(tx, message_id)? else {
-                return Ok(None);
-            };
-            if record.agent_id != agent_id
-                || record.state != TaskResultSettlementState::CallerAdmitted
-            {
-                return Ok(None);
-            }
-            let Some(activation_id) = record.activation_id.as_deref() else {
-                return Ok(None);
-            };
-            let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)?
-            else {
-                return Ok(None);
-            };
-            if attempt.state
-                != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
-            {
-                return Ok(None);
-            }
-            let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? else {
-                return Ok(None);
-            };
-            let Some(anchor) = attempt.source_message_id.as_deref() else {
-                return Ok(None);
-            };
-            if turn.terminal.as_ref().map(|terminal| terminal.kind)
-                != Some(crate::types::TurnTerminalKind::Interrupted)
-                || turn.idle_input_batch.as_ref().is_none_or(|batch| {
-                    batch.activation_id.as_deref() != Some(activation_id)
-                        || batch.anchor_message_id != anchor
-                })
-                || !tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM queue_entries
-                     WHERE agent_id = ?1 AND message_id = ?2 AND status = 'interrupted')",
-                    params![agent_id, anchor],
-                    |row| row.get::<_, bool>(0),
-                )?
-            {
-                return Ok(None);
-            }
-            let recovery = RecoverySources {
-                predecessor_turn_id: turn.turn_id.clone(),
-                activation_turns: BTreeMap::from([(
-                    activation_id.to_owned(),
-                    turn.turn_id.clone(),
-                )]),
-            };
-            let live: Vec<_> = turn
-                .live_input_batches
-                .iter()
-                .filter(|batch| {
-                    batch
-                        .items
-                        .iter()
-                        .any(|item| item.message_id == record.message_id)
-                })
-                .collect();
-            let valid = if let Some(batch) = live.first() {
-                live.len() == 1
-                    && turn.input_message_ids.contains(&record.message_id)
-                    && batch.activation_id == activation_id
-                    && batch.result_identities.contains(&record.result_identity)
-                    && batch.items.iter().any(|item| {
-                        item.message_id == record.message_id
-                            && item.source_ref == format!("message:{}", record.message_id)
-                    })
-                    && source_is_live_tx(
-                        tx,
-                        &record,
-                        agent_id,
-                        &turn.turn_id,
-                        Some(activation_id),
-                        now,
-                        Some(&recovery),
-                    )?
-            } else {
-                // Initial results live in the admission ledger, not ordinary input IDs.
-                turn.idle_input_batch
-                    .as_ref()
-                    .is_some_and(|batch| record.created_at <= batch.cutoff)
-                    && initial_source_is_recoverable_tx(
-                        tx,
-                        &record,
-                        &attempt,
-                        activation_id,
-                        now,
-                        &recovery,
-                    )?
-            };
-            Ok(valid.then(|| anchor.to_owned()))
-        })
+        self.db.transaction(|tx| interrupted_admitted_result_anchor_tx(tx, agent_id, message_id, now))
     }
 
     /// Discovery is not a grant. The attachment transaction rechecks every identity.
@@ -239,29 +147,7 @@ impl TaskResultSettlementRepository<'_> {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<TaskResultSettlementRecord>> {
-        self.db.transaction(|tx| {
-            let records = super::records_tx(
-                tx,
-                "SELECT payload_json FROM task_result_settlements
-                 WHERE agent_id = ?1 AND parent_turn_id = ?2
-                   AND state = 'persisted_pending' AND activation_id IS NULL
-                   AND created_at <= ?3
-                 ORDER BY created_at ASC, result_identity ASC LIMIT ?4",
-                params![
-                    agent_id,
-                    turn_id,
-                    timestamp(cutoff),
-                    limit.min(LIVE_TASK_RESULT_CANDIDATE_LIMIT) as i64
-                ],
-            )?;
-            let mut candidates = Vec::new();
-            for record in records {
-                if source_is_live_tx(tx, &record, agent_id, turn_id, None, cutoff, None)? {
-                    candidates.push(record);
-                }
-            }
-            Ok(candidates)
-        })
+        self.db.transaction(|tx| same_turn_candidates_tx(tx, agent_id, turn_id, cutoff, limit))
     }
 
     /// A settlement's anchor turn is live only while its turn record is still
@@ -660,6 +546,17 @@ fn turn_matches_attempt_source(
         ExecutionBinding::Command => TurnOwner::Command,
     };
     turn.effective_owner() == owner
+}
+
+/// Discovery only: match the main same-turn query without granting replay.
+pub(crate) fn idle_read_source_is_live_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    agent_id: &str,
+    turn_id: &str,
+    cutoff: DateTime<Utc>,
+) -> Result<bool> {
+    source_is_live_tx(tx, record, agent_id, turn_id, None, cutoff, None)
 }
 
 fn source_is_live_tx(
@@ -1598,4 +1495,122 @@ fn delivery_tx(
             .ok()
             .map(|delivery| (rowid, delivery))
     }))
+}
+
+pub(crate) fn interrupted_admitted_result_anchor_tx(tx: &Transaction<'_>, agent_id: &str, message_id: &str, now: DateTime<Utc>) -> Result<Option<String>> {
+    let Some(record) = super::latest_for_message_tx(tx, message_id)? else {
+        return Ok(None);
+    };
+    if record.agent_id != agent_id
+        || record.state != TaskResultSettlementState::CallerAdmitted
+    {
+        return Ok(None);
+    }
+    let Some(activation_id) = record.activation_id.as_deref() else {
+        return Ok(None);
+    };
+    let Some(attempt) = super::reply_admission_attempt_tx(tx, agent_id, activation_id)?
+    else {
+        return Ok(None);
+    };
+    if attempt.state
+        != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    {
+        return Ok(None);
+    }
+    let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? else {
+        return Ok(None);
+    };
+    let Some(anchor) = attempt.source_message_id.as_deref() else {
+        return Ok(None);
+    };
+    if turn.terminal.as_ref().map(|terminal| terminal.kind)
+        != Some(crate::types::TurnTerminalKind::Interrupted)
+        || turn.idle_input_batch.as_ref().is_none_or(|batch| {
+            batch.activation_id.as_deref() != Some(activation_id)
+                || batch.anchor_message_id != anchor
+        })
+        || !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM queue_entries
+             WHERE agent_id = ?1 AND message_id = ?2 AND status = 'interrupted')",
+            params![agent_id, anchor],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(None);
+    }
+    let recovery = RecoverySources {
+        predecessor_turn_id: turn.turn_id.clone(),
+        activation_turns: BTreeMap::from([(
+            activation_id.to_owned(),
+            turn.turn_id.clone(),
+        )]),
+    };
+    let live: Vec<_> = turn
+        .live_input_batches
+        .iter()
+        .filter(|batch| {
+            batch
+                .items
+                .iter()
+                .any(|item| item.message_id == record.message_id)
+        })
+        .collect();
+    let valid = if let Some(batch) = live.first() {
+        live.len() == 1
+            && turn.input_message_ids.contains(&record.message_id)
+            && batch.activation_id == activation_id
+            && batch.result_identities.contains(&record.result_identity)
+            && batch.items.iter().any(|item| {
+                item.message_id == record.message_id
+                    && item.source_ref == format!("message:{}", record.message_id)
+            })
+            && source_is_live_tx(
+                tx,
+                &record,
+                agent_id,
+                &turn.turn_id,
+                Some(activation_id),
+                now,
+                Some(&recovery),
+            )?
+    } else {
+        // Initial results live in the admission ledger, not ordinary input IDs.
+        turn.idle_input_batch
+            .as_ref()
+            .is_some_and(|batch| record.created_at <= batch.cutoff)
+            && initial_source_is_recoverable_tx(
+                tx,
+                &record,
+                &attempt,
+                activation_id,
+                now,
+                &recovery,
+            )?
+    };
+    Ok(valid.then(|| anchor.to_owned()))
+}
+
+pub(crate) fn same_turn_candidates_tx(tx: &Transaction<'_>, agent_id: &str, turn_id: &str, cutoff: DateTime<Utc>, limit: usize) -> Result<Vec<TaskResultSettlementRecord>> {
+    let records = super::records_tx(
+        tx,
+        "SELECT payload_json FROM task_result_settlements
+         WHERE agent_id = ?1 AND parent_turn_id = ?2
+           AND state = 'persisted_pending' AND activation_id IS NULL
+           AND created_at <= ?3
+         ORDER BY created_at ASC, result_identity ASC LIMIT ?4",
+        params![
+            agent_id,
+            turn_id,
+            timestamp(cutoff),
+            limit.min(LIVE_TASK_RESULT_CANDIDATE_LIMIT) as i64
+        ],
+    )?;
+    let mut candidates = Vec::new();
+    for record in records {
+        if source_is_live_tx(tx, &record, agent_id, turn_id, None, cutoff, None)? {
+            candidates.push(record);
+        }
+    }
+    Ok(candidates)
 }

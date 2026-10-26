@@ -7,7 +7,8 @@ use tokio::sync::broadcast;
 
 use crate::{
     runtime_db::{
-        transitions::{PostCommitEffects, PostCommitWarning},
+        current_read_writes::CommittedEventRead,
+        transitions::{AuditEventAck, PostCommitEffects, PostCommitWarning},
         RuntimeDb,
     },
     types::AuditEvent,
@@ -21,6 +22,7 @@ pub(crate) enum EventLogPageOrder {
     Desc,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct EventLogPage {
     pub(crate) events: Vec<AuditEvent>,
@@ -31,7 +33,8 @@ pub(crate) struct EventLogPage {
 #[derive(Debug, Clone)]
 pub(crate) struct PublishedAuditEvent {
     pub(crate) agent_id: Option<String>,
-    pub(crate) event: AuditEvent,
+    pub(crate) event: AuditEventAck,
+    pub(crate) qualified: Option<CommittedEventRead>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,7 +90,7 @@ impl RuntimeEventLog {
         }
     }
 
-    fn ensure_writable(&self) -> Result<()> {
+    pub(crate) fn ensure_writable(&self) -> Result<()> {
         anyhow::ensure!(
             !self.read_only,
             "cannot write through read-only runtime storage"
@@ -140,7 +143,8 @@ impl RuntimeEventLog {
         {
             event_bus.publish(PublishedAuditEvent {
                 agent_id,
-                event: event.clone(),
+                event: AuditEventAck::new(event.clone())?,
+                qualified: None,
             });
         }
         Ok(())
@@ -165,7 +169,31 @@ impl RuntimeEventLog {
     ) -> Vec<PostCommitWarning> {
         let mut warnings = Vec::new();
         for event in &effects.audit_events {
-            if let Err(error) = self.publish(self.agent_id.clone(), event) {
+            let result = (|| -> Result<()> {
+                let qualified = match event.current_record() {
+                    Some(record) => Some(record.clone()),
+                    None => effects
+                        .current_read_writes
+                        .as_ref()
+                        .map(|writes| writes.event_notification(event))
+                        .transpose()?
+                        .flatten(),
+                };
+                if let Some(bus) = self
+                    .event_bus
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?
+                    .as_ref()
+                {
+                    bus.publish(PublishedAuditEvent {
+                        agent_id: self.agent_id.clone(),
+                        event: event.clone(),
+                        qualified,
+                    });
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
                 tracing::warn!(
                     error = %error,
                     event_id = %event.id,
@@ -317,6 +345,7 @@ impl RuntimeEventLog {
         self.runtime_db.event_log_epoch()
     }
 
+    #[cfg(test)]
     pub(crate) fn page_matching<F>(
         &self,
         before_seq: Option<u64>,
