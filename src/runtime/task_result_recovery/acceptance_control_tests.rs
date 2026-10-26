@@ -54,12 +54,34 @@ fn event(runtime: &RuntimeHandle, request: &str, name: &str) -> Value {
 
 #[tokio::test(start_paused = true)]
 async fn recovery_acceptance_original_gate_allows_real_scanner_claim_before_original_result() {
+    assert_original_gate_scanner_claim(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_acceptance_triggered_exact_wait_preserves_original_delivery_fence() {
+    assert_original_gate_scanner_claim(true).await;
+}
+
+async fn assert_original_gate_scanner_claim(original_wait: bool) {
     let provider = Arc::new(FailureProvider::default());
     let harness = LifecycleHarness::with_provider(provider.clone());
     let runtime = harness.runtime();
     let owner = ready_owner(runtime).await;
     let (task, result) =
         completed_command_with_delivery(runtime, Some(&owner), "held-original", true).await;
+    if original_wait {
+        let WaitForRegistrationOutcome::TaskResultQueued {
+            result_message_id,
+            wait_condition_id,
+            ..
+        } = exact_wait(runtime, &owner.id, &task.id).await
+        else {
+            panic!("the original queued result must trigger its exact waiter");
+        };
+        assert_eq!(result_message_id, result.id);
+        let owner = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
+        seed_waiting_work_execution(runtime.storage(), &owner, &wait_condition_id);
+    }
     gated_control(runtime, &task, "held", false, true, false, Value::Null);
     assert!(matches!(
         SchedulerDecisionExecutor::new(runtime)
@@ -76,6 +98,25 @@ async fn recovery_acceptance_original_gate_allows_real_scanner_claim_before_orig
     assert!(provider.requests.lock().await.is_empty());
 
     harness.advance(Duration::from_secs(30)).await;
+    if original_wait {
+        assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+        assert!(recovery_sources(runtime).is_empty());
+        gated_control(
+            runtime,
+            &task,
+            "held",
+            false,
+            false,
+            false,
+            held["fence"].clone(),
+        );
+        let scheduled = Box::pin(claim_model(runtime)).await;
+        assert_eq!(scheduled.message.id, result.id);
+        process(runtime, scheduled).await;
+        assert_eq!(latest(runtime, &result.id).recovery_attempts, 0);
+        assert_eq!(provider.requests.lock().await.len(), 1);
+        return;
+    }
     assert!(runtime.emit_due_task_result_recovery().await.unwrap());
     let enqueued = event(runtime, "held", "scanner-enqueued");
     let scheduled = Box::pin(claim_model(runtime)).await;
@@ -121,6 +162,25 @@ async fn recovery_acceptance_original_gate_allows_real_scanner_claim_before_orig
     }
     assert_eq!(latest(runtime, &result.id).recovery_attempts, 1);
     assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_acceptance_ack_matches_real_cli_version() {
+    use clap::CommandFactory;
+
+    let harness = LifecycleHarness::with_provider(Arc::new(FailureProvider::default()));
+    let runtime = harness.runtime();
+    let owner = ready_owner(runtime).await;
+    let (task, _) = completed_command_with_delivery(runtime, Some(&owner), "ack-build", true).await;
+    gated_control(runtime, &task, "build", false, true, false, Value::Null);
+    let _ = SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    assert_eq!(
+        event(runtime, "build", "task-result-held")["build"],
+        crate::cli::Cli::command().render_long_version().trim()
+    );
 }
 
 #[tokio::test(start_paused = true)]

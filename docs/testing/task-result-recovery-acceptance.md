@@ -36,10 +36,20 @@ for charged distinct roots or durable model consumption.
 The provider script creates one real ready WorkItem, starts a promoted
 ExecCommand behind a file gate in its isolated volume, and commits an exact
 WaitFor(task_result). Only after the controller snapshots that owned waiter does
-it release the command. Each subsequent provider request is held at a uniquely
+it release the command. The controlled scanner-first case instead closes its
+setup turn with the captured owner ready and runnable, without reserving the
+original result through an exact wait. A triggered original waiter correctly
+prevents scanner takeover; a real-command negative regression preserves that
+fence. This case strictly requires no task wait, while all other cases retain
+the exact-wait oracle. Each subsequent provider request is held at a uniquely
 identified provider barrier. The controller reads the real admission ledger
 before releasing failure or success. It never edits deadlines, generations,
 settlements, or scheduler state. A barrier timeout is a failed fixture.
+Failure release returns transient HTTP 503, not contract-error HTTP 400: the
+latter can continue through provider routing rather than terminate the charged
+task-recovery attempt. Replay success joins the new completed turn through its
+exact activation input batch, source, and interrupted ingress turn; the attempt's
+retained ingress attachment alone is not an execution witness.
 
 | Suite | Cases | Required evidence |
 | --- | --- | --- |

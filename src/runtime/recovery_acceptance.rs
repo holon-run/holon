@@ -5,6 +5,7 @@ use super::*;
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementRecord, TASK_RESULT_RECOVERY_LIMIT,
 };
+use clap::CommandFactory;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -85,7 +86,7 @@ fn evidence(
 ) -> serde_json::Value {
     serde_json::json!({
         "protocol": 1,
-        "build": env!("HOLON_VERSION"),
+        "build": crate::cli::Cli::command().render_long_version().trim(),
         "event": event,
         "request_id": control.request_id,
         "agent_id": record.agent_id,

@@ -229,7 +229,7 @@ def task_result_consuming_turns(snapshot, record, *, admitted_turn_id=None):
 def require_task_reentry(
     snapshot: dict[str, Any], *, agent_id: str, task_id: str,
     parent_turn_id: str, captured: dict[str, Any] | None = None,
-    require_completion: bool = True,
+    require_completion: bool = True, wait_policy: str = "exact",
 ) -> dict[str, Any]:
     record, task = task_identity(
         snapshot, agent_id=agent_id, task_id=task_id,
@@ -244,8 +244,9 @@ def require_task_reentry(
         row for row in snapshot["wait_conditions"]
         if row["agent_id"] == agent_id and row["subject_ref"] == task_id
     ]
+    require(wait_policy in {"exact", "none"}, "unknown task-result wait policy")
     require(
-        bool(waits)
+        not waits if wait_policy == "none" else bool(waits)
         and any(row["last_turn_id"] == parent_turn_id for row in waits)
         and all(
             row["status"] == "resolved"
@@ -266,6 +267,35 @@ def require_task_reentry(
         row for row in snapshot["turn_records"]
         if row["agent_id"] == agent_id and row["turn_id"] == attempt.get("turn_id")
     ]
+    # Replay retains the ingress attachment on the attempt, but executes a new
+    # turn. Its input batch must name this exact activation, not just the source.
+    replays = []
+    for row in snapshot["turn_records"]:
+        if row["agent_id"] != agent_id or row.get("terminal_kind") != "completed":
+            continue
+        stored = payload(row) if "payload_json" in row else {}
+        replay = stored.get("replay") or {}
+        batch = stored.get("idle_input_batch") or {}
+        if (
+            replay.get("source_turn_id") == attempt.get("turn_id")
+            and replay.get("source_message_id") == attempt.get("source_message_id")
+            and replay.get("reason") == "interrupted_queue_claim_reentry"
+            and (replay.get("prior_terminal") or {}).get("kind") == "interrupted"
+            and batch.get("activation_id") == record["activation_id"]
+            and attempt.get("source_message_id")
+            in {item.get("message_id") for item in batch.get("items", [])}
+            and row.get("trigger_message_id") == attempt.get("source_message_id")
+        ):
+            replays.append(row)
+    if replays:
+        require(
+            len(turns) == 1 and turns[0].get("terminal_kind") == "interrupted"
+            and turns[0].get("current_work_item_id") == record["work_item_id"]
+            and turns[0].get("trigger_message_id") == attempt.get("source_message_id")
+            and attempt.get("recovery_of_attempt_id"),
+            "replay execution has no unique interrupted ingress attachment",
+        )
+        turns = replays
     require(
         activation["lifecycle_state"] == "settled"
         and attempt.get("attempt_id") == activation["attempt_id"]
@@ -388,6 +418,8 @@ def require_task_reentry(
         and refs.get("task_result_rejoin_generation") == str(record["rejoin_generation"])
     )
     require(direct or exact or scanner, f"activation lost task-result source causality: {attempt}")
+    require(wait_policy == "exact" or scanner,
+            "unwaited consumption requires the validated scanner source and model input")
     # A scanner wake is the only model-delivered carrier of this promise, so a
     # completed turn that consumed the wake consumed the same task result.
     successful = task_result_consuming_turns(

@@ -52,6 +52,73 @@ def snapshot_with_roots(count=5):
 
 
 class RecoveryOracleTests(unittest.TestCase):
+    def replay_snapshot(self):
+        snapshot = runner_tests.LiveAcceptanceEvidenceTests().task_snapshot()
+        ingress = snapshot["turn_records"][0]
+        replay = copy.deepcopy(ingress)
+        ingress["terminal_kind"] = "interrupted"
+        replay["turn_id"] += "-replay"
+        attempt = oracle.payload(snapshot["execution_protocol_attempts"][0])
+        snapshot["execution_protocol_attempts"].append({
+            **snapshot["execution_protocol_attempts"][0],
+            "attempt_id": "interrupted-predecessor",
+            "lifecycle_state": "interrupted",
+            "payload_json": json.dumps({
+                **attempt, "attempt_id": "interrupted-predecessor",
+            }),
+        })
+        attempt["recovery_of_attempt_id"] = "interrupted-predecessor"
+        snapshot["execution_protocol_attempts"][0]["payload_json"] = json.dumps(attempt)
+        replay["payload_json"] = json.dumps({
+            "replay": {
+                "source_message_id": attempt["source_message_id"],
+                "source_turn_id": ingress["turn_id"],
+                "reason": "interrupted_queue_claim_reentry",
+                "prior_terminal": {"kind": "interrupted"},
+            },
+            "idle_input_batch": {
+                "activation_id": attempt["attempt_id"],
+                "items": [{"message_id": attempt["source_message_id"]}],
+            },
+        })
+        snapshot["turn_records"].append(replay)
+        brief = snapshot["briefs"][0]
+        brief["turn_id"] = replay["turn_id"]
+        brief["payload_json"] = json.dumps({
+            **oracle.payload(brief), "turn_id": replay["turn_id"],
+        })
+        return snapshot
+
+    def test_interrupted_ingress_turn_is_not_the_replay_execution_turn(self):
+        oracle.require_task_reentry(
+            self.replay_snapshot(), agent_id="parent", task_id="task-1",
+            parent_turn_id="parent-turn",
+        )
+
+    def test_replay_execution_requires_exact_ingress_batch_source_and_owner(self):
+        for mutation in ("batch", "source", "ingress", "owner", "terminal", "duplicate"):
+            snapshot = self.replay_snapshot()
+            replay = snapshot["turn_records"][-1]
+            body = oracle.payload(replay)
+            if mutation == "batch":
+                body["idle_input_batch"]["activation_id"] = "foreign"
+            elif mutation == "source":
+                body["replay"]["source_message_id"] = "foreign"
+            elif mutation == "ingress":
+                body["replay"]["source_turn_id"] = "foreign"
+            elif mutation == "owner":
+                replay["current_work_item_id"] = "foreign"
+            elif mutation == "terminal":
+                snapshot["turn_records"][0]["terminal_kind"] = "completed"
+            else:
+                snapshot["turn_records"].append(copy.deepcopy(replay))
+            replay["payload_json"] = json.dumps(body)
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                oracle.require_task_reentry(
+                    snapshot, agent_id="parent", task_id="task-1",
+                    parent_turn_id="parent-turn",
+                )
+
     def test_terminal_receipts_require_exact_structured_envelopes(self):
         def check(detail):
             return oracle.require_terminal_task_receipt(
@@ -410,6 +477,36 @@ def scanner_lineage():
 
 
 class ModelLineageTests(unittest.TestCase):
+    def test_only_explicit_unwaited_scanner_mode_accepts_no_wait(self):
+        snapshot = scanner_lineage()
+        snapshot["wait_conditions"] = []
+        with self.assertRaises(AssertionError):
+            self.check(snapshot)
+        oracle.require_task_reentry(
+            snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
+            wait_policy="none",
+        )
+
+    def test_unwaited_mode_rejects_reserved_wait_and_direct_or_untyped_source(self):
+        for mutation in ("wait", "direct", "untyped"):
+            snapshot = scanner_lineage()
+            if mutation != "wait":
+                snapshot["wait_conditions"] = []
+            if mutation == "direct":
+                snapshot = runner_tests.LiveAcceptanceEvidenceTests().task_snapshot()
+                snapshot["wait_conditions"] = []
+            if mutation == "untyped":
+                message = next(row for row in snapshot["messages"]
+                               if row["message_id"] == "scanner-wake")
+                body = oracle.payload(message)
+                body["source_refs"]["task_result_identity"] = "foreign"
+                message["payload_json"] = json.dumps(body)
+            with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
+                oracle.require_task_reentry(
+                    snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
+                    wait_policy="none",
+                )
+
     def check(self, snapshot):
         return oracle.require_task_reentry(
             snapshot, agent_id="parent", task_id="task-1", parent_turn_id="parent-turn",
@@ -519,7 +616,66 @@ class DatabaseCaptureTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
 
 
+class ScannerSetupTests(unittest.TestCase):
+    def setup_snapshot(self):
+        return {
+            "tasks": [{"agent_id": "qa", "payload_json": json.dumps({
+                "id": "real-task", "status": "running", "work_item_id": "owner",
+                "detail": {"parent_turn_id": "parent", "rejoin_generation": 7},
+            })}],
+            "work_items": [{"work_item_id": "owner", "payload_json": json.dumps({
+                "state": "open", "plan_status": "ready", "blocked_by": None,
+            })}],
+            "execution_protocol_attempts": [], "wait_conditions": [],
+        }
+
+    def test_scanner_setup_captures_real_task_without_a_reserved_wait(self):
+        self.assertEqual(recovery.scanner_setup_identity(self.setup_snapshot()), {
+            "agent_id": "qa", "task_id": "real-task", "work_item_id": "owner",
+            "parent_turn_id": "parent", "rejoin_generation": 7,
+        })
+
+    def test_scanner_setup_waits_for_setup_execution_to_close(self):
+        snapshot = self.setup_snapshot()
+        snapshot["execution_protocol_attempts"] = [{"agent_id": "qa", "lifecycle_state": "open"}]
+        self.assertIsNone(recovery.scanner_setup_identity(snapshot))
+
+    def test_scanner_setup_rejects_blocked_closed_or_reserved_owner(self):
+        for field, value in (("state", "completed"), ("plan_status", "draft"),
+                             ("blocked_by", "independent dependency")):
+            snapshot = self.setup_snapshot()
+            owner = oracle.payload(snapshot["work_items"][0])
+            owner[field] = value
+            snapshot["work_items"][0]["payload_json"] = json.dumps(owner)
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                recovery.scanner_setup_identity(snapshot)
+        for status in ("active", "triggered"):
+            snapshot = self.setup_snapshot()
+            snapshot["wait_conditions"] = [{
+                "agent_id": "qa", "work_item_id": "owner", "status": status,
+            }]
+            with self.subTest(status=status), self.assertRaises(AssertionError):
+                recovery.scanner_setup_identity(snapshot)
+
+
 class ProviderFixtureTests(unittest.TestCase):
+    def test_only_scanner_first_setup_leaves_owner_runnable_without_waitfor(self):
+        for scanner_first in (False, True):
+            scenario = fixture.RecoveryScenario()
+            scenario.phase = 3
+            scenario.work_ids = ["work_000000000000001"]
+            scenario.task_ids = ["task_000000000000001"]
+            with tempfile.TemporaryDirectory() as directory:
+                control = Path(directory) / "control.json"
+                control.write_text(json.dumps({"scanner_first": scanner_first}))
+                with patch.object(fixture, "CONTROL", control):
+                    status, result = scenario.consume_gated({}, "A", Mock())
+            self.assertEqual(status, 200)
+            self.assertEqual(scenario.phase, 4)
+            calls = [item for item in result["output"] if item["type"] == "function_call"]
+            self.assertEqual([call["name"] for call in calls],
+                             [] if scanner_first else ["WaitFor"])
+
     def test_fairness_script_uses_new_real_task_and_parks_without_completing_owner(self):
         scenario = fixture.RecoveryScenario()
         scenario.fairness, scenario.phase = True, 6
@@ -626,7 +782,7 @@ class ProviderFixtureTests(unittest.TestCase):
 
                 with patch.object(fixture, "CONTROL", control):
                     status, body = scenario.consume_gated({}, "b", record)
-                self.assertEqual(status, 400 if action == "fail" else 200)
+                self.assertEqual(status, 503 if action == "fail" else 200)
                 self.assertEqual(scenario.phase, 4 if action == "fail" else 5)
                 self.assertEqual([row["state"] for row in rows], ["waiting", "released"])
 
@@ -652,7 +808,7 @@ class ProviderFixtureTests(unittest.TestCase):
             with patch.object(fixture, "CONTROL", control):
                 for side in ("a", "b"):
                     status, _ = scenario.consume_gated({}, side, record)
-                    self.assertEqual(status, 400)
+                    self.assertEqual(status, 503)
                     self.assertEqual(scenario.phase, 4)
 
 
@@ -680,16 +836,43 @@ class RecoveryRunnerTests(unittest.TestCase):
                 },
             }
             for snapshot in (before, after):
+                snapshot["wait_conditions"] = []
                 snapshot["messages"].append({
                     "message_id": source_id, "payload_json": json.dumps(source),
                 })
             row = next(row for row in before["execution_protocol_attempts"]
                        if row["attempt_id"] == "root-1")
             value = oracle.payload(row)
-            value.update(source_message_id=source_id, source={"identity": {"kind": "triggered_wait"}},
+            value.update(source_message_id=source_id, source={"identity": {
+                "kind": "internal_followup", "message_id": source_id,
+            }},
                          binding={"kind": "work_item", "work_item_id": record["work_item_id"]})
             row["payload_json"] = json.dumps(value)
             before["queue_entries"] = [{"message_id": record["message_id"], "status": "queued"}]
+            final = after["execution_protocol_attempts"][0]
+            attempt = oracle.payload(final)
+            attempt.update(
+                attempt_id="root-1", source_message_id=source_id,
+                source={"identity": {"kind": "internal_followup", "message_id": source_id}},
+                recovery_of_attempt_id=None,
+            )
+            final.update(attempt_id="root-1", payload_json=json.dumps(attempt))
+            after["execution_protocol_attempts"] = [final]
+            record["activation_id"] = "root-1"
+            turn = after["turn_records"][0]
+            turn.update(trigger_message_id=source_id, payload_json=json.dumps({
+                "idle_input_batch": {
+                    "activation_id": "root-1", "items": [{"message_id": source_id}],
+                },
+            }))
+            brief = after["briefs"][0]
+            brief.update(message_id=source_id, payload_json=json.dumps({
+                **oracle.payload(brief), "related_message_id": source_id,
+            }))
+            outcome = after["execution_protocol_outcomes"][0]
+            outcome.update(attempt_id="root-1", payload_json=json.dumps({
+                **oracle.payload(outcome), "attempt_id": "root-1",
+            }))
         else:
             source = None
         next(row for row in before["execution_protocol_attempts"]

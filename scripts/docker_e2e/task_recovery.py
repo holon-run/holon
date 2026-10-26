@@ -28,6 +28,31 @@ FAIRNESS_GATE = "/var/lib/holon/recovery-fairness-command-release"
 ACCEPTANCE_DIRECTORY = "/var/lib/holon/agents/qa/recovery-acceptance"
 
 
+def scanner_setup_identity(snapshot):
+    tasks = [payload(row) for row in snapshot["tasks"] if row["agent_id"] == "qa"]
+    if (len(tasks) != 1 or tasks[0]["status"] != "running"
+            or any(row["agent_id"] == "qa" and row["lifecycle_state"] == "open"
+                   for row in snapshot["execution_protocol_attempts"])):
+        return None
+    task = tasks[0]
+    owners = [payload(row) for row in snapshot["work_items"]
+              if row["work_item_id"] == task.get("work_item_id")]
+    require(len(owners) == 1 and owners[0]["state"] == "open"
+            and owners[0].get("plan_status") == "ready"
+            and not owners[0].get("blocked_by")
+            and not any(row["agent_id"] == "qa"
+                        and row["work_item_id"] == task["work_item_id"]
+                        and row["status"] in {"active", "triggered"}
+                        for row in snapshot["wait_conditions"]),
+            "scanner-first requires an open runnable captured owner without a reserved wait")
+    return {
+        "agent_id": "qa", "task_id": task["id"],
+        "work_item_id": task["work_item_id"],
+        "parent_turn_id": task["detail"]["parent_turn_id"],
+        "rejoin_generation": task["detail"]["rejoin_generation"],
+    }
+
+
 def validate_manifest(manifest):
     require(manifest["version"] == 1, "unknown recovery manifest")
     require(manifest["backoff_seconds"] == [60, 120, 240, 480]
@@ -364,19 +389,34 @@ class RecoveryRun(FaultRun):
         self.configure(self.mock, "/tmp/qa-fault.json", {"TASK_RESULT_RECOVERY": True})
         if self.spec.get("alive_owner"):
             self.configure(self.proxy, "/tmp/qa-fault.json", {"UPSTREAM_TIMEOUT": 90})
+        scanner_first = self.spec.get("first_order") == "scanner-first"
+        if scanner_first:
+            self.configure(self.mock, "/tmp/qa-recovery.json", {"scanner_first": True})
         marker = self.prefix.rsplit("-", 1)[-1]
+        wait_instruction = (
+            "Leave the captured owner runnable without registering a task wait. "
+            if scanner_first else "WaitFor that exact task with delivery=silent. "
+        )
         self.api("POST", "/api/control/agents/qa/prompt", {"text": (
             f"Create one ready WorkItem SCHEDULER-TASK-WAIT-{marker}. "
             f"Run one promoted command producing SCHEDULER-TASK-RESULT-{marker}, "
-            "WaitFor that exact task with delivery=silent. On its result, complete "
+            f"{wait_instruction}On its result, complete "
             f"that same WorkItem with SCHEDULER-TASK-WAIT-COMPLETE-{marker}."
         )})
-        # Command cannot finish until its real exact waiter and owner exist.
+        # Exact-first uses a real waiter. Scanner-first must leave its captured
+        # owner runnable; a triggered original waiter reserves the held result.
         while time.monotonic() < deadline:
             snapshot = self.snapshot("setup")
             waits = [row for row in snapshot["wait_conditions"]
                      if row["agent_id"] == "qa" and row["status"] == "active"
                      and row["kind"] == "task" and row["subject_ref"]]
+            if scanner_first:
+                self.setup_identity = scanner_setup_identity(snapshot)
+                if self.setup_identity is None:
+                    time.sleep(.5)
+                    continue
+                write_json(self.evidence / "pre-terminal-identity.json", self.setup_identity)
+                break
             if waits:
                 require(len(waits) == 1 and waits[0]["work_item_id"],
                         "setup must have one owned exact task wait")
@@ -395,7 +435,7 @@ class RecoveryRun(FaultRun):
                 break
             time.sleep(.5)
         else:
-            raise TimeoutError("real owned task wait was not established")
+            raise TimeoutError("real owned task setup was not established")
         if self.spec.get("fallback"):
             self.configure(self.proxy, "/tmp/qa-fault.json", {"FAULT_A": "rst"})
         if self.spec.get("first_order"):
@@ -480,6 +520,7 @@ class RecoveryRun(FaultRun):
                 require_task_reentry(
                     snapshot, agent_id="qa", task_id=record["task_id"],
                     parent_turn_id=record["parent_turn_id"], captured=self.captured,
+                    wait_policy="none" if scanner_first else "exact",
                 )
                 break
             if (self.spec["outcome"] == "exhausted"
@@ -547,6 +588,7 @@ class RecoveryRun(FaultRun):
             require_task_reentry(
                 snapshot, agent_id="qa", task_id=record["task_id"],
                 parent_turn_id=record["parent_turn_id"], captured=self.captured,
+                wait_policy="none" if self.spec.get("first_order") == "scanner-first" else "exact",
             )
             if rows:
                 require(recovery_root(snapshot, "qa", record["activation_id"])

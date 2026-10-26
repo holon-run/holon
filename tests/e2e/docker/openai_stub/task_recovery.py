@@ -18,8 +18,15 @@ class RecoveryScenario(Scenario):
     def __init__(self):
         super().__init__("scheduler-task-wait")
         self.fairness = False
+        self.scanner_first = False
 
     def task_wait(self):
+        if self.phase == 3 and self.scanner_first:
+            # A wait triggered by the held original reserves it against scanner.
+            self.phase = 4
+            return 200, response(
+                [text_item("SCHEDULER-TASK-SCANNER-READY")], "resp_scanner_ready",
+            )
         if self.fairness:
             if self.phase == 6:
                 return self.call("ExecCommand", {
@@ -81,6 +88,8 @@ class RecoveryScenario(Scenario):
             ))
             for item in items
         )
+        if self.phase == 3:
+            self.scanner_first = bool(control.get("scanner_first"))
         if self.phase != 4 or bootstrap:
             return self.consume(request)
         request_id = secrets.token_hex(12)
@@ -93,8 +102,8 @@ class RecoveryScenario(Scenario):
                 record(layer="recovery_barrier", request_id=request_id,
                        side=side, state="released", action=release)
                 if release == "fail":
-                    return 400, {"error": {
-                        "type": "invalid_request_error", "message": "deterministic recovery failure",
+                    return 503, {"error": {
+                        "type": "service_unavailable", "message": "deterministic recovery failure",
                     }}
                 if release != "success":
                     raise ValueError("unknown recovery release action")
