@@ -1367,6 +1367,123 @@ fn due_epoch_cas_preserves_cursor_and_cannot_regrant_operator_override() -> Resu
 }
 
 #[test]
+fn zero_dispatch_parking_uses_candidate_deadline_without_failed_epoch() -> Result<()> {
+    let (_dir, db) = database()?;
+    let current = episode(&db, ProviderRecoveryBudgetKind::Network)?;
+    let deadline = now() + Duration::milliseconds(1);
+    assert!(db.park_provider_recovery_episode(&current, deadline, true, now())?);
+    let parked = refresh(&db, &current)?;
+    assert_eq!(parked.not_before, Some(deadline));
+    assert_eq!(parked.failed_epochs, 0);
+    assert_eq!((parked.request_count, parked.total_requests), (0, 0));
+    assert_eq!(parked.state, ProviderRecoveryBudgetState::Cooling);
+    Ok(())
+}
+
+#[test]
+fn zero_dispatch_probe_epochs_do_not_restart_failed_epoch_floor() -> Result<()> {
+    let (dir, db) = database()?;
+    let current = episode(&db, ProviderRecoveryBudgetKind::Network)?;
+    let scope = transport("failed-before-shared-cooldown");
+    let reservation = lease(&db, std::slice::from_ref(&scope))?;
+    let dispatch = charge(&db, &current, &reservation, "failed-request", 2)?;
+    db.record_provider_recovery_request_outcome(
+        &dispatch,
+        ProviderRecoveryRequestOutcome::NetworkFailure(&scope),
+        true,
+        now(),
+    )?;
+    let current = refresh(&db, &current)?;
+    assert!(db.park_provider_recovery_episode(&current, now(), false, now())?);
+    let mut parked = refresh(&db, &current)?;
+    assert_eq!(parked.failed_epochs, 1);
+    assert_eq!(parked.not_before, Some(episode_floor(&parked, now())?));
+    let reopened = reopen(&dir)?;
+    for _ in 0..6 {
+        let due = parked.not_before.unwrap();
+        let next = reopened
+            .begin_provider_recovery_probe_epoch(&parked, due)?
+            .context("due epoch missing")?;
+        assert!(db
+            .begin_provider_recovery_probe_epoch(&parked, due)?
+            .is_none());
+        let deadline = due + Duration::seconds(1);
+        assert!(db.park_provider_recovery_episode(&next, deadline, true, due)?);
+        parked = refresh(&reopened, &next)?;
+        assert_eq!(parked.not_before, Some(deadline));
+        assert_eq!(parked.failed_epochs, 1);
+        assert_eq!((parked.request_count, parked.total_requests), (0, 1));
+        assert_eq!(parked.candidate_cursor, 2);
+        assert!(parked.side_effect_boundary);
+        assert_eq!(parked.state, ProviderRecoveryBudgetState::Cooling);
+        assert!(db
+            .begin_provider_recovery_probe_epoch(&parked, deadline - Duration::milliseconds(1))?
+            .is_none());
+        assert!(!db.park_provider_recovery_episode(
+            &parked,
+            deadline,
+            true,
+            deadline - Duration::milliseconds(1),
+        )?);
+        assert_eq!(refresh(&reopened, &parked)?.revision, parked.revision);
+    }
+    let due = parked.not_before.unwrap();
+    let next = db
+        .begin_provider_recovery_probe_epoch(&parked, due)?
+        .context("next dispatch epoch missing")?;
+    let ProviderAdmissionReservation::Granted(reservation) =
+        db.reserve_provider_admission(std::slice::from_ref(&scope), due, Duration::minutes(2))?
+    else {
+        anyhow::bail!("expected due probe");
+    };
+    let ProviderRecoveryDispatchResult::Charged(dispatch) =
+        db.charge_provider_recovery_dispatch(&next, &reservation, "second-failure", 2, due)?
+    else {
+        anyhow::bail!("expected charged probe");
+    };
+    db.record_provider_recovery_request_outcome(
+        &dispatch,
+        ProviderRecoveryRequestOutcome::NetworkFailure(&scope),
+        false,
+        due,
+    )?;
+    let next = refresh(&db, &next)?;
+    assert!(db.park_provider_recovery_episode(&next, due, false, due)?);
+    let failed = refresh(&reopened, &next)?;
+    assert_eq!(failed.failed_epochs, 2);
+    assert_eq!((failed.request_count, failed.total_requests), (1, 2));
+    assert_eq!(failed.not_before, Some(episode_floor(&failed, due)?));
+    Ok(())
+}
+
+#[test]
+fn zero_dispatch_without_future_deadline_paces_rechecks_without_escalation() -> Result<()> {
+    let (_dir, db) = database()?;
+    let mut current = episode(&db, ProviderRecoveryBudgetKind::Network)?;
+    let delay = ProviderCooldownPolicy::Transport.delay(1, current.key());
+    let mut at = now();
+    for _ in 0..6 {
+        assert!(db.park_provider_recovery_episode(&current, at, false, at)?);
+        let parked = refresh(&db, &current)?;
+        assert_eq!(parked.not_before, Some(at + delay));
+        assert_eq!(parked.failed_epochs, 0);
+        assert_eq!((parked.request_count, parked.total_requests), (0, 0));
+        assert_eq!(parked.state, ProviderRecoveryBudgetState::Cooling);
+        assert!(!db.park_provider_recovery_episode(
+            &parked,
+            at,
+            false,
+            at + Duration::milliseconds(1),
+        )?);
+        at = parked.not_before.unwrap();
+        current = db
+            .begin_provider_recovery_probe_epoch(&parked, at)?
+            .context("due local recheck missing")?;
+    }
+    Ok(())
+}
+
+#[test]
 fn repeated_parking_and_wakes_do_not_extend_floor() -> Result<()> {
     let (_dir, db) = database()?;
     let current = episode(&db, ProviderRecoveryBudgetKind::Network)?;

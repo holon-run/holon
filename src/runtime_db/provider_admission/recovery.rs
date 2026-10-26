@@ -903,10 +903,19 @@ impl RuntimeDb {
             {
                 return Ok(false);
             }
-            if episode.state == ProviderRecoveryBudgetState::Ready {
+            let floor = if episode.state == ProviderRecoveryBudgetState::Ready
+                && episode.request_count == 0
+            {
+                if earliest_candidate > now {
+                    earliest_candidate
+                } else {
+                    // No availability deadline: pace rechecks without counting
+                    // a failure or escalating an earlier epoch's failure floor.
+                    now.checked_add_signed(ProviderCooldownPolicy::Transport.delay(1, &episode.key))
+                        .context("provider recovery recheck overflow")?
+                }
+            } else if episode.state == ProviderRecoveryBudgetState::Ready {
                 episode.failed_epochs = episode.failed_epochs.saturating_add(1);
-            }
-            let floor = if episode.state == ProviderRecoveryBudgetState::Ready {
                 episode_floor(&episode, now)?
             } else {
                 episode
