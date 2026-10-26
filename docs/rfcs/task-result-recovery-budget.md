@@ -75,6 +75,16 @@ older `next` retries can indefinitely starve a `background` scanner root after
 restart. This selection does not bypass canonical replay fences or change
 operator/interject, exact-wait, unrelated-owner or provider-parking precedence.
 
+A still-deliverable, runtime-owned scanner source for that same owner must also
+get an admission opportunity before provider-lineage retries, even before its
+first snapshot is attached. Attached interrupted snapshots retain precedence
+over new roots. The search stops at operator/interject input, including input
+behind the selected provider retry. A source parked by the provider gate is
+excluded for that poll, so other lineages may continue without bypassing shared
+cooldowns or probe leases. This is queue selection, not a priority rewrite, a
+recovery charge or a consumption grant; canonical admission revalidates the
+source and budget.
+
 Eligibility filtering precedes the bounded candidate query's `LIMIT`. Snapshot
 commit reloads the selected identities rather than truncating an unfiltered
 owner scan again. The frozen input cutoff controls snapshot membership; budget

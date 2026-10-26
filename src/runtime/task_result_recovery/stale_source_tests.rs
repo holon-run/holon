@@ -66,7 +66,10 @@ fn pending_result(
     result
 }
 
-async fn queued_recovery(runtime: &RuntimeHandle, now: DateTime<Utc>) -> (String, String) {
+pub(in crate::runtime) async fn queued_recovery(
+    runtime: &RuntimeHandle,
+    now: DateTime<Utc>,
+) -> (String, String) {
     queued_recovery_for_owner(runtime, now, None).await
 }
 

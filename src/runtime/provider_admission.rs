@@ -688,6 +688,7 @@ impl RuntimeHandle {
         }
         let mut earliest: Option<DateTime<Utc>> = None;
         let mut untried = false;
+        let mut pending_forward = false;
         for index in order {
             let candidate = &chain.candidates[index];
             let blocked = self
@@ -709,6 +710,7 @@ impl RuntimeHandle {
                 continue;
             }
             untried = true;
+            pending_forward |= index >= start;
             match self.inner.runtime_db.reserve_provider_recovery_admission(
                 &episode,
                 &candidate.scopes,
@@ -716,6 +718,16 @@ impl RuntimeHandle {
                 PROBE_LEASE,
             )? {
                 ProviderRecoveryAdmissionReservation::Granted(lease) => {
+                    // Do not renew a failed prefix's floor while a later probe
+                    // is pending. A prefix recovered by another root is usable.
+                    if episode.kind == ProviderRecoveryBudgetKind::Network
+                        && index < start
+                        && pending_forward
+                        && lease.is_probe()
+                    {
+                        self.inner.runtime_db.release_provider_admission(&lease)?;
+                        continue;
+                    }
                     self.inner
                         .runtime_db
                         .clear_provider_queue_parking(&message.agent_id, &message.id)?;

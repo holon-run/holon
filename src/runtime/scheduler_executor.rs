@@ -315,6 +315,30 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok((replay, true));
             }
         }
+        if let Some(retry) = provider_recovery {
+            let source = queue.peek_next_matching(|message| {
+                message.priority == Priority::Interject
+                    || message.authority_class == AuthorityClass::OperatorInstruction
+                    || (message.agent_id == retry.agent_id
+                        && message.work_item_id == retry.work_item_id
+                        && !parked.contains(&message.id)
+                        && scheduler::runtime_owned_internal_followup(message)
+                        && matches!(
+                            &message.origin,
+                            MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
+                        ))
+            });
+            if let Some(source) = source {
+                // New scanner roots need admission opportunities too, not only
+                // attached snapshots, but cannot cross operator/interject input.
+                if source.priority != Priority::Interject
+                    && source.authority_class != AuthorityClass::OperatorInstruction
+                    && self.task_result_recovery_is_deliverable(source)?
+                {
+                    return Ok((Some(source), true));
+                }
+            }
+        }
         Ok(selected)
     }
 
@@ -4574,6 +4598,149 @@ mod tests {
         assert!(!executor
             .task_result_record_is_deliverable("default", &record, None)
             .unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn new_task_result_root_selection_preserves_fences_across_restart() {
+        use crate::runtime::task_result_recovery::stale_source_tests::queued_recovery;
+        use crate::runtime::tests::support::LifecycleHarness;
+
+        let mut harness = LifecycleHarness::new();
+        let (result_id, source_id) = queued_recovery(
+            harness.runtime(),
+            harness.now() - chrono::Duration::seconds(60),
+        )
+        .await;
+        for restart in [false, true] {
+            if restart {
+                harness.restart();
+            }
+            let runtime = harness.runtime();
+            let executor = SchedulerDecisionExecutor::new(runtime);
+            let source = runtime
+                .storage()
+                .read_message_by_id(&source_id)
+                .unwrap()
+                .unwrap();
+            let retry = MessageEnvelope::new(
+                "default",
+                MessageKind::InternalFollowup,
+                MessageOrigin::System {
+                    subsystem: "model_lineage_recovery".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Next,
+                MessageBody::Text {
+                    text: "retained lineage".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::RuntimeSystem,
+                AdmissionContext::RuntimeOwned,
+            );
+            let select = |messages: &[MessageEnvelope], waits: &[String], parked: &[String]| {
+                let mut queue = crate::queue::RuntimeQueue::default();
+                for message in messages {
+                    queue.push(message.clone());
+                }
+                executor
+                    .select_runtime_queue_message(
+                        &queue,
+                        &waits.iter().cloned().collect(),
+                        &parked.iter().cloned().collect(),
+                    )
+                    .unwrap()
+                    .0
+                    .unwrap()
+                    .id
+                    .clone()
+            };
+            let pair = [retry.clone(), source.clone()];
+            assert_eq!(select(&pair, &[], &[]), source.id);
+            assert_eq!(select(&pair, &[], &[source.id.clone()]), retry.id);
+
+            let mut other_owner = retry.clone();
+            other_owner.work_item_id = Some("unrelated-owner".into());
+            assert_eq!(
+                select(&[other_owner.clone(), source.clone()], &[], &[]),
+                other_owner.id
+            );
+            let mut invalid = source.clone();
+            invalid.admission_context = None;
+            assert_eq!(select(&[retry.clone(), invalid], &[], &[]), retry.id);
+            let mut invalid = source.clone();
+            invalid
+                .source_refs
+                .insert("task_result_owner_key".into(), "wrong-owner".into());
+            assert_eq!(select(&[retry.clone(), invalid], &[], &[]), retry.id);
+
+            let interject = queued_message(Priority::Interject, "interject");
+            assert_eq!(
+                select(
+                    &[retry.clone(), source.clone(), interject.clone()],
+                    &[],
+                    &[]
+                ),
+                interject.id
+            );
+            let mut operator = operator_prompt("operator");
+            operator.priority = Priority::Next;
+            assert_eq!(
+                select(&[operator.clone(), retry.clone(), source.clone()], &[], &[]),
+                operator.id
+            );
+            operator.priority = Priority::Normal;
+            assert_eq!(
+                select(&[retry.clone(), operator.clone(), source.clone()], &[], &[]),
+                retry.id,
+                "a fresh scanner cannot cross an operator input behind the selected retry"
+            );
+            let wait = queued_message(Priority::Normal, "exact-wait");
+            assert_eq!(
+                select(
+                    &[retry.clone(), source.clone(), wait.clone()],
+                    &[wait.id.clone()],
+                    &[],
+                ),
+                wait.id
+            );
+            let ordinary = queued_message(Priority::Next, "ordinary");
+            assert_eq!(
+                select(&[ordinary.clone(), source.clone()], &[], &[]),
+                ordinary.id
+            );
+
+            let record = runtime
+                .runtime_db()
+                .task_result_settlements()
+                .latest_for_message(&result_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.recovery_attempts, 0, "selection is not an admission");
+            let mut task = runtime
+                .runtime_db()
+                .tasks()
+                .latest(&record.task_id)
+                .unwrap()
+                .unwrap();
+            task.detail.as_mut().unwrap()["rejoin_generation"] = serde_json::json!(2);
+            assert!(
+                runtime.runtime_db().tasks().upsert(&task).is_err(),
+                "a terminal task cannot replace its captured generation"
+            );
+            if restart {
+                runtime
+                    .runtime_db()
+                    .task_result_settlements()
+                    .settle_owner_unavailable(
+                        &result_id,
+                        crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale,
+                        runtime.now(),
+                    )
+                    .unwrap();
+                assert_eq!(select(&pair, &[], &[]), retry.id, "settled source");
+            }
+        }
     }
 
     fn no_progress_cause(reason: &'static str) -> QueueHeadNoProgressCause {
