@@ -315,6 +315,13 @@ earlier requests and unknown outcomes are never refunded or erased.
 Dispatch diagnostics distinguish canonical source, owner, generation, authority
 and recovery-root failures from availability/budget refusals.
 
+An operator interjection never adopts a source that canonical state marks
+`Interrupted`. Such a source stays in the live queue for its own recovery
+replay; the interjection drain skips it and still admits later queued inputs, so
+a parked source cannot starve fresh operator input. Any other divergent or
+unknown canonical status remains a fail-closed conflict rather than an
+idempotent reconciliation.
+
 An unrecoverable guard/canonical contradiction while the attempt still owns
 its lane settles a WorkItem to `NeedsRepair`, not `Interrupted`/`Runnable`.
 Lifecycle and conversation attempts pause. Availability refusals park the

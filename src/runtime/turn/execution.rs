@@ -93,6 +93,7 @@ fn live_input_budget(
 
 enum OperatorInterjectionPlan {
     Admit,
+    RetainInterruptedSource,
 }
 
 #[derive(Clone)]
@@ -1037,6 +1038,7 @@ impl RuntimeHandle {
     ) -> Result<Vec<String>> {
         let boundary_str = boundary.as_str();
         let mut follow_up_texts = Vec::new();
+        let mut retained_sources = std::collections::BTreeSet::new();
         'outer: loop {
             let committed = {
                 let mut attempt = 0;
@@ -1050,7 +1052,10 @@ impl RuntimeHandle {
                     let mut guard = self.inner.agent.lock().await;
                     let Some(message) = guard
                         .queue
-                        .peek_next_matching(scheduler::is_operator_interjection_message)
+                        .peek_next_matching(|message| {
+                            scheduler::is_operator_interjection_message(message)
+                                && !retained_sources.contains(&message.id)
+                        })
                         .cloned()
                     else {
                         break 'outer;
@@ -1064,6 +1069,10 @@ impl RuntimeHandle {
                         boundary_str,
                     )? {
                         OperatorInterjectionPlan::Admit => {}
+                        OperatorInterjectionPlan::RetainInterruptedSource => {
+                            retained_sources.insert(message.id);
+                            continue 'outer;
+                        }
                     }
                     let text = render_operator_interjection_text(&message);
                     if text.len() > budget.bytes
@@ -1217,6 +1226,20 @@ impl RuntimeHandle {
         boundary: &str,
     ) -> Result<OperatorInterjectionPlan> {
         use crate::types::ExecutionAdmissionProvenance;
+
+        // Parked sources remain in memory for canonical claim/reentry. Interjecting
+        // them into another turn would bypass their recovery deadline and owner.
+        if self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)?
+            .is_some_and(|record| {
+                record.agent_id == agent_id && record.status == QueueEntryStatus::Interrupted
+            })
+        {
+            return Ok(OperatorInterjectionPlan::RetainInterruptedSource);
+        }
 
         let execution_binding = expected_state
             .current_execution_binding
