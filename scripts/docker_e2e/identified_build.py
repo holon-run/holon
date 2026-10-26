@@ -58,3 +58,7 @@ def main(argv=None):
     print(json.dumps(prepare(args.source, args.destination,
                              recovery_acceptance=args.recovery_acceptance)))
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

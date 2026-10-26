@@ -1,5 +1,8 @@
 """Real Git fixtures for the acceptance image's source identity contract."""
 from pathlib import Path
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -97,6 +100,22 @@ class IdentifiedBuildTests(unittest.TestCase):
             git(self.source, "commit", "--allow-empty", "-m", "build fixture")
             with self.subTest(count=count), self.assertRaisesRegex(ValueError, "exactly one"):
                 prepare(self.source, self.root / f"invalid-{index}", recovery_acceptance=True)
+
+    def test_documented_script_entrypoint_prepares_the_build_context(self):
+        # The acceptance workflow runs this file as a script; a missing
+        # __main__ guard would silently prepare nothing and build nothing.
+        destination = self.root / "script-identified"
+        run = subprocess.run(
+            [sys.executable, "scripts/docker_e2e/identified_build.py",
+             "--source", str(self.source), "--destination", str(destination)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        result = json.loads(run.stdout)
+        self.assertEqual(result["revision"], git(self.source, "rev-parse", "HEAD"))
+        self.assertTrue(Path(result["dockerfile"]).is_file())
+        self.assertTrue((destination / "source.json").is_file())
 
 
 if __name__ == "__main__":
