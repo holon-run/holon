@@ -12,6 +12,13 @@ pub struct ProviderQueueParking {
     pub reason: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderDispatchPause {
+    pub parking: ProviderQueueParking,
+    pub attempt_id: String,
+    pub denial: &'static str,
+}
+
 impl ProviderQueueParking {
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -29,7 +36,7 @@ impl ProviderQueueParking {
     }
 }
 
-fn read_parking(
+pub(crate) fn read_parking(
     connection: &Connection,
     agent_id: &str,
     message_id: &str,

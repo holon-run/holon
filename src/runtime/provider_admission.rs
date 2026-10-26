@@ -15,13 +15,16 @@ use crate::{
     },
     runtime_db::provider_admission::{
         ProviderAdmissionLease, ProviderAdmissionScope, ProviderCooldownPolicy,
-        ProviderQueueParking, ProviderRecoveryAdmissionReservation, ProviderRecoveryBinding,
-        ProviderRecoveryBudgetKind, ProviderRecoveryBudgetState, ProviderRecoveryDispatch,
-        ProviderRecoveryDispatchDenial, ProviderRecoveryDispatchResult, ProviderRecoveryEpisode,
-        ProviderRecoveryRequestOutcome,
+        ProviderDispatchPause, ProviderQueueParking, ProviderRecoveryAdmissionReservation,
+        ProviderRecoveryBinding, ProviderRecoveryBudgetKind, ProviderRecoveryBudgetState,
+        ProviderRecoveryDispatch, ProviderRecoveryDispatchDenial, ProviderRecoveryDispatchResult,
+        ProviderRecoveryEpisode, ProviderRecoveryRequestOutcome,
     },
     runtime_db::RuntimeDb,
-    types::{AdmissionContext, AuditEvent, AuthorityClass, MessageEnvelope, MessageOrigin},
+    types::{
+        AdmissionContext, AgentState, AgentStatus, AuditEvent, AuthorityClass, BriefRecord,
+        MessageEnvelope, MessageOrigin,
+    },
 };
 
 use super::{RuntimeHandle, RuntimeInner};
@@ -56,15 +59,115 @@ pub(super) enum ProviderTurnGate {
 
 #[derive(Debug, thiserror::Error)]
 #[error("provider admission deferred before dispatch: {0}")]
-struct DispatchDeferred(LocalDispatchDenial);
+struct DispatchDeferred(LocalDispatchDenial, Option<Box<ProviderDispatchPause>>);
+
+pub(super) fn dispatch_pause(error: &anyhow::Error) -> Option<&ProviderDispatchPause> {
+    if !crate::provider::is_dispatch_guard_rejected(error) {
+        return None;
+    }
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<DispatchDeferred>())?
+        .1
+        .as_deref()
+}
+
+#[derive(Clone, Copy)]
+enum ProviderPauseDisposition {
+    Waiting,
+    SuspendedByControl,
+}
+
+impl ProviderPauseDisposition {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::SuspendedByControl => "suspended_by_control",
+        }
+    }
+}
+
+pub(super) struct ProviderPauseSettlement<'a> {
+    pub pause: &'a ProviderDispatchPause,
+    pub source: &'a MessageEnvelope,
+    brief: BriefRecord,
+    rejection: crate::runtime_error::RuntimeErrorDescriptor,
+}
+
+impl ProviderPauseSettlement<'_> {
+    fn brief(&self, disposition: ProviderPauseDisposition) -> BriefRecord {
+        let mut brief = self.brief.clone();
+        let deadline = self.pause.parking.not_before.to_rfc3339();
+        brief.text = match disposition {
+            ProviderPauseDisposition::Waiting => format!(
+                "Waiting for provider cooldown until {deadline}; input retained. Automatic retry is eligible only while the agent is running and all recovery fences hold."
+            ),
+            ProviderPauseDisposition::SuspendedByControl => format!(
+                "Provider dispatch paused until {deadline}; input retained and the agent remains stopped. An explicit Start is required before recovery."
+            ),
+        };
+        brief
+    }
+
+    pub(super) fn evidence(&self, state: &AgentState) -> Result<(BriefRecord, Vec<AuditEvent>)> {
+        let disposition = if state.status == AgentStatus::Stopped {
+            ProviderPauseDisposition::SuspendedByControl
+        } else {
+            ProviderPauseDisposition::Waiting
+        };
+        let brief = self.brief(disposition);
+        let events = vec![
+            AuditEvent::legacy(
+                "provider_dispatch_paused",
+                serde_json::json!({
+                    "message_id": self.source.id,
+                    "message_kind": self.source.kind,
+                    "attempt_id": self.pause.attempt_id,
+                    "turn_id": brief.turn_id,
+                    "episode_key": self.pause.parking.episode_key,
+                    "chain_fingerprint": self.pause.parking.chain_fingerprint,
+                    "not_before": self.pause.parking.not_before.to_rfc3339(),
+                    "denial": self.pause.denial,
+                    "dispatch_phase": "before_send",
+                    "recovery_disposition": disposition.as_str(),
+                    "request_retryable": self.rejection.retryable,
+                    "rejection": self.rejection,
+                }),
+            ),
+            AuditEvent::legacy(
+                "queue_entry_settled",
+                serde_json::json!({
+                    "message_id": self.source.id,
+                    "message_kind": self.source.kind,
+                    "status": crate::types::QueueEntryStatus::Interrupted,
+                    "reason": "provider_dispatch_parked",
+                    "recovery_disposition": disposition.as_str(),
+                }),
+            ),
+            crate::types::brief_created_event_for(&brief)?,
+        ];
+        Ok((brief, events))
+    }
+
+    fn matches_brief(&self, stored: &BriefRecord) -> bool {
+        [
+            ProviderPauseDisposition::Waiting,
+            ProviderPauseDisposition::SuspendedByControl,
+        ]
+        .into_iter()
+        .any(|disposition| {
+            let expected = self.brief(disposition);
+            stored.id == expected.id
+                && stored.text == expected.text
+                && stored.turn_id == expected.turn_id
+                && stored.turn_index == expected.turn_index
+                && stored.kind == expected.kind
+        })
+    }
+}
 
 pub(super) fn is_parked_dispatch_rejection(error: &anyhow::Error) -> bool {
-    crate::provider::is_dispatch_guard_rejected(error)
-        && error.chain().any(|source| {
-            source
-                .downcast_ref::<DispatchDeferred>()
-                .is_some_and(|denial| denial.0.is_availability_pause())
-        })
+    dispatch_pause(error).is_some()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,14 +191,8 @@ impl LocalDispatchDenial {
             self,
             Self::ScopeCooling { .. }
                 | Self::ChainCooling { .. }
-                | Self::Reservation(
-                    ProviderRecoveryDispatchDenial::EpisodePaused
-                        | ProviderRecoveryDispatchDenial::BudgetExhausted
-                )
-                | Self::Dispatch(
-                    ProviderRecoveryDispatchDenial::EpisodePaused
-                        | ProviderRecoveryDispatchDenial::BudgetExhausted
-                )
+                | Self::Reservation(ProviderRecoveryDispatchDenial::EpisodePaused)
+                | Self::Dispatch(ProviderRecoveryDispatchDenial::EpisodePaused)
         )
     }
 }
@@ -105,6 +202,7 @@ struct RequestState {
     lease: Option<ProviderAdmissionLease>,
     dispatch: Option<ProviderRecoveryDispatch>,
     unknown_dispatch: bool,
+    dispatched: bool,
     side_effect_boundary: bool,
 }
 
@@ -139,7 +237,12 @@ impl ProviderTurnAdmission {
                 state.lease = None;
             }
         }
-        if reason.is_availability_pause() {
+        let mut pause = None;
+        if reason.is_availability_pause()
+            && !state.dispatched
+            && !state.unknown_dispatch
+            && !state.side_effect_boundary
+        {
             let episode = self.episode()?;
             let not_before = match reason {
                 LocalDispatchDenial::ScopeCooling { not_before }
@@ -150,7 +253,7 @@ impl ProviderTurnAdmission {
             };
             // Persist the original deadline before releasing execution ownership.
             // Interrupted replay retains this attempt's canonical recovery root.
-            self.db.park_provider_queue(&ProviderQueueParking {
+            let parking = ProviderQueueParking {
                 agent_id: self.attempt.agent_id.clone(),
                 message_id: self
                     .attempt
@@ -166,9 +269,19 @@ impl ProviderTurnAdmission {
                     "chain_cooling"
                 }
                 .into(),
-            })?;
+            };
+            self.db.park_provider_queue(&parking)?;
+            pause = Some(Box::new(ProviderDispatchPause {
+                parking,
+                attempt_id: self.attempt.attempt_id.clone(),
+                denial: match reason {
+                    LocalDispatchDenial::ScopeCooling { .. } => "scope_cooling",
+                    LocalDispatchDenial::ChainCooling { .. } => "chain_cooling",
+                    _ => "episode_paused",
+                },
+            }));
         }
-        Err(DispatchDeferred(reason).into())
+        Err(DispatchDeferred(reason, pause).into())
     }
 
     pub(super) fn model(&self) -> &ModelRouteRef {
@@ -255,6 +368,7 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                 // A previous HTTP result not reported by the adapter is unknown:
                 // it remains charged, never inferred successful or refunded.
                 state.dispatch = Some(dispatch);
+                state.dispatched = true;
                 Ok(())
             }
             ProviderRecoveryDispatchResult::Denied(reason) => {
@@ -407,6 +521,99 @@ impl Drop for ActiveAdmission {
 }
 
 impl RuntimeHandle {
+    pub(super) async fn settle_provider_dispatch_pause(
+        &self,
+        message: &MessageEnvelope,
+        error: &anyhow::Error,
+        pause: &ProviderDispatchPause,
+        duration_ms: u64,
+    ) -> Result<()> {
+        let source = self
+            .inner
+            .storage
+            .read_message_by_id(&message.id)?
+            .context("provider pause source disappeared")?;
+        let mut terminal = self
+            .build_turn_interrupted_record("provider_dispatch_parked", None, duration_ms)
+            .await;
+        let mut brief = crate::brief::make_ack(&message.agent_id, message);
+        brief.turn_id = Some(terminal.turn_id.clone());
+        brief.turn_index = Some(terminal.turn_index);
+        terminal.no_brief_reason = None;
+        let mut turn_record = self.build_turn_record(&terminal).await?;
+        turn_record.produced_brief_ids.push(brief.id.clone());
+        let transition = super::turn::TurnTerminalTransition {
+            terminal,
+            turn_record,
+            prepared_work_item_completion: None,
+            prepared_wait_for: None,
+            terminal_tool_executions: Vec::new(),
+        };
+        let report = ProviderPauseSettlement {
+            pause,
+            source: &source,
+            brief,
+            rejection: crate::runtime_error::describe_runtime_error(error),
+        };
+        let record = crate::types::QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: message.agent_id.clone(),
+            priority: message.priority.clone(),
+            status: crate::types::QueueEntryStatus::Interrupted,
+            created_at: message.created_at,
+            updated_at: self.now(),
+        };
+        let witness = super::terminal_execution_settlement_witness(
+            &self.inner.storage,
+            &self.inner.runtime_db,
+            &record,
+            &transition,
+        )?;
+        ensure!(
+            witness
+                .as_ref()
+                .is_some_and(|witness| witness.attempt_id == pause.attempt_id),
+            "provider pause execution identity changed before settlement"
+        );
+        match self
+            .commit_queue_terminal_settlement_with_evidence(
+                record.clone(),
+                Vec::new(),
+                true,
+                Some(&transition),
+                None,
+                Vec::new(),
+                Vec::new(),
+                Some(&report),
+            )
+            .await
+        {
+            Ok(true) => Ok(()),
+            outcome => {
+                if self.terminal_settlement_readback(&record, &transition, witness.as_ref())?
+                    == super::TerminalSettlementReadback::Committed
+                    && self
+                        .inner
+                        .runtime_db
+                        .provider_queue_parking(&source.agent_id, &source.id)?
+                        .as_ref()
+                        == Some(&pause.parking)
+                    && self
+                        .inner
+                        .storage
+                        .read_brief_by_id(&report.brief.id)?
+                        .is_some_and(|stored| report.matches_brief(&stored))
+                {
+                    // Only reconcile memory after the entire pause transaction is durable.
+                    self.restore_parked_provider_source(&source.id).await
+                } else {
+                    outcome.context("provider pause settlement did not commit")?;
+                    anyhow::bail!("provider pause settlement was not applied")
+                }
+            }
+        }
+    }
+
     pub(super) fn local_provider_dispatch_error(&self, mut error: anyhow::Error) -> anyhow::Error {
         if !crate::provider::is_dispatch_guard_rejected(&error) {
             return error;
@@ -420,8 +627,8 @@ impl RuntimeHandle {
             // Keep their domain, code and retryability rather than inventing a denial.
             return error;
         };
-        let disposition = if denial.is_availability_pause() {
-            "parked"
+        let disposition = if dispatch_pause(&error).is_some() {
+            "pause_requested"
         } else {
             "needs_repair"
         };
@@ -731,6 +938,7 @@ impl RuntimeHandle {
                             lease: Some(lease),
                             dispatch: None,
                             unknown_dispatch: false,
+                            dispatched: false,
                             side_effect_boundary: episode.side_effect_boundary,
                         }),
                     })));
@@ -825,6 +1033,21 @@ impl RuntimeHandle {
             excluded,
         )? {
             ProviderTurnGate::Granted(next) => {
+                {
+                    // Candidate reselection stays in the same turn: it cannot
+                    // erase evidence that replay would repeat a prior request.
+                    let previous = current
+                        .state
+                        .lock()
+                        .map_err(|_| anyhow!("provider admission poisoned"))?;
+                    let mut replacement = next
+                        .state
+                        .lock()
+                        .map_err(|_| anyhow!("provider admission poisoned"))?;
+                    replacement.dispatched |= previous.dispatched;
+                    replacement.unknown_dispatch |= previous.unknown_dispatch;
+                    replacement.side_effect_boundary |= previous.side_effect_boundary;
+                }
                 let model = next.model().clone();
                 let mut active = self
                     .inner
@@ -857,11 +1080,21 @@ impl RuntimeHandle {
                     .runtime_db
                     .provider_queue_parking(&message.agent_id, &message.id)?
                     .context("exhausted provider chain was not parked")?;
+                let pause = dispatch_pause(&error)
+                    .filter(|_| parking.reason == "chain_cooling")
+                    .map(|pause| {
+                        Box::new(ProviderDispatchPause {
+                            parking: parking.clone(),
+                            attempt_id: pause.attempt_id.clone(),
+                            denial: "chain_cooling",
+                        })
+                    });
                 Err(
                     self.local_provider_dispatch_error(error.context(DispatchDeferred(
                         LocalDispatchDenial::ChainCooling {
                             not_before: parking.not_before,
                         },
+                        pause,
                     ))),
                 )
             }

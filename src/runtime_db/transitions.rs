@@ -117,6 +117,12 @@ pub(crate) enum QueueMutation {
         record: QueueEntryRecord,
         source: Box<MessageEnvelope>,
     },
+    ParkProviderDispatch {
+        expected: QueueEntryRecord,
+        record: QueueEntryRecord,
+        pause: Box<crate::runtime_db::provider_admission::ProviderDispatchPause>,
+        source: Box<MessageEnvelope>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2568,6 +2574,7 @@ impl RuntimeTransitionRepository<'_> {
                     },
                     QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
                     QueueMutation::CompareAndSet { expected, record }
+                    | QueueMutation::ParkProviderDispatch { expected, record, .. }
                     | QueueMutation::ConsumeSettledTaskResultRecovery {
                         expected, record, ..
                     } => {
@@ -2604,6 +2611,12 @@ impl RuntimeTransitionRepository<'_> {
             }
             let agent_state_applied =
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
+            if command.turn_record.is_some() {
+                inject_fault(
+                    command.fault,
+                    TransitionFaultPoint::AfterTerminalAgentStateWrite,
+                )?;
+            }
             let execution_protocol_applied = execution_protocol
                 .as_ref()
                 .is_some_and(|prepared| prepared.has_writes());
@@ -2762,6 +2775,10 @@ impl RuntimeTransitionRepository<'_> {
             }
             if let Some(turn_record) = command.turn_record.as_ref() {
                 upsert_turn_record_tx(tx, turn_record)?;
+                inject_fault(
+                    command.fault,
+                    TransitionFaultPoint::AfterTerminalTurnRecordWrite,
+                )?;
                 if command.operation == QueueOperation::Settle {
                     for execution_command in &execution_protocol_transition.commands {
                         if let crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(
@@ -2812,6 +2829,10 @@ impl RuntimeTransitionRepository<'_> {
                         .and_then(|wait| wait.task_result_admission.as_ref())
                         .map(|admission| admission.message.clone())
                         .into_iter()
+                        .chain(match &command.mutation {
+                            QueueMutation::ParkProviderDispatch { source, .. } => Some(*source.clone()),
+                            _ => None,
+                        })
                         .collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -4071,8 +4092,48 @@ fn validate_queue_mutation_tx(tx: &Transaction<'_>, mutation: &QueueMutation) ->
         .optional()?
         .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
         .transpose()?;
+    if let QueueMutation::ParkProviderDispatch {
+        expected,
+        pause,
+        source,
+        ..
+    } = mutation
+    {
+        let parking = &pause.parking;
+        anyhow::ensure!(
+            existing.as_ref().is_some_and(
+                |record| record == expected && record.status == QueueEntryStatus::Dequeued
+            ) && crate::runtime_db::provider_admission::read_parking(
+                tx,
+                &parking.agent_id,
+                &parking.message_id
+            )?
+            .as_ref()
+                == Some(parking),
+            "provider pause source or parking changed before settlement"
+        );
+        let state = execution_protocol_repository::load_state_tx(tx, &parking.agent_id)?;
+        anyhow::ensure!(
+            state
+                .attempts
+                .get(&pause.attempt_id)
+                .is_some_and(|attempt| attempt.state
+                    == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                    && attempt.source_message_id.as_deref() == Some(source.id.as_str())),
+            "provider pause requires the original open execution attempt"
+        );
+        let stored: String = tx.query_row(
+            "SELECT payload_json FROM messages WHERE agent_id = ?1 AND message_id = ?2",
+            params![source.agent_id, source.id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            serde_json::from_str::<MessageEnvelope>(&stored)? == **source,
+            "provider pause cannot replace source evidence"
+        );
+    }
     match (mutation, existing.as_ref()) {
-        (QueueMutation::Upsert(_), Some(existing)) => {
+        (QueueMutation::Upsert(_) | QueueMutation::ParkProviderDispatch { .. }, Some(existing)) => {
             queue_entry_transition(existing, incoming)?;
         }
         (QueueMutation::CompareAndSet { expected, record }, _)
@@ -4093,7 +4154,8 @@ fn queue_mutation_record(mutation: &QueueMutation) -> &QueueEntryRecord {
     match mutation {
         QueueMutation::Consume(record) | QueueMutation::Upsert(record) => record,
         QueueMutation::CompareAndSet { record, .. }
-        | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. } => record,
+        | QueueMutation::ConsumeSettledTaskResultRecovery { record, .. }
+        | QueueMutation::ParkProviderDispatch { record, .. } => record,
     }
 }
 
@@ -4189,6 +4251,39 @@ fn validate_delivery_queue_admission(
 }
 
 fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
+    if let QueueMutation::ParkProviderDispatch {
+        record,
+        pause,
+        source,
+        ..
+    } = &command.mutation
+    {
+        anyhow::ensure!(
+            command.operation == QueueOperation::Settle
+                && record.status == QueueEntryStatus::Interrupted
+                && record.agent_id == command.agent_id
+                && source.agent_id == record.agent_id
+                && source.id == record.message_id
+                && pause.parking.agent_id == source.agent_id
+                && pause.parking.message_id == source.id
+                && pause.parking.reason == "chain_cooling"
+                && command
+                    .agent_state
+                    .as_ref()
+                    .is_some_and(|state| state.record.pending > 0)
+                && command
+                    .turn_record
+                    .as_ref()
+                    .is_some_and(|turn| turn.runtime_failure.is_none()
+                        && turn
+                            .terminal
+                            .as_ref()
+                            .is_some_and(|terminal| terminal.kind
+                                == crate::types::TurnTerminalKind::Interrupted)),
+            "invalid provider pause settlement"
+        );
+        return Ok(());
+    }
     if let QueueMutation::ConsumeSettledTaskResultRecovery {
         expected,
         record,
