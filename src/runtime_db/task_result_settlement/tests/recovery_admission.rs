@@ -393,8 +393,8 @@ fn canonical_snapshot_admission_pauses_after_five_distinct_recovery_roots() {
                 now + Duration::days(1),
             )
             .unwrap(),
-        vec![paused.clone()],
-        "normal authorized delivery does not inherit the automatic recovery cap",
+        Vec::<TaskResultSettlementRecord>::new(),
+        "an unrelated input does not rearm another result's paused obligation",
     );
     let admitted = admit(
         &db,
@@ -404,9 +404,8 @@ fn canonical_snapshot_admission_pauses_after_five_distinct_recovery_roots() {
         now + Duration::days(1),
     )
     .unwrap();
-    assert_eq!(admitted.len(), 1);
-    assert_eq!(admitted[0].recovery_attempts, TASK_RESULT_RECOVERY_LIMIT);
-    assert_eq!(admitted[0].recovery_paused_at, paused.recovery_paused_at);
+    assert!(admitted.is_empty());
+    assert_eq!(latest(&db, &record), paused);
 }
 
 #[test]

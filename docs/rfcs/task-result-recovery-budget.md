@@ -69,6 +69,12 @@ An already charged root remains eligible for its interrupted replay, even after
 the final charge pauses the identity. Normal authorized input is not restricted
 by the automatic recovery budget.
 
+When an interrupted result snapshot and provider-lineage retries coexist for
+the same execution owner, select that snapshot before the retries. Otherwise
+older `next` retries can indefinitely starve a `background` scanner root after
+restart. This selection does not bypass canonical replay fences or change
+operator/interject, exact-wait, unrelated-owner or provider-parking precedence.
+
 Eligibility filtering precedes the bounded candidate query's `LIMIT`. Snapshot
 commit reloads the selected identities rather than truncating an unfiltered
 owner scan again. The frozen input cutoff controls snapshot membership; budget

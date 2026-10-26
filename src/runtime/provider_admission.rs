@@ -38,6 +38,7 @@ struct Candidate {
     model: ModelRouteRef,
     scopes: Vec<ProviderAdmissionScope>,
     quota: Option<ProviderAdmissionScope>,
+    rate_limit: ProviderAdmissionScope,
     connection: ProviderAdmissionScope,
     request: ProviderAdmissionScope,
 }
@@ -329,21 +330,19 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         Some((&self.candidate.request, ProviderCooldownPolicy::Transport))
                     }
                     ProviderFailureKind::RateLimited => {
-                        self.candidate.quota.as_ref().map(|scope| {
-                            let hard = provider_transport_diagnostics(error)
-                                .and_then(|diagnostics| diagnostics.throttle.as_ref())
-                                .is_some_and(|throttle| {
-                                    throttle.kind == ProviderThrottleKind::HardQuota
-                                });
-                            (
-                                scope,
-                                if hard {
-                                    ProviderCooldownPolicy::HardQuota
-                                } else {
-                                    ProviderCooldownPolicy::TransientQuota
-                                },
-                            )
-                        })
+                        let hard = provider_transport_diagnostics(error)
+                            .and_then(|diagnostics| diagnostics.throttle.as_ref())
+                            .is_some_and(|throttle| {
+                                throttle.kind == ProviderThrottleKind::HardQuota
+                            });
+                        Some((
+                            &self.candidate.rate_limit,
+                            if hard {
+                                ProviderCooldownPolicy::HardQuota
+                            } else {
+                                ProviderCooldownPolicy::TransientQuota
+                            },
+                        ))
                     }
                     _ => None,
                 };
@@ -368,7 +367,7 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                     if policy == ProviderCooldownPolicy::Transport {
                         ProviderRecoveryRequestOutcome::NetworkFailure(scope)
                     } else {
-                        ProviderRecoveryRequestOutcome::OtherFailure
+                        ProviderRecoveryRequestOutcome::RateLimited(scope)
                     }
                 } else {
                     self.db.release_provider_admission(&lease)?;
@@ -509,10 +508,22 @@ impl RuntimeHandle {
                 .map(ProviderAdmissionScope::quota);
             let mut scopes: Vec<_> = quota.iter().cloned().collect();
             scopes.extend([connection.clone(), request.clone()]);
+            let rate_limit = match quota.as_ref() {
+                Some(scope) => scope.clone(),
+                None => {
+                    let scope = ProviderAdmissionScope::route_throttle(&format!(
+                        "{path}:{}",
+                        route.route_ref.as_string()
+                    ))?;
+                    scopes.push(scope.clone());
+                    scope
+                }
+            };
             candidates.push(Candidate {
                 model,
                 scopes,
                 quota,
+                rate_limit,
                 connection,
                 request,
             });
@@ -523,7 +534,18 @@ impl RuntimeHandle {
         );
         let identity: Vec<_> = candidates
             .iter()
-            .map(|candidate| (candidate.model.as_string(), &candidate.scopes))
+            .map(|candidate| {
+                // Supplemental throttle admission must not rebind unfinished
+                // pre-upgrade roots to a fresh recovery budget.
+                (
+                    candidate.model.as_string(),
+                    candidate
+                        .quota
+                        .iter()
+                        .chain([&candidate.connection, &candidate.request])
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect();
         Ok(Some(Chain {
             fingerprint: format!(

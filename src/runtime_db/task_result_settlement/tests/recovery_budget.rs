@@ -141,7 +141,21 @@ fn exhausted_budget_preserves_obligation_and_does_not_starve_other_results() {
         .unwrap()
         .iter()
         .any(|entry| entry.result_identity == record.result_identity));
-    // A normal authorized input remains able to deliver the paused obligation.
+    let selected = std::collections::BTreeSet::from([record.result_identity.clone()]);
+    assert!(db
+        .task_result_settlements()
+        .admit_unsettled_snapshot(
+            "agent-a",
+            Some("work-a"),
+            "unrelated-input",
+            None,
+            Some(&selected),
+            now,
+        )
+        .unwrap()
+        .is_empty());
+    assert_eq!(latest(&db, &record), paused);
+    // Explicit admission of this source is not an unrelated input's batch.
     assert!(db
         .task_result_settlements()
         .admit_message("agent-a", &record.message_id, "normal-input", now)

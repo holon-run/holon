@@ -14,7 +14,7 @@ trap cleanup EXIT
 
 expected_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
 actual_version="$(docker run --rm "$image" --version)"
-if [ "$actual_version" != "holon $expected_version" ]; then
+if ! [[ "$actual_version" =~ ^"holon $expected_version"(\ \([0-9a-f]{7,12}\))?$ ]]; then
   echo "unexpected image version: $actual_version (expected holon $expected_version)" >&2
   exit 1
 fi

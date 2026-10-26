@@ -31,5 +31,10 @@ fn main() {
         _ => pkg_version.clone(),
     };
 
+    let version = if std::env::var_os("CARGO_FEATURE_RECOVERY_ACCEPTANCE").is_some() {
+        format!("{version} [recovery-acceptance-test]")
+    } else {
+        version
+    };
     println!("cargo:rustc-env=HOLON_VERSION={}", version);
 }

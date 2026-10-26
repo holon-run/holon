@@ -257,6 +257,15 @@ share admission, but another credential or endpoint does not inherit its quota
 facts. This is not proof of account-wide equality; Codex keeps its existing
 account identity. Raw credentials never enter incident or episode records.
 
+When no quota identity exists (including legal `auth:none` routes), a 429
+belongs to a separate route-throttle scope hashed from the configured provider,
+endpoint, transport, proxy path and model route. It is neither an invented
+account nor a transport outage. Credentialed routes retain their existing quota
+scope instead. This supplemental scope does not change the legacy effective-chain
+fingerprint: upgrading an unfinished root cannot reset its budget, cursor,
+operator grant or deadline. Actual configuration changes retain existing chain
+identity semantics.
+
 An unavailable scope moves from cooling to a leased probe, not directly to
 healthy when its deadline passes. One database transaction reserves every
 applicable scope or none; each reservation binds its revision and probe token.
@@ -268,7 +277,7 @@ late success/failure cannot overwrite a newer incident or success. A healthy
 success is not an incident transition and does not invalidate another healthy
 reservation. A concurrent failure still opens a new fenced incident.
 
-Quota and transport deadlines compose by taking the maximum for a candidate.
+Quota, route-throttle and transport deadlines compose by taking the maximum for a candidate.
 The chain recheck uses the minimum candidate deadline, subject to the episode
 floor. A cooling primary must not prevent selection of a healthy fallback.
 Absolute server `Retry-After` deadlines also apply to 5xx transport failures,
@@ -277,8 +286,14 @@ shorten them.
 When no candidate qualifies, admission parks before creating a model turn;
 durable non-model settlement and inbound storage continue normally.
 
-Automatic network recovery includes the initial request in a persistent
-three-dispatch budget, with at most one dispatch per failed network scope.
+Automatic recovery includes the initial request in a persistent three-dispatch
+budget, with at most one dispatch per failed network or rate-limit scope.
+`rate_limited` records the admitted quota or route-throttle scope and never
+resolves an episode, including when it is the first failure. Subsequent protocol
+or other failures cannot replenish that episode. Operator grants deduplicate
+route-throttle scopes just as they deduplicate quota scopes, without blocking a
+healthy fallback sharing the same connection. Schema migration preserves all
+historical request IDs, outcomes, scopes, epochs, revisions and settlement times.
 Exhaustion with untried candidates is distinct from chain cooling. Expiry
 allows one bounded probe epoch, not a fresh sweep on every wake. Runtime-authenticated
 new operator messages can grant one target-bound, idempotent bounded episode;
@@ -311,8 +326,8 @@ fences, and effective-chain fingerprint. Request IDs are consumed atomically
 with the final admission-fence check; a duplicate is a denial, not permission
 to replay an unknown dispatch. Local construction and rejected reservations
 consume no request. A non-network error does not replenish an already active
-network recovery sequence. Complete usable responses end that sequence; quota
-and other failures outside a network sequence keep their own policies.
+recovery sequence. Complete usable responses end that sequence; other failures
+outside a recovery sequence keep their existing policies.
 
 Ordinary reads and replayed ingress do not start another budget epoch or extend
 its floor. A due explicit recheck uses the episode revision CAS, preserving the
@@ -431,6 +446,29 @@ when no newer wait or source revision supersedes it. Recovery must prove the sam
 durable resolved wait, trigger, predecessor lineage and generation. An independent
 business blocker remains intact; it cannot consume the failed continuation or
 authorize ordinary blocked, paused or repair-needed work.
+
+An unrelated fresh input must not batch or consume a recovery-paused result,
+even under the same owner. Both candidate selection and transactional snapshot
+admission preserve that boundary. Explicit admission of the result's own source
+or explicit rearm remains distinct; replay of its already charged interrupted
+root does not create another recovery charge.
+
+A scanner-queued recovery message is immutable and may predate the exact wait's
+registration. Its durable join is the same-agent, same-owner task wait naming
+that message as its trigger, whether the wait is `Triggered` or `Resolved`.
+An explicit `wait_id` must agree; a conflicting ref cannot use the trigger join
+as a fallback. Initial admission, failed-continuation recovery, daemon startup
+classification and interrupted claim replay use this same identity. Startup
+validates against its own canonical claim in the same transaction; another
+activation's live claim remains in flight. Replay must still reject cancelled,
+expired or superseded waits, stopped agents, closed owners and stale or consumed
+results; resolving a wait does not remove its expiry fence.
+The same join and replay lineage apply to an agent-lifecycle exact wait without
+a WorkItem; absence of a WorkItem does not revoke the explicit promise or give
+an ordinary unbound followup re-entry authority.
+Repeated daemon startup validates these runtime-owned successors through the
+exact source-to-wait join and canonical lineage, not an agent-message delivery
+that their source never created. Ordinary lifecycle delivery fences still apply.
 
 For repeated fallback, follow validated predecessor links to the original task
 input with a bounded, cycle-checked traversal. Intermediate recovery messages

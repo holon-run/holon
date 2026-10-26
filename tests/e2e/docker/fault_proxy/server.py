@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from email.utils import formatdate
 import re
 import select
 import signal
@@ -22,9 +23,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "openai_stub"))
 from server import call_item, response, text_item  # noqa: E402
+from task_recovery import RecoveryScenario  # noqa: E402
 
 LOCK = threading.Lock()
 RECORDS: list[dict] = []
+RECOVERY = RecoveryScenario()
 
 
 def setting(name, default):
@@ -37,6 +40,17 @@ def record(**fields):
     with LOCK:
         RECORDS.append(row)
     print(json.dumps(row), flush=True)
+
+
+def retry_after_headers(side, status):
+    if status != 429:
+        return {}
+    value = setting(f"RETRY_AFTER_{side.upper()}", "1")
+    if isinstance(value, dict):
+        seconds = int(value["seconds"])
+        value = (formatdate(time.time() + seconds, usegmt=True)
+                 if value["format"] == "http-date" else str(seconds))
+    return {} if value is None else {"Retry-After": str(value)}
 
 
 class Mock(BaseHTTPRequestHandler):
@@ -64,7 +78,14 @@ class Mock(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         body = json.dumps(payload, ensure_ascii=False)
         side = self.path.split("/")[1]
+        if setting("TASK_RESULT_RECOVERY", False):
+            status, body = RECOVERY.consume_gated(payload, side, record)
+            record(layer="mock_http", side=side, status=status, model=payload.get("model"),
+                   stream=payload.get("stream", False))
+            self.reply(status, body)
+            return
         status = int(setting(f"STATUS_{side.upper()}", "200"))
+        headers = retry_after_headers(side, status)
         scenario = setting("SCENARIO", "")
         markers = re.findall(r"QA_[A-Z0-9_]+", body)
         marker = next((value for value in (
@@ -86,10 +107,10 @@ class Mock(BaseHTTPRequestHandler):
             return
         record(layer="mock_http", side=side, status=status, model=payload.get("model"),
                stream=payload.get("stream", False), scenario=scenario, marker=marker,
-               tool_output=tool_output)
+               tool_output=tool_output, retry_after=headers.get("Retry-After"))
         if status != 200:
             self.reply(status, {"error": {"message": "fixture failure", "type": "fixture"}},
-                       {"Retry-After": "1"} if status == 429 else {})
+                       headers)
             return
         if scenario == "tool-continuation":
             if tool_output:
@@ -183,10 +204,11 @@ class Proxy(socketserver.BaseRequestHandler):
             except (OSError, TimeoutError):
                 pass
             return
-        with socket.create_connection(("mock", 8080), timeout=10) as upstream:
+        upstream_timeout = float(setting("UPSTREAM_TIMEOUT", 10))
+        with socket.create_connection(("mock", 8080), timeout=upstream_timeout) as upstream:
             peers = [self.request, upstream]
             while True:
-                readable, _, _ = select.select(peers, [], [], 30)
+                readable, _, _ = select.select(peers, [], [], max(30, upstream_timeout))
                 if not readable:
                     return
                 for source in readable:
@@ -225,7 +247,7 @@ def request():
         print(json.dumps({"status": error.code, "body": raw}))
 
 
-def database():
+def database(*, task_result=False, route_throttle=False):
     candidates = list(Path("/evidence-home").glob("**/runtime.sqlite"))
     if len(candidates) != 1:
         raise RuntimeError(f"expected one isolated runtime database, found {len(candidates)}")
@@ -247,11 +269,23 @@ def database():
               for t in tables if not t.startswith("sqlite_")}
     rows, truncated = {}, []
     for table in tables:
-        if any(word in table for word in ("turn", "work_item", "queue", "recovery",
+        if (any(word in table for word in ("turn", "work_item", "queue", "recovery",
                                           "settlement", "provider_admission",
                                           "incident", "tool", "message", "activation_input",
-                                          "transcript", "input_assignment")):
-            rows[table] = [dict(r) for r in db.execute(f'SELECT * FROM "{table}" LIMIT 500')]
+                                          "transcript", "input_assignment"))
+                or route_throttle and table.endswith("_incidents")
+                or (task_result or route_throttle) and table in {
+                    "tasks", "messages", "briefs", "wait_conditions",
+                    "execution_protocol_attempts", "execution_protocol_outcomes",
+                }):
+            cursor = db.execute(f'SELECT * FROM "{table}"')
+            rows[table] = []
+            # Task-result drills can outgrow 500 messages during real backoff.
+            # Keep one read transaction, reading every row in bounded batches.
+            while batch := cursor.fetchmany(500):
+                rows[table].extend(dict(r) for r in batch)
+                if not task_result:
+                    break
             if counts[table] > len(rows[table]):
                 truncated.append(table)
     db.close()
@@ -278,6 +312,10 @@ def main():
         database()
     elif mode == "database":
         database()
+    elif mode == "task-result-database":
+        database(task_result=True)
+    elif mode == "route-throttle-database":
+        database(route_throttle=True)
     else:
         raise SystemExit("unknown fixture mode")
 

@@ -653,6 +653,7 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
              DROP TABLE provider_recovery_requests;
              DROP TABLE provider_recovery_episodes;
              DROP TABLE provider_transport_incidents;
+             DROP TABLE provider_route_throttle_incidents;
              DROP TABLE task_result_recovery_admissions;
              DROP TABLE task_result_settlements;
              DROP TABLE agent_relation_backfill_outcomes;

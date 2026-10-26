@@ -20,6 +20,7 @@ pub use queue_parking::*;
 enum ScopeKind {
     Quota,
     Transport,
+    RouteThrottle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -40,16 +41,28 @@ impl ProviderAdmissionScope {
 
     /// Hash configured path identity, never a diagnostic URL or error message.
     pub fn transport(namespace: &str, configured_identity: &str) -> Result<Self> {
+        Self::configured(ScopeKind::Transport, namespace, configured_identity)
+    }
+
+    pub fn route_throttle(configured_identity: &str) -> Result<Self> {
+        Self::configured(
+            ScopeKind::RouteThrottle,
+            "route_throttle",
+            configured_identity,
+        )
+    }
+
+    fn configured(kind: ScopeKind, namespace: &str, configured_identity: &str) -> Result<Self> {
         ensure!(
             !namespace.trim().is_empty() && !configured_identity.trim().is_empty(),
-            "transport scope requires a namespace and configured identity"
+            "provider scope requires a namespace and configured identity"
         );
         let mut hash = Sha256::new();
         hash.update(namespace.trim().as_bytes());
         hash.update([0]);
         hash.update(configured_identity.trim().as_bytes());
         Ok(Self {
-            kind: ScopeKind::Transport,
+            kind,
             key: format!("sha256:{:x}", hash.finalize()),
         })
     }
@@ -62,6 +75,7 @@ impl ProviderAdmissionScope {
         match self.kind {
             ScopeKind::Quota => "provider_quota_incidents",
             ScopeKind::Transport => "provider_transport_incidents",
+            ScopeKind::RouteThrottle => "provider_route_throttle_incidents",
         }
     }
 }
@@ -579,6 +593,74 @@ mod tests {
             .provider_admission_blocked(std::slice::from_ref(scope), at)?
             .unwrap()
             .not_before)
+    }
+
+    #[test]
+    fn route_throttle_deadlines_probe_fences_and_isolation_survive_restart() -> Result<()> {
+        for policy in [
+            ProviderCooldownPolicy::TransientQuota,
+            ProviderCooldownPolicy::HardQuota,
+        ] {
+            let (dir, db) = database()?;
+            let scope =
+                ProviderAdmissionScope::route_throttle("configured/provider/endpoint/model")?;
+            let connection = transport("configured/endpoint");
+            let stale = reserve(&db, &[scope.clone(), connection.clone()], now())?;
+            let failure = reserve(&db, &[scope.clone(), connection.clone()], now())?;
+            let server = now() + Duration::hours(1);
+            assert!(db.record_provider_admission_failure(
+                &failure,
+                &scope,
+                policy,
+                now(),
+                Some(server),
+                "test/model",
+            )?);
+            assert_eq!(db.record_provider_admission_success(&stale, now())?, 0);
+            let deadline = db
+                .provider_admission_blocked(std::slice::from_ref(&scope), now())?
+                .unwrap()
+                .not_before;
+            assert!(deadline >= server);
+            assert!(db
+                .provider_admission_blocked(&[connection], now())?
+                .is_none());
+            assert!(db
+                .provider_admission_blocked(
+                    &[ProviderAdmissionScope::route_throttle(
+                        "configured/provider/endpoint/other-model"
+                    )?],
+                    now(),
+                )?
+                .is_none());
+            assert!(db
+                .provider_admission_blocked(&[quota("new-credential")], now())?
+                .is_none());
+            drop(db);
+            let db = reopen(&dir)?;
+            let other = reopen(&dir)?;
+            assert_eq!(
+                db.provider_admission_blocked(std::slice::from_ref(&scope), now())?
+                    .unwrap()
+                    .not_before,
+                deadline
+            );
+            let probe = reserve(&db, std::slice::from_ref(&scope), deadline)?;
+            assert!(probe.is_probe());
+            assert!(matches!(
+                other.reserve_provider_admission(
+                    std::slice::from_ref(&scope),
+                    deadline,
+                    Duration::minutes(2)
+                )?,
+                ProviderAdmissionReservation::Blocked(_)
+            ));
+            assert_eq!(db.record_provider_admission_success(&probe, deadline)?, 1);
+            assert!(other
+                .provider_admission_blocked(&[scope], deadline)?
+                .is_none());
+        }
+        Ok(())
     }
 
     #[test]

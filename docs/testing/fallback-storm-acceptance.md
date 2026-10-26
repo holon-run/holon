@@ -139,6 +139,11 @@ parking or restart-safe recovery. This suite does not yet enforce exact server
 
 ## Regression baseline and remaining gates
 
+The companion [task-result recovery W2 gate](task-result-recovery-acceptance.md)
+reuses this suite's isolation/build/cleanup mechanisms with real owned tasks,
+strict durable-consumption oracles and separate fast/real-policy slow gates.
+It does not change N02's review-only status or expand W1's verdict scope.
+
 Run the existing CI validation entry point; it includes the new oracle and
 runner lifecycle regressions and does not need Docker or provider credentials:
 

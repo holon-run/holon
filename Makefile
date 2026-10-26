@@ -265,8 +265,21 @@ docker-e2e-scheduler-live-canary: docker-build ## Run the real-model scheduler c
 
 docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 scripts/docker-e2e.py --validate-manifest
+	python3 scripts/docker-task-result-recovery.py --validate-manifest
 	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill \
-		tests.test_fallback_storm tests.test_continuation_interjection
+		tests.test_fallback_storm tests.test_continuation_interjection \
+		tests.test_docker_task_recovery tests.test_docker_identified_build tests.test_docker_route_throttle
+
+.PHONY: docker-e2e-task-result-fast docker-e2e-task-result-slow
+docker-e2e-task-result-fast: ## Run owned exact/fallback drills with prebuilt isolated images
+	python3 scripts/docker-task-result-recovery.py --image "$(DOCKER_IMAGE)" --python-image holon-openai-responses-stub:local --expected-revision "$$(git rev-parse HEAD)" --suite fast --timeout 180 --evidence-dir target/docker-e2e/task-result-fast
+
+docker-e2e-task-result-slow: ## Run real 60/120/240/480-second recovery policy (up to 6h serial)
+	python3 scripts/docker-task-result-recovery.py --image "$(DOCKER_IMAGE)" --python-image holon-openai-responses-stub:local --expected-revision "$$(git rev-parse HEAD)" --suite slow --timeout 3600 --evidence-dir target/docker-e2e/task-result-slow
+
+.PHONY: docker-e2e-task-result-controlled
+docker-e2e-task-result-controlled: ## Run canonical-order/sixth-source gates with the separately built test image
+	python3 scripts/docker-task-result-recovery.py --image "$(DOCKER_IMAGE)" --python-image holon-openai-responses-stub:local --expected-revision "$$(git rev-parse HEAD)" --suite controlled --timeout 3600 --evidence-dir target/docker-e2e/task-result-controlled
 
 docker-e2e-bootstrap: docker-build ## Run the opt-in browser-first setup + first-task E2E (needs a real API key)
 	python3 scripts/docker-e2e.py --image "$(DOCKER_IMAGE)" --skip-build --case runtime-bootstrap-first-task

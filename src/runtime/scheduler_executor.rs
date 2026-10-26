@@ -259,8 +259,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(selected);
         }
+        let provider_recovery = selected.0.filter(|message| {
+            super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message)
+        });
         if let Some(message) = selected.0 {
             if !crate::wake_contract::is_agent_message(message)
+                && provider_recovery.is_none()
                 && self
                     .runtime
                     .inner
@@ -280,7 +284,35 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         // This is selection only; canonical admission still validates its source.
         if let Some(id) = self.runtime.idle_batch_recovery_message(queue)? {
             if !parked.contains(&id) {
-                return Ok((queue.peek_next_matching(|message| message.id == id), true));
+                let replay = queue.peek_next_matching(|message| message.id == id);
+                if let Some(retry) = provider_recovery {
+                    let Some(replay) = replay else {
+                        return Ok(selected);
+                    };
+                    let result_id = replay
+                        .source_refs
+                        .get("task_result_message_id")
+                        .unwrap_or(&replay.id);
+                    // Older provider lineages must not starve an attached result
+                    // snapshot for this owner, including its final charged root.
+                    if retry.work_item_id != replay.work_item_id
+                        || self
+                            .runtime
+                            .inner
+                            .runtime_db
+                            .task_result_settlements()
+                            .interrupted_admitted_result_anchor(
+                                &replay.agent_id,
+                                result_id,
+                                self.runtime.now(),
+                            )?
+                            .as_deref()
+                            != Some(id.as_str())
+                    {
+                        return Ok(selected);
+                    }
+                }
+                return Ok((replay, true));
             }
         }
         Ok(selected)
@@ -778,6 +810,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .storage
             .read_message_by_id(&candidate.message.id)?
             .ok_or_else(|| anyhow!("claimed message is missing persisted ingress evidence"))?;
+        #[cfg(feature = "recovery-acceptance")]
+        if super::recovery_acceptance::hold_task_result(self.runtime, &original_message)? {
+            // Park only this original source before planning/claiming. The
+            // scanner and all unrelated queue sources remain schedulable.
+            return Ok(PrepareMessageOutcome::ProviderParked);
+        }
         let mut persisted_message = original_message.clone();
         let isolated_legacy_execution_bindings = if queue_entry
             .as_ref()
@@ -1620,7 +1658,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             )?;
             for record in records {
                 if crate::runtime::task_result_recovery::recovery_owner_key(&record) == *owner_key
-                    && self.task_result_record_is_deliverable(&message.agent_id, &record)?
+                    && self.task_result_record_is_deliverable(
+                        &message.agent_id,
+                        &record,
+                        Some(message.id.as_str()),
+                    )?
                 {
                     return Ok(true);
                 }
@@ -1647,14 +1689,47 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(false);
         }
-        self.task_result_record_is_deliverable(&message.agent_id, &record)
+        self.task_result_record_is_deliverable(
+            &message.agent_id,
+            &record,
+            Some(message.id.as_str()),
+        )
     }
 
     fn task_result_record_is_deliverable(
         &self,
         agent_id: &str,
         record: &crate::runtime_db::TaskResultSettlementRecord,
+        source_message_id: Option<&str>,
     ) -> Result<bool> {
+        // Exhaustion rejects new roots, not the interrupted snapshot of an
+        // already charged root. Canonical claim still checks its replay fences.
+        if record.recovery_paused_at.is_some() {
+            let settlements = self.runtime.inner.runtime_db.task_result_settlements();
+            let charged_replay = if let Some(source_message_id) = source_message_id {
+                settlements
+                    .recovery_root_is_charged(record, &canonical_activation_id(source_message_id))?
+                    && settlements
+                        .interrupted_admitted_result_anchor(
+                            agent_id,
+                            &record.message_id,
+                            self.runtime.now(),
+                        )?
+                        .as_deref()
+                        == Some(source_message_id)
+            } else {
+                false
+            };
+            if !charged_replay {
+                #[cfg(feature = "recovery-acceptance")]
+                super::recovery_acceptance::budget_rejected(
+                    self.runtime,
+                    record,
+                    source_message_id,
+                )?;
+                return Ok(false);
+            }
+        }
         if self
             .runtime
             .inner
@@ -1694,7 +1769,12 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .storage
             .active_wait_conditions_for_agent(agent_id)?
             .iter()
-            .any(|wait| wait.work_item_id == record.work_item_id))
+            .any(|wait| {
+                wait.work_item_id == record.work_item_id
+                    && !(wait.kind == crate::types::WaitConditionKind::Task
+                        && source_message_id
+                            .is_some_and(|id| wait.trigger_message_id() == Some(id)))
+            }))
     }
 
     fn canonical_activation_plan(
@@ -1750,17 +1830,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let repaired_wait = matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
-        ) && self
-            .runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .exact_waiter_recovery_source(message)?
-            .is_some();
-        let candidate = if repaired_wait {
+        )
+        .then(|| {
+            self.runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .exact_waiter_recovery_wait(message)
+        })
+        .transpose()?
+        .flatten();
+        let candidate = if let Some(wait) = &repaired_wait {
             Some(scheduler::CanonicalActivationCandidate::ExactWaitResume {
                 expected_work_item_id: message.work_item_id.clone(),
-                correlated_wait: message.source_refs.get("wait_id").cloned(),
+                correlated_wait: Some(wait.id.clone()),
             })
         } else {
             scheduler::canonical_activation_candidate(
@@ -1804,7 +1887,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .transitions()
             .load_execution_protocol_state_if_initialized(&message.agent_id)?;
-        let interrupted_exact_wait = if repaired_wait {
+        let interrupted_exact_wait = if repaired_wait.is_some() {
             self.interrupted_exact_wait_recovery(message, existing_execution.as_ref())?
         } else {
             None
@@ -1890,6 +1973,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 scenario,
                 existing_execution,
                 scenario_class,
+                interrupted_exact_wait.map(|(_, attempt)| attempt),
             );
         }
         if let scheduler::CanonicalActivationScenario::ExactTaskRejoin {
@@ -2310,9 +2394,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let Some(execution) = execution else {
             return Ok(None);
         };
-        let Some(work_item_id) = message.work_item_id.as_ref() else {
-            return Ok(None);
-        };
         if !self
             .runtime
             .inner
@@ -2328,25 +2409,32 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .inner
             .runtime_db
             .task_result_settlements()
-            .exact_waiter_recovery_replay_wait(message)?
+            .exact_waiter_recovery_replay_wait(message, self.runtime.now())?
         else {
             return Ok(None);
         };
-        if !execution.work_items.get(work_item_id).is_some_and(|work| {
-            matches!(
-                &work.state,
-                WorkItemExecutionState::Runnable {
-                    recovery_ref: Some(recovery_ref),
-                    ..
-                } if recovery_ref == "interrupted"
-            )
-        }) {
-            return Ok(None);
-        }
-        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
-            owner: crate::domain::scheduler::SchedulerOwner::WorkItem {
+        let owner = if let Some(work_item_id) = &message.work_item_id {
+            if !execution.work_items.get(work_item_id).is_some_and(|work| {
+                matches!(
+                    &work.state,
+                    WorkItemExecutionState::Runnable {
+                        recovery_ref: Some(recovery_ref),
+                        ..
+                    } if recovery_ref == "interrupted"
+                )
+            }) {
+                return Ok(None);
+            }
+            crate::domain::scheduler::SchedulerOwner::WorkItem {
                 work_item_id: work_item_id.clone(),
-            },
+            }
+        } else {
+            crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
+                agent_id: message.agent_id.clone(),
+            }
+        };
+        let scenario = scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner,
             wait_id: wait.id.clone(),
         };
         let expected_source = ExecutionSourceIdentity::TriggeredWait {
@@ -2388,17 +2476,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         scenario: scheduler::CanonicalActivationScenario,
         existing_execution: Option<crate::domain::execution_protocol::ExecutionProtocolState>,
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
+        interrupted_exact_attempt: Option<crate::domain::execution_protocol::ExecutionAttempt>,
     ) -> Result<CanonicalClaimOutcome> {
         let repaired_wait = matches!(
             &message.origin,
             MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
-        ) && self
-            .runtime
-            .inner
-            .runtime_db
-            .task_result_settlements()
-            .exact_waiter_recovery_source(message)?
-            .is_some();
+        )
+        .then(|| {
+            self.runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .exact_waiter_recovery_wait(message)
+        })
+        .transpose()?
+        .flatten();
         let wait_id = match &scenario {
             scheduler::CanonicalActivationScenario::ExactWaitResume { owner, wait_id }
                 if owner
@@ -2422,8 +2514,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                             )
                             && condition.trigger_message_id() == Some(message.id.as_str())
                             && (scheduler::message_matches_wait_condition(message, condition)
-                                || (repaired_wait
-                                    && message.source_refs.get("wait_id") == Some(wait_id)))
+                                || repaired_wait
+                                    .as_ref()
+                                    .is_some_and(|wait| wait.id == condition.id))
                     });
                 if matching.is_none() {
                     return Ok(CanonicalClaimOutcome::RejectQueued {
@@ -2500,6 +2593,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             };
             Some(predecessor)
+        } else if let Some(attempt) = interrupted_exact_attempt {
+            Some(attempt.attempt_id)
         } else {
             match self.canonical_lifecycle_recovery(
                 message,
@@ -4447,7 +4542,7 @@ mod tests {
             .unwrap();
         let executor = SchedulerDecisionExecutor::new(&runtime);
         assert!(executor
-            .task_result_record_is_deliverable("default", &record)
+            .task_result_record_is_deliverable("default", &record, None)
             .unwrap());
 
         runtime
@@ -4477,7 +4572,7 @@ mod tests {
             })
             .unwrap();
         assert!(!executor
-            .task_result_record_is_deliverable("default", &record)
+            .task_result_record_is_deliverable("default", &record, None)
             .unwrap());
     }
 

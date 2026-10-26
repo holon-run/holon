@@ -764,14 +764,12 @@ impl RuntimeHandle {
         // A shared body is not a shared grant. Only individually eligible
         // canonical waiters may join this original reply's activation.
         candidates.extend(anchor_replies);
-        if result_recovery {
-            candidates = repository.filter_recovery_snapshot_candidates(
-                &anchor.agent_id,
-                activation_id,
-                &candidates,
-                admission_at,
-            )?;
-        }
+        candidates = repository.filter_recovery_snapshot_candidates(
+            &anchor.agent_id,
+            activation_id,
+            &candidates,
+            admission_at,
+        )?;
         let mut candidate_ids = std::collections::BTreeSet::new();
         candidates.retain(|record| candidate_ids.insert(record.result_identity.clone()));
         let recovering = attempt.recovery_of_attempt_id.as_deref();

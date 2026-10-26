@@ -64,18 +64,13 @@ pub(super) fn closed_continuation_tx(
     let Some(source) = load_source_tx(tx, trigger_message_id)? else {
         return Ok(None);
     };
-    let payload: Option<String> = tx.query_row(
-        "SELECT payload_json FROM wait_conditions WHERE agent_id = ?1 AND wait_condition_id = ?2",
-        params![record.agent_id, wait_id], |row| row.get(0),
-    ).optional()?;
-    let Some(payload) = payload else {
+    let Some(wait) = exact_wait_for_source_tx(tx, &source, Some(wait_id))? else {
         return Ok(None);
     };
-    let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
     if wait.status != WaitConditionStatus::Resolved
         || source.id != *trigger_message_id
         || source.work_item_id != wait.work_item_id
-        || source.source_refs.get("wait_id") != Some(wait_id)
+        || wait.trigger_message_id() != Some(trigger_message_id.as_str())
         || wait.work_item_id.as_deref() != turn.effective_owner().work_item_id()
         || !wait_claims_result_tx(tx, &wait, record)?
         || classify_obligation_tx(tx, record, None, wait.work_item_id.as_deref())?
@@ -121,9 +116,16 @@ pub(super) fn wait_claims_result_tx(
     let Some(source) = load_source_tx(tx, trigger)? else {
         return Ok(false);
     };
+    // Persisted messages are append-only, so a recovery source the scanner
+    // queued first cannot gain the waiter ref afterwards. The wait names its
+    // trigger durably; an explicit ref must still agree when the source carries
+    // one.
     Ok(source_matches(&source, record)
         && source.work_item_id == wait.work_item_id
-        && source.source_refs.get("wait_id") == Some(&wait.id)
+        && source
+            .source_refs
+            .get("wait_id")
+            .is_none_or(|wait_id| wait_id == &wait.id)
         && wait_matches_result(wait, record))
 }
 
@@ -196,20 +198,9 @@ pub(super) fn source_candidate_tx(
     {
         return Ok(None);
     }
-    let Some(wait_id) = source.source_refs.get("wait_id") else {
+    let Some(wait) = exact_wait_for_source_tx(tx, &source, expected_wait_id)? else {
         return Ok(None);
     };
-    if expected_wait_id.is_some_and(|expected| expected != wait_id) {
-        return Ok(None);
-    }
-    let payload: Option<String> = tx.query_row(
-        "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1 AND agent_id = ?2",
-        params![wait_id, record.agent_id], |row| row.get(0),
-    ).optional()?;
-    let Some(payload) = payload else {
-        return Ok(None);
-    };
-    let wait: WaitConditionRecord = serde_json::from_str(&payload)?;
     let obligation =
         classify_obligation_tx(tx, &record, current_activation_id, waiter_work_item_id)?;
     let admissible = match obligation {
@@ -240,6 +231,67 @@ pub(super) fn source_candidate_tx(
         }
     }
     Ok(Some(record))
+}
+
+/// The exact wait an already validated recovery source belongs to. The source
+/// ref must agree when present. A scanner-queued source can reach the waiter
+/// before that ref exists, so its durable trigger join survives resolution too.
+pub(super) fn exact_wait_for_source_tx(
+    tx: &Transaction<'_>,
+    source: &MessageEnvelope,
+    expected_wait_id: Option<&str>,
+) -> Result<Option<WaitConditionRecord>> {
+    let Some(wait_id) = source.source_refs.get("wait_id") else {
+        return wait_triggered_by_source_tx(tx, source, expected_wait_id);
+    };
+    if expected_wait_id.is_some_and(|expected| expected != wait_id) {
+        return Ok(None);
+    }
+    let Some(payload) = tx
+        .query_row(
+            "SELECT payload_json FROM wait_conditions
+             WHERE wait_condition_id = ?1 AND agent_id = ?2",
+            params![wait_id, source.agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_str::<WaitConditionRecord>(&payload)?))
+}
+
+/// The exact wait a runtime recovery source triggers for the same work item.
+/// This is the durable join for a scanner-queued source that reached the waiter
+/// before the source could carry its own `wait_id` ref.
+fn wait_triggered_by_source_tx(
+    tx: &Transaction<'_>,
+    source: &MessageEnvelope,
+    expected_wait_id: Option<&str>,
+) -> Result<Option<WaitConditionRecord>> {
+    let mut statement = tx.prepare(
+        "SELECT payload_json FROM wait_conditions
+         WHERE agent_id = ?1 AND work_item_id IS ?2
+         ORDER BY wait_condition_id ASC",
+    )?;
+    let rows = statement.query_map(params![source.agent_id, source.work_item_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for payload in rows {
+        let wait: WaitConditionRecord = serde_json::from_str(&payload?)?;
+        if wait.kind != WaitConditionKind::Task
+            || !matches!(
+                wait.status,
+                WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+            )
+            || wait.trigger_message_id() != Some(source.id.as_str())
+            || expected_wait_id.is_some_and(|expected| expected != wait.id)
+        {
+            continue;
+        }
+        return Ok(Some(wait));
+    }
+    Ok(None)
 }
 
 fn candidate_for_attempt_tx(

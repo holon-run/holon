@@ -92,6 +92,7 @@ wreq-util = { version = "=3.0.0-rc.14" }
 [features]
 default = []
 local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
+recovery-acceptance = []
 
 [dev-dependencies]
 futures-util = "0.3"

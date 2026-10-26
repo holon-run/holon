@@ -1068,8 +1068,22 @@ fn startup_claim_recovery_tx(
                     .is_some_and(|scenario| crate::runtime::scheduler_executor::canonical_lifecycle_attempt_lineage_is_valid(
                         &state, message, &scenario, attempt_id,
                     ));
+                // Runtime-owned exact recovery has no agent-message delivery.
+                let exact_recovery = match &attempt.source.identity {
+                    crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait {
+                        wait_id,
+                        ..
+                    } => super::task_result_settlement::exact_waiter_recovery_wait_tx(
+                        tx,
+                        message,
+                        Some(attempt_id),
+                    )?
+                    .is_some_and(|wait| wait.id == *wait_id),
+                    _ => false,
+                };
                 let valid = valid
                     && (attempt.attempt_id == format!("activation:message:{}", message.id)
+                        || exact_recovery
                         || delivery.as_ref().is_some_and(|delivery| {
                             delivery.target_agent_id == agent_id
                                 && delivery.activation_id.as_deref() == Some(attempt_id)
@@ -1132,12 +1146,23 @@ fn startup_triggered_wait_is_exact_tx(
         ExecutionBinding::AgentLifecycle { .. } => None,
         _ => return Ok(false),
     };
+    let exact_ref = match message.source_refs.get("wait_id") {
+        Some(source_wait_id) => source_wait_id == wait_id,
+        // Immutable scanner sources may predate registration. Only validated
+        // task-result recovery sources may use their durable trigger join.
+        None => super::task_result_settlement::exact_waiter_recovery_wait_tx(
+            tx,
+            message,
+            Some(&attempt.attempt_id),
+        )?
+        .is_some_and(|wait| wait.id == *wait_id),
+    };
     Ok(wait.is_some_and(|wait| {
         wait.status == WaitConditionStatus::Resolved
             && wait.work_item_id.as_deref() == owner
             && wait.trigger_message_id() == Some(message.id.as_str())
             && trigger_message_id == &message.id
-            && message.source_refs.get("wait_id") == Some(wait_id)
+            && exact_ref
     }))
 }
 

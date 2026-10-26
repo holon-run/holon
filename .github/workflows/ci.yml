@@ -39,6 +39,7 @@ on:
       - "build.rs"
       - "scripts/docker-smoke.sh"
       - "scripts/docker-e2e.py"
+      - "scripts/docker-task-result-recovery.py"
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
       - ".github/workflows/e2e-scheduler-nightly.yml"
@@ -89,6 +90,7 @@ on:
       - "build.rs"
       - "scripts/docker-smoke.sh"
       - "scripts/docker-e2e.py"
+      - "scripts/docker-task-result-recovery.py"
       - "scripts/docker-live-acceptance.py"
       - "scripts/docker_e2e/**"
       - ".github/workflows/e2e-scheduler-nightly.yml"
@@ -158,6 +160,7 @@ jobs:
               - 'build.rs'
               - 'scripts/docker-smoke.sh'
               - 'scripts/docker-e2e.py'
+              - 'scripts/docker-task-result-recovery.py'
               - 'scripts/docker-live-acceptance.py'
               - 'scripts/docker_e2e/**'
               - '.github/workflows/e2e-scheduler-nightly.yml'
@@ -621,10 +624,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare revision-bearing acceptance context
+        run: python3 scripts/prepare-identified-docker-context.py --destination "$RUNNER_TEMP/holon-identified"
+
       - name: Build image
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ runner.temp }}/holon-identified/context
+          file: ${{ runner.temp }}/holon-identified/Dockerfile
           load: true
           push: false
           tags: holon:ci
@@ -1038,6 +1045,44 @@ jobs:
           HOLON_E2E_PROVIDER_CONFIG_FILE: /tmp/holon-e2e-config.json
         run: rm -f "${HOLON_E2E_PROVIDER_ENV_FILE}" "${HOLON_E2E_PROVIDER_CONFIG_FILE}"
 
+  task-result-controlled-required:
+    name: Task-result controlled recovery required
+    needs: changes
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Prepare separately identified recovery test build
+        run: python3 scripts/prepare-identified-docker-context.py --recovery-acceptance --destination "$RUNNER_TEMP/holon-recovery-test"
+      - name: Build isolated recovery test image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/holon-recovery-test/context
+          file: ${{ runner.temp }}/holon-recovery-test/Dockerfile
+          load: true
+          push: false
+          tags: holon:recovery-acceptance
+          cache-from: type=gha,scope=holon-recovery-acceptance
+          cache-to: type=gha,mode=max,scope=holon-recovery-acceptance
+      - name: Build isolated provider fixture
+        run: docker build -t holon-openai-responses-stub:local tests/e2e/docker/openai_stub
+      - name: Run controlled canonical-order and sixth-source hard gates
+        run: |
+          python3 scripts/docker-task-result-recovery.py \
+            --image holon:recovery-acceptance \
+            --python-image holon-openai-responses-stub:local \
+            --expected-revision "$(git rev-parse HEAD)" \
+            --suite controlled --timeout 3600 \
+            --evidence-dir target/docker-e2e/task-result-controlled
+      - name: Upload controlled recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-result-controlled
+          path: target/docker-e2e/task-result-controlled
+
   scheduler-e2e-required:
     name: Scheduler E2E Required
     needs:
@@ -1045,7 +1090,7 @@ jobs:
       - docker
     if: always() && (needs.docker.result == 'success' || needs.docker.result == 'skipped') && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -1066,11 +1111,16 @@ jobs:
         if: needs.docker.result == 'skipped'
         uses: docker/setup-buildx-action@v4
 
+      - name: Prepare revision-bearing acceptance context
+        if: needs.docker.result == 'skipped'
+        run: python3 scripts/prepare-identified-docker-context.py --destination "$RUNNER_TEMP/holon-identified"
+
       - name: Build image
         if: needs.docker.result == 'skipped'
         uses: docker/build-push-action@v7
         with:
-          context: .
+          context: ${{ runner.temp }}/holon-identified/context
+          file: ${{ runner.temp }}/holon-identified/Dockerfile
           load: true
           push: false
           tags: holon:scheduler-required
@@ -1087,6 +1137,15 @@ jobs:
             --scheduler-matrix \
             --timeout 120 \
             --evidence-dir target/docker-e2e/scheduler-required
+
+      - name: Run owned task-result fast hard gate
+        run: |
+          python3 scripts/docker-task-result-recovery.py \
+            --image holon:scheduler-required \
+            --python-image holon-openai-responses-stub:local \
+            --expected-revision "$(git rev-parse HEAD)" \
+            --suite fast --timeout 180 \
+            --evidence-dir target/docker-e2e/task-result-fast
 
       - name: Verify required reports
         run: |
@@ -1109,7 +1168,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scheduler-e2e-required
-          path: target/docker-e2e/scheduler-required
+          path: |
+            target/docker-e2e/scheduler-required
+            target/docker-e2e/task-result-fast
 
   timing:
     name: CI Timing
