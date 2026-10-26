@@ -249,7 +249,10 @@ class RecoveryRun(FaultRun):
             "task-result-released" if order == "scanner-first" else "scanner-released",
         )
         if released is None:
-            return False
+            # Let the claimed winner finish its provider request: the daemon
+            # services the loser release only after that turn returns. With no
+            # pending request, still wait for the acknowledgement before verdict.
+            return bool(barriers)
         require_first_admission(
             json.loads((self.evidence / "order-before.json").read_text()),
             captured=self.captured, order=order, held=held, scanner=scanner,
