@@ -140,6 +140,27 @@ fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
     format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
+/// A continuation round may replan an unsent cooling candidate onto an
+/// independent one. A first-round rejection keeps the durable park/resume
+/// contract, which already preserves the source, deadline and budget.
+fn continuation_supports_candidate_reselection(rounds: &[TurnRoundRecord]) -> bool {
+    !rounds.is_empty()
+        && rounds.iter().all(|round| {
+            round.assistant_blocks.iter().all(|block| {
+                matches!(
+                    block,
+                    ModelBlock::Text { .. }
+                        | ModelBlock::Citations { .. }
+                        | ModelBlock::ToolUse {
+                            kind: crate::provider::ModelToolCallKind::Function,
+                            provider_data: None,
+                            ..
+                        }
+                )
+            })
+        })
+}
+
 fn report_tool_allowed(name: &str) -> bool {
     // Keep the pending terminal intent unique, not a separate capability mode.
     // All other tools retain the execution's ordinary exposure and permissions.
@@ -150,6 +171,39 @@ fn report_tool_allowed(name: &str) -> bool {
             | crate::tool::names::PICK_WORK_ITEM
             | crate::tool::names::SLEEP
     )
+}
+
+fn merge_reselected_provider_attempts(
+    previous: Option<&ProviderAttemptTimeline>,
+    result: Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>,
+) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
+    let Some(previous) = previous else {
+        return result;
+    };
+    let merge = |timeline: Option<ProviderAttemptTimeline>| {
+        let Some(mut timeline) = timeline else {
+            return previous.clone();
+        };
+        let mut attempts = previous.attempts.clone();
+        attempts.append(&mut timeline.attempts);
+        timeline.attempts = attempts;
+        timeline.requested_model_ref = previous.requested_model_ref.clone();
+        timeline.aggregated_token_usage =
+            crate::provider::aggregate_attempt_token_usage(&timeline.attempts);
+        timeline
+    };
+    match result {
+        Ok((response, timeline)) => Ok((response, Some(merge(timeline)))),
+        Err(error) if error.downcast_ref::<CurrentRunAborted>().is_some() => Err(error),
+        Err(error) => {
+            let timeline = merge(provider_attempt_timeline(&error).cloned());
+            Err(crate::provider::provider_turn_error(
+                error.to_string(),
+                timeline,
+                error,
+            ))
+        }
+    }
 }
 
 fn report_tools(available_tools: &[ToolSpec]) -> Vec<ToolSpec> {
@@ -2086,7 +2140,7 @@ impl TurnExecution<'_> {
             let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
         };
-        let (turn_model_override, turn_model_state) = {
+        let (turn_model_override, mut turn_model_state) = {
             let guard = runtime.inner.agent.lock().await;
             (
                 guard.state.model_override.clone(),
@@ -2095,10 +2149,10 @@ impl TurnExecution<'_> {
         };
         let time_timezone = runtime.current_time_timezone().await?;
         let (
-            provider,
-            available_tools,
+            mut provider,
+            mut available_tools,
             _apply_patch_surface,
-            native_web_search,
+            mut native_web_search,
             builtin_web_search_selection,
         ) = runtime
             .provider_tool_selection_for_turn(model_selection.fallback_model())
@@ -2106,8 +2160,8 @@ impl TurnExecution<'_> {
         let configured_selector =
             configured_history_selector(agent_id, &turn_model_state.effective_model);
         let scoped_window = configured_work_item_scoped_window_messages();
-        let context_config = runtime.current_context_config().await;
-        let projection_budget =
+        let mut context_config = runtime.current_context_config().await;
+        let mut projection_budget =
             effective_prompt.history_reprojection_budget(context_config.turn_projection_budget());
         let mut projection_selector = configured_selector;
         let mut projection_fallback_reason =
@@ -2296,6 +2350,8 @@ impl TurnExecution<'_> {
             let runtime_time = RuntimeTime::new(runtime.now(), time_timezone);
             let inference_time = runtime_time.render();
             let provider_round_started = std::time::Instant::now();
+            let mut excluded_candidates = std::collections::BTreeSet::new();
+            let mut reselected_attempts = None;
             let (
                 response,
                 attempt_timeline,
@@ -2366,6 +2422,13 @@ impl TurnExecution<'_> {
                         provider_started_at,
                         &result,
                     );
+                    if result.as_ref().err().is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some()) {
+                        if let Some(timeline) = reselected_attempts.as_ref() {
+                            runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
+                        }
+                    }
+                    let result =
+                        merge_reselected_provider_attempts(reselected_attempts.as_ref(), result);
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => {
                             let identities = if runtime.active_provider_admission()?.is_some() {
@@ -2429,7 +2492,38 @@ impl TurnExecution<'_> {
                                 return Err(err);
                             }
                             if crate::provider::is_dispatch_guard_rejected(&err) {
-                                return Err(err);
+                                let timeline = provider_attempt_timeline(&err).cloned();
+                                let selection = if continuation_supports_candidate_reselection(&completed_rounds) {
+                                    runtime.reselect_cooling_provider(err, &mut excluded_candidates).await
+                                } else {
+                                    Err(err)
+                                };
+                                let model = match selection {
+                                    Ok(model) => model,
+                                    Err(err) => {
+                                        if let Some(timeline) = timeline.as_ref() {
+                                            runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
+                                        }
+                                        return Err(err);
+                                    }
+                                };
+                                reselected_attempts = timeline;
+                                runtime.reconfigure_provider_for_turn(Some(&model)).await?;
+                                (provider, available_tools, _, native_web_search, _) = runtime
+                                    .provider_tool_selection_for_turn(Some(&model))
+                                    .await?;
+                                turn_model_state = {
+                                    let guard = runtime.inner.agent.lock().await;
+                                    runtime.model_state_for_turn(&guard.state, Some(&model))
+                                };
+                                context_config = runtime.current_context_config().await;
+                                projection_budget = effective_prompt.history_reprojection_budget(
+                                    context_config.turn_projection_budget(),
+                                );
+                                projection_fallback_reason = provider_projection_fallback_reason(
+                                    provider.as_ref(), projection_selector,
+                                );
+                                continue 'provider_round;
                             }
                             if let Some(recovered_prompt) = runtime.try_context_length_recovery(
                                 agent_id,
@@ -2492,7 +2586,7 @@ impl TurnExecution<'_> {
                         }
                     });
                 } else {
-                    let context_config = runtime.current_context_config().await;
+                    let mut context_config = runtime.current_context_config().await;
                     let (turn_index, turn_budget) = {
                         let guard = runtime.inner.agent.lock().await;
                         (guard.state.turn_index, guard.state.turn_budget.clone())
@@ -2785,6 +2879,13 @@ impl TurnExecution<'_> {
                         provider_started_at,
                         &result,
                     );
+                    if result.as_ref().err().is_some_and(|error| error.downcast_ref::<CurrentRunAborted>().is_some()) {
+                        if let Some(timeline) = reselected_attempts.as_ref() {
+                            runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
+                        }
+                    }
+                    let result =
+                        merge_reselected_provider_attempts(reselected_attempts.as_ref(), result);
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => ProviderRoundResult::Completed((
                             response,
@@ -2813,7 +2914,38 @@ impl TurnExecution<'_> {
                                 return Err(err);
                             }
                             if crate::provider::is_dispatch_guard_rejected(&err) {
-                                return Err(err);
+                                let timeline = provider_attempt_timeline(&err).cloned();
+                                let selection = if continuation_supports_candidate_reselection(&completed_rounds) {
+                                    runtime.reselect_cooling_provider(err, &mut excluded_candidates).await
+                                } else {
+                                    Err(err)
+                                };
+                                let model = match selection {
+                                    Ok(model) => model,
+                                    Err(err) => {
+                                        if let Some(timeline) = timeline.as_ref() {
+                                            runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
+                                        }
+                                        return Err(err);
+                                    }
+                                };
+                                reselected_attempts = timeline;
+                                runtime.reconfigure_provider_for_turn(Some(&model)).await?;
+                                (provider, available_tools, _, native_web_search, _) = runtime
+                                    .provider_tool_selection_for_turn(Some(&model))
+                                    .await?;
+                                turn_model_state = {
+                                    let guard = runtime.inner.agent.lock().await;
+                                    runtime.model_state_for_turn(&guard.state, Some(&model))
+                                };
+                                context_config = runtime.current_context_config().await;
+                                projection_budget = effective_prompt.history_reprojection_budget(
+                                    context_config.turn_projection_budget(),
+                                );
+                                projection_fallback_reason = provider_projection_fallback_reason(
+                                    provider.as_ref(), projection_selector,
+                                );
+                                continue 'provider_round;
                             }
                             if let Some(recovered_prompt) = runtime.try_context_length_recovery(
                                 agent_id,
@@ -2883,6 +3015,13 @@ impl TurnExecution<'_> {
                 ProviderRoundResult::Completed(round) => round,
                 ProviderRoundResult::Terminal(outcome) => return Ok(outcome),
             };
+            if reselected_attempts.is_some() {
+                if let Some(timeline) = attempt_timeline.as_ref() {
+                    runtime
+                        .append_provider_attempt_failure_events(agent_id, round, timeline)
+                        .await?;
+                }
+            }
             let stop_reason = response.stop_reason.clone();
             let cache_usage = response.cache_usage.clone();
             let request_diagnostics = response.request_diagnostics.clone();
@@ -4952,8 +5091,9 @@ fn provider_quota_clean_success_identities(
 #[cfg(test)]
 mod tests {
     use super::{
-        corrective_replay_blocks, provider_error_is_safe_for_context_recovery,
-        provider_quota_incident_identities_to_resolve, report_tool_allowed,
+        corrective_replay_blocks, merge_reselected_provider_attempts,
+        provider_error_is_safe_for_context_recovery, provider_quota_incident_identities_to_resolve,
+        report_tool_allowed,
     };
     use crate::provider::{
         provider_turn_error, ModelBlock, ModelToolCallKind, ProviderAttemptOutcome,
@@ -5031,6 +5171,131 @@ mod tests {
             transport_diagnostics: None,
             transport_timeline: None,
         }
+    }
+
+    fn reselection_failure_timeline(
+        model: &str,
+        input: u64,
+        output: u64,
+    ) -> ProviderAttemptTimeline {
+        let mut attempt = quota_attempt(
+            model,
+            ProviderAttemptOutcome::RetriesExhausted,
+            Some("transport"),
+        );
+        attempt.token_usage = Some(crate::types::TokenUsage::new(input, output));
+        ProviderAttemptTimeline {
+            attempts: vec![attempt],
+            requested_model_ref: model.into(),
+            active_model_ref: Some(model.into()),
+            winning_model_ref: None,
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: Some(crate::types::TokenUsage::new(input, output)),
+        }
+    }
+
+    #[test]
+    fn reselection_preserves_terminal_failure_usage_and_source() {
+        let previous = reselection_failure_timeline("primary/model", 7, 11);
+        let current = reselection_failure_timeline("fallback/model", 3, 5);
+        let error = provider_turn_error(
+            "fallback failed",
+            current,
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "transport source").into(),
+        );
+        let error = merge_reselected_provider_attempts(Some(&previous), Err(error)).unwrap_err();
+        assert_eq!(
+            error
+                .chain()
+                .find_map(|source| source.downcast_ref::<std::io::Error>())
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::ConnectionReset
+        );
+        let timeline = crate::provider::provider_attempt_timeline(&error).unwrap();
+        assert_eq!(timeline.requested_model_ref, "primary/model");
+        assert_eq!(timeline.active_model_ref.as_deref(), Some("fallback/model"));
+        assert!(timeline.winning_model_ref.is_none());
+        assert_eq!(timeline.attempts.len(), 2);
+        assert_eq!(timeline.attempts[0].model_ref, "primary/model");
+        assert_eq!(timeline.attempts[1].model_ref, "fallback/model");
+        assert_eq!(
+            timeline.aggregated_token_usage,
+            Some(crate::types::TokenUsage::new(10, 16))
+        );
+
+        // A subsequent local rejection adds neither an HTTP attempt nor usage.
+        let error =
+            merge_reselected_provider_attempts(Some(timeline), Err(anyhow!("local rejection")))
+                .unwrap_err();
+        assert_eq!(
+            crate::provider::provider_attempt_timeline(&error).unwrap(),
+            timeline
+        );
+    }
+
+    #[test]
+    fn reselection_preserves_typed_local_dispatch_rejection() {
+        use crate::runtime_error::{describe_runtime_error, RuntimeError, RuntimeErrorDomain};
+
+        let previous = reselection_failure_timeline("primary/model", 7, 11);
+        let expected = RuntimeError::new(
+            RuntimeErrorDomain::Conflict,
+            "provider_dispatch_rejected",
+            "Local provider dispatch admission rejected this send before IO.",
+        )
+        .with_safe_context("stage", "before_dispatch")
+        .with_safe_context("predicate", "stale_execution")
+        .with_safe_context("recovery_disposition", "needs_repair")
+        .with_recovery_hint("Recheck the canonical execution.");
+        let expected = anyhow!("dispatch guard rejected").context(expected);
+        let descriptor = describe_runtime_error(&expected);
+        let error = merge_reselected_provider_attempts(Some(&previous), Err(expected)).unwrap_err();
+
+        assert!(error.downcast_ref::<RuntimeError>().is_some());
+        let actual = describe_runtime_error(&error);
+        assert_eq!(actual.domain, RuntimeErrorDomain::Conflict);
+        assert_eq!(actual.code, "provider_dispatch_rejected");
+        assert!(!actual.retryable);
+        assert_eq!(actual.safe_context, descriptor.safe_context);
+        assert_eq!(actual.recovery_hint, descriptor.recovery_hint);
+        assert_eq!(
+            crate::provider::provider_attempt_timeline(&error),
+            Some(&previous)
+        );
+    }
+
+    #[test]
+    fn reselection_preserves_typed_run_abort() {
+        let previous = reselection_failure_timeline("primary/model", 7, 11);
+        let error = merge_reselected_provider_attempts(
+            Some(&previous),
+            Err(super::CurrentRunAborted {
+                run_id: "cancelled-run".into(),
+                reason: "operator stopped".into(),
+            }
+            .into()),
+        )
+        .unwrap_err();
+        let aborted = error.downcast_ref::<super::CurrentRunAborted>().unwrap();
+        assert_eq!(aborted.run_id, "cancelled-run");
+    }
+
+    #[test]
+    fn reselection_without_prior_http_attempts_keeps_original_error() {
+        let error = merge_reselected_provider_attempts(
+            None,
+            Err(
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "local rejection").into(),
+            ),
+        )
+        .unwrap_err();
+        assert!(crate::provider::provider_attempt_timeline(&error).is_none());
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]

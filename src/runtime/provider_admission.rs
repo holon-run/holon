@@ -69,6 +69,7 @@ pub(super) fn is_parked_dispatch_rejection(error: &anyhow::Error) -> bool {
 #[derive(Debug, Clone, Copy)]
 enum LocalDispatchDenial {
     ScopeCooling { not_before: DateTime<Utc> },
+    ChainCooling { not_before: DateTime<Utc> },
     EpisodeChanged,
     Reservation(ProviderRecoveryDispatchDenial),
     Dispatch(ProviderRecoveryDispatchDenial),
@@ -85,6 +86,7 @@ impl LocalDispatchDenial {
         matches!(
             self,
             Self::ScopeCooling { .. }
+                | Self::ChainCooling { .. }
                 | Self::Reservation(
                     ProviderRecoveryDispatchDenial::EpisodePaused
                         | ProviderRecoveryDispatchDenial::BudgetExhausted
@@ -139,7 +141,8 @@ impl ProviderTurnAdmission {
         if reason.is_availability_pause() {
             let episode = self.episode()?;
             let not_before = match reason {
-                LocalDispatchDenial::ScopeCooling { not_before } => not_before,
+                LocalDispatchDenial::ScopeCooling { not_before }
+                | LocalDispatchDenial::ChainCooling { not_before } => not_before,
                 _ => episode
                     .not_before
                     .context("provider pause deadline missing")?,
@@ -440,7 +443,7 @@ impl RuntimeHandle {
             crate::runtime_error::RuntimeError::new(
                 crate::runtime_error::RuntimeErrorDomain::Conflict,
                 "provider_dispatch_rejected",
-                "Local provider dispatch admission rejected the send; no provider fallback was scheduled.",
+                "Local provider dispatch admission rejected this send before IO.",
             )
             .with_safe_context("stage", "before_dispatch")
             .with_safe_context("predicate", category)
@@ -622,6 +625,24 @@ impl RuntimeHandle {
                 return Ok(ProviderTurnGate::Parked);
             }
         }
+        self.select_provider_turn_candidate(
+            message,
+            attempt,
+            &chain,
+            &episode,
+            &std::collections::BTreeSet::new(),
+        )
+    }
+
+    fn select_provider_turn_candidate(
+        &self,
+        message: &MessageEnvelope,
+        attempt: &ExecutionAttempt,
+        chain: &Chain,
+        episode: &ProviderRecoveryEpisode,
+        excluded: &std::collections::BTreeSet<String>,
+    ) -> Result<ProviderTurnGate> {
+        let now = self.now();
         let len = chain.candidates.len();
         let start = usize::try_from(episode.candidate_cursor)
             .unwrap_or(len)
@@ -654,6 +675,9 @@ impl RuntimeHandle {
             if let Some(blocked) = blocked.as_ref() {
                 earliest =
                     Some(earliest.map_or(blocked.not_before, |at| at.min(blocked.not_before)));
+            }
+            if excluded.contains(&candidate.model.as_string()) {
+                continue;
             }
             if self
                 .inner
@@ -721,6 +745,108 @@ impl RuntimeHandle {
             parked.state == ProviderRecoveryBudgetState::BudgetExhausted,
         )?;
         Ok(ProviderTurnGate::Parked)
+    }
+
+    /// Replan an unsent candidate cooldown, never execution or budget fences.
+    pub(super) async fn reselect_cooling_provider(
+        &self,
+        error: anyhow::Error,
+        excluded: &mut std::collections::BTreeSet<String>,
+    ) -> Result<ModelRouteRef> {
+        if !crate::provider::is_dispatch_guard_rejected(&error) {
+            return Err(error);
+        }
+        let Some(cooling_until) =
+            error.chain().find_map(
+                |source| match source.downcast_ref::<DispatchDeferred>()?.0 {
+                    LocalDispatchDenial::ScopeCooling { not_before } => Some(not_before),
+                    _ => None,
+                },
+            )
+        else {
+            return Err(error);
+        };
+        let current = self
+            .active_provider_admission()?
+            .context("cooling provider admission missing")?;
+        excluded.insert(current.model().as_string());
+        let state = self.inner.agent.lock().await.state.clone();
+        let chain = self
+            .provider_admission_chain(&state)?
+            .context("cooling provider chain disappeared")?;
+        ensure!(
+            chain.fingerprint == current.chain_fingerprint,
+            "provider chain changed during candidate replan"
+        );
+        let episode = current.episode()?;
+        // before_dispatch already opened the epoch; replan cannot renew it.
+        ensure!(
+            episode.state == ProviderRecoveryBudgetState::Ready,
+            "provider episode changed during candidate replan"
+        );
+        let message = self
+            .inner
+            .storage
+            .read_message_by_id(
+                current
+                    .attempt
+                    .source_message_id
+                    .as_deref()
+                    .context("provider source message missing")?,
+            )?
+            .context("provider source message disappeared")?;
+        match self.select_provider_turn_candidate(
+            &message,
+            &current.attempt,
+            &chain,
+            &episode,
+            excluded,
+        )? {
+            ProviderTurnGate::Granted(next) => {
+                let model = next.model().clone();
+                let mut active = self
+                    .inner
+                    .turn_provider_admission
+                    .lock()
+                    .map_err(|_| anyhow!("turn provider admission poisoned"))?;
+                ensure!(
+                    active
+                        .as_ref()
+                        .is_some_and(|active| Arc::ptr_eq(active, &current)),
+                    "provider admission changed during candidate replan"
+                );
+                *active = Some(next);
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "provider_candidate_reselected",
+                    serde_json::json!({
+                        "from_model_ref": current.model(),
+                        "model_ref": model,
+                        "episode_key": episode.key(),
+                        "dispatch_occurred": false,
+                        "predicate": "scope_cooling",
+                        "cooling_until": cooling_until,
+                    }),
+                ))?;
+                Ok(model)
+            }
+            ProviderTurnGate::Parked => {
+                let parking = self
+                    .inner
+                    .runtime_db
+                    .provider_queue_parking(&message.agent_id, &message.id)?
+                    .context("exhausted provider chain was not parked")?;
+                Err(
+                    self.local_provider_dispatch_error(error.context(DispatchDeferred(
+                        LocalDispatchDenial::ChainCooling {
+                            not_before: parking.not_before,
+                        },
+                    ))),
+                )
+            }
+            ProviderTurnGate::Bypass => {
+                unreachable!("configured candidate selection cannot bypass")
+            }
+        }
     }
 
     fn persist_provider_queue_parking(

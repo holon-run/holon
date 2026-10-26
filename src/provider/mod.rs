@@ -1017,8 +1017,6 @@ pub struct ReqwestTransportDiagnostics {
 struct ProviderTurnError {
     message: String,
     timeline: ProviderAttemptTimeline,
-    #[source]
-    source: anyhow::Error,
 }
 
 pub fn provider_attempt_timeline(error: &anyhow::Error) -> Option<&ProviderAttemptTimeline> {
@@ -1068,12 +1066,10 @@ pub(crate) fn provider_turn_error(
     timeline: ProviderAttemptTimeline,
     source: anyhow::Error,
 ) -> anyhow::Error {
-    ProviderTurnError {
+    source.context(ProviderTurnError {
         message: message.into(),
         timeline,
-        source,
-    }
-    .into()
+    })
 }
 
 pub(crate) fn aggregate_attempt_token_usage(

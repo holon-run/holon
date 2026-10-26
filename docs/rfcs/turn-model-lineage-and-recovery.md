@@ -283,8 +283,28 @@ Exhaustion with untried candidates is distinct from chain cooling. Expiry
 allows one bounded probe epoch, not a fresh sweep on every wake. Runtime-authenticated
 new operator messages can grant one target-bound, idempotent bounded episode;
 they do not clear shared incidents or override a server not-before.
-Cross-lineage fallback still creates a new turn and preserves all existing
-source, owner, lifecycle, and side-effect gates.
+Fallback after a provider failure still creates a new turn and preserves all
+existing source, owner, lifecycle, and side-effect gates. A typed candidate
+cooldown before IO is different: the runtime may replan that unsent inference
+within the same turn, without replaying input or completed tools. Each candidate
+is checked at most once in that local replan, using the same recovery root and
+epoch. Each replacement obtains its own scope reservation and final dispatch
+charge; it never borrows the rejected candidate's guard.
+
+This local replan rebuilds the provider, tool surface, native search selection,
+and context policy for the selected route. Continuation projection uses the
+complete canonical tool-call/result history and the replacement's budget.
+Opaque reasoning, provider-owned tool state, or custom tool encodings cannot
+cross this boundary: if the completed rounds cannot be represented portably,
+the runtime stops explicitly rather than dropping blocks or replaying tools.
+Provider window IDs and remote compaction state are never transferred.
+
+Real HTTP attempts before a local cooldown rejection remain part of the same
+logical provider round after reselection. Their timeline and token usage are
+retained in order on final success or failure, without recording the local
+rejection as HTTP. The original requested route and final active/winning route
+remain distinct; typed cancellation still terminates the run rather than
+becoming a provider failure.
 
 The durable budget binds the validated root execution's source, owner, admitted
 fences, and effective-chain fingerprint. Request IDs are consumed atomically
@@ -314,6 +334,18 @@ diagnostic chain. The rejected send consumes no request or candidate cursor;
 earlier requests and unknown outcomes are never refunded or erased.
 Dispatch diagnostics distinguish canonical source, owner, generation, authority
 and recovery-root failures from availability/budget refusals.
+
+Only typed `ScopeCooling` permits the runtime-level local replan above.
+Execution, owner, cancellation, storage, unknown admission, episode and budget
+refusals remain fail closed. A candidate cooldown alone does not park the
+entire source; exhausted chain selection persists one absolute parking deadline,
+subject to the recovery episode floor. Diagnostics distinguish an unsent local
+candidate rejection, an actual HTTP attempt, and final chain parking.
+
+That replan is bounded to a turn that already completed at least one round. A
+candidate cooldown before a turn's first round keeps the existing parking
+contract and resumes the same source at the original deadline, so restart and
+interrupted-replay recovery stay unchanged.
 
 An operator interjection never adopts a source that canonical state marks
 `Interrupted`. Such a source stays in the live queue for its own recovery
