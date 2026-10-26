@@ -29,13 +29,13 @@ ACCEPTANCE_DIRECTORY = "/var/lib/holon/agents/qa/recovery-acceptance"
 
 
 def scanner_setup_identity(snapshot):
-    tasks = [payload(row) for row in snapshot["tasks"] if row["agent_id"] == "qa"]
+    tasks = [task for row in snapshot["tasks"] if (task := payload(row))["agent_id"] == "qa"]
     if (len(tasks) != 1 or tasks[0]["status"] != "running"
             or any(row["agent_id"] == "qa" and row["lifecycle_state"] == "open"
                    for row in snapshot["execution_protocol_attempts"])):
         return None
     task = tasks[0]
-    owners = [payload(row) for row in snapshot["work_items"]
+    owners = [row for row in snapshot["work_items"]
               if row["work_item_id"] == task.get("work_item_id")]
     require(len(owners) == 1 and owners[0]["state"] == "open"
             and owners[0].get("plan_status") == "ready"
@@ -74,7 +74,7 @@ def validate_manifest(manifest):
         if case.get("sixth"):
             require(case["goal"] == 5 and case["outcome"] == "exhausted",
                     "explicit sixth source requires real five-root exhaustion")
-        minimum = 1800 if case["goal"] == 5 else 180
+        minimum = 3600 if case["goal"] == 5 else 180
         require(case["timeout_seconds"] >= minimum, f"insufficient case timeout: {name}")
     return manifest
 
@@ -226,7 +226,18 @@ class RecoveryRun(FaultRun):
         )
         finished = {row["request_id"] for row in rows if row["state"] != "waiting"}
         return [row for row in rows if row["state"] == "waiting"
-                and row["request_id"] not in finished | self.ignored_requests]
+                and row["request_id"] not in finished | self.ignored_requests | self.releases.keys()]
+
+    def provider_outcomes_complete(self, snapshot, record):
+        rows = recovery_ledger(snapshot, record)
+        return len(rows) == self.spec["goal"] and all(
+            any(join["root_attempt_id"] == row["root_attempt_id"]
+                and join["action"] == (
+                    "success" if self.spec["outcome"] == "success"
+                    and index == len(rows) - 1 else "fail"
+                ) for join in self.joins)
+            for index, row in enumerate(rows)
+        )
 
     def record(self, snapshot):
         records = [
@@ -525,6 +536,11 @@ class RecoveryRun(FaultRun):
                 break
             if (self.spec["outcome"] == "exhausted"
                     and record.get("recovery_diagnostic_at") and not barriers):
+                # Startup may expose the diagnostic before the interrupted
+                # fifth root reaches its replayed provider request.
+                if not self.provider_outcomes_complete(snapshot, record):
+                    time.sleep(.5)
+                    continue
                 require_recovery_exhausted(snapshot, captured=self.captured)
                 if self.spec.get("sixth") and not self.observe_sixth(snapshot):
                     time.sleep(.5)

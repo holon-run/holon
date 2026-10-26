@@ -408,6 +408,12 @@ durable resolved wait, trigger, predecessor lineage and generation. An independe
 business blocker remains intact; it cannot consume the failed continuation or
 authorize ordinary blocked, paused or repair-needed work.
 
+An unrelated fresh input must not batch or consume a recovery-paused result,
+even under the same owner. Both candidate selection and transactional snapshot
+admission preserve that boundary. Explicit admission of the result's own source
+or explicit rearm remains distinct; replay of its already charged interrupted
+root does not create another recovery charge.
+
 A scanner-queued recovery message is immutable and may predate the exact wait's
 registration. Its durable join is the same-agent, same-owner task wait naming
 that message as its trigger, whether the wait is `Triggered` or `Resolved`.

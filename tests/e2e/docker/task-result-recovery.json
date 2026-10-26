@@ -11,15 +11,15 @@
     "exact-success": {"goal": 0, "outcome": "success", "timeout_seconds": 180},
     "fallback-success": {"goal": 0, "outcome": "success", "fallback": true, "timeout_seconds": 180},
     "alive-owner": {"goal": 0, "outcome": "success", "alive_owner": true, "timeout_seconds": 180},
-    "fifth-success": {"goal": 5, "outcome": "success", "fallback": true, "timeout_seconds": 1800},
-    "exhausted": {"goal": 5, "outcome": "exhausted", "timeout_seconds": 1800},
-    "restart-backoff": {"goal": 5, "outcome": "success", "restart": "backoff", "timeout_seconds": 1800},
-    "restart-fifth": {"goal": 5, "outcome": "success", "restart": "fifth", "timeout_seconds": 1800},
-    "restart-fifth-exhausted": {"goal": 5, "outcome": "exhausted", "restart": "fifth", "fallback": true, "timeout_seconds": 1800},
-    "coexisting-owner": {"goal": 5, "outcome": "exhausted", "fairness": true, "timeout_seconds": 1800},
+    "fifth-success": {"goal": 5, "outcome": "success", "fallback": true, "timeout_seconds": 3600},
+    "exhausted": {"goal": 5, "outcome": "exhausted", "timeout_seconds": 3600},
+    "restart-backoff": {"goal": 5, "outcome": "success", "restart": "backoff", "timeout_seconds": 3600},
+    "restart-fifth": {"goal": 5, "outcome": "success", "restart": "fifth", "timeout_seconds": 3600},
+    "restart-fifth-exhausted": {"goal": 5, "outcome": "exhausted", "restart": "fifth", "fallback": true, "timeout_seconds": 3600},
+    "coexisting-owner": {"goal": 5, "outcome": "exhausted", "fairness": true, "timeout_seconds": 3600},
     "controlled-exact-first": {"goal": 0, "outcome": "success", "first_order": "exact-first", "timeout_seconds": 180},
     "controlled-scanner-first": {"goal": 1, "outcome": "success", "first_order": "scanner-first", "timeout_seconds": 180},
-    "sixth-rejected": {"goal": 5, "outcome": "exhausted", "sixth": true, "timeout_seconds": 1800}
+    "sixth-rejected": {"goal": 5, "outcome": "exhausted", "sixth": true, "timeout_seconds": 3600}
   },
   "pending_coverage": [
     "controlled first-admission and explicit sixth-source gates are implemented but remain unverified",

@@ -82,7 +82,7 @@ jobs:
     name: Task-result recovery required (${{ matrix.case }})
     needs: candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 70
     environment: release-e2e
     permissions:
       contents: read
@@ -113,7 +113,7 @@ jobs:
             --image "${CANDIDATE_IMAGE}" \
             --python-image holon-openai-responses-stub:local \
             --expected-revision "${{ needs.candidate.outputs.sha }}" \
-            --suite slow --case "${{ matrix.case }}" --timeout 1800 \
+            --suite slow --case "${{ matrix.case }}" --timeout 3600 \
             --evidence-dir "target/docker-e2e/task-result-${{ matrix.case }}"
       - name: Upload recovery evidence
         if: always()
@@ -126,7 +126,7 @@ jobs:
     name: Controlled recovery hard gates
     needs: candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 100
     permissions:
       contents: read
     steps:
@@ -154,7 +154,7 @@ jobs:
             --image holon:recovery-acceptance \
             --python-image holon-openai-responses-stub:local \
             --expected-revision "${{ needs.candidate.outputs.sha }}" \
-            --suite controlled --timeout 1800 \
+            --suite controlled --timeout 3600 \
             --evidence-dir target/docker-e2e/task-result-controlled
       - name: Upload controlled recovery evidence
         if: always()

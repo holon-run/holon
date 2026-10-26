@@ -619,13 +619,14 @@ class DatabaseCaptureTests(unittest.TestCase):
 class ScannerSetupTests(unittest.TestCase):
     def setup_snapshot(self):
         return {
-            "tasks": [{"agent_id": "qa", "payload_json": json.dumps({
-                "id": "real-task", "status": "running", "work_item_id": "owner",
+            "tasks": [{"owner_agent_id": "qa", "payload_json": json.dumps({
+                "id": "real-task", "agent_id": "qa",
+                "status": "running", "work_item_id": "owner",
                 "detail": {"parent_turn_id": "parent", "rejoin_generation": 7},
             })}],
-            "work_items": [{"work_item_id": "owner", "payload_json": json.dumps({
+            "work_items": [{"work_item_id": "owner",
                 "state": "open", "plan_status": "ready", "blocked_by": None,
-            })}],
+            }],
             "execution_protocol_attempts": [], "wait_conditions": [],
         }
 
@@ -644,9 +645,8 @@ class ScannerSetupTests(unittest.TestCase):
         for field, value in (("state", "completed"), ("plan_status", "draft"),
                              ("blocked_by", "independent dependency")):
             snapshot = self.setup_snapshot()
-            owner = oracle.payload(snapshot["work_items"][0])
+            owner = snapshot["work_items"][0]
             owner[field] = value
-            snapshot["work_items"][0]["payload_json"] = json.dumps(owner)
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 recovery.scanner_setup_identity(snapshot)
         for status in ("active", "triggered"):
@@ -813,6 +813,40 @@ class ProviderFixtureTests(unittest.TestCase):
 
 
 class RecoveryRunnerTests(unittest.TestCase):
+    def test_exhaustion_checkpoint_waits_for_every_charged_provider_outcome(self):
+        snapshot, record = self.owned_snapshot({"goal": 5, "outcome": "exhausted"})
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "restart-fifth-exhausted",
+                {"goal": 5, "outcome": "exhausted"},
+            )
+            run.joins = [
+                {"root_attempt_id": row["root_attempt_id"], "action": "fail"}
+                for row in snapshot["task_result_recovery_admissions"]
+            ]
+            self.assertTrue(run.provider_outcomes_complete(snapshot, record))
+            fifth = run.joins.pop()
+            self.assertFalse(run.provider_outcomes_complete(snapshot, record))
+            run.joins.append(run.joins[-1].copy())
+            self.assertFalse(run.provider_outcomes_complete(snapshot, record))
+            run.joins[-1] = {**fifth, "action": "success"}
+            self.assertFalse(run.provider_outcomes_complete(snapshot, record))
+            run.joins[-1] = fifth
+            self.assertTrue(run.provider_outcomes_complete(snapshot, record))
+
+    def test_released_barrier_cannot_trigger_another_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "restart-fifth",
+                {"goal": 5, "outcome": "success"},
+            )
+            run.docker = Mock(return_value=Namespace(stdout=json.dumps({
+                "layer": "recovery_barrier", "state": "waiting", "request_id": "old",
+            })))
+            self.assertEqual(len(run.barriers()), 1)
+            run.releases["old"] = "fail"
+            self.assertEqual(run.barriers(), [])
+
     def order_evidence(self, order):
         scanner_first = order == "scanner-first"
         after, record = self.owned_snapshot({"goal": int(scanner_first), "outcome": "success"})
@@ -1514,15 +1548,15 @@ class RecoveryRunnerTests(unittest.TestCase):
         self.assertIn(case, manifest["suites"]["slow"])
         self.assertEqual(manifest["cases"][case], {
             "goal": 5, "outcome": "exhausted", "restart": "fifth",
-            "fallback": True, "timeout_seconds": 1800,
+            "fallback": True, "timeout_seconds": 3600,
         })
 
     def test_release_slow_gate_cannot_be_softened_or_hidden_behind_120_seconds(self):
         workflow = (ROOT / ".github/workflows/release-e2e.yml").read_text()
         gate = workflow.split("  task-result-recovery-required:\n", 1)[1].split("  core:\n", 1)[0]
         self.assertNotIn("continue-on-error", gate)
-        self.assertIn("timeout-minutes: 40", gate)
-        self.assertIn("--timeout 1800", gate)
+        self.assertIn("timeout-minutes: 70", gate)
+        self.assertIn("--timeout 3600", gate)
         for name in json.loads(recovery.MANIFEST.read_text())["suites"]["slow"]:
             self.assertIn(name, gate)
         self.assertIn("needs: [candidate, task-result-recovery-required, task-result-controlled-required]",
@@ -1543,19 +1577,21 @@ class RecoveryRunnerTests(unittest.TestCase):
                             workflow.split("  task-result-controlled-required:\n", 1)[1], 1)[0]
             self.assertNotIn("continue-on-error", gate)
             self.assertIn("--recovery-acceptance", gate)
-            self.assertIn("--suite controlled --timeout 1800", gate)
+            self.assertIn("timeout-minutes: 100", gate)
+            self.assertIn("--suite controlled --timeout 3600", gate)
             self.assertIn("holon:recovery-acceptance", gate)
 
-    def test_cli_rejects_120_second_slow_gate_before_docker(self):
+    def test_cli_rejects_insufficient_slow_budget_before_docker(self):
         with patch.object(recovery, "command") as command:
-            with self.assertRaises(SystemExit) as error:
-                recovery.main([
-                    "--image", "candidate", "--python-image", "fixture",
-                    "--expected-revision", "12345678", "--evidence-dir", "unused",
-                    "--suite", "slow", "--timeout", "120",
-                ])
-            self.assertEqual(error.exception.code, 2)
-            command.assert_not_called()
+            for timeout in ("120", "1800"):
+                with self.subTest(timeout=timeout), self.assertRaises(SystemExit) as error:
+                    recovery.main([
+                        "--image", "candidate", "--python-image", "fixture",
+                        "--expected-revision", "12345678", "--evidence-dir", "unused",
+                        "--suite", "slow", "--timeout", timeout,
+                    ])
+                self.assertEqual(error.exception.code, 2)
+                command.assert_not_called()
 
     def test_snapshot_truncation_or_missing_tables_cannot_pass(self):
         for database in (

@@ -328,17 +328,26 @@ async fn start_without_provider(runtime: &RuntimeHandle) -> MessageEnvelope {
 
 #[tokio::test(start_paused = true)]
 async fn p1_paused_and_backoff_results_do_not_reserve_recovery_capacity() {
-    assert_budgeted_recovery_capacity().await;
+    assert_budgeted_recovery_capacity(false).await;
 }
 
-fn assert_budgeted_recovery_capacity() -> std::pin::Pin<Box<impl std::future::Future<Output = ()>>>
-{
+#[tokio::test(start_paused = true)]
+async fn p1_fresh_task_result_does_not_consume_paused_owner_results() {
+    assert_budgeted_recovery_capacity(true).await;
+}
+
+fn assert_budgeted_recovery_capacity(
+    normal_anchor: bool,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = ()>>> {
     Box::pin(async move {
         use crate::runtime_db::task_result_settlement::{
             charge_recovery_admission_tx, TaskResultSettlementState,
         };
 
-        for paused in [false, true] {
+        for paused in [false, true]
+            .into_iter()
+            .filter(|paused| !normal_anchor || *paused)
+        {
             let provider = Arc::new(BatchProvider::default());
             let mut harness = LifecycleHarness::with_provider(provider.clone());
             let runtime = harness.runtime();
@@ -347,7 +356,7 @@ fn assert_budgeted_recovery_capacity() -> std::pin::Pin<Box<impl std::future::Fu
                 .await
                 .unwrap();
             let mut blocked = Vec::new();
-            for index in 0..64 {
+            for index in 0..if normal_anchor { 1 } else { 64 } {
                 let id = publish_owner_result_with_reentry(
                     runtime,
                     &owner.id,
@@ -407,7 +416,7 @@ fn assert_budgeted_recovery_capacity() -> std::pin::Pin<Box<impl std::future::Fu
                 "new result must reach model",
                 Priority::Normal,
                 TaskKind::CommandTask,
-                false,
+                normal_anchor,
             )
             .await;
             let message = runtime
@@ -415,17 +424,19 @@ fn assert_budgeted_recovery_capacity() -> std::pin::Pin<Box<impl std::future::Fu
                 .read_message_by_id(&fresh)
                 .unwrap()
                 .unwrap();
-            runtime
-                .storage()
-                .append_queue_entry(&QueueEntryRecord {
-                    message_id: fresh.clone(),
-                    agent_id: message.agent_id,
-                    priority: message.priority,
-                    status: QueueEntryStatus::Processed,
-                    created_at: message.created_at,
-                    updated_at: runtime.now(),
-                })
-                .unwrap();
+            if !normal_anchor {
+                runtime
+                    .storage()
+                    .append_queue_entry(&QueueEntryRecord {
+                        message_id: fresh.clone(),
+                        agent_id: message.agent_id,
+                        priority: message.priority,
+                        status: QueueEntryStatus::Processed,
+                        created_at: message.created_at,
+                        updated_at: runtime.now(),
+                    })
+                    .unwrap();
+            }
             let before: Vec<_> = blocked
                 .iter()
                 .map(|record| {
@@ -445,16 +456,21 @@ fn assert_budgeted_recovery_capacity() -> std::pin::Pin<Box<impl std::future::Fu
                 .latest_for_message(&fresh)
                 .unwrap()
                 .unwrap();
-            let (wake, _) = runtime
-                .task_result_repair_source(&record, Some(&owner.id))
-                .unwrap();
-            runtime.enqueue(wake).await.unwrap();
+            if !normal_anchor {
+                let (wake, _) = runtime
+                    .task_result_repair_source(&record, Some(&owner.id))
+                    .unwrap();
+                runtime.enqueue(wake).await.unwrap();
+            }
             let scheduled = Box::pin(claim_model_input(runtime)).await;
             let admitted = Box::pin(process_result_batch(runtime, scheduled)).await;
             assert_eq!(admitted.len(), 1, "paused={paused}");
             assert_eq!(admitted[0].result_identity, record.result_identity);
-            assert_eq!(admitted[0].recovery_attempts, 1);
-            assert_eq!(admitted[0].last_recovery_admitted_at, Some(runtime.now()));
+            assert_eq!(admitted[0].recovery_attempts, u32::from(!normal_anchor));
+            assert_eq!(
+                admitted[0].last_recovery_admitted_at,
+                (!normal_anchor).then_some(runtime.now()),
+            );
             assert_eq!(provider.requests.lock().await.len(), 1);
             assert_eq!(
                 runtime

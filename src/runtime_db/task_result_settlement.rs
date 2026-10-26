@@ -1522,7 +1522,13 @@ impl TaskResultSettlementRepository<'_> {
     ) -> Result<Vec<TaskResultSettlementRecord>> {
         self.db.transaction(|tx| {
             let root = match recovery_snapshot_scope_tx(tx, agent_id, activation_id)? {
-                RecoverySnapshotScope::NormalInput => return Ok(records.to_vec()),
+                RecoverySnapshotScope::NormalInput => {
+                    return Ok(records
+                        .iter()
+                        .filter(|record| record.recovery_paused_at.is_none())
+                        .cloned()
+                        .collect())
+                }
                 RecoverySnapshotScope::Invalid => return Ok(Vec::new()),
                 RecoverySnapshotScope::RecoveryRoot(root) => root,
             };
@@ -1552,7 +1558,7 @@ fn charge_selected_recovery_tx(
     now: DateTime<Utc>,
 ) -> Result<bool> {
     let root = match recovery_snapshot_scope_tx(tx, &record.agent_id, activation_id)? {
-        RecoverySnapshotScope::NormalInput => return Ok(true),
+        RecoverySnapshotScope::NormalInput => return Ok(record.recovery_paused_at.is_none()),
         RecoverySnapshotScope::Invalid => return Ok(false),
         RecoverySnapshotScope::RecoveryRoot(root) => root,
     };

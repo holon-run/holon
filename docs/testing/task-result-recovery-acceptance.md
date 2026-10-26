@@ -67,11 +67,14 @@ retained ingress attachment alone is not an execution witness.
 
 Production backoff is **60/120/240/480 seconds**: at least 900 seconds between
 the first and fifth charged roots, plus setup, model and restart time. Each slow
-case has a CLI minimum of **1800 seconds**; `--timeout 120` is rejected before
+case has a CLI minimum of **3600 seconds**; `--timeout 120` is rejected before
 Docker is invoked. Release E2E runs six required matrix jobs, each with a
-40-minute workflow timeout. The core/attestation job depends on all six and the
+70-minute workflow timeout. The budget includes actual provider retry,
+route-parking and restart latency; the production recovery backoff is unchanged.
+The core/attestation job depends on all six and the
 separate controlled gate. CI and release both build a distinct compile-time
 `recovery-acceptance` image and run the three controlled cases as hard failures.
+That gate has a 100-minute workflow budget including the separate image build.
 PR scheduler-required runs all three fast cases as hard-failure steps; this does not
 claim that a PR ran the slow suite. Python asset validation runs in
 `make docker-e2e-validate` without Docker.
@@ -96,7 +99,7 @@ python3 scripts/docker-task-result-recovery.py \
   --image holon:qa-candidate \
   --python-image holon-openai-responses-stub:local \
   --expected-revision "$(git rev-parse HEAD)" \
-  --suite slow --case restart-fifth --timeout 1800 \
+  --suite slow --case restart-fifth --timeout 3600 \
   --evidence-dir target/docker-e2e/task-result-restart-fifth
 ```
 

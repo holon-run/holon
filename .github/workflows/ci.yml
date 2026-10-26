@@ -1050,7 +1050,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v4
@@ -1074,7 +1074,7 @@ jobs:
             --image holon:recovery-acceptance \
             --python-image holon-openai-responses-stub:local \
             --expected-revision "$(git rev-parse HEAD)" \
-            --suite controlled --timeout 1800 \
+            --suite controlled --timeout 3600 \
             --evidence-dir target/docker-e2e/task-result-controlled
       - name: Upload controlled recovery evidence
         if: always()
