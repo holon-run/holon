@@ -1,6 +1,8 @@
 """Real Git fixtures for the acceptance image's source identity contract."""
 from pathlib import Path
 import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -116,6 +118,62 @@ class IdentifiedBuildTests(unittest.TestCase):
         self.assertEqual(result["revision"], git(self.source, "rev-parse", "HEAD"))
         self.assertTrue(Path(result["dockerfile"]).is_file())
         self.assertTrue((destination / "source.json").is_file())
+
+
+class DockerSmokeVersionTests(unittest.TestCase):
+    def test_smoke_accepts_only_the_expected_release_and_optional_clean_revision(self):
+        repository = Path(__file__).resolve().parents[1]
+        version = re.search(r'^version = "([^"]+)"', (repository / "Cargo.toml").read_text(),
+                            re.MULTILINE).group(1)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docker = root / "docker"
+            docker.write_text("""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$SMOKE_TEST_DOCKER_LOG"
+case "$1" in
+  run)
+    if [[ "$*" == *--version* ]]; then
+      printf '%s\\n' "$SMOKE_TEST_VERSION"
+    fi
+    ;;
+  port) printf '127.0.0.1:12345\\n' ;;
+  inspect) printf 'true\\n' ;;
+esac
+""")
+            docker.chmod(0o755)
+            curl = root / "curl"
+            curl.write_text("#!/usr/bin/env bash\nexit 0\n")
+            curl.chmod(0o755)
+            valid = [f"holon {version}", f"holon {version} (abcdef0)",
+                     f"holon {version} (5ab7c313bcfd)"]
+            invalid = [
+                f"holon {version} (abcdef)", f"holon {version} (abcdef0123456)",
+                f"holon {version} (ABCDEF0)", f"holon {version} (not-a-sha)",
+                f"holon {version} (abcdef0-dirty)", f"holon {version}-extra",
+                f"holon {version} [recovery-acceptance-test]",
+                f"holon {version} (abcdef0) [recovery-acceptance-test]",
+                f"prefix holon {version}", f"holon {version} trailing",
+                f"holon {version}\nextra", f"holon {version.replace('.', 'x')}",
+                "holon 999.0.0", "",
+            ]
+            for actual in valid + invalid:
+                with self.subTest(actual=actual):
+                    log = root / "docker.log"
+                    log.write_text("")
+                    result = subprocess.run(
+                        ["bash", "scripts/docker-smoke.sh", "fixture:smoke"],
+                        cwd=repository, capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+                             "SMOKE_TEST_VERSION": actual,
+                             "SMOKE_TEST_DOCKER_LOG": str(log)},
+                    )
+                    if actual in valid:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("Docker smoke passed", result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("unexpected image version", result.stderr)
+                        self.assertNotIn("volume create", log.read_text())
 
 
 if __name__ == "__main__":
