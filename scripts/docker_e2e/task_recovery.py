@@ -85,7 +85,7 @@ def unwrap_database(database):
     return database["rows"]
 
 
-def provider_barrier_identity(snapshot, record, source_message_ids):
+def provider_barrier_identity(snapshot, record, source_message_ids, *, activation_id=None):
     require(isinstance(source_message_ids, list) and bool(source_message_ids)
             and all(isinstance(value, str) and value for value in source_message_ids),
             "provider barrier lacks actual input source IDs")
@@ -97,7 +97,7 @@ def provider_barrier_identity(snapshot, record, source_message_ids):
     if not candidates:
         # The provider log may become visible after this observation's DB snapshot.
         return None
-    if len(candidates) > 1:
+    if activation_id is None and len(candidates) > 1:
         # A restart replays the same input message into a new attempt. Only the
         # in-flight attempt can own the pending provider request.
         live = [row for row in candidates if not payload(row).get("terminal_at")]
@@ -121,6 +121,12 @@ def provider_barrier_identity(snapshot, record, source_message_ids):
     require(all(set(chains[row["attempt_id"]]) <= set(deepest_chain) for row in candidates),
             "provider barrier has ambiguous canonical input sources")
     attempt = deepest
+    if activation_id is not None:
+        # Frozen joins name the attempt observed before shutdown, not a later
+        # replay or a still-live attempt in the final database.
+        observed = [row for row in candidates if row["attempt_id"] == activation_id]
+        require(len(observed) == 1, "provider barrier activation does not match its input sources")
+        attempt = observed[0]
     root = recovery_root(snapshot, record["agent_id"], attempt["attempt_id"])
     ancestors = attempts
     ancestor = attempt["attempt_id"]
@@ -316,7 +322,7 @@ class RecoveryRun(FaultRun):
                 and row["request_id"] not in finished | self.ignored_requests | self.releases.keys()]
 
     def release_action(self, barrier, record):
-        """Grant the success only to the designated (last charged) root.
+        """Grant success to the initial root or the designated charged root.
 
         A replayed request from an earlier lineage can still be queued after a
         restart; releasing it as the success would hand the response to a
@@ -325,7 +331,10 @@ class RecoveryRun(FaultRun):
         success = (
             self.spec["outcome"] == "success"
             and record["recovery_attempts"] == self.spec["goal"]
-            and barrier["root_attempt_id"] == record.get("last_recovery_root_attempt_id")
+            and (
+                barrier["recovery_attempts"] == 0 if self.spec["goal"] == 0 else
+                barrier["root_attempt_id"] == record.get("last_recovery_root_attempt_id")
+            )
             and "success" not in self.releases.values()
         )
         return "success" if success else "fail"
@@ -687,6 +696,7 @@ class RecoveryRun(FaultRun):
         for join in self.joins:
             identity = provider_barrier_identity(
                 snapshot, record, join.get("source_message_ids"),
+                activation_id=join["activation_id"],
             )
             require(identity is not None
                     and all(join[key] == value for key, value in identity.items()),

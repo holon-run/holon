@@ -1104,6 +1104,24 @@ class RecoveryRunnerTests(unittest.TestCase):
             self.assertEqual(calls, ["barriers", "observation"])
             self.assertEqual((barriers, snapshot), (["barrier"], "rows"))
 
+    def test_zero_budget_success_releases_only_an_initial_result_root_once(self):
+        manifest = recovery.validate_manifest(json.loads(recovery.MANIFEST.read_text()))
+        for case in ("exact-success", "fallback-success", "alive-owner",
+                     "controlled-exact-first"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                run = recovery.RecoveryRun(
+                    Namespace(evidence_dir=Path(directory)), case, manifest["cases"][case],
+                )
+                record = {"recovery_attempts": 0, "last_recovery_root_attempt_id": None}
+                barrier = {"root_attempt_id": "initial-root", "recovery_attempts": 0}
+                self.assertEqual(run.release_action(barrier, record), "success")
+                self.assertEqual(run.release_action(
+                    {**barrier, "recovery_attempts": 1}, record), "fail")
+                self.assertEqual(run.release_action(
+                    barrier, {**record, "recovery_attempts": 1}), "fail")
+                run.releases["first-request"] = "success"
+                self.assertEqual(run.release_action(barrier, record), "fail")
+
     def test_only_the_designated_root_may_be_released_as_success(self):
         with tempfile.TemporaryDirectory() as directory:
             run = recovery.RecoveryRun(
@@ -1720,7 +1738,7 @@ class RecoveryRunnerTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 run.verify_frozen()
 
-    def test_frozen_provider_join_cannot_relabel_a_previous_root_as_the_fifth(self):
+    def test_frozen_provider_join_preserves_recorded_attempt_after_restart(self):
         spec = {"goal": 5, "outcome": "success"}
         with tempfile.TemporaryDirectory() as directory:
             run = recovery.RecoveryRun(Namespace(evidence_dir=Path(directory)), "fifth-success", spec)
@@ -1741,6 +1759,19 @@ class RecoveryRunnerTests(unittest.TestCase):
                 "action": "success" if index == 5 else "fail",
                 "budget_before_release": 5 if index == 5 else index,
             } for index in range(1, 6)]
+            original = next(row for row in snapshot["execution_protocol_attempts"]
+                            if row["attempt_id"] == "root-5")
+            value = oracle.payload(original)
+            original["payload_json"] = json.dumps({
+                **value, "terminal_at": "2026-10-25T13:15:00Z",
+            })
+            snapshot["execution_protocol_attempts"].append({
+                "agent_id": "qa", "attempt_id": "replay-5",
+                "payload_json": json.dumps({
+                    **value, "recovery_of_attempt_id": "root-5",
+                    "terminal_at": "2026-10-25T13:16:00Z",
+                }),
+            })
             (run.evidence / "database.json").write_text(json.dumps({
                 "rows": snapshot, "truncated_tables": [],
             }))
