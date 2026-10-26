@@ -337,6 +337,14 @@ Its policy override can skip local cooldown only, never a server not-before or
 an existing probe lease. Budget settlement does not itself clear availability
 incidents or authorize execution; canonical source and owner checks still apply.
 
+An epoch with no dispatched requests is an availability pause, not a failed
+epoch: it neither increments the episode's failure count nor restarts its
+failure floor. Its next recheck follows the earliest future candidate deadline,
+including shared cooldowns and probe leases. If selection supplies no future
+deadline, a fixed first-step local delay prevents busy rechecks without
+escalating failure history. Epochs with actual dispatched requests retain their
+failure floor; repeated parking within an epoch does not restart that floor.
+
 Runtime model requests carry an explicit dispatch guard through transport
 lowering. Local prompt, payload, header, and HTTP-request construction complete
 before the guard charges IO; SDK retries and redirects cannot silently bypass
