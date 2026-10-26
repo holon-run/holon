@@ -1,12 +1,12 @@
 ---
 title: 连接到远程 Holon 运行时
-summary: 访问部署在其他机器上的运行时并验证连接安全性。
+summary: 从另一台电脑或手机访问远程运行时，验证连接并查回已有任务结果。
 order: 160
 ---
 
 # 连接到远程 Holon 运行时
 
-将 Holon 部署在远程主机上，并从本地设备发起连接。选择可达的访问网络，保护控制平面安全，并分别验证鉴权访问与未经鉴权访问的防御表现。
+将 Holon 部署在服务器或远程主机上，并从笔记本电脑、台式机或手机发起连接。选择可达的访问网络，保护控制平面安全，并分别验证鉴权访问与查回已有任务结果。
 
 ## 前置条件
 
@@ -148,7 +148,9 @@ holon tui --connect https://home:8787 --token-profile home
 
 ### 移动端访问
 
-你可以使用原生 Android 客户端或 iOS 客户端从移动设备连接到远程运行时。输入远程 HTTPS URL 与 Token 即可开启加密移动会话。详见[使用 Android 客户端连接](/zh-CN/guides/connect-android-client.md)与[使用 iOS 客户端连接](/zh-CN/guides/connect-ios-client.md)。
+你可以使用原生移动客户端从手机或平板连接到远程运行时。通过二维码扫码配对或输入远程 HTTPS URL 与 Token 开启加密会话：
+- [使用 Android 客户端连接](/zh-CN/guides/connect-android-client.md) — 安装 APK 或源码构建
+- [使用 iOS 客户端连接](/zh-CN/guides/connect-ios-client.md) — 从 iPhone 或 iPad 连接
 
 ## 守护进程管理
 
@@ -165,8 +167,9 @@ holon daemon stop
 
 1. 打开远程 Web GUI 或使用 TUI 建立连接，确认显示预期的 Agent 名册。核对基准 URL，避免误连其他环境。
 2. 向某个已知 Agent 发送一条安全的测试消息，等待其返回新的回复。页面正常加载或请求被服务端接收，并不代表 Agent 已最终完成了任务。
-3. 携带配置的凭据请求 `/api/agents/list`，检查是否成功返回 JSON 响应。
-4. 在不携带凭据的情况下重复该请求：
+3. **查回已有任务：** 在远程客户端中导航至已记录的 WorkItem ID，确认能够正确读取服务器端刚刚生成或先前保存的任务完成简报与产物文件。
+4. 携带配置的凭据请求 `/api/agents/list`，检查是否成功返回 JSON 响应。
+5. 在不携带凭据的情况下重复该请求：
 
    ```bash
    curl -i https://your-server:8787/api/agents/list
@@ -200,4 +203,5 @@ holon daemon stop
 - [排查 Holon 任务故障](/zh-CN/guides/troubleshooting.md) — 网络连通性问题排查
 - [通过 HTTP 自动化执行](/zh-CN/guides/automate-over-http.md) — 使用代码调度与驱动 Holon
 - [使用 Android 客户端连接](/zh-CN/guides/connect-android-client.md) — 在移动设备上管理 Agent
+- [使用 iOS 客户端连接](/zh-CN/guides/connect-ios-client.md) — 从 iOS 设备查验任务
 - [配置 OIDC 认证](/zh-CN/guides/configure-oidc-authentication.md) — 单点登录与审计日志

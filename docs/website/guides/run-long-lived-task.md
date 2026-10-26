@@ -1,13 +1,14 @@
 ---
 title: Run a long-lived task
-summary: Track one objective across sessions, wait for dependencies, and verify its completion report.
+summary: Keep an agent working after closing your terminal, wait for dependencies, and retrieve the same task result across sessions.
 order: 70
 ---
 
 # Run a long-lived task
 
-Use a WorkItem when work needs to continue across sessions or wait for a decision,
-CI run, or another task. This walkthrough keeps one objective from planning to
+Use a WorkItem when work must continue after you close your terminal or client,
+or when it needs to wait for a decision, CI run, or background task.
+This walkthrough tracks one objective from planning to
 acceptance. A durable record lets the agent recover its goal; it does not guarantee
 that a shell process survives a daemon crash or machine reboot.
 
@@ -41,6 +42,28 @@ holon agent status builder
 
 Confirm that `builder` has the intended workspace before authorizing edits.
 Creating an agent alone does not select a repository for your task.
+
+### Quick check: verify reconnect on a read-only task
+
+Before authorizing code edits, confirm that background execution and reconnect
+work as expected on a harmless read-only check:
+
+```bash
+holon prompt --agent builder \
+  "Check the runtime environment and tool versions for this project. Save the findings in a new WorkItem and report when done."
+```
+
+Note the returned `WORK_ITEM_ID` and disconnect (close your terminal or exit TUI).
+The daemon continues running in the background. Later, reconnect and verify:
+
+```bash
+holon work-item get WORK_ITEM_ID --agent builder
+holon tail --agent builder --limit 10
+```
+
+Confirm that the item shows the same objective and new results generated after
+you disconnected. Once confirmed, proceed with full multi-session editing
+workflows below.
 
 ### 3. Start a WorkItem-backed piece of work
 

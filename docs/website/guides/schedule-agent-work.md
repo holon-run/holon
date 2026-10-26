@@ -1,13 +1,14 @@
 ---
 title: Schedule agent work
-summary: Create a one-off or recurring timer, verify the resulting work, and cancel the schedule.
+summary: Schedule an authorized read-only check, verify the resulting work, and cancel the timer.
 order: 110
 ---
 
 # Schedule agent work
 
 Timers wake an agent after a delay or at a recurring interval. Before creating
-one, tell the agent what action is authorized and when the schedule should end.
+one, tell the agent what action is authorized (such as checking a specific CI
+run) and when the schedule should end.
 A timer summary describes the reminder; it does not grant new permissions.
 
 ## Before you start
@@ -21,6 +22,16 @@ holon agent status builder
 holon prompt --agent builder \
   "Track the agreed CI check. When its timer fires, read that run's current status and report it. Do not push, merge, or start another build."
 ```
+
+Agree on the following inputs before scheduling:
+
+| Input | Example | Note |
+|---|---|---|
+| Target source | Specific CI URL or run ID | Must be readable without new credentials |
+| Read-only access | Pre-configured token or public API | Do not paste plaintext secrets in prompts |
+| Permitted actions | Read status, produce concise brief | No code edits, push, merge, or rebuild |
+| Stop condition | Run reaches terminal status (`passed`/`failed`) | Also cancel if timeout is reached |
+| Destination | Active WorkItem completion brief | Reviewable across sessions |
 
 Wait for the agent to confirm the source and scope before scheduling the check.
 The CLI commands below are operator actions. Agent tool equivalents are shown
@@ -71,6 +82,16 @@ Check both timer state and the resulting report. Success means the agent checked
 the agreed source and reported the result. A timer firing alone does not prove
 that the model ran successfully or the CI run passed.
 
+Verify the check details against your agreed inputs:
+
+| Verification item | Expected evidence |
+|---|---|
+| Source & run ID | Matches the agreed target run |
+| Check timestamp | Occurs at or shortly after the scheduled fire time |
+| Observed status | Primary source status (e.g., `success`, `in_progress`) |
+| Timer ID | Matches the saved ID and shows completed or next fire time |
+| WorkItem report | Updated in the WorkItem brief via `holon work-item get` |
+
 ## 3. Repeat only when needed
 
 For an authorized recurring check every ten minutes:
@@ -119,3 +140,8 @@ started by a previous firing.
 
 For field names and endpoints, see
 [Events and timers](../reference/events-and-timers.md).
+
+## See also
+
+- [Run a long-lived task](run-long-lived-task.md) — track objectives across sessions
+- [Connect external events](connect-external-events.md) — wake agents from webhooks

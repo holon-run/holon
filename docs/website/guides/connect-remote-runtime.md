@@ -1,13 +1,14 @@
 ---
 title: Connect to a remote Holon runtime
-summary: Reach a runtime running on another machine and verify the connection.
+summary: Reach a runtime from another computer or mobile phone and retrieve task results.
 order: 160
 ---
 
 # Connect to a remote Holon runtime
 
-Run Holon on one machine and connect from another. Choose a reachable address,
-protect the control plane, then verify authorized and unauthenticated access.
+Run Holon on a server or host machine and connect from your laptop, desktop,
+or mobile device. Choose a reachable address, protect the control plane, then
+verify authorized access and inspect existing task results.
 
 ## Prerequisites
 
@@ -164,9 +165,13 @@ holon tui --connect https://office:8787 --token-profile office
 holon tui --connect https://home:8787 --token-profile home
 ```
 
-### Mobile Access via Android Client
+### Mobile Access (Android & iOS)
 
-You can also connect to remote runtimes from an Android phone or tablet using the native Holon Android client. Provide your remote HTTPS base URL and token to start an encrypted mobile session. See [Connect with the Android client](/guides/connect-android-client.md).
+You can also connect to remote runtimes from a mobile phone or tablet using
+native Holon mobile clients. Provide your remote HTTPS base URL and token or QR
+code pairing to start an encrypted session:
+- [Connect with the Android client](/guides/connect-android-client.md) — install the APK or build from source
+- [Connect with the iOS client](/guides/connect-ios-client.md) — connect from iPhone or iPad
 
 
 ## Daemon Management
@@ -189,9 +194,12 @@ holon daemon stop
 2. Send a harmless request to a known agent and wait for its new response.
    A page loading or a request being accepted is not proof that the agent
    completed the work.
-3. Request `/api/agents/list` with the configured credential and check for a
+3. **Retrieve an existing task:** From the remote client, navigate to an active
+   or recent WorkItem by ID. Verify that you can read the latest brief and
+   output artifacts generated on the server host.
+4. Request `/api/agents/list` with the configured credential and check for a
    successful JSON response.
-4. Repeat the request without a credential:
+5. Repeat the request without a credential:
 
    ```bash
    curl -i https://your-server:8787/api/agents/list
@@ -242,4 +250,5 @@ before exposing a host with sensitive files.
 - [Troubleshoot a Holon task](/guides/troubleshooting.md) — connection problems
 - [Automate Holon over HTTP](/guides/automate-over-http.md) — drive Holon from code
 - [Connect with the Android client](/guides/connect-android-client.md) — manage agents from mobile devices
+- [Connect with the iOS client](/guides/connect-ios-client.md) — inspect tasks from iOS devices
 - [Configure OIDC authentication](/guides/configure-oidc-authentication.md) — single sign-on and audit trails
