@@ -3480,6 +3480,27 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "openai-codex/gpt-6.1-terra",
+      "display_name": "GPT-6.1-Terra (Codex)",
+      "description": "Reviewed Codex context from OpenAI codex-rs/models-manager/models.json; not the general API context or opt-in maximum.",
+      "context_window_tokens": 500000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": "low",
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": true
+      },
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "openai/gpt-5.3",
       "display_name": "GPT-5.3",
       "description": "Conservative GPT-5.3 runtime defaults used when explicit model metadata is not available locally.",
@@ -3748,6 +3769,27 @@
         "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "opencode-go/gemini-4-argon",
+      "display_name": "Gemini 4 Argon",
+      "description": "OpenCode Go translated text route; the native Google API is not registered. Token limits, vision, and reasoning controls remain unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -10258,6 +10300,16 @@
       }
     },
     {
+      "route_ref": "openai-codex@default/gpt-6.1-terra",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "openai@default/gpt-5.3",
       "policy": {
         "display_name": null,
@@ -10348,6 +10400,30 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/claude-haiku-5-5",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@default/deepseek-v4-flash",
       "policy": {
         "display_name": null,
@@ -10369,6 +10445,16 @@
     },
     {
       "route_ref": "opencode-go@default/deepseek-v4.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/gemini-4-argon",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10415,6 +10501,78 @@
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/gpt-5.6-luna",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/gpt-6-luna",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/grok-4.7",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
       }
     },
     {
@@ -10548,6 +10706,30 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/minimax-m3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@default/minimax-m3.1-flash",
       "policy": {
         "display_name": null,
@@ -10565,6 +10747,126 @@
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/muse-spark-1.2-contributor",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/muse-spark-1.3-contributor",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/qwen3.7-plus",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/qwen3.8-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/qwen3.8-max",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
       }
     },
     {
@@ -10598,6 +10900,30 @@
       }
     },
     {
+      "route_ref": "opencode-go@messages/beam-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@messages/claude-haiku-5-5",
       "policy": {
         "display_name": null,
@@ -10605,6 +10931,486 @@
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/deepseek-v4-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/deepseek-v4.1-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/gemini-4-argon",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/glm-5.2",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/glm-5.3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/glm-5.3-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/gpt-5.6-luna",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/gpt-6-luna",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/grok-4.7",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/hy3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/hy4-preview",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/iceman-contributor-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/kimi-k2.7-code",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/kimi-k3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/kimi-k3.1-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/longcat-2.0",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/mimo-v2.5",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/mimo-v2.5-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/mimo-v2.6-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/mimo-v2.6-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
       }
     },
     {
@@ -10635,6 +11441,78 @@
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/minimax-m3.1-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/muse-spark-1.2-contributor",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/muse-spark-1.3-contributor",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
       }
     },
     {
@@ -10688,6 +11566,222 @@
       }
     },
     {
+      "route_ref": "opencode-go@messages/step-5-preview",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/beam-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/claude-haiku-5-5",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/deepseek-v4-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/deepseek-v4.1-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/gemini-4-argon",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/glm-5.2",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/glm-5.3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/glm-5.3-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@responses/gpt-5.6-luna",
       "policy": {
         "display_name": null,
@@ -10718,6 +11812,318 @@
       }
     },
     {
+      "route_ref": "opencode-go@responses/hy3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/hy4-preview",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/iceman-contributor-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/kimi-k2.7-code",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/kimi-k3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/kimi-k3.1-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/longcat-2.0",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/mimo-v2.5",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/mimo-v2.5-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/mimo-v2.6-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/mimo-v2.6-pro",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/minimax-m3",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/minimax-m3.1-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@responses/muse-spark-1.2-contributor",
       "policy": {
         "display_name": null,
@@ -10735,6 +12141,102 @@
         "effective_context_window_percent": null,
         "capabilities": {},
         "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/qwen3.7-plus",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/qwen3.8-flash",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/qwen3.8-max",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/step-5-preview",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
       }
     },
     {
@@ -15402,6 +16904,10 @@
       "route_ref": "openai-codex@default/gpt-6.1-sol"
     },
     {
+      "model_ref": "openai-codex/gpt-6.1-terra",
+      "route_ref": "openai-codex@default/gpt-6.1-terra"
+    },
+    {
       "model_ref": "openai/gpt-5.3",
       "route_ref": "openai@default/gpt-5.3"
     },
@@ -15452,6 +16958,10 @@
     {
       "model_ref": "opencode-go/deepseek-v4.1-flash",
       "route_ref": "opencode-go@default/deepseek-v4.1-flash"
+    },
+    {
+      "model_ref": "opencode-go/gemini-4-argon",
+      "route_ref": "opencode-go@default/gemini-4-argon"
     },
     {
       "model_ref": "opencode-go/glm-5.1",

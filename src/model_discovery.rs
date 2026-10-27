@@ -851,6 +851,42 @@ impl VeniceModel {
     }
 }
 
+// The official Go table lists preferred APIs, not exclusive text eligibility.
+// Only these reviewed IDs are translated across the three registered endpoints.
+// Gemini's native Google API is not registered; default is its text fallback.
+pub(crate) const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
+    ("grok-4.7", "responses"),
+    ("gpt-6-luna", "responses"),
+    ("gpt-5.6-luna", "responses"),
+    ("claude-haiku-5-5", "messages"),
+    ("gemini-4-argon", "default"),
+    ("glm-5.3-flash", "default"),
+    ("glm-5.3", "default"),
+    ("glm-5.2", "default"),
+    ("kimi-k3.1-pro", "default"),
+    ("kimi-k3", "default"),
+    ("kimi-k2.7-code", "default"),
+    ("longcat-2.0", "default"),
+    ("deepseek-v4.1-flash", "default"),
+    ("deepseek-v4-pro", "default"),
+    ("mimo-v2.6-flash", "default"),
+    ("mimo-v2.6-pro", "default"),
+    ("mimo-v2.5", "default"),
+    ("mimo-v2.5-pro", "default"),
+    ("minimax-m3.1-flash", "default"),
+    ("minimax-m3", "messages"),
+    ("muse-spark-1.3-contributor", "responses"),
+    ("muse-spark-1.2-contributor", "responses"),
+    ("qwen3.8-max", "messages"),
+    ("qwen3.8-flash", "messages"),
+    ("qwen3.7-plus", "messages"),
+    ("hy4-preview", "default"),
+    ("hy3", "default"),
+    ("step-5-preview", "default"),
+    ("beam-free", "default"),
+    ("iceman-contributor-free", "default"),
+];
+
 #[derive(Debug, Deserialize)]
 struct OpenCodeGoModelsResponse {
     #[serde(default)]
@@ -877,48 +913,33 @@ struct OpenCodeGoModel {
 impl OpenCodeGoModel {
     fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
         let id = self.id.trim();
-        let endpoint = match id {
-            "deepseek-v4-pro"
-            | "deepseek-v4-flash"
-            | "deepseek-v4.1-flash"
-            | "glm-5.3"
-            | "glm-5.3-flash"
-            | "glm-5.2"
-            | "glm-5.1"
-            | "kimi-k3"
-            | "kimi-k2.7-code"
-            | "kimi-k2.6"
-            | "longcat-2.0"
-            | "longcat-2.5-preview-free"
-            | "mimo-v2.6-pro"
-            | "mimo-v2.6-flash"
-            | "mimo-v2.5-pro"
-            | "mimo-v2.5"
-            | "hy4-preview"
-            | "hy3"
-            | "space-bunny"
-            | "step-5-preview-free"
-            | "cat-jam-free" => None,
-            "claude-haiku-5-5" | "minimax-m3" | "minimax-m2.7" | "minimax-m2.5" | "qwen3.8-max"
-            | "qwen3.8-flash" | "qwen3.7-max" | "qwen3.7-plus" | "qwen3.6-plus" => {
-                Some(ProviderEndpointId::parse("messages").expect("valid OpenCode Go endpoint id"))
-            }
-            "grok-4.7"
-            | "grok-4.6"
-            | "gpt-6-luna"
-            | "gpt-5.6-luna"
-            | "muse-spark-1.3-contributor"
-            | "muse-spark-1.2-contributor" => {
-                Some(ProviderEndpointId::parse("responses").expect("valid OpenCode Go endpoint id"))
-            }
-            // The official Gemini route uses Google's protocol, not OpenAI chat.
-            _ => return None,
-        };
+        let preferred_endpoint = OPENCODE_GO_TEXT_MODELS
+            .iter()
+            .find_map(|(model, endpoint)| (*model == id).then_some(*endpoint))
+            .or_else(|| match id {
+                // Retain historical mappings without granting translation to
+                // IDs no longer present in the reviewed current text table.
+                "deepseek-v4-flash"
+                | "glm-5.1"
+                | "kimi-k2.6"
+                | "longcat-2.5-preview-free"
+                | "space-bunny"
+                | "step-5-preview-free"
+                | "cat-jam-free" => Some("default"),
+                "minimax-m2.7" | "minimax-m2.5" | "qwen3.7-max" | "qwen3.6-plus" => {
+                    Some("messages")
+                }
+                "grok-4.6" => Some("responses"),
+                _ => None,
+            })?;
+        let endpoint = (preferred_endpoint != "default").then(|| {
+            ProviderEndpointId::parse(preferred_endpoint).expect("valid OpenCode Go endpoint id")
+        });
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
             display_name: id.to_string(),
             description:
-                "Remote discovered OpenCode Go route from the official endpoint table or retained legacy mapping."
+                "Remote discovered OpenCode Go text model with its preferred registered endpoint or retained legacy mapping; translated eligibility is limited to reviewed current IDs."
                     .to_string(),
             context_window_tokens: None,
             effective_context_window_percent: 95,
@@ -2394,6 +2415,66 @@ mod tests {
                 && model.max_output_tokens_upper_limit.is_none()
                 && model.capabilities == ModelCapabilityFlags::default()
         }));
+    }
+
+    #[test]
+    fn opencode_go_discovery_accepts_reviewed_text_ids_without_inventing_capabilities() {
+        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 30);
+        let mut data = OPENCODE_GO_TEXT_MODELS
+            .iter()
+            .map(|(id, _)| serde_json::json!({"id": id}))
+            .collect::<Vec<_>>();
+        for id in [
+            "future-model",
+            "gemini-4-argon-contributor",
+            "gpt-6-luna-future",
+            " ",
+        ] {
+            data.push(serde_json::json!({"id": id}));
+        }
+        let payload: OpenCodeGoModelsResponse =
+            serde_json::from_value(serde_json::json!({"data": data})).unwrap();
+        let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
+        // Discovery is model-keyed, not route-keyed: retain one preferred record.
+        assert_eq!(models.len(), 30);
+        assert!(models
+            .windows(2)
+            .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));
+        for (id, preferred) in OPENCODE_GO_TEXT_MODELS {
+            let model = models
+                .iter()
+                .find(|model| model.model_ref.model == *id)
+                .unwrap();
+            assert_eq!(
+                model
+                    .endpoint
+                    .as_ref()
+                    .map_or("default", ProviderEndpointId::as_str),
+                *preferred,
+                "{id}"
+            );
+            assert_eq!(model.source, ModelMetadataSource::RemoteDiscovered);
+            assert_eq!(model.context_window_tokens, None);
+            assert_eq!(model.auto_compact_token_limit, None);
+            assert_eq!(model.default_max_output_tokens, None);
+            assert_eq!(model.max_output_tokens_upper_limit, None);
+            assert_eq!(model.default_verbosity, None);
+            assert_eq!(model.capabilities, ModelCapabilityFlags::default());
+            assert!(model.reasoning_effort_options.is_empty());
+        }
+        for id in [
+            "gemini-4-argon",
+            "kimi-k3.1-pro",
+            "iceman-contributor-free",
+            "minimax-m3.1-flash",
+            "step-5-preview",
+            "beam-free",
+        ] {
+            assert!(
+                models.iter().any(|model| model.model_ref.model == id),
+                "{id}"
+            );
+        }
     }
 
     #[test]

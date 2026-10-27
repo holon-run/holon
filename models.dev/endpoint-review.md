@@ -9,6 +9,93 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-28 incremental review
+
+This cycle starts from main `6a848009`; public endpoint evidence was checked
+on October 27 at 20:36–20:43 UTC (October 28 in Beijing).
+Refresh uses upstream revision
+`0bc5ae4e21918c0396a4885bd6b427e7a5af4c60eddf65795fc05ad0f2f8f7bb`.
+The artifact has three additions, two removals, and nine changed records;
+the supplement's 55 models and explicit route associations are unchanged.
+The eleven added/changed OpenRouter records match its independently fetched
+[public listing](https://openrouter.ai/api/v1/models); the two removed records
+are absent there, not proven retired on their native providers.
+
+### Confirmed endpoint changes
+
+- [OpenAI's Codex catalog](https://github.com/openai/codex/blob/126a0ee92ed2c5e73cd8a8f7e37563e8527552d7/codex-rs/models-manager/models.json)
+  now includes `gpt-6.1-terra`. Its default context is 500,000, distinct
+  from the API's 1,050,000 and optional Codex maximum 872,000.
+  Explicit admission must preserve the future-model review gate, existing
+  preferred model, unknown output capacities, and independent runtime budget.
+  Text/image input, parallel tools, shell execution, and six effort levels
+  are confirmed; image generation is not inferred.
+- [Go's model table](https://opencode.ai/v2/docs/console/go/) describes
+  native formats, not exclusive access. Its
+  [harness guide](https://opencode.ai/v2/docs/console/harnesses/) confirms
+  translation across all three existing APIs for current text models.
+  Review all 30 exact table IDs, including `gemini-4-argon`, in both the
+  static catalog and discovery. Preserve native preferred routes and metadata;
+  new translated routes require conservative field narrowing, not native
+  capability or capacity inheritance. Historical names are not renamed,
+  retired, or automatically expanded. Stable `x-opencode-session` is an
+  integration prerequisite, not a newly verified transport implementation.
+
+### Implemented metadata and preservation checks
+
+The regenerated builtin snapshot adds two models and 62 routes: one explicit
+Codex admission and 61 Go routes, completing 30 current IDs across the three
+registered protocols. The 60 non-preferred Go routes explicitly clear nullable
+capacities and verbosity, disable unconfirmed capabilities and cache controls,
+and retain empty effort options. Gemini's preferred text fallback is also
+conservative because its native Google protocol is not registered.
+
+All 384 previous builtin models, 533 routes, 170 aliases, 43 provider defaults,
+and 384 per-model preferred routes are unchanged. The offline field review adds
+62 records to the baseline for **666 total**, with all **604 existing field
+projections unchanged**. New output capacities remain unknown; the existing
+8192-token runtime fallback is policy, not a certified output limit.
+Real snapshot generation, Terra admission, 11 Go-related regressions and
+snapshot consistency passed. Final serial verification completed on October 27
+at 21:16 UTC: pinned refresh, `models-dev validate`, and the 666-record
+`models-dev coverage --check` passed; catalog tests passed 171 with one ignored,
+discovery 33, models.dev integration 19, route cache 17, and Responses 53.
+`cargo fmt --all -- --check`, warning-free `cargo check --locked --all-targets`,
+and `git diff --check` passed. Independent review found no confirmed P1/P2
+blockers and separately checked all 62 additions and unchanged baseline objects.
+These local gates do not establish live Go session or paid-inference acceptance.
+
+### Independent endpoint rechecks
+
+The source links below refer to the same independently fetched endpoint
+documents as the preceding cycle unless a new conflict is noted.
+
+| Registered endpoints | This cycle's result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Messages matrix unchanged; 46 existing exact IDs covered, with model-specific capability exceptions. |
+| `dashscope@token-plan` | Personal/team documentation unchanged; six historically unconfirmed routes are not newly certified. |
+| `dashscope@coding-plan`, `@coding-plan-intl` | Domestic/international tables independently unchanged; no cross-plan eligibility inference. |
+| `bigmodel@default`, `zai@default` | China and international model/key/cache sources independently unchanged; moved documentation is not endpoint retirement. |
+| `minimax@default`, `minimax-cn@default` | Separate regional schemas unchanged; implicit cache is not explicit control, recommended output is not default capacity. Existing native M2.5/M2.7 remain until November 18. |
+| `minimax@m-plan`, `minimax-cn@m-plan` | Independent plan tables unchanged; Preview/old plan names forward to Flash, without borrowing native retirement or regional quotas. |
+| `volcengine@default` | Native matrix and EOS unchanged. New K3.1 thinking/sampling conflicts are documented in the [capacity evidence](metadata-evidence.md); retain `low/high/max` and unknown output capacities. |
+| `volcengine@coding`, `@plan` | Independently unchanged. K2.7 Code EOS is **October 28 at 14:00 UTC+8**, later than this 04:30 review; retain it now. M3 remains until November 2 at 14:00 UTC+8. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | Protocol matrix and three schemas unchanged; Chat's reviewed fields do not migrate to the other protocols. |
+| `qianfan@default` | Model list/Chat schema unchanged; preserve conflicting capacities and historical IDs without affirmative retirement evidence. |
+| `moonshot@default` | International model/Chat/pricing/cache text unchanged. October 31 restricts new K2 users; full retirement remains planned for end of December, with no exact cutoff invented. |
+| `byteplus@coding` | Independently unchanged; retain 13 names and Singapore subscription boundary without borrowing ordinary API limits. |
+| `stepfun@default`, `@plan` | Separate model/EOS/plan documents unchanged; keep five plan IDs, router restrictions, and non-integer capacity gaps. |
+| `opencode-go@default`, `@messages`, `@responses` | Confirmed translated-access change above; current table is 30 IDs, public discovery 38, and absence of historical names is not retirement. |
+| `kilocode@default` | Five `kilo-auto` objects unchanged. Two new gateway discovery IDs are already parseable; OpenRouter records do not imply Kilo static admission. |
+| `together@default` | Six model cards unchanged; `.ai` examples do not retire registered `.xyz`, and Dedicated limits do not overwrite serverless fields. |
+| `fireworks@default` | Relevant model cards/cache guide unchanged. Rune's current card says it returns probabilities rather than generated text, so do not add it as an agent-turn model despite index marketing changes. |
+| `openrouter@default` Auto | Auto metadata unchanged; routing cost tiers and underlying model capacities are not guaranteed Auto effort levels or limits. |
+| DeepSeek native endpoints | Pricing and Responses documentation rechecked; no new qualifications or exact integer capacities established by shorthand. |
+
+This is public metadata review, not live account, inference, or session
+acceptance. No credentials, paid probes, deployment, or persistent user
+configuration changes are part of this cycle.
+
 ## 2026-10-27 incremental review
 
 This cycle starts from main `95236be5`. Independent endpoint checks were made

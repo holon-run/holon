@@ -101,9 +101,9 @@ pub(super) fn kilocode_entries() -> Vec<BuiltInModelMetadata> {
 }
 
 fn opencode_go_models_dev_entries() -> Vec<BuiltInModelMetadata> {
-    // Routing follows the official Go endpoint table; specifications are from
+    // Preferences follow the official native Go table; specifications are from
     // models.dev's opencode-go entry only, never inherited from upstream vendors.
-    // Grok 4.6 lacks Go-specific specifications; Gemini requires Google's protocol.
+    // Grok 4.6 lacks Go-specific specifications; translated routes are separate.
     [
         ("grok-4.7", "Grok 4.7", 500_000, 500_000, true, Some("responses")),
         ("gpt-6-luna", "GPT-6 Luna", 1_050_000, 128_000, true, Some("responses")),
@@ -331,6 +331,54 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         source: ModelMetadataSource::ConservativeBuiltin,
         endpoint: None,
     });
+    entries.push(BuiltInModelMetadata {
+        model_ref: ModelRef::new(provider_id("opencode-go"), "gemini-4-argon"),
+        display_name: "Gemini 4 Argon".into(),
+        description: "OpenCode Go translated text route; the native Google API is not registered. Token limits, vision, and reasoning controls remain unconfirmed.".into(),
+        context_window_tokens: None,
+        effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(
+            DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+        ),
+        capabilities: ModelCapabilityFlags::default(),
+        reasoning_effort_options: Vec::new(),
+        source: ModelMetadataSource::ConservativeBuiltin,
+        endpoint: None,
+    });
     entries.extend(opencode_go_models_dev_entries());
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_go_gemini_uses_exact_id_without_inventing_capabilities() {
+        let entries = opencode_entries();
+        let gemini = entries
+            .iter()
+            .filter(|entry| entry.model_ref.provider == provider_id("opencode-go"))
+            .filter(|entry| entry.model_ref.model.starts_with("gemini-"))
+            .collect::<Vec<_>>();
+        assert_eq!(gemini.len(), 1);
+        let model = gemini[0];
+        assert_eq!(model.model_ref.model, "gemini-4-argon");
+        assert_eq!(model.display_name, "Gemini 4 Argon");
+        assert_eq!(model.endpoint, None);
+        assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
+        assert_eq!(model.context_window_tokens, None);
+        assert_eq!(model.auto_compact_token_limit, None);
+        assert_eq!(model.default_max_output_tokens, None);
+        assert_eq!(model.max_output_tokens_upper_limit, None);
+        assert_eq!(model.default_verbosity, None);
+        assert_eq!(model.capabilities, ModelCapabilityFlags::default());
+        assert!(model.reasoning_effort_options.is_empty());
+        assert!(crate::model_discovery::OPENCODE_GO_TEXT_MODELS
+            .contains(&("gemini-4-argon", "default")));
+    }
 }
