@@ -379,6 +379,309 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn issue_3484_real_delivery_survives_two_recoveries_and_processes_new_input() -> Result<()>
+    {
+        use crate::domain::execution_protocol::ExecutionAttemptState;
+        use crate::provider::{
+            AgentProvider, ConversationMessage, ProviderTurnRequest, ProviderTurnResponse,
+        };
+        use crate::runtime::tests::support::{
+            context_config, host_backed_test_runtime, CountingProvider,
+        };
+        use crate::types::{BriefKind, QueueEntryStatus};
+        use anyhow::Context;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        struct DeliveryCaptureProvider {
+            inner: CountingProvider,
+            requests: tokio::sync::Mutex<Vec<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl AgentProvider for DeliveryCaptureProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> Result<ProviderTurnResponse> {
+                let current_inputs = request
+                    .conversation
+                    .iter()
+                    .filter_map(|message| match message {
+                        ConversationMessage::UserBlocks(blocks) => Some(blocks),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|block| block.text.starts_with("## current_input\n"))
+                    .map(|block| block.text.clone())
+                    .collect();
+                self.requests.lock().await.push(current_inputs);
+                self.inner.complete_turn(request).await
+            }
+        }
+
+        let (home, _host, sender) = host_backed_test_runtime().await;
+        let sender_id = sender.agent_id().await?;
+        let workspace = home.path().join("settlement-acceptance-workspace");
+        std::fs::create_dir_all(&workspace)?;
+        let state_root = home.path().join("settlement-acceptance-state");
+        let provider = Arc::new(DeliveryCaptureProvider {
+            inner: CountingProvider {
+                calls: tokio::sync::Mutex::new(0),
+                reply: "delivery completed",
+            },
+            requests: tokio::sync::Mutex::new(Vec::new()),
+        });
+        let new_target = || {
+            RuntimeHandle::new(
+                "settlement-acceptance-target",
+                state_root.clone(),
+                workspace.clone(),
+                "http://127.0.0.1:7878".into(),
+                provider.clone(),
+                "fixture".into(),
+                context_config(),
+            )
+        };
+        let prepare = |key: &str| {
+            let mut source = caller(None);
+            source.caller_principal = format!("agent:{sender_id}");
+            source.caller_agent_id = Some(sender_id.clone());
+            source.current_turn_id = None;
+            let mut input = request("settlement-acceptance-target", key);
+            input.content = MessageBody::Text {
+                text: format!("issue-3484-{key}-delivery-marker"),
+            };
+            input.requested_priority = Some(Priority::Normal);
+            AgentMessageDeliveryService::prepare(input, source)
+        };
+        let mut target = new_target()?;
+        let mut ids = Vec::new();
+        for key in ["anchor", "follower"] {
+            ids.push(
+                target
+                    .agent_message_delivery_service()
+                    .deliver(&prepare(key)?)
+                    .await?
+                    .message_id
+                    .context("accepted delivery")?,
+            );
+        }
+        let originals = ids
+            .iter()
+            .map(|id| {
+                target
+                    .storage()
+                    .read_message_by_id(id)?
+                    .context("source evidence")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        assert!(originals.iter().all(|message| message.turn_id.is_some()));
+        let mut predecessor = None;
+        for interrupted_claim in 0..2 {
+            if interrupted_claim > 0 {
+                drop(target);
+                target = new_target()?;
+                target.recover_scheduler_bootstrap_claims().await?;
+            }
+            let anchor = start_reply_selector_turn(&target).await?;
+            assert_eq!(anchor.id, ids[0]);
+            assert!(target.attach_idle_sender_inputs(&anchor, 24 * 1024).await?);
+            let execution = target
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("settlement-acceptance-target")?
+                .context("canonical execution")?;
+            let delivery = target
+                .inner
+                .runtime_db
+                .agent_message_deliveries()
+                .latest_for_message(&ids[0])?
+                .context("bound anchor delivery")?;
+            let activation = delivery.activation_id.context("bound activation")?;
+            let attempt = &execution.attempts[&activation];
+            assert_eq!(attempt.state, ExecutionAttemptState::Open);
+            assert_eq!(attempt.recovery_of_attempt_id, predecessor);
+            assert_eq!(attempt.turn_id, originals[0].turn_id);
+            assert_eq!(delivery.turn_id, attempt.turn_id);
+            assert_eq!(attempt.source_message_id.as_ref(), Some(&ids[0]));
+            if let Some(previous) = &predecessor {
+                assert_eq!(
+                    execution.attempts[previous].state,
+                    ExecutionAttemptState::Interrupted
+                );
+            }
+            predecessor = Some(activation);
+            assert_eq!(provider.inner.call_count().await, 0);
+        }
+        drop(target);
+        target = new_target()?;
+        target.recover_scheduler_bootstrap_claims().await?;
+
+        // Only ordinary runtime recovery and real producer ingress are used;
+        // no durable message, attempt, or delivery evidence is rewritten.
+        let mut runner = tokio::spawn(target.clone().run());
+        let delivered = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut processed_ids = vec![ids[0].clone()];
+            for key in [None, Some("after-recovery")] {
+                if let Some(key) = key {
+                    processed_ids.push(
+                        target
+                            .agent_message_delivery_service()
+                            .deliver(&prepare(key)?)
+                            .await?
+                            .message_id
+                            .context("accepted subsequent input")?,
+                    );
+                }
+                let id = processed_ids.last().unwrap();
+                loop {
+                    assert!(
+                        !runner.is_finished(),
+                        "runtime exited before delivery: {:?}",
+                        (&mut runner).await
+                    );
+                    let processed = target
+                        .inner
+                        .runtime_db
+                        .queue_entries()
+                        .latest(id)?
+                        .is_some_and(|entry| entry.status == QueueEntryStatus::Processed);
+                    let published = target
+                        .storage()
+                        .read_recent_briefs(10)?
+                        .iter()
+                        .any(|brief| brief.related_message_id.as_deref() == Some(id.as_str()));
+                    if processed && published {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+            Ok::<_, anyhow::Error>(processed_ids)
+        })
+        .await;
+        runner.abort();
+        let _ = runner.await;
+        let processed_ids = delivered.context("recovery must not strand later input")??;
+        assert_eq!(provider.inner.call_count().await, 2);
+        {
+            let requests = provider.requests.lock().await;
+            assert_eq!(requests.len(), 2);
+            for current_inputs in requests.iter() {
+                assert_eq!(
+                    current_inputs.len(),
+                    1,
+                    "current input block must be unique"
+                );
+            }
+            let recovered_input = &requests[0][0];
+            for key in ["anchor", "follower"] {
+                assert_eq!(
+                    recovered_input
+                        .matches(&format!("issue-3484-{key}-delivery-marker"))
+                        .count(),
+                    1,
+                    "{key} body must reach the provider as current input exactly once"
+                );
+            }
+            for id in &ids {
+                assert_eq!(
+                    recovered_input
+                        .matches(&format!("  source_ref: message:{id}\n"))
+                        .count(),
+                    1,
+                    "recovered source must be admitted exactly once"
+                );
+            }
+            assert!(!recovered_input.contains("issue-3484-after-recovery-delivery-marker"));
+            let later_input = &requests[1][0];
+            assert_eq!(
+                later_input
+                    .matches("issue-3484-after-recovery-delivery-marker")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                later_input
+                    .matches(&format!("  source_ref: message:{}\n", processed_ids[1]))
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(target.agent_state().await?.pending, 0);
+        assert!(target.storage().read_recent_tool_executions(10)?.is_empty());
+        let execution = target
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("settlement-acceptance-target")?
+            .context("settled execution")?;
+        let deliveries = target.inner.runtime_db.agent_message_deliveries();
+        let anchor = deliveries.latest_for_message(&ids[0])?.unwrap();
+        let final_attempt = &execution.attempts[anchor.activation_id.as_ref().unwrap()];
+        assert_eq!(final_attempt.recovery_of_attempt_id, predecessor);
+        assert_eq!(
+            execution.attempts[predecessor.as_ref().unwrap()].state,
+            ExecutionAttemptState::Interrupted
+        );
+        assert_eq!(final_attempt.turn_id, originals[0].turn_id);
+        assert_eq!(execution.attempts.len(), 4);
+        for (id, original) in ids.iter().zip(&originals) {
+            assert_eq!(
+                serde_json::to_value(target.storage().read_message_by_id(id)?.unwrap())?,
+                serde_json::to_value(original)?
+            );
+            assert_eq!(
+                deliveries.latest_for_message(id)?.unwrap().state,
+                AgentMessageDeliveryState::Consumed
+            );
+        }
+        let follower = deliveries.latest_for_message(&ids[1])?.unwrap();
+        assert!(follower.activation_id.is_none());
+        assert!(follower.turn_id.is_none());
+        assert_eq!(
+            target
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&ids[1])?
+                .unwrap()
+                .status,
+            QueueEntryStatus::Interjected
+        );
+        assert!(!execution
+            .attempts
+            .values()
+            .any(|attempt| { attempt.source_message_id.as_ref() == Some(&ids[1]) }));
+        let briefs = target.storage().read_recent_briefs(10)?;
+        assert_eq!(briefs.len(), 2);
+        let turns = target.storage().read_recent_turns(10)?;
+        for id in processed_ids {
+            let brief = briefs
+                .iter()
+                .find(|brief| brief.related_message_id.as_deref() == Some(id.as_str()))
+                .context("Result brief for processed input")?;
+            assert_eq!(brief.kind, BriefKind::Result);
+            let turn = turns
+                .iter()
+                .find(|turn| {
+                    turn.input_message_ids.contains(&id)
+                        && turn.terminal.as_ref().is_some_and(|terminal| {
+                            terminal.kind == crate::types::TurnTerminalKind::Completed
+                        })
+                })
+                .context("Completed turn for processed input")?;
+            if id == ids[0] {
+                assert!(turn.input_message_ids.contains(&ids[1]));
+            }
+            assert_eq!(turn.produced_brief_ids, vec![brief.id.clone()]);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn operator_authorized_agent_message_anchor_can_reply() -> Result<()> {
         real_agent_message_can_reply(false).await
     }
