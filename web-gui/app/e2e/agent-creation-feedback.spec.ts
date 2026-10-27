@@ -185,3 +185,44 @@ test("500 retains form inputs and provides safe diagnostics guidance instead of 
   await expect(dialog.getByRole("textbox", { name: "Agent ID" })).toHaveValue("reused-agent");
   await expect(dialog.getByRole("combobox")).toHaveValue("test-template");
 });
+
+test("300 a settled successful turn retires the creation banner", async ({ page, request }, info) => {
+  const session = sessionFor(info, "creation");
+  const id = "successful-turn-agent";
+  let finished = false;
+  const state = () => bootstrap(!finished ? "pending" : "succeeded");
+  await page.route(`**/api/control/agents/${id}/detail`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...await response.json(), bootstrap: state() } });
+  });
+  await page.route("**/api/jobs/job-create", (route) => route.fulfill({ json: {
+    job: { id: "job-create", status: !finished ? "running" : "completed" },
+  } }));
+  await page.route(`**/api/control/agents/${id}/create`, async (route) => {
+    await request.post(`/__e2e__/configure?session=${encodeURIComponent(session)}`, {
+      data: { visibleAgentIds: ["bootstrap-agent", id] },
+    });
+    await route.fulfill({ status: 202, json: {
+      identity: { agent_id: id, incarnation: 1, status: "active" },
+      receipt: { receipt_id: "receipt-success", agent_id: id, stage: "provisioning", job_id: "job-create", bootstrap: state() },
+    } });
+  });
+  await page.goto("/");
+  const dialog = await openCreate(page, id);
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByText("Created — initializing", { exact: true })).toBeVisible();
+  finished = true;
+  await expect(page.getByText("Created — initialization complete", { exact: true })).toBeVisible();
+  await request.post(`/__e2e__/conversation?session=${encodeURIComponent(session)}`, { data: {
+    agentId: id,
+    turns: [{
+      turn_id: "first-response", key: { turn_index: 1, turn_id: "first-response" }, revision: 1,
+      presentation_class: "operator", inputs: [{ message_id: "initial-message", preview: "Initialize" }],
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "available" },
+      settled: true, attention: null, detail_coverage: { kind: "complete" }, brief_ids: ["brief-1"],
+    }],
+  } });
+  await expect(page.locator(".agent-creation-status")).not.toBeVisible();
+});
