@@ -4,6 +4,11 @@
 with `Retry-After`, holds provider responses, and emits native Responses
 reasoning plus a real gated `ExecCommand`. It never writes runtime SQLite
 state or creates synthetic recovery inputs.
+The tool call precedes the reasoning item so the existing append-only window
+can retain the opaque item through `previous_response_id`. The nonempty
+`reasoning_text` still makes runtime candidate reselection unsafe, exercising
+same-turn waiting. This fixture does not cover the separate existing prefix
+mismatch for a reasoning-first mixed response.
 
 The shared `fault_proxy/server.py` HTTP Mock dispatches `native-cooldown` and
 `recovery-cooldown` requests to this fixture before its generic fault handling.
@@ -47,6 +52,14 @@ cooldowns. Releasing the held source HTTP 503 creates a runtime-owned recovery
 input; admission must retain it in `Queued` with a canonical parking deadline.
 After that deadline it must dispatch and consume once with the original tool
 evidence and source owner, without running the tool again.
+The recovered prompt must carry the original `tool_execution_id`; the oracle
+joins that reference to the unchanged successful tool record and its actual
+stdout, not merely to a matching marker in prompt text. Recovery reprojects
+persisted evidence references; it does not promise inline replay of stdout or
+the failed provider's opaque window.
+Completed-turn input IDs include both the recovery and its validated source;
+they are context references, not a dequeue list. Exact queue claim/settlement
+counts separately prove that the original source was not consumed again.
 
 This is the deterministic **scheduler-admission** compound-fault gate. It does
 not claim to cover the narrower already-admitted/pre-send race that produces an

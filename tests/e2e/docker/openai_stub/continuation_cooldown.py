@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from server import Scenario, call_item, response, text_item
@@ -10,6 +11,7 @@ NATIVE_GATE = "qa-3772-native-gate"
 NATIVE_RESULT = "QA_NATIVE_TOOL_DONE"
 NATIVE_REASONING = {
     "type": "reasoning", "id": "rs_cooldown",
+    "summary": [],
     "content": [{"type": "reasoning_text", "text": "QA_NATIVE_REASONING"}],
     "encrypted_content": "qa-native-opaque",
 }
@@ -38,6 +40,8 @@ def consume(handler, payload, side, setting, record):
         "previous_response_id": payload.get("previous_response_id"),
         "recovery_input": [item["provenance"].get("id") for item in recovery],
         "has_tool_evidence": NATIVE_RESULT in body,
+        "tool_evidence_refs": sorted(set(re.findall(
+            r"tool_execution_id=([A-Za-z0-9_-]+)", body))),
     }
 
     def reply(status, marker, output=None, headers=None):
@@ -56,16 +60,20 @@ def consume(handler, payload, side, setting, record):
         fail("cooling", 12)
     elif "QA_COOL_RECOVERY" in current:
         fail("cooling", 12)
+    elif (scenario == "recovery-cooldown" and side == "b" and recovery
+          and not row["has_tool_evidence"] and setting("HOLD_SOURCE_FAILURE", False)):
+        # The helper reaches B through a runtime repair input, not its operator marker.
+        fail("cooling", 12)
     elif recovery:
         reply(200, "QA_RECOVERY_DONE")
     elif "QA_NATIVE" in current and not outputs:
         reply(200, "native_tool_call", response([
-            NATIVE_REASONING,
             call_item("call-native", "ExecCommand", {
                 "cmd": f"while [ ! -f /var/lib/holon/{NATIVE_GATE} ]; "
                        f"do sleep 0.1; done; printf {NATIVE_RESULT}",
                 "yield_time_ms": 20000,
             }),
+            NATIVE_REASONING,
         ], f"resp_{side}_native"))
     elif outputs and scenario == "recovery-cooldown":
         record(**row, response="source_failure_held")

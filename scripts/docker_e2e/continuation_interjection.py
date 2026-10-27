@@ -51,7 +51,7 @@ def evaluate_native_cooldown(events, http, snapshot, observation, message_id):
     for checkpoint in (snapshot, waiting):
         _complete_snapshot(checkpoint)
     state = observation["state"]
-    wait = state.get("provider_cooldown_wait")
+    wait = state["agent"]["agent"].get("provider_cooldown_wait")
     require(wait is not None and wait.get("turn_id") and wait.get("attempt_id"),
             "query must expose a turn/attempt-bound cooldown wait")
     require("qa-a" in str(wait.get("model")), "native continuation changed model")
@@ -151,9 +151,8 @@ def evaluate_recovery_cooldown(events, http, snapshot, before):
     require(entry is not None and entry["status"] == "queued",
             "scheduler-parked recovery input must remain Queued until admission")
     resumed = [row for row in http if mid in row.get("recovery_input", [])]
-    require(len(resumed) == 1 and resumed[0].get("response") == "QA_RECOVERY_DONE"
-            and resumed[0].get("has_tool_evidence"),
-            "recovery input must dispatch once with original tool evidence")
+    require(len(resumed) == 1 and resumed[0].get("response") == "QA_RECOVERY_DONE",
+            "recovery input must dispatch once")
     require(datetime.fromtimestamp(resumed[0]["at"], timezone.utc)
             >= _instant(parked[0]["not_before"]), "recovery dispatched before its deadline")
     require(any(row.get("response") == "source_failure"
@@ -180,9 +179,23 @@ def evaluate_recovery_cooldown(events, http, snapshot, before):
                     and event.get("payload", {}).get("message_id") == mid
                     for event in events), "scheduler-parked input must not invent a replay")
     tools = _native_tools(snapshot)
-    require(len(tools) == 1
-            and json.loads(tools[0]["payload_json"]).get("status") == "success",
-            "recovery must preserve one successful tool execution")
+    require(len(tools) == 1 and tools == _native_tools(before),
+            "recovery must preserve the original tool evidence byte-for-byte")
+    tool = json.loads(tools[0]["payload_json"])
+    tool_id = tools[0].get("evidence_id")
+    result = tool.get("output", {}).get("envelope", {}).get("result", {})
+    require(tool_id and tool.get("id") == tool_id
+            and tool_id in resumed[0].get("tool_evidence_refs", [])
+            and tool.get("agent_id") == tools[0].get("agent_id") == "qa"
+            and tool.get("output", {}).get("is_error") is False
+            and tool.get("status") == "success" and result.get("exit_status") == 0
+            and "QA_NATIVE_TOOL_DONE" in result.get("stdout_preview", ""),
+            "recovery prompt must reference the original successful tool output")
+    source_failure = [row for row in http if row.get("response") == "source_failure"]
+    require(len(source_failure) == 1 and tool.get("completed_at")
+            and _instant(tool["completed_at"])
+            < datetime.fromtimestamp(source_failure[0]["at"], timezone.utc),
+            "the original tool must finish before the source provider failure")
     require(len(_completed(events)) == len(_result_briefs(events)) == 1
             and _completed(events)[0]["payload"].get("last_assistant_message")
             == "QA_RECOVERY_DONE", "recovery must deliver once")
@@ -193,10 +206,32 @@ def evaluate_recovery_cooldown(events, http, snapshot, before):
               == "provider_failed_needs_recovery"]
     completed_id = _completed(events)[0]["payload"].get("turn_id")
     completed = [turn for turn in _turns(snapshot) if turn.get("turn_id") == completed_id]
+    recovery = json.loads(source["payload_json"])
+    refs = recovery.get("source_refs", {})
+    directive = recovery.get("metadata", {}).get("provider_recovery", {})
+    source_mid = refs.get("source_message_id")
     require(len(failed) == len(completed) == 1 and failed[0].get("owner") is not None
             and failed[0]["owner"] == completed[0].get("owner")
-            and completed[0].get("input_message_ids") == [mid],
-            "recovery must inherit the failed source owner and consume only its own input")
+            and refs.get("source_turn_id") == failed[0].get("turn_id")
+            and directive.get("source_turn_id") == refs.get("source_turn_id")
+            and directive.get("source_message_id") == source_mid
+            and directive.get("source_terminal_kind") == "provider_failed_needs_recovery"
+            and source_mid and failed[0].get("input_message_ids") == [source_mid]
+            and tool.get("turn_id") == tools[0].get("turn_id") == failed[0].get("turn_id")
+            and tool_id in failed[0].get("tool_execution_ids", [])
+            and completed[0].get("trigger", {}).get("message_id") == mid
+            and len(completed[0].get("input_message_ids", [])) == 2
+            and set(completed[0]["input_message_ids"]) == {mid, source_mid},
+            "recovery must inherit only its validated source and owner")
+    original_settled = [event for event in events if event["type"] == "queue_entry_settled"
+                        and event.get("payload", {}).get("message_id") == source_mid]
+    require(len(original_settled) == 1
+            and original_settled[0]["payload"].get("status") == "processed"
+            and not any(event["type"] == "queue_entry_claimed"
+                        and event.get("payload", {}).get("message_id") == source_mid
+                        and _instant(event["ts"]) >= _instant(parked[0]["not_before"])
+                        for event in events),
+            "context source references must not re-consume the original operator input")
     return "verified-r3773-isolated"
 
 
@@ -654,7 +689,7 @@ class AcceptanceRun(FaultRun):
 
         def waiting():
             state = self.api("GET", "/api/agents/qa/state")
-            return state if state.get("provider_cooldown_wait") else None
+            return state if state["agent"]["agent"].get("provider_cooldown_wait") else None
 
         state = self.wait_until(waiting, 15, "queryable native cooldown wait")
         before = self.snapshot()
@@ -675,7 +710,8 @@ class AcceptanceRun(FaultRun):
         write_json(self.evidence / "cooldown-observation.json", redact_evidence(observation))
         events = self.wait_completed("qa", cursor)
         final_state = self.api("GET", "/api/agents/qa/state")
-        require(not final_state.get("provider_cooldown_wait"), "completed wait was not cleared")
+        require(not final_state["agent"]["agent"].get("provider_cooldown_wait"),
+                "completed wait was not cleared")
         self.docker("stop", "--time", "5", self.daemon)
         http, snapshot = self.mock_records(), self.snapshot()
         write_json(self.evidence / "events.json", redact_evidence(events))

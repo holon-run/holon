@@ -62,7 +62,7 @@ def native_evidence():
     waiting = copy.deepcopy(snapshot)
     waiting["rows"]["queue_entries_current"][0]["status"] = "claimed"
     observation = {
-        "state": {"provider_cooldown_wait": wait}, "snapshot": waiting,
+        "state": {"agent": {"agent": {"provider_cooldown_wait": wait}}}, "snapshot": waiting,
         "http_before": http[:2], "http_after": http[:2],
         "tcp_before": [{"side": "a"}], "tcp_after": [{"side": "a"}],
         "requests_before": [{"request_id": "r1"}], "requests_after": [{"request_id": "r1"}],
@@ -75,23 +75,42 @@ def recovery_evidence():
     source = {"agent_id": "qa", "message_id": "m-recovery", "payload_json": json.dumps({
         "kind": "internal_followup", "authority_class": "runtime_instruction",
         "origin": {"kind": "system", "subsystem": "model_lineage_recovery"},
+        "source_refs": {"source_message_id": "m-source", "source_turn_id": "source-turn"},
+        "metadata": {"provider_recovery": {
+            "source_message_id": "m-source", "source_turn_id": "source-turn",
+            "source_terminal_kind": "provider_failed_needs_recovery",
+        }},
     })}
     before = {"rows": {
         "messages": [source],
         "queue_entries_current": [{"message_id": "m-recovery", "status": "queued"}],
         "provider_queue_parking": [{
             "message_id": "m-recovery", "not_before": "2026-10-27T00:00:12Z"}],
+        "tool_executions": [{
+            "evidence_id": "tool-original", "agent_id": "qa", "turn_id": "source-turn",
+            "payload_json": json.dumps({
+                "id": "tool-original", "turn_id": "source-turn", "agent_id": "qa",
+                "completed_at": "2026-10-27T00:00:00Z",
+                "input": {"cmd": "qa-3772-native-gate"}, "status": "success",
+                "output": {"is_error": False, "envelope": {"result": {
+                    "exit_status": 0,
+                    "stdout_preview": "QA_NATIVE_TOOL_DONE",
+                }}},
+            }),
+        }],
     }}
     snapshot = copy.deepcopy(before)
     snapshot["rows"]["provider_queue_parking"] = []
     snapshot["rows"]["queue_entries_current"][0]["status"] = "processed"
-    snapshot["rows"]["tool_executions"] = [{
-        "payload_json": '{"input":{"cmd":"qa-3772-native-gate"},"status":"success"}'}]
     owner = {"kind": "agent_lifecycle", "agent_id": "qa"}
     snapshot["rows"]["turn_records"] = [{"payload_json": json.dumps(turn)} for turn in [
         {"turn_id": "source-turn", "owner": owner,
+         "input_message_ids": ["m-source"],
+         "tool_execution_ids": ["tool-original"],
          "terminal": {"kind": "provider_failed_needs_recovery"}},
-        {"turn_id": "recovered-turn", "owner": owner, "input_message_ids": ["m-recovery"]},
+        {"turn_id": "recovered-turn", "owner": owner,
+         "trigger": {"message_id": "m-recovery"},
+         "input_message_ids": ["m-recovery", "m-source"]},
     ]]
     events = [
         {"type": "queue_entry_settled", "payload": {
@@ -104,12 +123,15 @@ def recovery_evidence():
             "kind": "completed", "turn_id": "recovered-turn",
             "last_assistant_message": "QA_RECOVERY_DONE"}},
         {"type": "brief_created", "payload": {"kind": "result"}},
+        {"type": "queue_entry_settled", "payload": {
+            "message_id": "m-source", "status": "processed"}},
     ]
     http = [
-        {"response": "source_failure", "status": 503},
+        {"response": "source_failure", "status": 503, "at": 1793059201},
         *[{"response": "cooling", "status": 503, "side": side} for side in ("a", "b")],
         {"recovery_input": ["m-recovery"], "at": 1793059212,
-         "response": "QA_RECOVERY_DONE", "has_tool_evidence": True},
+         "response": "QA_RECOVERY_DONE", "has_tool_evidence": False,
+         "tool_evidence_refs": ["tool-original"]},
     ]
     return events, http, snapshot, before
 
@@ -121,15 +143,22 @@ class NativeOracleTests(unittest.TestCase):
     def test_real_fault_active_wait_and_single_continuation(self):
         self.assertEqual(evaluate_native_cooldown(*native_evidence()), "verified-t3772-isolated")
 
+    def test_provider_window_retains_opaque_state_without_inline_replay(self):
+        events, http, snapshot, observation, mid = native_evidence()
+        http[-1].update(previous_response_id="resp_a_native", native_context=[])
+        self.assertEqual(evaluate_native_cooldown(
+            events, http, snapshot, observation, mid), "verified-t3772-isolated")
+
     def test_negative_gates(self):
         mutations = {
             "http_io": lambda e, h, s, o: o["http_after"].append({"side": "a"}),
             "tcp_io": lambda e, h, s, o: o["tcp_after"].append({"side": "a"}),
             "budget_charge": lambda e, h, s, o: o["requests_after"].append({"request_id": "r2"}),
             "no_real_failure": lambda e, h, s, o: h.pop(0),
-            "wrong_cause": lambda e, h, s, o: o["state"]["provider_cooldown_wait"]["cause"].update(
+            "missing_query_wait": lambda e, h, s, o: o["state"]["agent"]["agent"].clear(),
+            "wrong_cause": lambda e, h, s, o: o["state"]["agent"]["agent"]["provider_cooldown_wait"]["cause"].update(
                 http_status=429),
-            "raw_diagnostic": lambda e, h, s, o: o["state"]["provider_cooldown_wait"]["cause"].update(
+            "raw_diagnostic": lambda e, h, s, o: o["state"]["agent"]["agent"]["provider_cooldown_wait"]["cause"].update(
                 detail="fixture-only diagnostic"),
             "early_retry": lambda e, h, s, o: h[-1].update(at=1793059211),
             "wrong_model": lambda e, h, s, o: h[-1].update(model="other"),
@@ -174,7 +203,9 @@ class RecoveryOracleTests(unittest.TestCase):
         for name in ("missing_source", "mutated_source", "missing_parking", "consumed",
                      "missing_fault", "early", "lost_evidence", "duplicate_dispatch",
                      "rerun_tool", "missing_claim", "duplicate_consumption", "aborted",
-                     "changed_owner", "wrong_recovery_input", "not_processed"):
+                     "changed_owner", "wrong_recovery_input", "not_processed",
+                     "input_only_marker", "tool_error", "wrong_tool_turn",
+                     "wrong_source_binding", "duplicate_original_consumption"):
             with self.subTest(name=name):
                 e, h, s, b = copy.deepcopy(recovery_evidence())
                 if name == "missing_source":
@@ -190,7 +221,7 @@ class RecoveryOracleTests(unittest.TestCase):
                 elif name == "early":
                     h[-1]["at"] -= 1
                 elif name == "lost_evidence":
-                    h[-1]["has_tool_evidence"] = False
+                    h[-1]["tool_evidence_refs"] = ["tool-unrelated"]
                 elif name == "duplicate_dispatch":
                     h.append(copy.deepcopy(h[-1]))
                 elif name == "rerun_tool":
@@ -211,6 +242,26 @@ class RecoveryOracleTests(unittest.TestCase):
                     s["rows"]["turn_records"][1]["payload_json"] = json.dumps(turn)
                 elif name == "not_processed":
                     s["rows"]["queue_entries_current"][0]["status"] = "queued"
+                elif name in ("input_only_marker", "tool_error", "wrong_tool_turn"):
+                    for checkpoint in (s, b):
+                        row = checkpoint["rows"]["tool_executions"][0]
+                        tool = json.loads(row["payload_json"])
+                        if name == "input_only_marker":
+                            tool["input"]["cmd"] += " QA_NATIVE_TOOL_DONE"
+                            tool["output"]["envelope"]["result"]["stdout_preview"] = ""
+                        elif name == "tool_error":
+                            tool["output"]["is_error"] = True
+                        else:
+                            row["turn_id"] = tool["turn_id"] = "unrelated"
+                        row["payload_json"] = json.dumps(tool)
+                elif name == "wrong_source_binding":
+                    for checkpoint in (s, b):
+                        row = checkpoint["rows"]["messages"][0]
+                        source = json.loads(row["payload_json"])
+                        source["source_refs"]["source_turn_id"] = "unrelated"
+                        row["payload_json"] = json.dumps(source)
+                elif name == "duplicate_original_consumption":
+                    e.append(copy.deepcopy(e[-1]))
                 with self.assertRaises(AssertionError):
                     evaluate_recovery_cooldown(e, h, s, b)
 
@@ -233,8 +284,8 @@ class ProviderFixtureTests(unittest.TestCase):
     def test_native_round_retains_opaque_context_and_gated_tool(self):
         reply, _ = self.request({"input": "QA_NATIVE"})
         output = reply.call_args.args[1]["output"]
-        self.assertEqual(output[0], NATIVE_REASONING)
-        self.assertIn("qa-3772-native-gate", output[1]["arguments"])
+        self.assertEqual(output[1], NATIVE_REASONING)
+        self.assertIn("qa-3772-native-gate", output[0]["arguments"])
 
     def test_native_continuation_logs_original_result_and_context(self):
         reply, records = self.request({"input": [NATIVE_REASONING, {
@@ -304,6 +355,26 @@ class FaultProxyHttpTests(unittest.TestCase):
         with result:
             return result.status, result.headers, json.load(result)
 
+    def recovery_payload(self, tool_evidence=False, tool_ref=None):
+        provenance = {
+            "id": "helper-repair", "kind": "internal_followup",
+            "authority_class": "runtime_instruction",
+            "origin": {"kind": "system", "subsystem": "model_lineage_recovery"},
+        }
+        text = (
+            "## current_input\n"
+            "Current input batch (receive order; each item retains its own "
+            "authority and reply route):\n"
+            "- reply_context_id: helper-repair\n"
+            "  source_ref: message:helper-repair\n"
+            f"  provenance: {json.dumps(provenance)}\n"
+            "  representation: full\n  body:\n"
+            + ("QA_NATIVE_TOOL_DONE" if tool_evidence else "resume helper")
+            + (f"\ntool_execution_id={tool_ref}" if tool_ref else "")
+        )
+        return {"input": [{"role": "user", "content": [
+            {"type": "input_text", "text": text}]}]}
+
     def test_fixture_serves_a_real_http_failure_and_native_continuation(self):
         status, headers, _ = self.request({"input": "QA_COOL_NATIVE"})
         self.assertEqual(status, 503)
@@ -326,8 +397,9 @@ class FaultProxyHttpTests(unittest.TestCase):
                 "output": "QA_NATIVE_TOOL_DONE"}]})
             try:
                 self.assertTrue(self.source_held.wait(timeout=2))
-                for side in ("a", "b"):
-                    status, headers, _ = self.request({"input": "QA_COOL_RECOVERY"}, side)
+                for side, payload in (("a", {"input": "QA_COOL_RECOVERY"}),
+                                      ("b", self.recovery_payload())):
+                    status, headers, _ = self.request(payload, side)
                     self.assertEqual(status, 503)
                     self.assertEqual(headers["Retry-After"], "12")
                 self.assertFalse(source.done())
@@ -337,6 +409,23 @@ class FaultProxyHttpTests(unittest.TestCase):
         self.assertEqual([row["response"] for row in self.records],
                          ["source_failure_held", "cooling", "cooling", "source_failure"])
         self.assertEqual([row["side"] for row in self.records], ["a", "a", "b", "a"])
+
+    def test_helper_fault_does_not_reject_source_recovery_or_released_helper(self):
+        self.settings.update(SCENARIO="recovery-cooldown", HOLD_SOURCE_FAILURE=True)
+        status, _, _ = self.request(self.recovery_payload(tool_evidence=True), "b")
+        self.assertEqual(status, 200)
+        self.settings["HOLD_SOURCE_FAILURE"] = False
+        status, _, _ = self.request(self.recovery_payload(), "b")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["response"] for row in self.records],
+                         ["QA_RECOVERY_DONE", "QA_RECOVERY_DONE"])
+
+    def test_recovery_observes_tool_reference_without_inventing_inline_output(self):
+        self.settings.update(SCENARIO="recovery-cooldown")
+        status, _, _ = self.request(self.recovery_payload(tool_ref="tool-original"), "b")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.records[-1]["tool_evidence_refs"], ["tool-original"])
+        self.assertFalse(self.records[-1]["has_tool_evidence"])
 
     def test_unselected_scenario_keeps_existing_fault_dispatch(self):
         self.settings.update(SCENARIO="", STATUS_A=429, RETRY_AFTER_A="7")
