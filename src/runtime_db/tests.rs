@@ -240,6 +240,51 @@ mod tests {
             &connection,
             "provider_route_throttle_incidents"
         )?);
+        connection.execute_batch(
+            "INSERT INTO provider_recovery_requests VALUES (
+                'pending', 'legacy', 2, 8, '[]', NULL, NULL, 'dispatched', NULL);",
+        )?;
+        let tables = [
+            "provider_recovery_episodes",
+            "provider_recovery_requests",
+            "provider_queue_parking",
+            "provider_quota_incidents",
+            "provider_transport_incidents",
+            "provider_route_throttle_incidents",
+        ];
+        for table in &tables[3..] {
+            connection.execute(
+                &format!(
+                    "INSERT INTO {table} (
+                        identity_key, incident_id, revision, consecutive_failures,
+                        next_retry_at, opened_at, last_failed_at, server_not_before,
+                        probe_token, probe_lease_until, cooldown_policy
+                     ) VALUES ('legacy-key', 'incident', 9, 4, 'retry', 'opened',
+                        'failed', 'server-floor', 'active-probe', 'lease-end', 'hard_quota')"
+                ),
+                [],
+            )?;
+        }
+        let before: Vec<_> = tables
+            .iter()
+            .map(|table| rows(&connection, table))
+            .collect::<Result<_>>()?;
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 89)
+            .expect("payment required needs an explicit upgrade migration");
+        apply_migration(&mut connection, migration)?;
+        for (table, expected) in tables.iter().zip(before) {
+            assert_eq!(rows(&connection, table)?, expected, "{table}");
+        }
+        connection.execute(
+            "UPDATE provider_recovery_requests SET outcome = 'payment_required',
+             failed_scope_json = '{\"kind\":\"candidate\",\"key\":\"candidate-hash\"}',
+             settled_at = 'settled' WHERE request_id = 'request-4'",
+            [],
+        )?;
+        assert!(!connection.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        assert!(table_exists(&connection, "provider_candidate_incidents")?);
         Ok(())
     }
 
@@ -960,6 +1005,7 @@ mod tests {
              DROP TABLE provider_transport_incidents;
              DROP TABLE provider_quota_incidents;
              DROP TABLE provider_route_throttle_incidents;
+             DROP TABLE provider_candidate_incidents;
              DROP TABLE task_result_recovery_admissions;
              DROP TABLE task_result_settlements;
              DROP INDEX idx_agent_deletion_jobs_status_retry_created;

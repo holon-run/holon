@@ -4,6 +4,8 @@ use crate::domain::execution_protocol::{
     ExecutionSourceIdentity, ExecutionTrust,
 };
 
+mod payment_required;
+
 fn now() -> DateTime<Utc> {
     "2026-10-24T17:00:00Z".parse().unwrap()
 }
@@ -1018,21 +1020,25 @@ fn rate_limited_never_refills_budget_and_deduplicates_only_its_scope() -> Result
         ProviderRecoveryBudgetKind::Network,
         ProviderRecoveryBudgetKind::Operator,
     ] {
-        for route_scope in [false, true] {
+        for scope_kind in 0..3 {
             for protocol_response in [false, true] {
                 let (dir, db) = database()?;
                 let mut current = episode(&db, kind)?;
                 let common = transport("healthy-connection");
-                let limited = if route_scope {
-                    ProviderAdmissionScope::route_throttle("provider/endpoint/model-a")?
-                } else {
-                    quota("account-a")
+                let limited = match scope_kind {
+                    0 => quota("account-a"),
+                    1 => ProviderAdmissionScope::route_throttle("provider/endpoint/model-a")?,
+                    _ => ProviderAdmissionScope::candidate("provider/endpoint/credential/model-a")?,
                 };
                 let first = lease(&db, &[common.clone(), limited.clone()])?;
                 let dispatch = charge(&db, &current, &first, "limited", 1)?;
                 assert!(db.record_provider_recovery_request_outcome(
                     &dispatch,
-                    ProviderRecoveryRequestOutcome::RateLimited(&limited),
+                    if scope_kind == 2 {
+                        ProviderRecoveryRequestOutcome::PaymentRequired(&limited)
+                    } else {
+                        ProviderRecoveryRequestOutcome::RateLimited(&limited)
+                    },
                     false,
                     now(),
                 )?);
@@ -1051,12 +1057,14 @@ fn rate_limited_never_refills_budget_and_deduplicates_only_its_scope() -> Result
                     ProviderRecoveryDispatchDenial::ScopeAlreadyAttempted,
                 );
                 for index in 1..3 {
-                    let next = if route_scope {
-                        ProviderAdmissionScope::route_throttle(&format!(
+                    let next = match scope_kind {
+                        0 => quota(&format!("account-{index}")),
+                        1 => ProviderAdmissionScope::route_throttle(&format!(
                             "provider/endpoint/model-{index}"
-                        ))?
-                    } else {
-                        quota(&format!("account-{index}"))
+                        ))?,
+                        _ => ProviderAdmissionScope::candidate(&format!(
+                            "provider/endpoint/credential/model-{index}"
+                        ))?,
                     };
                     let reservation = lease(&db, &[common.clone(), next])?;
                     let dispatch = charge(

@@ -1,6 +1,7 @@
 mod candidate_reselection;
 mod failure_messages;
 mod local_dispatch;
+mod payment_required;
 mod probe_frontier;
 mod rate_limited;
 mod root_fairness;

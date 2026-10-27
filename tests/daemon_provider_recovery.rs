@@ -1,4 +1,4 @@
-//! Compiled-daemon provider cooldown recovery regressions for #3484.
+//! Compiled-daemon provider recovery regressions for #3484 and #3766.
 //!
 //! These tests spawn the real `holon serve` binary against local mock
 //! providers to prove, at process level:
@@ -9,7 +9,11 @@
 //!   used and nothing is parked;
 //! - a task-result continuation that is parked during cooldown recovers the
 //!   same way, covering an isolated equivalent of "tool result arrives while
-//!   the chain cools", not a replay of a production database.
+//!   the chain cools", not a replay of a production database;
+//! - an agent override survives payment failure, while real fallback dispatch
+//!   and tool continuation agree with the recovery audit;
+//! - exhausted payment candidates park within the existing dispatch budget
+//!   and do not dispatch or create model turns before the deadline on restart.
 //!
 //! Every invocation has its own home, socket, environment, process group,
 //! and mock provider ports. No real provider or network endpoint is used.
@@ -70,6 +74,8 @@ enum MockMode {
     Initialize,
     /// Every model request receives HTTP 429 without a Retry-After hint.
     RateLimited,
+    /// The spending-limit response must not be retried on the same candidate.
+    PaymentRequired,
     /// Every model request receives a successful completion.
     Success,
 }
@@ -85,16 +91,20 @@ struct MockState {
 
 struct MockStats {
     rate_limited: AtomicUsize,
+    payment_required: AtomicUsize,
     success: AtomicUsize,
     last_success_at: Mutex<Option<DateTime<Utc>>>,
+    requested_models: Mutex<Vec<String>>,
 }
 
 impl MockStats {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             rate_limited: AtomicUsize::new(0),
+            payment_required: AtomicUsize::new(0),
             success: AtomicUsize::new(0),
             last_success_at: Mutex::new(None),
+            requested_models: Mutex::new(Vec::new()),
         })
     }
 }
@@ -147,10 +157,20 @@ impl MockProvider {
         self.stats.rate_limited.load(Ordering::SeqCst)
     }
 
+    fn payment_required_hits(&self) -> usize {
+        self.stats.payment_required.load(Ordering::SeqCst)
+    }
+
+    fn requested_models(&self) -> Vec<String> {
+        self.stats.requested_models.lock().unwrap().clone()
+    }
+
     fn reset_hits(&self) {
         self.stats.rate_limited.store(0, Ordering::SeqCst);
+        self.stats.payment_required.store(0, Ordering::SeqCst);
         self.stats.success.store(0, Ordering::SeqCst);
         *self.stats.last_success_at.lock().unwrap() = None;
+        self.stats.requested_models.lock().unwrap().clear();
     }
 
     fn arm_tool_call(&self, counter: PathBuf) {
@@ -270,6 +290,15 @@ fn rate_limited_body() -> &'static str {
     "{\"error\":{\"message\":\"mock rate limit\",\"type\":\"rate_limit_error\"}}"
 }
 
+fn anthropic_tool_body(name: &str, id: &str, input: Value) -> String {
+    json!({
+        "content": [{ "type": "tool_use", "id": id, "name": name, "input": input }],
+        "stop_reason": "tool_use",
+        "usage": { "input_tokens": 5, "output_tokens": 2 }
+    })
+    .to_string()
+}
+
 fn handle_mock_connection(
     stream: &mut TcpStream,
     state: &Mutex<MockState>,
@@ -285,6 +314,12 @@ fn handle_mock_connection(
         write_mock_response(stream, 404, "Not Found", "{\"error\":\"not found\"}");
         return;
     }
+    stats.requested_models.lock().unwrap().push(
+        request["model"]
+            .as_str()
+            .expect("real provider request must include its model")
+            .to_owned(),
+    );
     let mut state = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -296,37 +331,75 @@ fn handle_mock_connection(
             .last_success_at
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Utc::now());
-        write_mock_response(
-            stream,
-            200,
-            "OK",
-            &openai_tool_call_body(state.probe_command.as_deref().unwrap()),
-        );
+        let command = state.probe_command.as_deref().unwrap();
+        let body = if openai {
+            openai_tool_call_body(command)
+        } else {
+            anthropic_tool_body(
+                "ExecCommand",
+                "call_recovery_probe",
+                json!({ "cmd": command, "yield_time_ms": 0 }),
+            )
+        };
+        write_mock_response(stream, 200, "OK", &body);
         return;
     }
     if state.wait_call_pending {
-        let output = request["input"]
-            .as_array()
-            .and_then(|input| {
+        let output = if openai {
+            request["input"].as_array().and_then(|input| {
                 input.iter().rev().find(|item| {
                     item["type"] == "function_call_output"
                         && item["call_id"] == "call_recovery_probe"
                 })
             })
-            .expect("request must contain the probe command receipt");
-        let task_id =
-            find_task_id(&output["output"]).expect("background command must return a real task id");
+        } else {
+            request["messages"].as_array().and_then(|messages| {
+                messages.iter().rev().find_map(|message| {
+                    message["content"].as_array().and_then(|content| {
+                        content.iter().find(|item| {
+                            item["type"] == "tool_result"
+                                && item["tool_use_id"] == "call_recovery_probe"
+                        })
+                    })
+                })
+            })
+        }
+        .expect("request must contain the probe command receipt");
+        let task_id = find_task_id(output).expect("background command must return a real task id");
         state.task_id = Some(task_id.clone());
         state.wait_call_pending = false;
         stats.success.fetch_add(1, Ordering::SeqCst);
         *stats.last_success_at.lock().unwrap() = Some(Utc::now());
-        write_mock_response(stream, 200, "OK", &openai_wait_body(&task_id));
+        let body = if openai {
+            openai_wait_body(&task_id)
+        } else {
+            anthropic_tool_body(
+                "WaitFor",
+                "wait_recovery_probe",
+                json!({
+                    "wake": "task_result",
+                    "resource": task_id,
+                    "delivery": "silent",
+                    "reason": "wait for the isolated recovery probe"
+                }),
+            )
+        };
+        write_mock_response(stream, 200, "OK", &body);
         return;
     }
     match state.mode {
         MockMode::RateLimited => {
             stats.rate_limited.fetch_add(1, Ordering::SeqCst);
             write_mock_response(stream, 429, "Too Many Requests", rate_limited_body());
+        }
+        MockMode::PaymentRequired => {
+            stats.payment_required.fetch_add(1, Ordering::SeqCst);
+            write_mock_response(
+                stream,
+                402,
+                "Payment Required",
+                "{\"error\":{\"code\":\"personal-team-blocked:spending-limit\",\"message\":\"You have reached your spending limit\"}}",
+            );
         }
         MockMode::Initialize | MockMode::Success => {
             stats.success.fetch_add(1, Ordering::SeqCst);
@@ -448,6 +521,9 @@ struct ParkedInput {
     message_id: String,
     not_before: DateTime<Utc>,
     source: Value,
+    chain_fingerprint: String,
+    episode_key: String,
+    reason: String,
 }
 
 impl Fixture {
@@ -488,7 +564,8 @@ impl Fixture {
             .prepare(
                 "SELECT p.message_id, p.not_before,
                         (SELECT m.payload_json FROM messages m
-                         WHERE m.message_id = p.message_id ORDER BY m.rowid DESC LIMIT 1)
+                         WHERE m.message_id = p.message_id ORDER BY m.rowid DESC LIMIT 1),
+                        p.chain_fingerprint, p.episode_key, p.reason
                  FROM provider_queue_parking p WHERE p.agent_id = ?1",
             )
             .unwrap();
@@ -502,6 +579,9 @@ impl Fixture {
                         .unwrap()
                         .with_timezone(&Utc),
                     source: serde_json::from_str(&source).unwrap(),
+                    chain_fingerprint: row.get(3)?,
+                    episode_key: row.get(4)?,
+                    reason: row.get(5)?,
                 })
             })
             .unwrap()
@@ -524,6 +604,132 @@ impl Fixture {
             actual.source == expected.source,
             "restart must not replace source evidence"
         );
+        assert_eq!(actual.chain_fingerprint, expected.chain_fingerprint);
+        assert_eq!(actual.episode_key, expected.episode_key);
+        assert_eq!(actual.reason, expected.reason);
+    }
+
+    fn turn_count(&self) -> i64 {
+        self.database()
+            .query_row(
+                "SELECT COUNT(*) FROM turn_records WHERE agent_id = ?1",
+                [AGENT_ID],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Read only production-created state; tests never seed or repair recovery.
+    fn recovery_snapshot(&self, root_message_id: &str) -> Value {
+        let db = self.database();
+        let episode: String = db
+            .query_row(
+                "SELECT json_object(
+                    'key', episode_key, 'binding', json(binding_json),
+                    'budget_kind', budget_kind, 'revision', revision, 'epoch', epoch,
+                    'state', state, 'request_count', request_count,
+                    'total_requests', total_requests, 'candidate_cursor', candidate_cursor,
+                    'failed_epochs', failed_epochs, 'not_before', not_before,
+                    'side_effect_boundary', side_effect_boundary,
+                    'opened_at', opened_at, 'updated_at', updated_at)
+                 FROM provider_recovery_episodes
+                 WHERE json_extract(binding_json, '$.agent_id') = ?1
+                   AND json_extract(binding_json, '$.root_message_id') = ?2",
+                [AGENT_ID, root_message_id],
+                |row| row.get(0),
+            )
+            .expect("operator root must own a durable recovery episode");
+        let episode: Value = serde_json::from_str(&episode).unwrap();
+        let mut query = db
+            .prepare(
+                "SELECT json_object(
+                    'request_id', request_id, 'epoch', epoch, 'revision', revision,
+                    'scopes', json(scopes_json), 'outcome', outcome,
+                    'failed_scope', json(failed_scope_json),
+                    'dispatched_at', dispatched_at, 'settled_at', settled_at)
+                 FROM provider_recovery_requests WHERE episode_key = ?1 ORDER BY rowid",
+            )
+            .unwrap();
+        let requests = query
+            .query_map([episode["key"].as_str().unwrap()], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+            .map(|row| serde_json::from_str::<Value>(&row.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        let mut query = db
+            .prepare(
+                "SELECT json_object(
+                    'identity_key', identity_key, 'incident_id', incident_id,
+                    'revision', revision, 'consecutive_failures', consecutive_failures,
+                    'next_retry_at', next_retry_at, 'last_failure_kind', last_failure_kind,
+                    'last_model_ref', last_model_ref, 'opened_at', opened_at,
+                    'last_failed_at', last_failed_at, 'resolved_at', resolved_at,
+                    'server_not_before', server_not_before, 'probe_token', probe_token,
+                    'probe_lease_until', probe_lease_until, 'cooldown_policy', cooldown_policy)
+                 FROM provider_candidate_incidents
+                 WHERE identity_key IN (
+                    SELECT json_extract(failed_scope_json, '$.key')
+                    FROM provider_recovery_requests
+                    WHERE episode_key = ?1 AND outcome = 'payment_required')
+                 ORDER BY identity_key",
+            )
+            .unwrap();
+        let candidates = query
+            .query_map([episode["key"].as_str().unwrap()], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+            .map(|row| serde_json::from_str::<Value>(&row.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        json!({ "episode": episode, "requests": requests, "candidates": candidates })
+    }
+
+    fn assert_payment_ledger(&self, root_message_id: &str, dispatches: usize) -> Value {
+        let snapshot = self.recovery_snapshot(root_message_id);
+        let episode = &snapshot["episode"];
+        assert_eq!(episode["binding"]["root_message_id"], root_message_id);
+        assert_eq!(episode["binding"]["agent_id"], AGENT_ID);
+        assert!(episode["binding"]["owner"].is_object());
+        assert!(episode["binding"]["root_attempt_id"].is_string());
+        assert_eq!(
+            episode["epoch"], 1,
+            "payment failure must not reopen epochs"
+        );
+        assert_eq!(episode["request_count"].as_u64(), Some(dispatches as u64));
+        assert_eq!(episode["total_requests"].as_u64(), Some(dispatches as u64));
+        assert!(
+            matches!(
+                episode["state"].as_str(),
+                Some("cooling" | "budget_exhausted")
+            ),
+            "failed payment episode must not resolve"
+        );
+        let requests = snapshot["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), dispatches);
+        for request in requests {
+            assert_eq!(request["outcome"], "payment_required");
+            assert_eq!(request["failed_scope"]["kind"], "candidate");
+            assert!(request["settled_at"].is_string());
+        }
+        let candidates = snapshot["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), dispatches);
+        for candidate in candidates {
+            assert_eq!(candidate["consecutive_failures"], 1);
+            assert_eq!(candidate["cooldown_policy"], "payment_required");
+            assert!(candidate["resolved_at"].is_null());
+            let failed_at =
+                DateTime::parse_from_rfc3339(candidate["last_failed_at"].as_str().unwrap())
+                    .unwrap();
+            let retry_at =
+                DateTime::parse_from_rfc3339(candidate["next_retry_at"].as_str().unwrap()).unwrap();
+            let delay = retry_at - failed_at;
+            assert!(
+                delay >= chrono::Duration::minutes(15) && delay <= chrono::Duration::seconds(990),
+                "first payment failure must retain the 15-minute floor plus at most 10% jitter"
+            );
+        }
+        snapshot
     }
 
     fn assert_source_processed(&self, message_id: &str) {
@@ -770,6 +976,59 @@ impl Fixture {
         primary.set_mode(MockMode::RateLimited);
     }
 
+    fn set_primary_override(&self, address: &str) {
+        let response = self
+            .client
+            .post(format!(
+                "http://{address}/api/control/agents/{AGENT_ID}/model"
+            ))
+            .bearer_auth(TOKEN)
+            .json(&json!({ "model": "openai@default/gpt-5.4" }))
+            .send()
+            .expect("set agent model through the production control API");
+        assert!(response.status().is_success(), "{:?}", response.text());
+        self.assert_primary_override(address);
+    }
+
+    fn assert_primary_override(&self, address: &str) {
+        let status = self
+            .try_get(
+                address,
+                &format!("/api/agents/{AGENT_ID}/status?detail=full"),
+            )
+            .unwrap();
+        assert_eq!(status["model"]["source"], "agent_override");
+        assert_eq!(status["agent"]["model_override"], "openai@default/gpt-5.4");
+        let persisted: String = self
+            .database()
+            .query_row(
+                "SELECT json_extract(payload_json, '$.model_override')
+                 FROM agent_states WHERE agent_id = ?1",
+                [AGENT_ID],
+                |row| row.get(0),
+            )
+            .expect("agent override must remain durable");
+        assert_eq!(persisted, "openai@default/gpt-5.4");
+    }
+
+    fn assert_one_brief(&self, address: &str, marker: &str) {
+        let briefs = self
+            .try_get(address, &format!("/api/agents/{AGENT_ID}/briefs?limit=64"))
+            .unwrap();
+        assert_eq!(
+            briefs
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|brief| brief["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker)))
+                .count(),
+            1,
+            "operator result must be delivered exactly once"
+        );
+    }
+
     fn events(&self, address: &str) -> Vec<Value> {
         let page = self
             .try_get(
@@ -902,6 +1161,229 @@ fn fallback_env(fallback: &MockProvider) -> Vec<(String, String)> {
             format!("http://{}", fallback.address),
         ),
     ]
+}
+
+#[test]
+fn payment_required_override_uses_fallback_tools_and_delivers_once() {
+    let _lock = server_lock();
+    let primary = MockProvider::start(MockMode::Initialize, "primary-must-not-answer", false);
+    let fallback = MockProvider::start(MockMode::Success, "payment-fallback-final", false);
+    let mut env = primary_env(&primary);
+    env.extend(fallback_env(&fallback));
+    let mut fixture = Fixture::new(env);
+    let (_serve, address) = fixture.spawn_serve();
+    fixture.initialize_agent(&address, &primary);
+    fixture.set_primary_override(&address);
+    primary.set_mode(MockMode::PaymentRequired);
+    fallback.arm_tool_call(fixture.path("payment-probe-count"));
+    let source = fixture.post_prompt(&address, "run the fallback probe and answer once");
+
+    wait_for_brief_marker(&fixture, &address, "payment-fallback-final", DEADLINE);
+    let task_id = fallback.task_id();
+    let settlement = fixture.task_settlement(&task_id);
+    let result_message_id = settlement["message_id"].as_str().unwrap();
+    fixture.wait_input_completed(result_message_id);
+    fixture.assert_admitted_once(result_message_id);
+    let settlement = fixture.task_settlement(&task_id);
+    assert_eq!(settlement["state"], "settled");
+    assert_eq!(settlement["disposition"], "model_delivered");
+    assert_eq!(
+        fs::read_to_string(fixture.path("payment-probe-count")).unwrap(),
+        "ran\n",
+        "provider recovery must not replay the completed side effect"
+    );
+    assert_eq!(primary.payment_required_hits(), 1);
+    assert_eq!(primary.success_hits(), 0);
+    assert_eq!(primary.requested_models(), ["gpt-5.4"]);
+    assert_eq!(
+        fallback.success_hits(),
+        3,
+        "the real fallback must receive the tool, exact wait and task-result continuation"
+    );
+    assert_eq!(
+        fallback.requested_models(),
+        ["claude-sonnet-4-6"; 3],
+        "the HTTP model must agree with the admitted fallback route"
+    );
+    fixture.assert_primary_override(&address);
+    fixture.assert_one_brief(&address, "payment-fallback-final");
+    assert!(fixture.parked_inputs().is_empty());
+    assert!(fixture.paused_events(&address).is_empty());
+
+    let events = fixture.events(&address);
+    let recovery = events
+        .iter()
+        .find(|event| {
+            event["type"] == "recovery_turn_started"
+                && event["payload"]["source_message_id"] == source
+        })
+        .expect("the failed source must start a canonical recovery turn");
+    let payload = &recovery["payload"];
+    let selected = "anthropic@default/claude-sonnet-4-6";
+    assert_eq!(payload["root_message_id"], source);
+    assert_eq!(payload["requested_fallback_model_ref"], selected);
+    assert_eq!(payload["admitted_model_ref"], selected);
+    assert_eq!(payload["fallback_model_ref"], selected);
+    assert!(payload["reselection_reason"].is_null());
+    let recovery_message_id = payload["message_id"].as_str().unwrap();
+    let trigger: String = fixture
+        .database()
+        .query_row(
+            "SELECT trigger_message_id FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2",
+            [AGENT_ID, payload["turn_id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(trigger, recovery_message_id);
+    fixture.assert_source_processed(recovery_message_id);
+    fixture.assert_admitted_once(recovery_message_id);
+
+    let lineage = events
+        .iter()
+        .filter(|event| {
+            event["type"] == "lineage_selected"
+                && event["event_seq"].as_u64() > recovery["event_seq"].as_u64()
+        })
+        .min_by_key(|event| event["event_seq"].as_u64())
+        .expect("recovery must select a provider lineage");
+    assert_eq!(
+        lineage["payload"]["model_override"],
+        "openai@default/gpt-5.4"
+    );
+    assert_eq!(lineage["payload"]["recovery_fallback_model"], selected);
+    assert_eq!(lineage["payload"]["model"]["active_model"], selected);
+    assert_eq!(
+        lineage["payload"]["model"]["effective_model"],
+        "openai@default/gpt-5.4"
+    );
+    assert_eq!(lineage["payload"]["model"]["fallback_active"], true);
+    let promoted = events
+        .iter()
+        .filter(|event| {
+            event["type"] == "pending_model_promoted"
+                && event["event_seq"].as_u64() > lineage["event_seq"].as_u64()
+        })
+        .min_by_key(|event| event["event_seq"].as_u64())
+        .expect("the selected fallback must be promoted before real dispatch");
+    assert_eq!(promoted["payload"]["fallback_model"], selected);
+
+    let ledger = fixture.recovery_snapshot(&source);
+    assert_eq!(
+        ledger["episode"]["binding"]["root_attempt_id"],
+        payload["predecessor_attempt_id"]
+    );
+    let requests = ledger["requests"].as_array().unwrap();
+    assert_eq!(requests[0]["outcome"], "payment_required");
+    assert_eq!(requests[0]["failed_scope"]["kind"], "candidate");
+    assert!(
+        requests
+            .iter()
+            .skip(1)
+            .any(|request| request["outcome"] == "available_response"),
+        "a logged promotion is insufficient without a settled real fallback response"
+    );
+}
+
+#[test]
+fn payment_required_chain_parks_within_budget_and_restart_preserves_deadline() {
+    let _lock = server_lock();
+    let primary = MockProvider::start(MockMode::Initialize, "primary-must-not-answer", false);
+    let fallback =
+        MockProvider::start(MockMode::PaymentRequired, "fallback-must-not-answer", false);
+    let mut env = primary_env(&primary);
+    env.extend(fallback_env(&fallback));
+    let mut fixture = Fixture::new(env);
+    let (serve, address) = fixture.spawn_serve();
+    fixture.initialize_agent(&address, &primary);
+    fixture.set_primary_override(&address);
+    primary.set_mode(MockMode::PaymentRequired);
+    let initial_turns = fixture.turn_count();
+    let source = fixture.post_prompt(&address, "park the exhausted payment recovery");
+    let deadline = Instant::now() + DEADLINE;
+    let parked = loop {
+        let dispatches = primary.requested_models().len() + fallback.requested_models().len();
+        assert!(
+            dispatches <= 3,
+            "payment recovery must park within the existing epoch budget, not at lineage depth 64"
+        );
+        assert!(
+            fixture.turn_count() - initial_turns <= 3,
+            "exhausted candidates must not create empty model turns"
+        );
+        let paused = fixture.paused_events(&address);
+        if let Some(parked) = fixture.parked_inputs().into_iter().find(|parked| {
+            parked.not_before.signed_duration_since(Utc::now())
+                >= chrono::Duration::from_std(PARK_WINDOW).unwrap()
+                && paused.iter().any(|event| {
+                    event["payload"]["message_id"] == parked.message_id
+                        && event["payload"]["not_before"].as_str().is_some_and(|at| {
+                            DateTime::parse_from_rfc3339(at).is_ok_and(|at| at == parked.not_before)
+                        })
+                })
+        }) {
+            break parked;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "payment candidates never reached a committed park:\n{}",
+            fixture.diagnostics(serve)
+        );
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(primary.payment_required_hits(), 1);
+    assert_eq!(fallback.payment_required_hits(), 1);
+    assert_eq!(primary.requested_models(), ["gpt-5.4"]);
+    assert_eq!(fallback.requested_models(), ["claude-sonnet-4-6"]);
+    let snapshot = fixture.assert_payment_ledger(&source, 2);
+    assert_eq!(parked.episode_key, snapshot["episode"]["key"]);
+    assert_eq!(
+        parked.chain_fingerprint,
+        snapshot["episode"]["binding"]["chain_fingerprint"]
+    );
+    assert_eq!(snapshot["episode"]["budget_kind"], "operator");
+    let turns = fixture.turn_count();
+    assert!(turns - initial_turns <= 3);
+    fixture.assert_primary_override(&address);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(fixture.recovery_snapshot(&source), snapshot);
+
+    fixture.kill(serve);
+    let (_resumed, address) = fixture.spawn_serve();
+    let observe_until = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(
+            Utc::now() < parked.not_before,
+            "restart observation must remain before the persisted retry deadline"
+        );
+        fixture.assert_park_retained(&parked);
+        fixture.assert_primary_override(&address);
+        assert_eq!(
+            primary.requested_models().len() + fallback.requested_models().len(),
+            2,
+            "restart and ordinary reads must not dispatch before not_before"
+        );
+        assert_eq!(
+            fixture.turn_count(),
+            turns,
+            "parking must happen before creating another model turn"
+        );
+        assert_eq!(
+            fixture.recovery_snapshot(&source),
+            snapshot,
+            "restart must preserve root, owner, fences, grant, cursor, epoch and request ledger"
+        );
+        assert!(
+            !json_contains(
+                &json!(fixture.events(&address)),
+                "canonical_provider_recovery_source_invalid"
+            ),
+            "normal payment exhaustion must not depend on the lineage safety limit"
+        );
+        if Instant::now() >= observe_until {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]

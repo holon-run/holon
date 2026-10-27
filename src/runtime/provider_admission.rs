@@ -44,6 +44,7 @@ struct Candidate {
     rate_limit: ProviderAdmissionScope,
     connection: ProviderAdmissionScope,
     request: ProviderAdmissionScope,
+    payment: ProviderAdmissionScope,
 }
 
 struct Chain {
@@ -248,6 +249,7 @@ pub(super) struct ProviderTurnAdmission {
     chain_fingerprint: String,
     candidate: Candidate,
     next_cursor: u32,
+    recovery_reselection_reason: Option<&'static str>,
     state: Mutex<RequestState>,
 }
 
@@ -320,6 +322,10 @@ impl ProviderTurnAdmission {
 
     pub(super) fn model(&self) -> &ModelRouteRef {
         &self.candidate.model
+    }
+
+    pub(super) fn recovery_reselection_reason(&self) -> Option<&'static str> {
+        self.recovery_reselection_reason
     }
 
     fn episode(&self) -> Result<ProviderRecoveryEpisode> {
@@ -492,6 +498,10 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                             },
                         ))
                     }
+                    ProviderFailureKind::PaymentRequired => Some((
+                        &self.candidate.payment,
+                        ProviderCooldownPolicy::PaymentRequired,
+                    )),
                     _ => None,
                 };
                 if let Some((scope, policy)) = failure {
@@ -512,10 +522,14 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         server_not_before,
                         &self.candidate.model.as_string(),
                     )?;
-                    if policy == ProviderCooldownPolicy::Transport {
-                        ProviderRecoveryRequestOutcome::NetworkFailure(scope)
-                    } else {
-                        ProviderRecoveryRequestOutcome::RateLimited(scope)
+                    match policy {
+                        ProviderCooldownPolicy::Transport => {
+                            ProviderRecoveryRequestOutcome::NetworkFailure(scope)
+                        }
+                        ProviderCooldownPolicy::PaymentRequired => {
+                            ProviderRecoveryRequestOutcome::PaymentRequired(scope)
+                        }
+                        _ => ProviderRecoveryRequestOutcome::RateLimited(scope),
                     }
                 } else {
                     self.db.release_provider_admission(&lease)?;
@@ -747,8 +761,13 @@ impl RuntimeHandle {
                 .quota_identity()
                 .as_ref()
                 .map(ProviderAdmissionScope::quota);
+            let payment = ProviderAdmissionScope::candidate(&format!(
+                "{path}:{}:{:?}",
+                route.route_ref.as_string(),
+                quota.as_ref().map(ProviderAdmissionScope::key)
+            ))?;
             let mut scopes: Vec<_> = quota.iter().cloned().collect();
-            scopes.extend([connection.clone(), request.clone()]);
+            scopes.extend([connection.clone(), request.clone(), payment.clone()]);
             let rate_limit = match quota.as_ref() {
                 Some(scope) => scope.clone(),
                 None => {
@@ -767,6 +786,7 @@ impl RuntimeHandle {
                 rate_limit,
                 connection,
                 request,
+                payment,
             });
         }
         ensure!(
@@ -911,6 +931,26 @@ impl RuntimeHandle {
             .unwrap_or(len)
             .min(len);
         let mut order: Vec<_> = (start..len).chain(0..start).collect();
+        let selection = super::turn::TurnModelSelection::from_message(message)?;
+        let requested = selection
+            .recovery
+            .as_ref()
+            .map(|directive| &directive.fallback_model_ref);
+        let mut reselection_reason = None;
+        if let Some(requested) = requested {
+            super::provider_recovery::resolve_for_context(&self.inner.storage, message)?
+                .context("provider recovery source resolution missing at admission")?;
+            if let Some(index) = chain
+                .candidates
+                .iter()
+                .position(|candidate| &candidate.model == requested)
+            {
+                order.retain(|candidate| *candidate != index);
+                order.insert(0, index);
+            } else {
+                reselection_reason = Some("requested_model_not_in_effective_chain");
+            }
+        }
         // A new operator input tries healthy candidates before exercising its
         // one-shot permission to probe a local-policy cooldown.
         if episode.kind == ProviderRecoveryBudgetKind::Operator {
@@ -923,6 +963,9 @@ impl RuntimeHandle {
                     .is_some()
                 {
                     cooling.push(index);
+                    if requested == Some(&chain.candidates[index].model) {
+                        reselection_reason = Some("requested_candidate_cooling");
+                    }
                 }
             }
             order.sort_by_key(|index| cooling.contains(index));
@@ -941,6 +984,9 @@ impl RuntimeHandle {
                     Some(earliest.map_or(blocked.not_before, |at| at.min(blocked.not_before)));
             }
             if excluded.contains(&candidate.model.as_string()) {
+                if requested == Some(&candidate.model) {
+                    reselection_reason = Some("requested_candidate_excluded");
+                }
                 continue;
             }
             if self
@@ -948,6 +994,9 @@ impl RuntimeHandle {
                 .runtime_db
                 .provider_recovery_candidate_attempted(&episode, &candidate.scopes)?
             {
+                if requested == Some(&candidate.model) {
+                    reselection_reason = Some("requested_candidate_already_attempted");
+                }
                 continue;
             }
             untried = true;
@@ -980,6 +1029,11 @@ impl RuntimeHandle {
                         chain_fingerprint: chain.fingerprint.clone(),
                         candidate: candidate.clone(),
                         next_cursor: u32::try_from(index + 1).context("provider chain too long")?,
+                        recovery_reselection_reason: requested
+                            .filter(|requested| *requested != &candidate.model)
+                            .map(|_| {
+                                reselection_reason.unwrap_or("requested_candidate_unavailable")
+                            }),
                         state: Mutex::new(RequestState {
                             lease: Some(lease),
                             dispatch: None,
@@ -990,10 +1044,16 @@ impl RuntimeHandle {
                     })));
                 }
                 ProviderRecoveryAdmissionReservation::Blocked(blocked) => {
+                    if requested == Some(&candidate.model) {
+                        reselection_reason = Some("requested_candidate_cooling");
+                    }
                     earliest =
                         Some(earliest.map_or(blocked.not_before, |at| at.min(blocked.not_before)));
                 }
                 ProviderRecoveryAdmissionReservation::Denied(_) => {
+                    if requested == Some(&candidate.model) {
+                        reselection_reason = Some("requested_candidate_reservation_denied");
+                    }
                     if blocked.is_none() {
                         earliest = Some(now);
                     }
