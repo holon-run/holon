@@ -16,7 +16,7 @@ use tokio::sync::watch;
 use crate::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
-    provider::resolved_model_availability,
+    provider::resolved_route_availability,
     runtime_db::RuntimeDbProtectionStatus,
     types::{AgentStatus, RuntimeFailureSummary},
     web::{WebProviderCapabilityMetadata, WebProviderKind},
@@ -200,16 +200,7 @@ impl RuntimeDecisionSurface {
             .model
             .as_deref()
             .and_then(|model| crate::config::ModelRouteRef::parse_compatible(model).ok())
-            .and_then(|route| {
-                let model_ref = route.model_ref().as_string();
-                resolved_model_availability(config)
-                    .into_iter()
-                    .find(|entry| {
-                        entry.model == model_ref
-                            && entry.provider == route.provider.as_str()
-                            && entry.endpoint == route.endpoint.as_str()
-                    })
-            });
+            .and_then(|route| resolved_route_availability(config, &route));
         Self {
             enabled: decision.enabled.unwrap_or(false),
             model: decision.model.clone(),

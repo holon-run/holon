@@ -1,3 +1,11 @@
+use std::{
+    path::Path,
+    sync::Mutex as StdMutex,
+    time::{Duration as StdDuration, Instant, SystemTime},
+};
+
+use sha2::{Digest, Sha256};
+
 use super::*;
 use crate::{
     config::RuntimeModelCatalog,
@@ -7,6 +15,12 @@ use crate::{
     },
     provider::resolved_model_availability,
 };
+
+/// Upper bound on how long `/api/models` may serve a cached catalog snapshot
+/// while credential material changes outside config reloads (OAuth refresh,
+/// profile edits). Config replacement and discovery-cache rewrites invalidate
+/// the snapshot immediately; this only bounds dynamic availability staleness.
+const MODELS_SNAPSHOT_TTL: StdDuration = StdDuration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct HandshakeResponse {
@@ -71,21 +85,23 @@ pub async fn root(
 pub async fn models_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let started_at = std::time::Instant::now();
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let started_at = Instant::now();
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
-    let mut config = (*state.host.config()).clone();
-    load_model_discovery_cache(&mut config).await?;
-    models_response("/models", started_at, &config)
+    let snapshot = state.models_cache.snapshot(&state.host).await?;
+    Ok(models_snapshot_response(
+        "/models", started_at, &headers, &snapshot,
+    ))
 }
 
 pub async fn refresh_models_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let started_at = std::time::Instant::now();
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let started_at = Instant::now();
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
-    let mut config = (*state.host.config()).clone();
+    let source = state.host.config();
+    let mut config = (*source).clone();
     load_model_discovery_cache(&mut config).await?;
     let cache_path = discovery_cache_path(&config.home_dir);
     for provider in model_discovery_refresh_candidates(&config) {
@@ -99,7 +115,13 @@ pub async fn refresh_models_handler(
     }
 
     load_model_discovery_cache(&mut config).await?;
-    models_response("/models/refresh", started_at, &config)
+    let snapshot = state.models_cache.replace(source, config).await?;
+    Ok(models_snapshot_response(
+        "/models/refresh",
+        started_at,
+        &headers,
+        &snapshot,
+    ))
 }
 
 async fn load_model_discovery_cache(
@@ -114,23 +136,212 @@ async fn load_model_discovery_cache(
     Ok(())
 }
 
-fn models_response(
-    route: &'static str,
-    started_at: std::time::Instant,
-    config: &crate::config::AppConfig,
-) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+/// Cache key component for the on-disk discovery cache. Requests on a cache
+/// hit skip both the 1 MiB JSON load and the catalog rebuild; a rewritten
+/// file (refresh, rotation) changes length or mtime and invalidates the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiscoveryCacheStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn discovery_cache_stamp(home_dir: &Path) -> Option<DiscoveryCacheStamp> {
+    let metadata = std::fs::metadata(discovery_cache_path(home_dir)).ok()?;
+    Some(DiscoveryCacheStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+struct ModelsSnapshot {
+    source_config: Arc<crate::config::AppConfig>,
+    discovery_cache: Option<DiscoveryCacheStamp>,
+    built_at: Instant,
+    payload: Bytes,
+    etag: HeaderValue,
+}
+
+/// Shared `/api/models` snapshot. The catalog sweep is CPU-bound and the body
+/// is multi-megabyte, so a hit reuses both; misses build once under a
+/// single-flight gate instead of stampeding the executor.
+pub(crate) struct ModelsResponseCache {
+    snapshot: StdMutex<Option<Arc<ModelsSnapshot>>>,
+    build_gate: tokio::sync::Mutex<()>,
+    ttl: StdDuration,
+    #[cfg(test)]
+    builds: std::sync::atomic::AtomicUsize,
+}
+
+impl ModelsResponseCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            snapshot: StdMutex::new(None),
+            build_gate: tokio::sync::Mutex::new(()),
+            ttl: MODELS_SNAPSHOT_TTL,
+            #[cfg(test)]
+            builds: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    #[cfg(test)]
+    fn builds(&self) -> usize {
+        self.builds.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn cached(
+        &self,
+        source_config: &Arc<crate::config::AppConfig>,
+        discovery_cache: Option<DiscoveryCacheStamp>,
+    ) -> Option<Arc<ModelsSnapshot>> {
+        let guard = self
+            .snapshot
+            .lock()
+            .expect("models snapshot cache poisoned");
+        let snapshot = guard.as_ref()?;
+        (Arc::ptr_eq(&snapshot.source_config, source_config)
+            && snapshot.discovery_cache == discovery_cache
+            && snapshot.built_at.elapsed() < self.ttl)
+            .then(|| snapshot.clone())
+    }
+
+    async fn snapshot(
+        &self,
+        host: &RuntimeHost,
+    ) -> Result<Arc<ModelsSnapshot>, (StatusCode, Json<Value>)> {
+        let source = host.config();
+        let stamp = discovery_cache_stamp(&source.home_dir);
+        if let Some(snapshot) = self.cached(&source, stamp) {
+            return Ok(snapshot);
+        }
+
+        let _build = self.build_gate.lock().await;
+        // Another request may have built while this one waited on the gate.
+        let source = host.config();
+        let stamp = discovery_cache_stamp(&source.home_dir);
+        if let Some(snapshot) = self.cached(&source, stamp) {
+            return Ok(snapshot);
+        }
+
+        let mut config = (*source).clone();
+        load_model_discovery_cache(&mut config).await?;
+        let snapshot = Arc::new(build_models_snapshot(source, config, stamp).await?);
+        #[cfg(test)]
+        self.builds
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *self
+            .snapshot
+            .lock()
+            .expect("models snapshot cache poisoned") = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    async fn replace(
+        &self,
+        source_config: Arc<crate::config::AppConfig>,
+        config: crate::config::AppConfig,
+    ) -> Result<Arc<ModelsSnapshot>, (StatusCode, Json<Value>)> {
+        let _build = self.build_gate.lock().await;
+        let stamp = discovery_cache_stamp(&source_config.home_dir);
+        let snapshot = Arc::new(build_models_snapshot(source_config, config, stamp).await?);
+        #[cfg(test)]
+        self.builds
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *self
+            .snapshot
+            .lock()
+            .expect("models snapshot cache poisoned") = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+}
+
+async fn build_models_snapshot(
+    source_config: Arc<crate::config::AppConfig>,
+    config: crate::config::AppConfig,
+    discovery_cache: Option<DiscoveryCacheStamp>,
+) -> Result<ModelsSnapshot, (StatusCode, Json<Value>)> {
+    tokio::task::spawn_blocking(move || {
+        build_models_snapshot_blocking(source_config, config, discovery_cache)
+    })
+    .await
+    .map_err(|error| error_response(error.into()))?
+    .map_err(error_response)
+}
+
+fn build_models_snapshot_blocking(
+    source_config: Arc<crate::config::AppConfig>,
+    config: crate::config::AppConfig,
+    discovery_cache: Option<DiscoveryCacheStamp>,
+) -> anyhow::Result<ModelsSnapshot> {
     let available_models = RuntimeModelCatalog::from_config(&config).available_models();
     let model_availability = resolved_model_availability(&config);
-    let model_discovery_cache = Vec::<crate::model_discovery::ModelDiscoveryCacheStatus>::new();
-    traced_json(
-        route,
-        started_at,
-        json!({
-            "available_models": available_models,
-            "model_availability": model_availability,
-            "model_discovery_cache": model_discovery_cache,
-        }),
-    )
+    let payload = serde_json::to_vec(&json!({
+        "available_models": available_models,
+        "model_availability": model_availability,
+        "model_discovery_cache": Vec::<crate::model_discovery::ModelDiscoveryCacheStatus>::new(),
+    }))?;
+    let etag = HeaderValue::from_str(&entity_tag(&payload))
+        .expect("sha256 entity tag is a valid header value");
+    Ok(ModelsSnapshot {
+        source_config,
+        discovery_cache,
+        built_at: Instant::now(),
+        payload: Bytes::from(payload),
+        etag,
+    })
+}
+
+fn entity_tag(payload: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(payload);
+    let mut etag = String::with_capacity(digest.len() * 2 + 2);
+    etag.push('"');
+    for byte in digest {
+        let _ = write!(etag, "{byte:02x}");
+    }
+    etag.push('"');
+    etag
+}
+
+fn models_snapshot_response(
+    route: &'static str,
+    started_at: Instant,
+    headers: &HeaderMap,
+    snapshot: &ModelsSnapshot,
+) -> AxumResponse {
+    if if_none_match_matches(headers, &snapshot.etag) {
+        diagnostics::record_http_json_response(route, started_at.elapsed(), 0);
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        response.headers_mut().insert(ETAG, snapshot.etag.clone());
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        return response;
+    }
+
+    let mut response = traced_json_bytes(route, started_at, snapshot.payload.clone());
+    response.headers_mut().insert(ETAG, snapshot.etag.clone());
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+}
+
+fn if_none_match_matches(headers: &HeaderMap, etag: &HeaderValue) -> bool {
+    let Some(candidates) = headers
+        .get(IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let etag = etag.to_str().unwrap_or_default();
+    candidates.split(',').map(str::trim).any(|candidate| {
+        candidate == "*"
+            || candidate == etag
+            || candidate
+                .strip_prefix("W/")
+                .is_some_and(|candidate| candidate == etag)
+    })
 }
 
 fn model_discovery_refresh_candidates(
@@ -435,4 +646,161 @@ pub struct AgentListQuery {
     /// lightweight public roster; private supervised children are exposed via
     /// the caller's AgentSummary.active_children projection.
     pub parent: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, http::Request};
+    use tower::ServiceExt;
+
+    fn test_state(home: &tempfile::TempDir) -> AppState {
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let config =
+            crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host = RuntimeHost::new_with_provider(
+            config,
+            Arc::new(crate::provider::StubProvider::new("unused")),
+        )
+        .unwrap();
+        AppState::for_tcp(host)
+    }
+
+    async fn models_request(
+        state: AppState,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, HeaderMap, Bytes) {
+        let mut request = Request::builder().method("GET").uri("/api/models");
+        if let Some(value) = if_none_match {
+            request = request.header(IF_NONE_MATCH, value);
+        }
+        let response = crate::http::router(state)
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn models_handler_serves_conditional_requests_from_one_snapshot() {
+        let home = tempfile::tempdir().unwrap();
+        let state = test_state(&home);
+        let (status, headers, body) = models_request(state.clone(), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let etag = headers.get(ETAG).cloned().expect("etag header");
+        assert_eq!(
+            headers
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+        let value: Value = serde_json::from_slice(&body).expect("models json");
+        assert!(value.get("available_models").is_some());
+        assert!(value.get("model_availability").is_some());
+
+        let (status, not_modified_headers, not_modified_body) =
+            models_request(state.clone(), Some(etag.to_str().unwrap())).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert_eq!(not_modified_headers.get(ETAG), Some(&etag));
+        assert!(not_modified_body.is_empty());
+
+        let weak = format!("W/{}", etag.to_str().unwrap());
+        let (status, _, _) = models_request(state.clone(), Some(&weak)).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        let (status, _, _) = models_request(state.clone(), Some("*")).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+
+        let (status, _, cached_body) = models_request(state, Some("\"not-current\"")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cached_body, body);
+    }
+
+    #[tokio::test]
+    async fn models_cache_reuses_snapshot_until_ttl_expires() {
+        let home = tempfile::tempdir().unwrap();
+        let state = test_state(&home);
+        let first = state.models_cache.snapshot(&state.host).await.unwrap();
+        let second = state.models_cache.snapshot(&state.host).await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let mut expired = ModelsResponseCache::new();
+        expired.ttl = StdDuration::ZERO;
+        let source = state.host.config();
+        let snapshot = expired
+            .replace(source.clone(), (*source).clone())
+            .await
+            .unwrap();
+        assert!(expired.cached(&source, snapshot.discovery_cache).is_none());
+        expired.ttl = MODELS_SNAPSHOT_TTL;
+        let cached = expired
+            .cached(&source, snapshot.discovery_cache)
+            .expect("snapshot within ttl");
+        assert!(Arc::ptr_eq(&cached, &snapshot));
+
+        let other_home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            other_home.path().join("config.json"),
+            r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        )
+        .unwrap();
+        let other = crate::config::AppConfig::load_with_home(Some(other_home.path().to_path_buf()))
+            .unwrap();
+        assert!(expired
+            .cached(&Arc::new(other), snapshot.discovery_cache)
+            .is_none());
+
+        std::fs::write(home.path().join("model-discovery-cache.json"), "{}").unwrap();
+        assert!(expired
+            .cached(&source, discovery_cache_stamp(home.path()))
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn models_cache_coalesces_concurrent_builds() {
+        let home = tempfile::tempdir().unwrap();
+        let state = test_state(&home);
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cache = state.models_cache.clone();
+            let host = state.host.clone();
+            handles.push(tokio::spawn(
+                async move { cache.snapshot(&host).await.unwrap() },
+            ));
+        }
+        let mut snapshots = Vec::new();
+        for handle in handles {
+            snapshots.push(handle.await.unwrap());
+        }
+        assert!(snapshots
+            .windows(2)
+            .all(|pair| Arc::ptr_eq(&pair[0], &pair[1])));
+        assert_eq!(state.models_cache.builds(), 1);
+    }
+
+    #[test]
+    fn entity_tag_is_stable_and_if_none_match_accepts_validator_forms() {
+        let first = entity_tag(b"models");
+        assert_eq!(first, entity_tag(b"models"));
+        assert_ne!(first, entity_tag(b"models-2"));
+        let etag = HeaderValue::from_str(&first).unwrap();
+
+        let mut headers = HeaderMap::new();
+        assert!(!if_none_match_matches(&headers, &etag));
+        headers.insert(IF_NONE_MATCH, HeaderValue::from_static("\"other\""));
+        assert!(!if_none_match_matches(&headers, &etag));
+        headers.insert(IF_NONE_MATCH, HeaderValue::from_static("*"));
+        assert!(if_none_match_matches(&headers, &etag));
+        headers.insert(IF_NONE_MATCH, etag.clone());
+        assert!(if_none_match_matches(&headers, &etag));
+        let weak = HeaderValue::from_str(&format!("W/{first}")).unwrap();
+        headers.insert(IF_NONE_MATCH, weak);
+        assert!(if_none_match_matches(&headers, &etag));
+    }
 }

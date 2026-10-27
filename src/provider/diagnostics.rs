@@ -13,7 +13,9 @@ use crate::{
     },
 };
 
-use super::{build_candidate, classify_provider_error, retry::provider_retry_policy_json};
+use super::{
+    build_candidate_with_catalog, classify_provider_error, retry::provider_retry_policy_json,
+};
 
 pub fn provider_doctor(config: &AppConfig) -> Value {
     let catalog = RuntimeModelCatalog::from_config(config);
@@ -21,7 +23,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
     let mut model_availability = Vec::new();
     for route_ref in config.provider_chain() {
         let model_ref = route_ref.model_ref();
-        let availability = provider_availability(config, &route_ref);
+        let availability = provider_availability(config, &catalog, &route_ref);
         let provider_cfg = config
             .providers
             .get(&model_ref.provider)
@@ -59,7 +61,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
             &availability,
         ));
     }
-    let provider_model_availability = resolved_model_availability(config);
+    let provider_model_availability = resolved_model_availability_with_catalog(config, &catalog);
     let model_providers =
         resolved_model_providers_from_availability(config, &provider_model_availability);
     let models_by_provider = model_providers
@@ -92,6 +94,13 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
 
 pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvailability> {
     let catalog = RuntimeModelCatalog::from_config(config);
+    resolved_model_availability_with_catalog(config, &catalog)
+}
+
+fn resolved_model_availability_with_catalog(
+    config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
+) -> Vec<ResolvedModelAvailability> {
     let mut routes = BTreeMap::new();
     for route_ref in catalog.available_model_routes() {
         routes.insert(route_ref.as_string(), route_ref);
@@ -111,11 +120,63 @@ pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvail
 
     routes
         .into_values()
-        .map(|route_ref| {
-            let availability = provider_availability(config, &route_ref);
-            resolved_model_availability_entry(config, &catalog, &route_ref, &availability)
-        })
+        .map(|route_ref| resolved_model_availability_for_route(config, catalog, &route_ref))
         .collect()
+}
+
+/// Resolve availability for exactly one route, matching the entry a full
+/// `resolved_model_availability` sweep would produce for it.
+///
+/// Readiness needs one decision route out of the whole catalog; running the
+/// full sweep there costs the same as rendering `/api/models` (#3776).
+pub fn resolved_route_availability(
+    config: &AppConfig,
+    route_ref: &ModelRouteRef,
+) -> Option<ResolvedModelAvailability> {
+    let catalog = RuntimeModelCatalog::from_config(config);
+    if !route_is_enumerated(config, &catalog, route_ref) {
+        return None;
+    }
+    Some(resolved_model_availability_for_route(
+        config, &catalog, route_ref,
+    ))
+}
+
+fn route_is_enumerated(
+    config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
+    route_ref: &ModelRouteRef,
+) -> bool {
+    let route = route_ref.as_string();
+    if std::iter::once(&config.default_model)
+        .chain(config.fallback_models.iter())
+        .chain(config.vision_model.iter())
+        .chain(config.image_generation_model.iter())
+        .chain(config.vision_candidate_models.iter())
+        .any(|candidate| candidate.as_string() == route)
+    {
+        return true;
+    }
+    if config
+        .validated_model_overrides
+        .keys()
+        .any(|model_ref| ModelRouteRef::from_legacy_model_ref(model_ref).as_string() == route)
+    {
+        return true;
+    }
+    catalog
+        .available_model_routes()
+        .iter()
+        .any(|candidate| candidate.as_string() == route)
+}
+
+fn resolved_model_availability_for_route(
+    config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
+    route_ref: &ModelRouteRef,
+) -> ResolvedModelAvailability {
+    let availability = provider_availability(config, catalog, route_ref);
+    resolved_model_availability_entry(config, catalog, route_ref, &availability)
 }
 
 pub fn resolved_model_providers(config: &AppConfig) -> Vec<ModelProviderEntry> {
@@ -519,8 +580,11 @@ fn base_context_config(config: &AppConfig) -> ContextConfig {
     }
 }
 
-fn provider_availability(config: &AppConfig, route_ref: &ModelRouteRef) -> Value {
-    let catalog = RuntimeModelCatalog::from_config(config);
+fn provider_availability(
+    config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
+    route_ref: &ModelRouteRef,
+) -> Value {
     if let Some(route) =
         catalog.resolve_explicit_model_metadata(&base_context_config(config), route_ref)
     {
@@ -543,7 +607,7 @@ fn provider_availability(config: &AppConfig, route_ref: &ModelRouteRef) -> Value
         }
     }
 
-    let mut availability = match build_candidate(config, route_ref) {
+    let mut availability = match build_candidate_with_catalog(config, catalog, route_ref) {
         Ok(candidate) => json!({
             "available": true,
             "prompt_capabilities": candidate.provider.prompt_capabilities(),
@@ -607,7 +671,11 @@ fn provider_availability(config: &AppConfig, route_ref: &ModelRouteRef) -> Value
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::PathBuf};
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
 
     use tempfile::tempdir;
 
@@ -616,13 +684,14 @@ mod tests {
             built_in_provider_registry_with_settings, provider_registry_for_tests, AppConfig,
             ControlAuthMode, ModelRef, ModelRouteRef, ProviderId,
         },
-        model_catalog::{ModelMetadataSource, ModelRuntimeOverride},
+        model_catalog::{BuiltInModelMetadata, ModelMetadataSource, ModelRuntimeOverride},
+        model_discovery::ProviderModelDiscoveryCache,
     };
 
     use super::{
         base_context_config, provider_doctor, resolved_model_availability,
         resolved_model_providers, resolved_model_providers_from_availability_for_runtime,
-        resolved_provider_models, RuntimeModelCatalog,
+        resolved_provider_models, resolved_route_availability, RuntimeModelCatalog,
     };
 
     struct TestConfigFixture {
@@ -727,6 +796,131 @@ mod tests {
             openai.resolved_capabilities.as_ref(),
             Some(&route.capabilities)
         );
+    }
+
+    #[test]
+    fn resolved_route_availability_matches_full_sweep_entry() {
+        let fixture = test_config(Some("openai-key"));
+        let models = resolved_model_availability(&fixture.config);
+        let mut routes = vec![fixture.config.default_model.clone()];
+        routes.extend(fixture.config.fallback_models.iter().cloned());
+
+        for route in routes {
+            let single = resolved_route_availability(&fixture.config, &route).expect("route entry");
+            let sweep = models
+                .iter()
+                .find(|entry| {
+                    entry.model == route.model_ref().as_string()
+                        && entry.provider == route.provider.as_str()
+                        && entry.endpoint == route.endpoint.as_str()
+                })
+                .expect("sweep entry");
+            assert_eq!(&single, sweep);
+        }
+    }
+
+    #[test]
+    fn resolved_route_availability_skips_routes_outside_the_sweep() {
+        let fixture = test_config(Some("openai-key"));
+        let unknown =
+            ModelRouteRef::parse_compatible("openai/not-a-catalog-model-3776").expect("route");
+
+        assert!(resolved_route_availability(&fixture.config, &unknown).is_none());
+    }
+
+    fn add_discovered_models(config: &mut AppConfig, count: usize) {
+        let models = (0..count)
+            .map(|index| BuiltInModelMetadata {
+                model_ref: ModelRef::new(ProviderId::openai(), format!("bench-model-{index:04}")),
+                display_name: format!("Bench Model {index:04}"),
+                description: "synthetic discovery entry for #3776 attribution".into(),
+                context_window_tokens: Some(128_000),
+                effective_context_window_percent: 100,
+                auto_compact_token_limit: None,
+                default_max_output_tokens: Some(8_192),
+                max_output_tokens_upper_limit: Some(16_384),
+                default_verbosity: None,
+                tool_output_truncation_estimated_tokens: None,
+                capabilities: Default::default(),
+                reasoning_effort_options: Vec::new(),
+                source: ModelMetadataSource::RemoteDiscovered,
+                endpoint: None,
+            })
+            .collect();
+        config.model_discovery_cache.providers.insert(
+            ProviderId::openai(),
+            ProviderModelDiscoveryCache {
+                provider: ProviderId::openai(),
+                fetched_at: chrono::Utc::now(),
+                source_url: None,
+                response_hash: None,
+                models,
+            },
+        );
+    }
+
+    fn median_duration(iterations: usize, mut run: impl FnMut()) -> Duration {
+        let mut samples = (0..iterations)
+            .map(|_| {
+                let started = Instant::now();
+                run();
+                started.elapsed()
+            })
+            .collect::<Vec<_>>();
+        samples.sort();
+        samples[samples.len() / 2]
+    }
+
+    /// Phase 0 attribution for #3776. Ignored by default because it only
+    /// prints timings; run explicitly with:
+    /// `cargo test --lib benchmark_model_availability_sweep -- --ignored --nocapture`
+    #[test]
+    #[ignore = "#3776 phase 0 attribution, manual run"]
+    fn benchmark_model_availability_sweep() {
+        const DISCOVERED_MODELS: usize = 1_024;
+
+        let mut fixture = test_config(Some("openai-key"));
+        add_discovered_models(&mut fixture.config, DISCOVERED_MODELS);
+        let config = &fixture.config;
+
+        let catalog_build = median_duration(5, || {
+            std::hint::black_box(RuntimeModelCatalog::from_config(config));
+        });
+        let routes = RuntimeModelCatalog::from_config(config).available_model_routes();
+        let sweep = median_duration(3, || {
+            std::hint::black_box(resolved_model_availability(config));
+        });
+        let single_route = median_duration(5, || {
+            std::hint::black_box(resolved_route_availability(config, &config.default_model));
+        });
+        let models = resolved_model_availability(config);
+        let serialization = median_duration(3, || {
+            std::hint::black_box(
+                serde_json::to_vec(&serde_json::json!({
+                    "available_models": RuntimeModelCatalog::from_config(config)
+                        .available_models(),
+                    "model_availability": models,
+                }))
+                .expect("serialize availability"),
+            );
+        });
+        let body = serde_json::to_vec(&serde_json::json!({
+            "available_models": RuntimeModelCatalog::from_config(config).available_models(),
+            "model_availability": models,
+        }))
+        .expect("serialize availability");
+
+        println!("route_count={}", routes.len());
+        println!("discovered_models={DISCOVERED_MODELS}");
+        println!("catalog_build_ms={:.3}", catalog_build.as_secs_f64() * 1e3);
+        println!("sweep_ms={:.3}", sweep.as_secs_f64() * 1e3);
+        println!("single_route_ms={:.3}", single_route.as_secs_f64() * 1e3);
+        println!(
+            "legacy_per_route_catalog_rebuilds_ms={:.3}",
+            catalog_build.as_secs_f64() * routes.len() as f64 * 1e3
+        );
+        println!("serialization_ms={:.3}", serialization.as_secs_f64() * 1e3);
+        println!("payload_bytes={}", body.len());
     }
 
     #[test]
