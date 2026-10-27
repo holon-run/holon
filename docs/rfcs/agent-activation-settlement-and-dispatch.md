@@ -1679,6 +1679,23 @@ unconditional terminal re-entry must be reduced and settled with
 `model_reentry=false`; a continuation decision cannot reopen a provider turn
 after canonical planning selects reducer-only execution.
 
+A WorkItem-bound task result whose canonical execution is temporarily not
+runnable — another activation holds the lane, or the lane is paused or
+otherwise not activatable — settles the same way. The pending settlement is
+the durable obligation, the queue notification does not consume queue-head
+no-progress budget, and no model turn is opened; a later legal activation for
+the same owner admits the pending result through bounded oldest-first
+admission. A validated runtime input without a result payload (for example a
+bound internal followup) is not dropped either: the durable queued entry is
+the retention obligation, selection skips it for the rest of that poll so
+later legal inputs keep advancing, and each poll re-derives the deferral from
+current state instead of accumulating no-progress attempts toward quarantine.
+Such deferral is not activation authority: it must not clear business
+blockers, consume an unrelated wait, or rebuild a runnable binding.
+Permanently invalid inputs — wrong owner, forged authority, stale or
+already-consumed sources, and owner closure fences — keep their existing
+deterministic rejection and settlement semantics.
+
 An external input carrying an exact wait correlation is terminally dropped only
 when durable authority proves that wait generation is obsolete, inactive, or
 no longer the WorkItem execution generation. The runtime never downgrades that

@@ -324,6 +324,23 @@ pub(crate) fn seed_runnable_work_execution(storage: &AppStorage, work_item: &Wor
     );
 }
 
+/// Seed a temporarily non-runnable lane whose work item still projects as
+/// runnable (paused execution, no reciprocal attempt requirements).
+pub(crate) fn seed_paused_work_execution(
+    storage: &AppStorage,
+    work_item: &WorkItemRecord,
+    reason: &str,
+) {
+    seed_work_execution(
+        storage,
+        work_item,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+            generation: work_item.revision.max(1),
+            reason: reason.into(),
+        },
+    );
+}
+
 pub(crate) fn seed_waiting_work_execution(
     storage: &AppStorage,
     work_item: &WorkItemRecord,

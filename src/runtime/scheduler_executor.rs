@@ -150,6 +150,10 @@ enum CanonicalClaimOutcome {
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
     },
+    DeferUntilRunnable {
+        scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
+        reason: &'static str,
+    },
     HardBlocker(CanonicalClaimHardBlocker),
 }
 
@@ -237,6 +241,7 @@ enum PrepareMessageOutcome {
     Poll(RunLoopPoll),
     Replan,
     ProviderParked,
+    DeferredUntilRunnable,
 }
 
 impl<'a> SchedulerDecisionExecutor<'a> {
@@ -780,7 +785,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             };
 
             match self.prepare_message(candidate.clone()).await? {
-                PrepareMessageOutcome::ProviderParked => {
+                // Parked entries (provider parking or not-runnable deferral)
+                // stay queued durably and are skipped for the rest of this
+                // poll so later legal inputs can still advance.
+                PrepareMessageOutcome::ProviderParked
+                | PrepareMessageOutcome::DeferredUntilRunnable => {
                     provider_parked.insert(candidate.message.id.clone());
                 }
                 PrepareMessageOutcome::Poll(poll) => {
@@ -953,6 +962,23 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 // Terminalization notifies the scheduler, so the next poll can
                 // advance past the rejected queue head in the same session.
                 return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
+            }
+            Ok(CanonicalClaimOutcome::DeferUntilRunnable {
+                scenario_class,
+                reason,
+            }) => {
+                // A temporarily non-runnable canonical execution retains the
+                // validated input (#3773). The durable Queued entry is the
+                // retention obligation and the decision is recomputed on every
+                // poll, so nothing is mutated here; the deduplicated advisory
+                // is the observable evidence.
+                scheduler::append_deferred_activation_advisory(
+                    &self.runtime.inner.storage,
+                    &persisted_message,
+                    scenario_class,
+                    reason,
+                )?;
+                return Ok(PrepareMessageOutcome::DeferredUntilRunnable);
             }
             Ok(CanonicalClaimOutcome::RetainQueued {
                 scenario_class,
@@ -2330,9 +2356,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 )
             })
         {
-            return Ok(CanonicalClaimOutcome::RejectQueued {
-                scenario_class,
-                reason: "canonical_work_item_execution_not_runnable",
+            // A temporarily non-runnable canonical execution is a state of
+            // the lane, not a defect of the input (#3773). A validated task
+            // result settles reducer-only so its pending settlement survives
+            // for the next legal activation; other validated runtime inputs
+            // defer in place instead of being dropped or escalated to
+            // quarantine by poll count alone.
+            return Ok(if message.kind == MessageKind::TaskResult {
+                CanonicalClaimOutcome::ReduceOnly
+            } else {
+                CanonicalClaimOutcome::DeferUntilRunnable {
+                    scenario_class,
+                    reason: "canonical_work_item_execution_not_runnable",
+                }
             });
         }
 

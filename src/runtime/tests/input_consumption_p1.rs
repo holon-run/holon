@@ -6,6 +6,7 @@ use crate::types::{
     QueueEntryRecord, TurnOwner, WorkItemPlanStatus,
 };
 
+mod canonical_not_runnable;
 mod recovery_batching;
 mod recovery_diagnostics;
 mod rejected_producers;

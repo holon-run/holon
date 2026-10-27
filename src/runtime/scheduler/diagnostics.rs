@@ -248,6 +248,31 @@ pub(crate) fn append_ambiguous_wait_advisory(
     Ok(())
 }
 
+pub(crate) fn append_deferred_activation_advisory(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
+    reason: &str,
+) -> Result<()> {
+    let diagnostic = SchedulingAdvisory::warning(
+        "canonical_activation_deferred_not_runnable",
+        "canonical activation input waits for a runnable execution and remains queued",
+    )
+    .maybe_work_item_id(message.work_item_id.clone())
+    .evidence(format!("message_id={}", message.id))
+    .evidence(format!("scenario_class={}", scenario_class.as_str()))
+    .evidence(format!("reason={reason}"));
+    let event = scheduling_advisory_event(&diagnostic);
+    let duplicate = storage
+        .read_recent_events(64)?
+        .iter()
+        .any(|latest| latest.kind == event.kind && latest.data == event.data);
+    if !duplicate {
+        storage.append_event(&event)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn append_interrupted_replay_source_advisory(
     storage: &AppStorage,
     message: &MessageEnvelope,
