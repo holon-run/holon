@@ -448,7 +448,14 @@ canonical availability, ownership or recovery fingerprints.
 
 `R3773I` parks recovery `R` before scheduler claim, so `R` remains `Queued`,
 not `Interrupted`. Its fresh root `F0` is authenticated operator input with
-no causation parent. Only after the stub holds `F0`'s real HTTP response may
+no causation parent. Both `F0` and `F1` explicitly bind an independent real
+WorkItem `W`, created through the authenticated control API while the source
+HTTP request is held, then set to `needs_input` to prevent autonomous dispatch.
+The fresh turn belongs to `W`; the original source and recovery keep their
+original owner. This preserves the existing rule that a later successful turn
+with the same owner supersedes older queued recovery, rather than weakening
+that rule to satisfy the fixture.
+Only after the stub holds `F0`'s real HTTP response may
 `F1` interject into that fresh turn. Fresh execution consumes exactly
 `{F0, F1}`; recovery consumes exactly `{R, S}`, where `S` is its original
 source. Neither interjection provenance nor authority may be upgraded.

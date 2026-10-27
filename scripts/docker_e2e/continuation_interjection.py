@@ -418,7 +418,10 @@ def evaluate_recovery_interjection(events, http, snapshot, before, competition):
     require(len(completed) == 1
             and completed[0]["trigger"].get("origin") == recovery["origin"]
             and completed[0]["trigger"].get("authority_class") == recovery["authority_class"]
-            and completed[0].get("agent_id") == "qa",
+            and completed[0].get("agent_id") == "qa"
+            and completed[0].get("owner") == failed[0].get("owner")
+            and completed[0].get("current_work_item_id")
+            == failed[0].get("current_work_item_id"),
             "recovery turn trigger/provenance mismatch")
     _exact_inputs(completed[0], (recovery_id, source_id))
     parked = _source_rows(before, "provider_queue_parking", recovery_id)
@@ -463,15 +466,38 @@ def evaluate_recovery_interjection(events, http, snapshot, before, competition):
         "before_tool_execution", "QA_FRESH_FOLLOW")
     root = _message(snapshot, competition["f0_id"])
     _operator(root)
+    work_item_id = competition["work_item_id"]
+    require(work_item_id and failed[0].get("current_work_item_id") != work_item_id
+            and failed[0].get("owner") != {"kind": "work_item", "work_item_id": work_item_id}
+            and source.get("work_item_id") == recovery.get("work_item_id")
+            == failed[0].get("current_work_item_id"),
+            "fresh WorkItem must not replace the original source or recovery owner")
+    for checkpoint in (before, queued, boundary, snapshot):
+        owners = [row for row in _rows(checkpoint, "work_items")
+                  if row.get("work_item_id") == work_item_id]
+        require(len(owners) == 1 and owners[0].get("agent_id") == "qa"
+                and owners[0].get("state") == "open"
+                and owners[0].get("plan_status") == "needs_input",
+                "fresh owner must be a real independent non-autonomous WorkItem")
+    created = [event for event in events if event["type"] == "work_item_enqueue_requested"
+               and event.get("payload", {}).get("work_item_id") == work_item_id]
+    require(len(created) == 1
+            and created[0]["payload"].get("target_agent_id") == "qa"
+            and created[0]["payload"].get("admission_context") == "control_authenticated",
+            "fresh WorkItem must originate from the authenticated control API")
     require(root.get("causation_id") is None
             and turn.get("trigger", {}).get("message_id") == competition["f0_id"]
-            and turn.get("agent_id") == "qa" and turn.get("owner"),
+            and turn.get("agent_id") == "qa"
+            and turn.get("owner") == {"kind": "work_item", "work_item_id": work_item_id}
+            and turn.get("current_work_item_id") == work_item_id
+            and root.get("work_item_id") == work_item_id,
             "fresh competition must run on an independent authenticated operator root")
     _exact_inputs(turn, (competition["f0_id"], competition["f1_id"]))
     follow = _message(snapshot, competition["f1_id"])
     require(follow.get("origin") == root.get("origin")
             and follow.get("authority_class") == root.get("authority_class")
-            and follow.get("admission_context") == root.get("admission_context"),
+            and follow.get("admission_context") == root.get("admission_context")
+            and follow.get("work_item_id") == work_item_id,
             "interjected follow-up must not upgrade its source or authority")
     require(not any(event["type"] == "operator_interjection_admitted"
                     and event.get("payload", {}).get("message_id") == recovery_id
@@ -1051,6 +1077,13 @@ class AcceptanceRun(FaultRun):
         self.wait_until(lambda: any(row.get("response") == "source_failure_held"
                                     for row in self.mock_records()), 30,
                         "real source continuation HTTP before shared failure")
+        if compete:
+            # The active source HTTP keeps autonomous work from racing this setup.
+            owner = self.api("POST", "/api/control/agents/qa/work-items",
+                             {"objective": "R3773I fresh operator competition"})
+            self.api("PATCH", f"/api/control/agents/qa/work-items/{owner['id']}",
+                     {"plan_status": "needs_input"})
+            write_json(self.evidence / "fresh-work-item.json", owner)
         self.api("POST", "/api/control/agents/qa2/prompt", {"text": "QA_COOL_RECOVERY"})
         self.wait_until(lambda: self.cooling_fence()
                         and self.cooling_fence("qa-b@default/gpt-5.4"),
@@ -1094,14 +1127,14 @@ class AcceptanceRun(FaultRun):
             started_at = datetime.now(timezone.utc).isoformat()
             self.configure(SCENARIO=self.scenario, HOLD_FRESH_RESPONSE=True)
             root = self.api("POST", "/api/control/agents/qa/prompt",
-                            {"text": "QA_FRESH_COMPETE"})
+                            {"text": "QA_FRESH_COMPETE", "work_item_id": owner["id"]})
             write_json(self.evidence / "fresh-root-prompt.json", root)
             self.wait_until(lambda: any(row.get("response") == "fresh_response_held"
                                         and row.get("side") == "b"
                                         for row in self.mock_records()), 15,
                             "healthy B holding the fresh root response")
             follow = self.api("POST", "/api/control/agents/qa/prompt",
-                              {"text": "QA_FRESH_FOLLOW"})
+                              {"text": "QA_FRESH_FOLLOW", "work_item_id": owner["id"]})
             write_json(self.evidence / "fresh-follow-prompt.json", follow)
             queued = self.snapshot()
             write_json(self.evidence / "competition-queued.json", redact_evidence(queued))
@@ -1114,6 +1147,7 @@ class AcceptanceRun(FaultRun):
             competition = {
                 "snapshot": self.snapshot(), "queued": queued, "b_incident": b_incident,
                 "f0_id": root["message_id"], "f1_id": follow["message_id"],
+                "work_item_id": owner["id"],
                 "started_at": started_at,
                 "sampled_at": datetime.now(timezone.utc).isoformat(),
             }

@@ -204,6 +204,15 @@ def recovery_interjection_evidence():
     original = canonical_message("m-source", "QA_NATIVE")
     root = canonical_message("m-fresh", "QA_FRESH_COMPETE")
     follow = canonical_message("m-follow", "QA_FRESH_FOLLOW")
+    for message in (root, follow):
+        payload = json.loads(message["payload_json"])
+        payload["work_item_id"] = "work-fresh"
+        message["payload_json"] = json.dumps(payload)
+    before["rows"]["work_items"] = [{
+        "work_item_id": "work-fresh", "agent_id": "qa",
+        "state": "open", "plan_status": "needs_input",
+    }]
+    snapshot["rows"]["work_items"] = copy.deepcopy(before["rows"]["work_items"])
     recovery = json.loads(before["rows"]["messages"][0]["payload_json"])
     recovery.update(id="m-recovery", agent_id="qa", delivery_surface="runtime_system",
                     admission_context="runtime_owned", causation_id="m-source")
@@ -231,7 +240,9 @@ def recovery_interjection_evidence():
         "message_id": "m-recovery", "origin": recovery["origin"],
         "authority_class": "runtime_instruction"})
     turns.append({
-        "turn_id": "fresh-turn", "agent_id": "qa", "owner": turns[0]["owner"],
+        "turn_id": "fresh-turn", "agent_id": "qa",
+        "owner": {"kind": "work_item", "work_item_id": "work-fresh"},
+        "current_work_item_id": "work-fresh",
         "trigger": {"message_id": "m-fresh"},
         "input_message_ids": ["m-fresh", "m-follow"],
     })
@@ -258,6 +269,10 @@ def recovery_interjection_evidence():
             "kind": "completed", "turn_id": "fresh-turn", "last_assistant_message": "QA_FRESH_DONE"}},
         {"type": "brief_created", "payload": {"kind": "result"}},
     ]
+    events.append({"type": "work_item_enqueue_requested", "payload": {
+        "work_item_id": "work-fresh", "target_agent_id": "qa",
+        "admission_context": "control_authenticated",
+    }})
     http[1].update(at=1793059199, retry_after="24")
     http[2].update(at=1793059199.1, retry_after="1")
     http[-1].update(at=1793059230, current_input=[{"id": "m-recovery"}, {"id": "m-source"}])
@@ -270,6 +285,7 @@ def recovery_interjection_evidence():
     competition = {
         "snapshot": boundary, "queued": queued,
         "f0_id": "m-fresh", "f1_id": "m-follow",
+        "work_item_id": "work-fresh",
         "started_at": "2026-10-27T00:00:10Z", "sampled_at": "2026-10-27T00:00:13Z",
         "b_incident": {"last_model_ref": "qa-b@default/gpt-5.4",
                        "next_retry_at": "2026-10-27T00:00:10Z"},
@@ -493,6 +509,45 @@ class RecoveryInterjectionOracleTests(unittest.TestCase):
                 elif name == "duplicate_recovery_input":
                     next(row for row in h if row.get("recovery_input"))["recovery_input"].append(
                         "m-recovery")
+                with self.assertRaises(AssertionError):
+                    evaluate_recovery_interjection(e, h, s, b, c)
+
+    def test_competition_requires_a_real_independent_authenticated_work_item(self):
+        for name in ("missing_owner", "autonomous_owner", "wrong_agent",
+                     "missing_api_audit", "unauthenticated_api", "root_unbound",
+                     "follow_unbound", "turn_unbound", "same_owner", "recovery_reowned"):
+            with self.subTest(name=name):
+                e, h, s, b, c = copy.deepcopy(recovery_interjection_evidence())
+                checkpoints = (b, c["queued"], c["snapshot"], s)
+                if name in ("missing_owner", "autonomous_owner", "wrong_agent"):
+                    for checkpoint in checkpoints:
+                        owners = checkpoint["rows"]["work_items"]
+                        if name == "missing_owner":
+                            owners.clear()
+                        else:
+                            owners[0]["plan_status" if name == "autonomous_owner"
+                                      else "agent_id"] = ("ready" if name == "autonomous_owner"
+                                                         else "other")
+                elif name == "missing_api_audit":
+                    e[:] = [event for event in e
+                            if event["type"] != "work_item_enqueue_requested"]
+                elif name == "unauthenticated_api":
+                    e[-1]["payload"]["admission_context"] = "external"
+                elif name in ("root_unbound", "follow_unbound"):
+                    for checkpoint in checkpoints[1:]:
+                        update_message(checkpoint, "m-fresh" if name == "root_unbound"
+                                       else "m-follow", work_item_id=None)
+                elif name == "turn_unbound":
+                    update_turn(s, "fresh-turn", current_work_item_id=None)
+                elif name == "same_owner":
+                    for checkpoint in checkpoints:
+                        update_turn(checkpoint, "source-turn", current_work_item_id="work-fresh",
+                                    owner={"kind": "work_item", "work_item_id": "work-fresh"})
+                    update_turn(s, "recovered-turn", current_work_item_id="work-fresh",
+                                owner={"kind": "work_item", "work_item_id": "work-fresh"})
+                elif name == "recovery_reowned":
+                    update_turn(s, "recovered-turn", current_work_item_id="work-fresh",
+                                owner={"kind": "work_item", "work_item_id": "work-fresh"})
                 with self.assertRaises(AssertionError):
                     evaluate_recovery_interjection(e, h, s, b, c)
 
