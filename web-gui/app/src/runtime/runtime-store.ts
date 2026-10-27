@@ -418,6 +418,7 @@ export interface RuntimeStoreState {
   createAgentFromTemplate: (agentId: string, template: string, name?: string) => Promise<AgentCreationResult>;
   lookupCreatedAgent: (agentId: string) => Promise<AgentCreationLookup>;
   refreshAgentCreation: (agentId: string) => Promise<void>;
+  dismissAgentCreation: (agentId: string) => void;
   addSkillToCatalog: (input: AddSkillInput) => Promise<boolean>;
   removeSkillFromCatalog: (name: string) => Promise<boolean>;
   updateSkillCatalog: (name?: string) => Promise<boolean>;
@@ -2440,6 +2441,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   refreshAgentCreation: async (agentId) => {
     const progress = get().agentCreations[agentId];
     if (progress) await reconcileAgentCreation(set, get, captureAgentCreationRequest(get), agentId, progress);
+  },
+
+  // The banner states that the agent was created, not that its first turn
+  // succeeded. Once the conversation proves a settled successful turn, the
+  // banner is redundant and retires; a failed first turn keeps it visible.
+  dismissAgentCreation: (agentId) => {
+    set((state) => {
+      if (!state.agentCreations[agentId]) return {};
+      const agentCreations = { ...state.agentCreations };
+      delete agentCreations[agentId];
+      return { agentCreations };
+    });
   },
 
   dismissTemplateDiagnostics: () => {
