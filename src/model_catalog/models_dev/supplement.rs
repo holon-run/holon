@@ -58,9 +58,8 @@ pub const AUTO_SUPPLEMENT_PROVIDERS: &[&str] = &[
 
 /// Runtime providers that share an upstream models.dev catalog.
 ///
-/// `openai-codex` is an existing first-party runtime transport, not a
-/// separate models.dev provider. Keep its catalog in sync with OpenAI models
-/// so the same model can be selected through either supported transport.
+/// Shared metadata sources allow retention, not automatic endpoint admission.
+/// New Codex aliases require endpoint review before entering the supplement.
 const SUPPLEMENT_PROVIDER_ALIASES: &[(&str, &str)] = &[("openai", "openai-codex")];
 
 /// How many days back a model's upstream release date may lie and still be
@@ -240,6 +239,8 @@ pub enum DeferredReason {
     NotTextOutput,
     /// The model uses modalities unsupported by the target runtime provider.
     UnsupportedByProvider,
+    /// A shared upstream catalog does not establish endpoint access.
+    EndpointReviewRequired,
     /// Release date is older than the recency window.
     ReleaseOutsideWindow,
     /// No usable release date upstream; needs a human decision.
@@ -385,6 +386,14 @@ pub fn generate(
                     // Retained: refresh metadata from the current snapshot but
                     // keep the entry admitted.
                     retained.push(model_ref_string);
+                    continue;
+                }
+                if holon_provider_id == "openai-codex" {
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::EndpointReviewRequired,
+                        release_date: release_date_key(model).map(str::to_string),
+                    });
                     continue;
                 }
                 let Some(modalities) = model.modalities.as_ref() else {
@@ -533,6 +542,23 @@ fn supplement_model_supported_by_provider(
     model_id: &str,
     model: &ModelsDevModel,
 ) -> bool {
+    // Every supplement model implies a default API route. These EOS dates do
+    // not retire independently registered coding/plan or hosted offerings.
+    // https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md
+    if provider == "volcengine"
+        && matches!(
+            model_id,
+            "deepseek-v3-2-251201"
+                | "doubao-seed-1-8-251228"
+                | "doubao-seed-1-6-251015"
+                | "doubao-seed-1-6-flash-250828"
+                | "doubao-seed-1-6-vision-250815"
+                | "doubao-seed-2-0-lite-260215"
+                | "doubao-seed-2-0-mini-260215"
+        )
+    {
+        return false;
+    }
     // International native API retirement, not a family-wide aggregator ban.
     // https://platform.kimi.ai/docs/models.md (retired 2026-08-31)
     if provider == "moonshot"
@@ -807,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn drafts_openai_models_for_api_and_codex_providers() {
+    fn drafts_api_models_but_defers_unreviewed_codex_aliases() {
         let parsed: ModelsDevSnapshot = serde_json::from_str(
             r#"{
                 "openai": {
@@ -835,13 +861,11 @@ mod tests {
             .map(|model| model.model_ref.as_string())
             .collect();
 
-        assert_eq!(
-            drafted_refs,
-            vec![
-                "openai-codex/gpt-future-test".to_string(),
-                "openai/gpt-future-test".to_string()
-            ]
-        );
+        assert_eq!(drafted_refs, vec!["openai/gpt-future-test".to_string()]);
+        assert!(update.deferred.iter().any(|model| {
+            model.model_ref == "openai-codex/gpt-future-test"
+                && model.reason == DeferredReason::EndpointReviewRequired
+        }));
     }
 
     #[test]
@@ -1149,6 +1173,78 @@ mod tests {
         let model = parsed.providers["minimax"].models.values().next().unwrap();
         for id in ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"] {
             assert!(supplement_model_supported_by_provider("minimax", id, model));
+        }
+    }
+
+    #[test]
+    fn retired_volcengine_api_ids_are_not_drafted_or_retained() {
+        let legacy = legacy();
+        let ids = [
+            "deepseek-v3-2-251201",
+            "doubao-seed-1-8-251228",
+            "doubao-seed-1-6-251015",
+            "doubao-seed-1-6-flash-250828",
+            "doubao-seed-1-6-vision-250815",
+            "doubao-seed-2-0-lite-260215",
+            "doubao-seed-2-0-mini-260215",
+        ];
+        let mut parsed: ModelsDevSnapshot =
+            serde_json::from_str(r#"{"volcengine":{"id":"volcengine","models":{}}}"#).unwrap();
+        let mut previous = ModelsDevSupplement::empty();
+        for id in ids {
+            let model = serde_json::from_value(serde_json::json!({
+                "id": id, "release_date": "2026-10-26",
+                "modalities": {"input": ["text"], "output": ["text"]}
+            }))
+            .unwrap();
+            for provider in ["volcengine-coding", "volcengine-agent", "openrouter"] {
+                assert!(supplement_model_supported_by_provider(provider, id, &model));
+            }
+            parsed
+                .providers
+                .get_mut("volcengine")
+                .unwrap()
+                .models
+                .insert(id.into(), model);
+            previous
+                .models
+                .push(supplement_metadata(&format!("volcengine/{id}"), id));
+        }
+        let sample = parsed.providers["volcengine"]
+            .models
+            .values()
+            .next()
+            .unwrap();
+        for id in [
+            "doubao-seed-2-0-pro-260215",
+            "doubao-seed-2-0-code-preview-260215",
+            "kimi-k2.7-code",
+            "minimax-m3",
+        ] {
+            assert!(supplement_model_supported_by_provider(
+                "volcengine",
+                id,
+                sample
+            ));
+        }
+        for previous in [None, Some(&previous)] {
+            let update = generate(&parsed, previous, &legacy, "2026-10-26", "rev", "ver").unwrap();
+            assert!(update.supplement.models.is_empty());
+            assert!(update.supplement.routes.is_empty());
+            for id in ids {
+                let model_ref = format!("volcengine/{id}");
+                if previous.is_some() {
+                    assert!(update.removed.iter().any(|removed| {
+                        removed.model_ref == model_ref
+                            && removed.reason == RemovalReason::UnsupportedByProvider
+                    }));
+                } else {
+                    assert!(update.deferred.iter().any(|deferred| {
+                        deferred.model_ref == model_ref
+                            && deferred.reason == DeferredReason::UnsupportedByProvider
+                    }));
+                }
+            }
         }
     }
 

@@ -5,6 +5,59 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-10-27
+
+The official [GPT-6.1 Terra API model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+confirms a 1,050,000-token context window, a 128,000-token output ceiling,
+text/image input, and `none`/`low`/`medium`/`high`/`xhigh`/`max` reasoning.
+Tool calling requires Responses; Holon's built-in `openai@default` already
+uses that transport. Its supplement keeps the existing 95% prompt policy
+(997,500 tokens) and conservative parallel/image-generation/interactive flags.
+The output default is an explicit runtime policy, not a separate capacity claim.
+
+The public Codex model metadata checked this cycle does not list
+`gpt-6.1-terra`. That absence is not retirement evidence, but it is insufficient
+to admit a new ChatGPT-sign-in route. New OpenAI-to-Codex supplement aliases
+therefore require endpoint review; previously reviewed aliases retain their
+sticky admission, subject to the existing affirmative retirement/modality filters.
+At the Terra-only checkpoint, the API route was the sole field-review addition
+and all 600 previous projections were unchanged. The separate Volcengine
+repairs below require their own review; that checkpoint is not their approval.
+No account-specific availability or paid inference was tested.
+
+### Volcengine native Responses qualifications and EOS
+
+The [ordinary API retirement notice](https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md)
+has model-specific exceptions: DeepSeek V3.2 `251201` reached EOS on
+July 30, 2026, not the batch's September 21 date; Seed 2.0 Lite/Mini `260215`
+reached EOS on October 22, not the batch's November 24 date. These ordinary
+API notices do not remove independently registered coding/plan routes.
+Supplement models always imply a default API route, so their ordinary
+retirement filter must reject new and retained copies without deleting
+subscription-only built-in registrations.
+
+The [model matrix](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md)
+and [Responses effort matrix](https://ark.volcengine.com/region:cn-beijing/docs/responses-api-deep-thinking.md)
+confirm Seed 2.1 Pro/Lite `260915` and DeepSeek 4.1 Flash
+`261017`/`260910`/Economy `261017`, with image input and reasoning.
+`minimal/low/medium/high` and `none/low/high/max`, respectively, are actual
+effort levels; compatibility aliases do not add levels. Native `k` shorthand
+does not certify exact context, server output default, or output ceiling.
+Unknown values continue to use independent internal runtime-budget fallback.
+
+The [K3.1 native card](https://ark.volcengine.com/models/kimi-k3-1-pro.md)
+confirms the direct ID `kimi-k3-1-pro`, Responses, image input,
+`low/high/max`, and exact context 1,048,576. Its output default/ceiling
+conflict with the general matrix, so both remain unknown. The dotted plan ID
+and the dated internal response ID are not additional direct API aliases.
+Implicit caching and native Responses cache controls do not establish
+Anthropic explicit `cache_control`.
+
+Other endpoint rechecks, source restrictions, future retirement dates, and
+unresolved exact capacities are retained in [the endpoint audit](endpoint-review.md).
+The second independent group found no new code-level delta across its 14
+registered endpoints; this does not newly certify previously unknown limits.
+
 ## Accepted missing-field updates
 
 All numbers below are integer tokens. None of these changes populates

@@ -2068,6 +2068,30 @@ mod tests {
     }
 
     #[test]
+    fn api_terra_does_not_grant_codex_endpoint_access() {
+        let catalog = BuiltInModelCatalog::new();
+        let api = catalog
+            .get(&ModelRef::parse("openai/gpt-6.1-terra").unwrap())
+            .expect("reviewed API model");
+        assert_eq!(api.context_window_tokens, Some(1_050_000));
+        assert_eq!(api.max_output_tokens_upper_limit, Some(128_000));
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse("openai@default/gpt-6.1-terra").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("openai-codex/gpt-6.1-terra").unwrap())
+            .is_none());
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse("openai-codex@default/gpt-6.1-terra").unwrap())
+            .is_none());
+        assert!(catalog
+            .get_route(
+                &ModelRouteRef::parse("openai-codex@default/gpt-daybreak-blue-latest").unwrap()
+            )
+            .is_some());
+    }
+
+    #[test]
     fn discovery_catalog_policies_match_static_catalog_registration() {
         let catalog = BuiltInModelCatalog::new();
         for definition in provider_definitions() {
