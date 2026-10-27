@@ -398,6 +398,10 @@ operator input, including input arriving during OAuth refresh or compaction.
 The fence does not charge a request or bypass authority and budget checks.
 There is no new arbitrary cooldown timeout.
 
+The cooling wrapper admits interjections only after the first round. At
+round one it leaves queued operator input for the next eligible input boundary
+or a later turn; it does not create a second execution or adopt a parked source.
+
 This wait is an active execution substate, not source parking, completion or
 a scheduler wake. Expose its current turn/attempt/model, start time, earliest
 recheck and safe shared-cooldown cause through a queryable snapshot and
@@ -410,10 +414,35 @@ captured classification/status/time/Retry-After and local incident correlation,
 never raw errors, requests, response bodies or diagnostic URLs. Missing
 historical details must remain explicitly unavailable.
 
+`Superseded` is a reserved cooldown-wait end outcome, not a currently emitted
+event. Terminal state cleanup must not be interpreted as such an event; the
+current queryable execution snapshot remains authoritative.
+
 Turn-local waiting retains execution memory and ownership. It adds no durable
 exact-round checkpoint or cross-daemon-restart continuation permission: existing
 recovery and side-effect replay fences remain unchanged. Releasing execution
 while preserving an exact native round across restart is a separate contract.
+
+Docker acceptance separates two interjection contracts: `T3772I` interrupts
+an actual turn-local cooldown wait while preserving native tool context and
+single delivery; `R3773I` races fresh input against an independently parked
+recovery source while preserving its owner, absolute deadline, lineage and
+single consumption. The legacy `I3754` post-tool-parking oracle remains a
+distinct historical case, not a synonym for either replacement. Neither new
+case may manufacture parking by reverting the active-wait contract or changing
+canonical availability, ownership or recovery fingerprints.
+
+`R3773I` parks recovery `R` before scheduler claim, so `R` remains `Queued`,
+not `Interrupted`. Its fresh root `F0` is authenticated operator input with
+no causation parent. Only after the stub holds `F0`'s real HTTP response may
+`F1` interject into that fresh turn. Fresh execution consumes exactly
+`{F0, F1}`; recovery consumes exactly `{R, S}`, where `S` is its original
+source. Neither interjection provenance nor authority may be upgraded.
+The runner derives a usable fresh-provider window from actual incidents
+and the original parking deadline `D`, failing closed if there is too
+little time. Fresh completion must precede `D`, recovery dispatch must not
+precede `D`, and the parked owner, fingerprint and deadline must not change.
+This does not cover the separate admission-after-grant `Interrupted` race.
 
 An operator interjection never adopts a source that canonical state marks
 `Interrupted`. Such a source stays in the live queue for its own recovery
