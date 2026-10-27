@@ -222,7 +222,7 @@ def recovery_interjection_evidence():
     before["rows"]["conversation_input_assignments"] = [{
         "message_id": "m-source", "agent_id": "qa", "turn_id": "source-turn", "revision": 1}]
     parking = before["rows"]["provider_queue_parking"][0]
-    parking.update(not_before="2026-10-27T00:00:30Z", chain_fingerprint="sha256:chain",
+    parking.update(not_before="2026-10-27T00:00:30+00:00", chain_fingerprint="sha256:chain",
                    episode_key="episode-original")
     snapshot["rows"]["messages"] = copy.deepcopy(before["rows"]["messages"]) + [root, follow]
     snapshot["rows"]["conversation_input_assignments"] = copy.deepcopy(
@@ -260,7 +260,7 @@ def recovery_interjection_evidence():
         {"type": "turn_terminal", "payload": {
             "kind": "provider_failed_needs_recovery", "turn_id": "source-turn"}},
         {"type": "provider_queue_parked", "payload": {
-            "message_id": "m-recovery", "not_before": parking["not_before"],
+            "message_id": "m-recovery", "not_before": "2026-10-27T00:00:30Z",
             "episode_key": parking["episode_key"]}},
         {"type": "operator_interjection_admitted", "ts": "2026-10-27T00:00:11Z",
          "payload": {"message_id": "m-follow", "turn_id": "fresh-turn",
@@ -552,7 +552,8 @@ class RecoveryInterjectionOracleTests(unittest.TestCase):
                     evaluate_recovery_interjection(e, h, s, b, c)
 
     def test_competition_is_not_a_marker_only_or_rewritten_parking_case(self):
-        for name in ("deadline", "fingerprint", "episode", "assignment", "queued_owner",
+        for name in ("deadline", "park_event_deadline", "fingerprint", "episode",
+                     "assignment", "queued_owner",
                      "preclaimed_recovery", "fresh_not_queued", "fresh_not_interjected",
                      "fresh_wrong_turn", "fresh_duplicate_admission", "fresh_wrong_boundary",
                      "missing_rendered_fresh", "fresh_external_origin", "follow_external_origin",
@@ -568,6 +569,8 @@ class RecoveryInterjectionOracleTests(unittest.TestCase):
                     c["snapshot"]["rows"]["provider_queue_parking"][0][
                         {"deadline": "not_before", "fingerprint": "chain_fingerprint",
                          "episode": "episode_key"}[name]] = "wrong"
+                elif name == "park_event_deadline":
+                    e[1]["payload"]["not_before"] = "2026-10-27T00:00:29.999Z"
                 elif name == "assignment":
                     c["snapshot"]["rows"]["conversation_input_assignments"][0]["turn_id"] = "wrong"
                 elif name == "queued_owner":

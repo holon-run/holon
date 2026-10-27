@@ -455,7 +455,7 @@ def evaluate_recovery_interjection(events, http, snapshot, before, competition):
     park_events = [event for event in events if event["type"] == "provider_queue_parked"
                    and event.get("payload", {}).get("message_id") == recovery_id]
     require(park_events and any(
-        event["payload"].get("not_before") == parked[0]["not_before"]
+        _instant(event["payload"].get("not_before")) == _instant(parked[0]["not_before"])
         and event["payload"].get("episode_key") == parked[0]["episode_key"]
         for event in park_events), "missing actual scheduler ProviderParked evidence")
     fresh_final = [event for event in _completed(events)
