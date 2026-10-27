@@ -9,6 +9,125 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-10-27 incremental review
+
+This cycle starts from main `95236be5`. Independent endpoint checks were made
+on 2026-10-26 at 21:22–21:33 UTC (October 27 in Beijing), in addition to the
+ordinary API refresh. No credentials, paid inference, deployment, or account
+availability checks were used.
+
+### Ordinary API changes and endpoint admission
+
+- The refreshed upstream revision is
+  `075da82620b738f6da30c52e4e2cb4ff19a054dcaef9018519c233a71bc5f3f8`.
+  The artifact has eight additions, six removals, and four changed records.
+  Changed OpenRouter output limits match the separately saved public model
+  listing; aggregator data does not grant native or subscription access.
+- The [Terra API model card](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+  confirms context 1,050,000, output ceiling 128,000, text/image input, and six
+  reasoning levels. Tool calling requires Responses, already used by
+  `openai@default`. The public [Codex model metadata](https://learn.chatgpt.com/docs/models)
+  does not list Terra. New OpenAI-to-Codex aliases now require endpoint review,
+  while previously reviewed aliases remain admitted subject to existing
+  retirement/modality filters. Missing Codex evidence is not retirement.
+- DeepSeek's [pricing](https://api-docs.deepseek.com/quick_start/pricing/) and
+  [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) do not
+  establish new subscription qualifications or integer limits this cycle.
+
+### Volcengine ordinary Responses
+
+The [native retirement notice](https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md)
+establishes these already effective EOS dates, all at 14:00 UTC+8:
+
+| Exact ordinary API ID | EOS date |
+| --- | --- |
+| `deepseek-v3-2-251201` | 2026-07-30 (batch-specific exception) |
+| `doubao-seed-1-8-251228` | 2026-09-21 |
+| `doubao-seed-1-6-251015` | 2026-09-21 |
+| `doubao-seed-1-6-flash-250828` | 2026-09-21 |
+| `doubao-seed-1-6-vision-250815` | 2026-09-21 |
+| `doubao-seed-2-0-lite-260215` | 2026-10-22 (batch-specific exception) |
+| `doubao-seed-2-0-mini-260215` | 2026-10-22 (batch-specific exception) |
+
+Remove ordinary registrations where present and prevent supplement refresh
+from resurrecting these default API routes. This is not a global `ModelRef`
+ban: independently registered coding/plan and hosted offerings remain.
+EOS may automatically migrate an old access point rather than make every
+request fail. Pro/code-preview `260215` do not reach EOS until November 24.
+Removing the retired Seed 1.8 ordinary default necessarily changes only that
+provider's default candidate; new registrations must not reorder other defaults.
+
+The [native model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md),
+[Responses thinking matrix](https://ark.volcengine.com/region:cn-beijing/docs/responses-api-deep-thinking.md),
+and [Responses schema](https://ark.volcengine.com/region:cn-beijing/docs/create-model-responses-api.md)
+confirm five missing exact Responses IDs:
+`doubao-seed-2-1-pro-260915`, `doubao-seed-2-1-lite-260915`,
+`deepseek-v4-1-flash-261017`, `deepseek-v4-1-flash-260910`, and
+`deepseek-v4-1-flash-economy-261017`. They support reasoning and image input.
+Use real effort levels, not compatibility aliases: Seed `minimal/low/medium/high`,
+DeepSeek `none/low/high/max`. Capacity expressions such as `1024k`, `384k`,
+and `128k` do not establish new exact integers.
+
+The [native K3.1 card](https://ark.volcengine.com/models/kimi-k3-1-pro.md)
+separately confirms the direct API ID `kimi-k3-1-pro`, distinct from the
+dotted subscription name and the dated internal response ID. Responses,
+image input, always-on reasoning, `low/high/max`, and context 1,048,576 are
+confirmed. Its exact output integers conflict with the overview; output
+default/ceiling remain unknown. Native implicit caching or Responses
+`caching`/`previous_response_id` does not imply Anthropic `cache_control`.
+
+### Registered endpoint rechecks
+
+Each endpoint below was checked independently; grouped rows do not imply
+shared credentials, regions, protocols, capacities, or model entitlements.
+
+| Registered endpoints | Evidence and retained boundary |
+| --- | --- |
+| `dashscope@default` | [Messages matrix](https://help.aliyun.com/zh/model-studio/anthropic-api-messages): all 46 listed exact IDs covered; existing host remains supported. Model-specific effort/cache exceptions remain. |
+| `dashscope@token-plan` | [Personal](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview), [team](https://help.aliyun.com/zh/model-studio/token-plan-team-overview), and [team quickstart](https://help.aliyun.com/zh/model-studio/token-plan-team-quickstart) unchanged; team shared Beijing hosts are published, but deployment/account details remain independent. Six historically unconfirmed routes are not newly certified. |
+| `dashscope@coding-plan`, `@coding-plan-intl` | [Domestic](https://help.aliyun.com/zh/model-studio/coding-plan) and [international](https://www.alibabacloud.com/help/en/model-studio/coding-plan) tables independently unchanged; historical absence is not retirement. |
+| `volcengine@coding`, `@plan` | [Coding](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-plan-overview.md) and [Agent](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md) unchanged. Their independent notices retain K2.7 Code until October 28 14:00 UTC+8 and M3 until November 2 14:00 UTC+8. The October 25 K3 discount expiry is not retirement. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | [Protocol matrix](https://cloud.tencent.com/document/product/1823/130079) and three schemas unchanged; yesterday's exact Chat capacity/reasoning/vision repairs do not extend to other protocols. Guangzhou/Singapore keys remain distinct. |
+| `qianfan@default` | [Models](https://cloud.baidu.com/doc/qianfan/s/rmh4stp0j) and [Chat schema](https://cloud.baidu.com/doc/qianfan-api/s/3m7of64lb) unchanged; yesterday's 15 additions and capacity-conflict cleanup remain. Absence is not ERNIE X1.1/DS V3.2 retirement. |
+| `bigmodel@default`, `zai@default` | [China latest models](https://docs.bigmodel.cn/cn/coding-plan/latest-model.md) and [international DevPack](https://docs.z.ai/devpack/latest-model.md), key and model documents independently checked; no new Messages/plan ID confirmed. |
+| `minimax@default`, `minimax-cn@default` | Independent [international](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md) and [China](https://platform.minimax.cn/docs/api-reference/text-chat-anthropic.md) schemas retain M3/M3.1 limits and distinct effort support. Recommended output is not a server default. Implicit cache exists despite unsupported explicit `cache_control`. M2.5/M2.7 remain available to existing native API users until November 18, not immediately retired. |
+| `minimax@m-plan`, `minimax-cn@m-plan` | Independent [international](https://platform.minimax.io/docs/m-plan/intro.md) and [China](https://platform.minimax.cn/docs/m-plan/intro.md) tables retain M3.1 Flash qualifications and unknown Preview limits; old M2.5/M2.7 plan names forward to M3.1 rather than follow native retirement. |
+| `moonshot@default` | [Models](https://platform.kimi.ai/docs/models.md), [Chat](https://platform.kimi.ai/docs/api/chat.md), and [pricing](https://platform.kimi.ai/docs/pricing/chat.md) unchanged. K2 new-user restriction starts October 31; full retirement is planned for **end of December 2026**, not November. Kimi Code remains a separate unregistered product. |
+| `byteplus@coding` | [Quickstart](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-get-started) and [plan](https://docs.byteplus.com/en/docs/modelark/coding-plan-personal-plan-overview) cover the existing 13 names; SSR content was checked. Ordinary `/api/v3` is separately billed; router capabilities and integer shorthand remain unexpanded. |
+| `stepfun@default`, `@plan` | [Models](https://platform.stepfun.com/docs/zh/guides/models/list.md), [retirement](https://platform.stepfun.com/docs/zh/guides/models/deprecations.md), and [plan integration](https://platform.stepfun.com/docs/zh/step-plan/integrations/reasoning-api.md) retain separate five-ID plan access and router restrictions. `INF`/`250K` are not integer defaults/ceilings; unregistered Messages is not added. |
+| `opencode-go@default`, `@messages`, `@responses` | [Go protocol table](https://opencode.ai/v2/docs/console/go/) and public discovery unchanged; K3.1/Iceman remain Chat-only. Zen is separate; its delayed DeepSeek retirement publication does not remove Go routes. |
+| `kilocode@default` | [Gateway listing](https://api.kilo.ai/api/gateway/models) and [auto model guide](https://kilo.ai/docs/code-with-ai/agents/auto-model) retain the same five exact records. `max_completion_tokens` is not a new server default; reasoning support is not an effort enum. |
+| `together@default` | [M3](https://www.together.ai/models/minimax-m3) and other checked cards retain yesterday's repair. Examples now recommend `api.together.ai`, but this is not evidence that the registered `.xyz` host retired. Dedicated M2.7 limits do not overwrite serverless limits; blocked documentation remains an evidence gap. |
+| `fireworks@default` | [329-ID index](https://fireworks.ai/models), model cards, and [prompt caching](https://docs.fireworks.ai/guides/prompt-caching.md) retain yesterday's M3 ceiling fix. Service default 2048 does not overwrite the runtime budget; the M3 vision conflict remains unresolved. Prefix caching is not Anthropic control support. |
+
+No new protocol, endpoint, credential, default/fallback configuration, or
+production service is enabled by these checks.
+
+### Final field review and local verification
+
+- The reviewed metadata baseline contains 604 routes: one ordinary OpenAI API
+  addition, six native Responses additions, three ordinary EOS removals, and
+  597 unchanged existing
+  raw/effective/evidence projections. The Lite coding/plan raw image-input
+  capability remains at its previous value; effective plan capabilities
+  are covered separately.
+- The artifact (1,087 models), supplement (55 models), mapping audit (zero
+  stale mappings), and `models-dev coverage --check --json` pass.
+- `cargo test --locked --lib model_catalog`: 186 passed, one ignored.
+  The three `models_dev_*` integration targets pass 11, seven, and one tests;
+  `route_cache` passes 17 tests and `responses` passes 76.
+- `cargo fmt --all -- --check`,
+  `RUSTFLAGS="-D warnings" cargo check --locked --all-targets`, and
+  `git diff --check` pass. The preceding 17-test Volcengine run also passes;
+  new Codex admission and ordinary EOS filtering have failing-before /
+  passing-after regression evidence.
+- Independent final review of the frozen increment found no confirmed P1/P2
+  blockers or outstanding facts blocking its conclusion. It covered Codex
+  admission, ordinary EOS versus plan isolation, native Responses wiring,
+  and exact preservation of the 597 existing metadata records. Local checks
+  and static review do not establish account availability or live supplier
+  behavior.
+
 ## 2026-10-26 incremental review
 
 This cycle starts from main `31e3ffcd`, including #3746's field-review gate

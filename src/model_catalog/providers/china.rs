@@ -573,24 +573,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
         catalog_model(
             "volcengine",
-            "doubao-seed-1-8-251228",
-            "Doubao Seed 1.8",
-            256_000,
-            4_096,
-            false,
-            true,
-        ),
-        catalog_model(
-            "volcengine",
-            "deepseek-v3-2-251201",
-            "DeepSeek V3.2",
-            128_000,
-            4_096,
-            false,
-            false,
-        ),
-        catalog_model(
-            "volcengine",
             "doubao-seed-2-0-pro-260215",
             "Doubao Seed 2.0 Pro",
             256_000,
@@ -606,15 +588,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             4_096,
             false,
             true,
-        ),
-        catalog_model(
-            "volcengine",
-            "doubao-seed-2-0-lite-260215",
-            "Doubao Seed 2.0 Lite",
-            256_000,
-            4_096,
-            false,
-            false,
         ),
         catalog_model(
             "volcengine-coding",
@@ -1415,7 +1388,218 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             entry
         }),
     );
+    // API EOS does not revoke separately reviewed Coding/Agent Plan access.
+    // Keep the shared metadata, but no longer register a default API route.
+    // Append after existing candidates to preserve subscription defaults.
+    entries.extend(
+        [
+            ("deepseek-v3-2-251201", "DeepSeek V3.2", 128_000),
+            (
+                "doubao-seed-2-0-lite-260215",
+                "Doubao Seed 2.0 Lite",
+                256_000,
+            ),
+        ]
+        .into_iter()
+        .map(|(model, name, context)| {
+            let mut entry = catalog_model("volcengine", model, name, context, 4_096, false, false);
+            entry.endpoint = Some(ProviderEndpointId::parse("coding").expect("valid endpoint"));
+            entry
+        }),
+    );
+    // Native Responses IDs, independently reviewed against model-list.md and
+    // responses-api-deep-thinking.md. Do not project dotted subscription IDs
+    // or K3.1's response-only internal version ID into direct API eligibility.
+    // Append so new API models cannot displace existing preferred routes.
+    entries.extend(
+        [
+            ("doubao-seed-2-1-pro-260915", "Doubao Seed 2.1 Pro 260915"),
+            ("doubao-seed-2-1-lite-260915", "Doubao Seed 2.1 Lite 260915"),
+            ("deepseek-v4-1-flash-261017", "DeepSeek V4.1 Flash 261017"),
+            ("deepseek-v4-1-flash-260910", "DeepSeek V4.1 Flash 260910"),
+            (
+                "deepseek-v4-1-flash-economy-261017",
+                "DeepSeek V4.1 Flash Economy 261017",
+            ),
+            ("kimi-k3-1-pro", "Kimi K3.1 Pro"),
+        ]
+        .into_iter()
+        .map(|(model, name)| BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("volcengine"), model),
+            display_name: name.into(),
+            description: format!(
+                "Volcengine native Responses API {name}; abbreviated token limits \
+                 remain unknown; K3.1 output limits conflict across official pages."
+            ),
+            // Only K3.1 has an exact numeric context specification. A "k"
+            // abbreviation is not evidence of an exact integer token limit.
+            context_window_tokens: (model == "kimi-k3-1-pro").then_some(1_048_576),
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                supports_reasoning: true,
+                image_input: true,
+                ..ModelCapabilityFlags::default()
+            },
+            // Advertise distinct native levels, not the compatibility aliases
+            // that Responses maps onto them.
+            reasoning_effort_options: match model {
+                "doubao-seed-2-1-pro-260915" | "doubao-seed-2-1-lite-260915" => {
+                    &["minimal", "low", "medium", "high"][..]
+                }
+                "kimi-k3-1-pro" => &["low", "high", "max"][..],
+                _ => &["none", "low", "high", "max"][..],
+            }
+            .iter()
+            .map(|level| (*level).to_owned())
+            .collect(),
+            source: ModelMetadataSource::ConservativeBuiltin,
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
+        }),
+    );
     entries
+}
+
+#[test]
+fn volcengine_api_eos_keeps_independently_reviewed_subscription_routes() {
+    let catalog = BuiltInModelCatalog::new();
+    for model in [
+        "deepseek-v3-2-251201",
+        "doubao-seed-1-8-251228",
+        "doubao-seed-1-6-251015",
+        "doubao-seed-1-6-flash-250828",
+        "doubao-seed-1-6-vision-250815",
+        "doubao-seed-2-0-lite-260215",
+        "doubao-seed-2-0-mini-260215",
+    ] {
+        let api = ModelRouteRef::parse(&format!("volcengine@default/{model}")).unwrap();
+        assert!(catalog.get_route(&api).is_none(), "{}", api.as_string());
+    }
+    for (endpoint, model) in [
+        ("coding", "deepseek-v3-2-251201"),
+        ("coding", "doubao-seed-2-0-lite-260215"),
+        ("plan", "doubao-seed-2-0-lite-260215"),
+        ("plan", "doubao-seed-2-0-mini-260215"),
+        // EOS for these API versions is not until 2026-11-24 (UTC+8).
+        ("default", "doubao-seed-2-0-pro-260215"),
+        ("default", "doubao-seed-2-0-code-preview-260215"),
+    ] {
+        let route = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
+        assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+    }
+    let lite = ModelRef::new(provider_id("volcengine"), "doubao-seed-2-0-lite-260215");
+    let entries = late_entries();
+    let metadata = entries
+        .iter()
+        .find(|entry| entry.model_ref == lite)
+        .unwrap();
+    assert!(!metadata.capabilities.image_input);
+    for endpoint in ["coding", "plan"] {
+        let route = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{}", lite.model)).unwrap();
+        let policy = catalog.resolve_route_policy(
+            &route,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &ContextConfig::default(),
+            8_192,
+        );
+        assert!(!policy.capabilities.image_input);
+    }
+}
+
+#[test]
+fn volcengine_native_responses_ids_keep_protocol_and_unknown_limits_scoped() {
+    let entries = late_entries();
+    let catalog = BuiltInModelCatalog::new();
+    for model in [
+        "doubao-seed-2-1-pro-260915",
+        "doubao-seed-2-1-lite-260915",
+        "deepseek-v4-1-flash-261017",
+        "deepseek-v4-1-flash-260910",
+        "deepseek-v4-1-flash-economy-261017",
+        "kimi-k3-1-pro",
+    ] {
+        let metadata = entries
+            .iter()
+            .find(|entry| entry.model_ref == ModelRef::new(provider_id("volcengine"), model))
+            .unwrap();
+        assert_eq!(metadata.endpoint.as_ref().unwrap().as_str(), "default");
+        assert_eq!(
+            metadata.context_window_tokens,
+            (model == "kimi-k3-1-pro").then_some(1_048_576)
+        );
+        assert_eq!(metadata.auto_compact_token_limit, None);
+        assert_eq!(metadata.default_max_output_tokens, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, None);
+        assert!(metadata.capabilities.supports_reasoning);
+        assert!(metadata.capabilities.image_input);
+        let efforts: &[&str] = if model.starts_with("doubao-") {
+            &["minimal", "low", "medium", "high"]
+        } else if model == "kimi-k3-1-pro" {
+            &["low", "high", "max"]
+        } else {
+            &["none", "low", "high", "max"]
+        };
+        assert_eq!(metadata.reasoning_effort_options, efforts);
+        let api = ModelRouteRef::parse(&format!("volcengine@default/{model}")).unwrap();
+        // Responses caching is not evidence for Anthropic cache_control.
+        assert!(catalog
+            .get_route(&api)
+            .unwrap()
+            .cache_capabilities
+            .is_none());
+        for endpoint in ["coding", "plan", "messages", "responses"] {
+            let other = ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap();
+            assert!(catalog.get_route(&other).is_none(), "{}", other.as_string());
+        }
+    }
+    // The dotted spelling is a separately reviewed subscription ID. The
+    // dated K3.1 version is response-only, not a direct invocation model ID.
+    for model in ["kimi-k3.1-pro", "kimi-k3-1-pro-261024"] {
+        let api = ModelRouteRef::parse(&format!("volcengine@default/{model}")).unwrap();
+        assert!(catalog.get_route(&api).is_none());
+    }
+}
+
+#[test]
+fn volcengine_native_additions_do_not_displace_surviving_preferences() {
+    let catalog = BuiltInModelCatalog::new();
+    for (provider, route) in [
+        // The former default (Seed 1.8) is retired; retain the next existing
+        // candidate, never prefer one of the newly appended API models.
+        (
+            "volcengine",
+            "volcengine@default/doubao-seed-2-0-pro-260215",
+        ),
+        ("volcengine-coding", "volcengine@coding/ark-code-latest"),
+        (
+            "volcengine-agent",
+            "volcengine@plan/doubao-seed-2-0-mini-260215",
+        ),
+    ] {
+        assert_eq!(
+            catalog.preferred_route_for_provider(&provider_id(provider)),
+            Some(ModelRouteRef::parse(route).unwrap())
+        );
+    }
+    for (model, endpoint) in [
+        ("ark-code-latest", "coding"),
+        ("deepseek-v4-pro", "coding"),
+        ("kimi-k3.1-pro", "coding"),
+        ("doubao-seed-2-0-code-preview-260215", "default"),
+    ] {
+        assert_eq!(
+            catalog.preferred_route_for_model(&ModelRef::new(provider_id("volcengine"), model)),
+            Some(ModelRouteRef::parse(&format!("volcengine@{endpoint}/{model}")).unwrap())
+        );
+    }
 }
 
 #[test]

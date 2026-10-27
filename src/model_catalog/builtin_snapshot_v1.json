@@ -6920,6 +6920,87 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "volcengine/deepseek-v4-1-flash-260910",
+      "display_name": "DeepSeek V4.1 Flash 260910",
+      "description": "Volcengine native Responses API DeepSeek V4.1 Flash 260910; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-1-flash-261017",
+      "display_name": "DeepSeek V4.1 Flash 261017",
+      "description": "Volcengine native Responses API DeepSeek V4.1 Flash 261017; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-1-flash-economy-261017",
+      "display_name": "DeepSeek V4.1 Flash Economy 261017",
+      "description": "Volcengine native Responses API DeepSeek V4.1 Flash Economy 261017; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "volcengine/deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
       "description": "Holon built-in runtime metadata for the volcengine-coding/deepseek-v4-flash compatible provider model.",
@@ -7004,27 +7085,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "volcengine/doubao-seed-1-8-251228",
-      "display_name": "Doubao Seed 1.8",
-      "description": "Holon built-in runtime metadata for the volcengine/doubao-seed-1-8-251228 compatible provider model.",
-      "context_window_tokens": 256000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 4096,
-      "max_output_tokens_upper_limit": 4096,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
       "model_ref": "volcengine/doubao-seed-2-0-code-preview-260215",
       "display_name": "Doubao Seed 2.0 Code Preview",
       "description": "Holon built-in runtime metadata for the volcengine/doubao-seed-2-0-code-preview-260215 compatible provider model.",
@@ -7107,6 +7167,60 @@
         "interactive_exec": false
       },
       "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2-1-lite-260915",
+      "display_name": "Doubao Seed 2.1 Lite 260915",
+      "description": "Volcengine native Responses API Doubao Seed 2.1 Lite 260915; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2-1-pro-260915",
+      "display_name": "Doubao Seed 2.1 Pro 260915",
+      "description": "Volcengine native Responses API Doubao Seed 2.1 Pro 260915; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "conservative_builtin"
     },
     {
       "model_ref": "volcengine/doubao-seed-2.0-mini",
@@ -7358,6 +7472,32 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "volcengine/kimi-k3-1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "description": "Volcengine native Responses API Kimi K3.1 Pro; abbreviated token limits remain unknown; K3.1 output limits conflict across official pages.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -12942,7 +13082,7 @@
       }
     },
     {
-      "route_ref": "volcengine@default/deepseek-v3-2-251201",
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-260910",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12952,7 +13092,17 @@
       }
     },
     {
-      "route_ref": "volcengine@default/doubao-seed-1-8-251228",
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-261017",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-economy-261017",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12972,16 +13122,6 @@
       }
     },
     {
-      "route_ref": "volcengine@default/doubao-seed-2-0-lite-260215",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "volcengine@default/doubao-seed-2-0-pro-260215",
       "policy": {
         "display_name": null,
@@ -12992,7 +13132,37 @@
       }
     },
     {
+      "route_ref": "volcengine@default/doubao-seed-2-1-lite-260915",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@default/doubao-seed-2-1-pro-260915",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "volcengine@default/doubao-seedream-5.0-lite",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "volcengine@default/kimi-k3-1-pro",
       "policy": {
         "display_name": null,
         "description": null,
@@ -14373,7 +14543,7 @@
     },
     {
       "provider": "volcengine",
-      "model_ref": "volcengine/doubao-seed-1-8-251228"
+      "model_ref": "volcengine/doubao-seed-2-0-pro-260215"
     },
     {
       "provider": "volcengine-agent",
@@ -14547,7 +14717,7 @@
     },
     {
       "provider": "volcengine",
-      "route_ref": "volcengine@default/doubao-seed-1-8-251228"
+      "route_ref": "volcengine@default/doubao-seed-2-0-pro-260215"
     },
     {
       "provider": "volcengine-agent",
@@ -15881,7 +16051,19 @@
     },
     {
       "model_ref": "volcengine/deepseek-v3-2-251201",
-      "route_ref": "volcengine@default/deepseek-v3-2-251201"
+      "route_ref": "volcengine@coding/deepseek-v3-2-251201"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-1-flash-260910",
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-260910"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-1-flash-261017",
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-261017"
+    },
+    {
+      "model_ref": "volcengine/deepseek-v4-1-flash-economy-261017",
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-economy-261017"
     },
     {
       "model_ref": "volcengine/deepseek-v4-flash",
@@ -15900,16 +16082,12 @@
       "route_ref": "volcengine@coding/deepseek-v4.1-flash-economy"
     },
     {
-      "model_ref": "volcengine/doubao-seed-1-8-251228",
-      "route_ref": "volcengine@default/doubao-seed-1-8-251228"
-    },
-    {
       "model_ref": "volcengine/doubao-seed-2-0-code-preview-260215",
       "route_ref": "volcengine@default/doubao-seed-2-0-code-preview-260215"
     },
     {
       "model_ref": "volcengine/doubao-seed-2-0-lite-260215",
-      "route_ref": "volcengine@default/doubao-seed-2-0-lite-260215"
+      "route_ref": "volcengine@coding/doubao-seed-2-0-lite-260215"
     },
     {
       "model_ref": "volcengine/doubao-seed-2-0-mini-260215",
@@ -15918,6 +16096,14 @@
     {
       "model_ref": "volcengine/doubao-seed-2-0-pro-260215",
       "route_ref": "volcengine@default/doubao-seed-2-0-pro-260215"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2-1-lite-260915",
+      "route_ref": "volcengine@default/doubao-seed-2-1-lite-260915"
+    },
+    {
+      "model_ref": "volcengine/doubao-seed-2-1-pro-260915",
+      "route_ref": "volcengine@default/doubao-seed-2-1-pro-260915"
     },
     {
       "model_ref": "volcengine/doubao-seed-2.0-mini",
@@ -15966,6 +16152,10 @@
     {
       "model_ref": "volcengine/kimi-k3",
       "route_ref": "volcengine@coding/kimi-k3"
+    },
+    {
+      "model_ref": "volcengine/kimi-k3-1-pro",
+      "route_ref": "volcengine@default/kimi-k3-1-pro"
     },
     {
       "model_ref": "volcengine/kimi-k3.1-pro",

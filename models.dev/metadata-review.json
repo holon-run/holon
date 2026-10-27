@@ -19037,6 +19037,92 @@
       "review": null
     },
     {
+      "route_ref": "openai@default/gpt-6.1-terra",
+      "facts": {
+        "context_window_tokens": 1050000,
+        "default_max_output_tokens": 128000,
+        "max_output_tokens_upper_limit": 128000,
+        "prompt_budget_estimated_tokens": 997500,
+        "runtime_max_output_tokens": 128000,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": 1050000,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": 997500,
+          "default_max_output_tokens": 128000,
+          "max_output_tokens_upper_limit": 128000,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "route": {
+          "effective_context_window_percent": null,
+          "capabilities": {},
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "model_builtin",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
       "route_ref": "openai@default/gpt-daybreak-blue-latest",
       "facts": {
         "context_window_tokens": 1050000,
@@ -40188,24 +40274,29 @@
       }
     },
     {
-      "route_ref": "volcengine@default/deepseek-v3-2-251201",
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-260910",
       "facts": {
-        "context_window_tokens": 128000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 121600,
-        "runtime_max_output_tokens": 4096,
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
-          "image_input": false,
+          "image_input": true,
           "image_generation": false,
-          "supports_reasoning": false,
+          "supports_reasoning": true,
           "interactive_exec": false
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ]
       },
       "inputs": {
         "model": {
@@ -40213,16 +40304,22 @@
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
-            "image_input": false,
+            "image_input": true,
             "interactive_exec": false,
             "parallel_tool_calls": false,
-            "supports_reasoning": false
+            "supports_reasoning": true
           },
-          "context_window_tokens": 128000,
-          "default_max_output_tokens": 4096,
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high",
+            "max"
+          ],
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -40234,29 +40331,220 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
             "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-27",
+        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
+        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
+        ]
+      }
+    },
+    {
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-261017",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high",
+            "max"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-27",
+        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
+        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
+        ]
+      }
+    },
+    {
+      "route_ref": "volcengine@default/deepseek-v4-1-flash-economy-261017",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high",
+            "max"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-27",
+        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
+        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@default/deepseek-v4-flash-ga-260731",
@@ -40423,77 +40711,6 @@
       "review": null
     },
     {
-      "route_ref": "volcengine@default/doubao-seed-1-8-251228",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": true,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
       "route_ref": "volcengine@default/doubao-seed-2-0-code-preview-260215",
       "facts": {
         "context_window_tokens": 256000,
@@ -40520,77 +40737,6 @@
             "agent_turn": true,
             "image_generation": false,
             "image_input": true,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 4096,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 4096,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "derived",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "volcengine@default/doubao-seed-2-0-lite-260215",
-      "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 4096,
-        "max_output_tokens_upper_limit": 4096,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 4096,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": null,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
             "interactive_exec": false,
             "parallel_tool_calls": false,
             "supports_reasoning": false
@@ -40711,6 +40857,97 @@
       "review": null
     },
     {
+      "route_ref": "volcengine@default/doubao-seed-2-1-lite-260915",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-27",
+        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
+        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
+        ]
+      }
+    },
+    {
       "route_ref": "volcengine@default/doubao-seed-2-1-pro-260628",
       "facts": {
         "context_window_tokens": 256000,
@@ -40797,6 +41034,97 @@
       "context_status": "known",
       "output_status": "known",
       "review": null
+    },
+    {
+      "route_ref": "volcengine@default/doubao-seed-2-1-pro-260915",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-27",
+        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
+        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@default/doubao-seed-2-1-turbo-260628",
@@ -41208,6 +41536,95 @@
       "context_status": "known",
       "output_status": "known",
       "review": null
+    },
+    {
+      "route_ref": "volcengine@default/kimi-k3-1-pro",
+      "facts": {
+        "context_window_tokens": 1048576,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 996147,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1048576,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-10-27",
+        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
+        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "evidence": [
+          "models.dev/endpoint-review.md",
+          "models.dev/metadata-evidence.md"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@plan/MiniMax-M3",
