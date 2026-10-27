@@ -72,6 +72,40 @@ pub(super) fn dispatch_pause(error: &anyhow::Error) -> Option<&ProviderDispatchP
         .as_deref()
 }
 
+/// User-facing summary for a confirmed local dispatch admission rejection.
+///
+/// Returns `None` unless the error already carries the
+/// `provider_dispatch_rejected` descriptor, so provider IO failures keep their
+/// real failure text. The summary avoids internal message-kind and transport
+/// jargon; the descriptor, audit events, and source chain stay untouched.
+pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Option<String> {
+    let descriptor = crate::runtime_error::describe_runtime_error(error);
+    if descriptor.code != "provider_dispatch_rejected" {
+        return None;
+    }
+    let denial = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<DispatchDeferred>())
+        .map(|deferred| deferred.0);
+    let base = match denial {
+        Some(
+            LocalDispatchDenial::ScopeCooling { .. } | LocalDispatchDenial::ChainCooling { .. },
+        ) => "The model channel is cooling down. This send was blocked.",
+        Some(_) => "A local safety check blocked this model send.",
+        // Legacy diagnostics cannot prove a reason or whether this send occurred.
+        None => "The model request could not continue.",
+    };
+    let needs_repair = descriptor
+        .safe_context
+        .get("recovery_disposition")
+        .is_some_and(|disposition| disposition == "needs_repair");
+    Some(if needs_repair {
+        format!("{base} Recovery needs attention; check the diagnostics before retrying.")
+    } else {
+        format!("{base} Check the diagnostics for recovery status.")
+    })
+}
+
 #[derive(Clone, Copy)]
 enum ProviderPauseDisposition {
     Waiting,

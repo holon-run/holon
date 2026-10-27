@@ -331,6 +331,11 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         error: &anyhow::Error,
     ) -> String {
+        if let Some(user_summary) =
+            super::provider_admission::local_dispatch_rejection_user_summary(error)
+        {
+            return user_summary;
+        }
         let message_kind = to_json_value(&message.kind)
             .as_str()
             .map(ToString::to_string)

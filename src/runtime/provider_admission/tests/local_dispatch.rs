@@ -798,6 +798,26 @@ async fn unsafe_pause_denial_scenario() {
             .provider_queue_parking("default", &input.id)
             .unwrap()
             .is_none());
+        // Prior IO, an unknown result, and side effects do not become "unsent".
+        let error = error.context(
+            crate::runtime_error::RuntimeError::new(
+                RuntimeErrorDomain::Conflict,
+                "provider_dispatch_rejected",
+                "Local provider dispatch admission rejected this send before IO.",
+            )
+            .with_safe_context("recovery_disposition", "needs_repair"),
+        );
+        let summary = RuntimeHandle::concise_runtime_failure_text(&input, &error);
+        let reason = match reason {
+            LocalDispatchDenial::ScopeCooling { .. } => {
+                "The model channel is cooling down. This send was blocked."
+            }
+            _ => "A local safety check blocked this model send.",
+        };
+        assert_eq!(
+            summary,
+            format!("{reason} Recovery needs attention; check the diagnostics before retrying.")
+        );
     }
     let mut clean = RequestState {
         lease: None,
@@ -1067,6 +1087,35 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
         .unwrap();
     let turns = runtime.storage().read_recent_turns(20).unwrap();
     assert_eq!(turns.len(), 1);
+    let expected_summary = "A local safety check blocked this model send. Recovery needs attention; check the diagnostics before retrying.";
+    let last_failure = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .last_runtime_failure
+        .unwrap();
+    assert_eq!(last_failure.summary, expected_summary);
+    let artifact = last_failure.failure_artifact.unwrap();
+    assert_eq!(artifact.summary, expected_summary);
+    assert!(!artifact.source_chain.is_empty());
+    assert!(turns[0].produced_brief_ids.iter().any(|id| {
+        runtime
+            .storage()
+            .read_brief_by_id(id)
+            .unwrap()
+            .is_some_and(|brief| brief.text == expected_summary)
+    }));
+    let transcript = runtime.storage().read_recent_transcript(20).unwrap();
+    let failure_entry = transcript
+        .iter()
+        .find(|entry| entry.kind == crate::types::TranscriptEntryKind::RuntimeFailure)
+        .unwrap();
+    assert_eq!(failure_entry.data["text"], expected_summary);
+    assert_eq!(
+        failure_entry.data["failure_artifact"]["summary"],
+        expected_summary
+    );
+    assert_eq!(failure_entry.data["error"], failure.operator_message);
     let events = runtime.storage().read_recent_events(256).unwrap();
     assert_eq!(
         events
