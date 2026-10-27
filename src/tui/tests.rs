@@ -293,6 +293,7 @@ pub(super) fn sample_agent_summary(agent_id: &str) -> AgentSummary {
         recent_operator_notifications: Vec::new(),
         recent_brief_count: 1,
         recent_event_count: 1,
+        provider_cooldown_wait: None,
     }
 }
 

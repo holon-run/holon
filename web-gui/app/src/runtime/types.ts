@@ -1,4 +1,9 @@
 import type { SessionEventEnvelope } from "./session-events";
+import type { components } from "./generated/openapi";
+
+export type ProviderCooldownWait = NonNullable<
+  components["schemas"]["AgentStateSnapshotDto"]["agent"]["agent"]["provider_cooldown_wait"]
+>;
 
 export type DisplayLevel = "info" | "verbose" | "debug";
 
@@ -376,6 +381,7 @@ export interface AgentSummary {
   postureReason: string;
   currentRunId?: string | null;
   currentWork?: WorkItemSummary;
+  providerCooldownWait?: ProviderCooldownWait | null;
   workspaceSummary?: WorkspaceSummary;
   attachedWorkspaces?: AttachedWorkspaceEntry[];
   tasks?: TaskSummary[];

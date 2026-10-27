@@ -630,6 +630,25 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent-one/state"]);
   });
 
+  it("recovers a cooldown wait from state queries and clears it after settlement", async () => {
+    const state = agentStateFixture("agent-one");
+    state.agent.agent.provider_cooldown_wait = {
+      turn_id: "turn-current",
+      turn_index: 7,
+      started_at: "2026-10-27T10:00:00Z",
+      not_before: "2026-10-27T11:00:00Z",
+      cause: { failure_kind: "rate_limited", http_status: 429 },
+    };
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () => Response.json(state)) as typeof fetch,
+    });
+    expect((await client.getAgentState("agent-one")).providerCooldownWait).toEqual(state.agent.agent.provider_cooldown_wait);
+    delete state.agent.agent.provider_cooldown_wait;
+    expect((await client.getAgentState("agent-one")).providerCooldownWait).toBeUndefined();
+  });
+
   it("bypasses HTTP caches when validating agent identity and state", async () => {
     const seen: Array<{ url: string; cache: RequestCache | undefined }> = [];
     const client = createRuntimeClient({

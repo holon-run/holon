@@ -851,7 +851,7 @@ async fn unsafe_pause_denial_scenario() {
     let episode_deadline = admission.episode().unwrap().not_before.unwrap();
     for (reason, expected_deadline) in [
         (
-            LocalDispatchDenial::ChainCooling {
+            LocalDispatchDenial::ScopeCooling {
                 not_before: deadline,
             },
             deadline,

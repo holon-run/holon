@@ -2,6 +2,20 @@
  * English translation resources.
  */
 const en = {
+  providerCooldown: {
+    title: "Waiting for shared provider cooldown",
+    earliestRetry: "Earliest retry attempt:",
+    notGuaranteed: "This turn is still active. The deadline permits a retry, not guaranteed recovery.",
+    rateLimited: "The provider rate-limited a request in this shared scope.",
+    serverError: "A provider server error triggered this shared cooldown.",
+    timeout: "A provider request timed out in this shared scope.",
+    transport: "A provider connection failure triggered this shared cooldown.",
+    unavailable: "Further cooldown cause details are unavailable.",
+    serverHeader: "Retry timing came from the provider's Retry-After header.",
+    localBackoff: "Retry timing came from the local backoff policy.",
+    incident: "Diagnostic incident: {{id}}",
+    interject: "Write an interjection",
+  },
   agentCreation: {
     title: "Agent creation",
     budgetFailure: "Run failed: the prompt baseline exceeds the configured model budget (baseline_over_budget). Review the model and budget settings before explicitly continuing. This is not a failed agent creation.",

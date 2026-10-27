@@ -3481,6 +3481,53 @@ export interface components {
                     last_wake_reason?: string | null;
                     /** Format: uint */
                     pending: number;
+                    /** @description Active turn-local provider cooldown wait, when one is in flight. */
+                    provider_cooldown_wait?: {
+                        attempt_id?: string | null;
+                        /**
+                         * @description Sanitized origin of a shared cooldown. Carries only classification
+                         *      metadata: no raw upstream error text, no URLs, and no other agent's
+                         *      request content. Missing fields degrade honestly instead of being
+                         *      reconstructed.
+                         * @default {}
+                         */
+                        cause: {
+                            /** @description Honest degradation marker, e.g. "cause record unavailable". */
+                            detail_unavailable_reason?: string | null;
+                            /**
+                             * @description Failure classification allowlist: connection | timeout | rate_limited |
+                             *      server_error | transport. None when no cause record is available.
+                             */
+                            failure_kind?: string | null;
+                            /** Format: uint16 */
+                            http_status?: number | null;
+                            /** @description Local, opaque incident identity for authorized diagnostics lookup. */
+                            incident_id?: string | null;
+                            /** Format: date-time */
+                            occurred_at?: string | null;
+                            retry_after?: {
+                                policy?: string | null;
+                                /** Format: uint64 */
+                                seconds?: number | null;
+                                /** @enum {string} */
+                                source: "server_header" | "local_backoff";
+                            } | null;
+                        };
+                        model?: string | null;
+                        /**
+                         * Format: date-time
+                         * @description Authoritative absolute deadline; the earliest retry attempt.
+                         */
+                        not_before: string;
+                        /** Format: date-time */
+                        started_at: string;
+                        turn_id?: string | null;
+                        /**
+                         * Format: uint64
+                         * @default 0
+                         */
+                        turn_index: number;
+                    } | null;
                     /** Format: date-time */
                     sleeping_until?: string | null;
                     /** @enum {string} */

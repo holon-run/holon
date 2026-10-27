@@ -267,7 +267,7 @@ docker-e2e-validate: ## Validate the Docker E2E manifest and runner unit tests
 	python3 scripts/docker-e2e.py --validate-manifest
 	python3 scripts/docker-task-result-recovery.py --validate-manifest
 	python3 -m unittest tests.test_docker_e2e_runner tests.test_scheduler_drill \
-		tests.test_fallback_storm tests.test_continuation_interjection \
+		tests.test_fallback_storm tests.test_continuation_interjection tests.test_continuation_cooldown \
 		tests.test_docker_task_recovery tests.test_docker_identified_build tests.test_docker_route_throttle
 
 .PHONY: docker-e2e-task-result-fast docker-e2e-task-result-slow

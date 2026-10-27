@@ -98,8 +98,9 @@ use chat::{plan_chat_completion_request, send_chat_completion_request};
 #[cfg(test)]
 use continuation::{incremental_diagnostics, OpenAiProviderWindow};
 use continuation::{
-    invalidate_openai_continuation, OpenAiContinuationMismatchDiagnostics, OpenAiContinuationState,
-    OpenAiRequestPlan, OpenAiRequestShape,
+    invalidate_openai_continuation, invalidate_openai_continuation_after_failure,
+    OpenAiContinuationMismatchDiagnostics, OpenAiContinuationState, OpenAiRequestPlan,
+    OpenAiRequestShape,
 };
 
 pub(crate) use responses::build_openai_responses_request;
@@ -703,16 +704,21 @@ impl AgentProvider for OpenAiProvider {
                         {
                             Ok(parsed) => parsed,
                             Err(error) => {
-                                invalidate_openai_continuation(
+                                invalidate_openai_continuation_after_failure(
                                     &self.continuation,
                                     plan.scope.as_ref(),
+                                    &error,
                                 );
                                 return Err(error);
                             }
                         }
                     }
                     Err(error) => {
-                        invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                        invalidate_openai_continuation_after_failure(
+                            &self.continuation,
+                            plan.scope.as_ref(),
+                            &error,
+                        );
                         return Err(error);
                     }
                 }
@@ -1060,10 +1066,7 @@ impl AgentProvider for OpenAiCodexProvider {
                         {
                             Ok(parsed) => parsed,
                             Err(retry_error) => {
-                                invalidate_openai_continuation(
-                                    &self.continuation,
-                                    plan.scope.as_ref(),
-                                );
+                                invalidate_openai_continuation_after_failure(&self.continuation, plan.scope.as_ref(), &retry_error);
                                 return Err(set_provider_transport_quota_identity(
                                     retry_error,
                                     quota_identity.clone(),
@@ -1071,11 +1074,15 @@ impl AgentProvider for OpenAiCodexProvider {
                             }
                         }
                     } else {
-                        invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                        invalidate_openai_continuation_after_failure(&self.continuation, plan.scope.as_ref(), &error);
                         return Err(error);
                     }
                 } else {
-                    invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                    invalidate_openai_continuation_after_failure(
+                        &self.continuation,
+                        plan.scope.as_ref(),
+                        &error,
+                    );
                     return Err(error);
                 }
             }
@@ -1330,7 +1337,11 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         {
             Ok(parsed) => parsed,
             Err(error) => {
-                invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
+                invalidate_openai_continuation_after_failure(
+                    &self.continuation,
+                    plan.scope.as_ref(),
+                    &error,
+                );
                 return Err(error);
             }
         };

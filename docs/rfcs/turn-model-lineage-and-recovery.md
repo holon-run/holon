@@ -393,6 +393,78 @@ candidate cooldown before a turn's first round keeps the existing parking
 contract and resumes the same source at the original deadline, so restart and
 interrupted-replay recovery stay unchanged.
 
+When a continuation cannot select an independent healthy candidate (including
+provider-native history), typed `ScopeCooling` may instead wait within the
+current execution. This requires a confirmed unsent request, no in-flight or
+unknown outcome, and unchanged canonical authority. Release only undispatched
+claims; retain the immutable round request, native blocks, tool results, model,
+attempt and recovery root. Never replay the source or rerun a tool. A deadline
+is the earliest recheck, not a promise of IO: re-read shared availability and
+pass all original execution, source, owner, cancellation, episode and budget
+guards before sending. Waiting cannot refund prior requests, charge new ones,
+advance candidate cursors, renew epochs or extend an episode's failure floor.
+Extended cooldowns use their authoritative absolute deadline; expired or
+repeated local denials cannot create a busy loop. Explicit stop cancels the wait.
+Operator interjections use an independent input broadcast and return to the
+original round's budgeted input boundary without replaying its tools. A final
+dispatch input-version fence rejects continuations prepared before newer
+operator input, including input arriving during OAuth refresh or compaction.
+The fence does not charge a request or bypass authority and budget checks.
+There is no new arbitrary cooldown timeout.
+
+The cooling wrapper admits interjections only after the first round. At
+round one it leaves queued operator input for the next eligible input boundary
+or a later turn; it does not create a second execution or adopt a parked source.
+
+This wait is an active execution substate, not source parking, completion or
+a scheduler wake. Expose its current turn/attempt/model, start time, earliest
+recheck and safe shared-cooldown cause through a queryable snapshot and
+state-change events. Emit entry, deadline/cause changes and exit, not per-second
+heartbeats or model-generated briefs. Refresh/reconnect must recover current
+state; terminal execution and restart must not leave stale waiting projections.
+Distinguish resumption, cancellation and fence rejection. The cause describes
+an earlier shared failure, not a new HTTP failure by this turn; publish only
+captured classification/status/time/Retry-After and local incident correlation,
+never raw errors, requests, response bodies or diagnostic URLs. Missing
+historical details must remain explicitly unavailable.
+
+`Superseded` is a reserved cooldown-wait end outcome, not a currently emitted
+event. Terminal state cleanup must not be interpreted as such an event; the
+current queryable execution snapshot remains authoritative.
+
+Turn-local waiting retains execution memory and ownership. It adds no durable
+exact-round checkpoint or cross-daemon-restart continuation permission: existing
+recovery and side-effect replay fences remain unchanged. Releasing execution
+while preserving an exact native round across restart is a separate contract.
+
+Docker acceptance separates two interjection contracts: `T3772I` interrupts
+an actual turn-local cooldown wait while preserving native tool context and
+single delivery; `R3773I` races fresh input against an independently parked
+recovery source while preserving its owner, absolute deadline, lineage and
+single consumption. The legacy `I3754` post-tool-parking oracle remains a
+distinct historical case, not a synonym for either replacement. Neither new
+case may manufacture parking by reverting the active-wait contract or changing
+canonical availability, ownership or recovery fingerprints.
+
+`R3773I` parks recovery `R` before scheduler claim, so `R` remains `Queued`,
+not `Interrupted`. Its fresh root `F0` is authenticated operator input with
+no causation parent. Both `F0` and `F1` explicitly bind an independent real
+WorkItem `W`, created through the authenticated control API while the source
+HTTP request is held, then set to `needs_input` to prevent autonomous dispatch.
+The fresh turn belongs to `W`; the original source and recovery keep their
+original owner. This preserves the existing rule that a later successful turn
+with the same owner supersedes older queued recovery, rather than weakening
+that rule to satisfy the fixture.
+Only after the stub holds `F0`'s real HTTP response may
+`F1` interject into that fresh turn. Fresh execution consumes exactly
+`{F0, F1}`; recovery consumes exactly `{R, S}`, where `S` is its original
+source. Neither interjection provenance nor authority may be upgraded.
+The runner derives a usable fresh-provider window from actual incidents
+and the original parking deadline `D`, failing closed if there is too
+little time. Fresh completion must precede `D`, recovery dispatch must not
+precede `D`, and the parked owner, fingerprint and deadline must not change.
+This does not cover the separate admission-after-grant `Interrupted` race.
+
 An operator interjection never adopts a source that canonical state marks
 `Interrupted`. Such a source stays in the live queue for its own recovery
 replay; the interjection drain skips it and still admits later queued inputs, so

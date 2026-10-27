@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn payment_cooldown_cause_survives_restart_without_exposing_identity() -> Result<()> {
+    let (dir, db) = database()?;
+    let scope = ProviderAdmissionScope::candidate("endpoint/credential-secret/model")?;
+    let lease = reserve(&db, std::slice::from_ref(&scope), now())?;
+    let cause = ProviderCooldownCause {
+        failure_kind: "payment_required".into(),
+        http_status: Some(402),
+        occurred_at: now(),
+        server_not_before: None,
+        incident_id: None,
+        details_available: true,
+    };
+    assert!(db.record_provider_admission_failure_with_cause(
+        &lease,
+        &scope,
+        ProviderCooldownPolicy::PaymentRequired,
+        now(),
+        None,
+        "provider/model",
+        Some(&cause),
+    )?);
+    let observed = reopen(&dir)?.provider_cooldown_cause(&scope)?.unwrap();
+    assert_eq!(observed.failure_kind, "payment_required");
+    assert_eq!(observed.http_status, Some(402));
+    assert!(observed.details_available);
+    assert!(uuid::Uuid::parse_str(observed.incident_id.as_deref().unwrap()).is_ok());
+    assert!(!serde_json::to_string(&observed)?.contains("credential-secret"));
+    Ok(())
+}
+
+#[test]
 fn candidate_identity_is_hashed_and_payment_failure_is_isolated() -> Result<()> {
     let (_dir, db) = database()?;
     let raw = "provider/endpoint/credential-secret/model-a";

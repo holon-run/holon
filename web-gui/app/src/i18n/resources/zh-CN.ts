@@ -5,6 +5,20 @@ import type { EnResource } from "./en";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const zh: Record<string, any> = {
+  providerCooldown: {
+    title: "正在等待共享 Provider 冷却",
+    earliestRetry: "最早可重试时间：",
+    notGuaranteed: "当前轮次仍在执行。到点仅允许重试，不保证服务恢复。",
+    rateLimited: "共享作用域内的一次请求触发了 Provider 限流。",
+    serverError: "Provider 服务端错误触发了共享冷却。",
+    timeout: "共享作用域内的一次 Provider 请求超时。",
+    transport: "Provider 连接失败触发了共享冷却。",
+    unavailable: "无法获取更详细的冷却原因。",
+    serverHeader: "重试时间来自 Provider 的 Retry-After 响应头。",
+    localBackoff: "重试时间来自本地退避策略。",
+    incident: "诊断事件：{{id}}",
+    interject: "撰写插话",
+  },
   agentCreation: {
     title: "智能体创建",
     budgetFailure: "运行失败：提示词基线超过当前模型预算（baseline_over_budget）。请检查模型与预算配置，再显式继续运行。这不表示智能体创建失败。",

@@ -4238,6 +4238,16 @@ CREATE INDEX idx_provider_recovery_requests_episode
   ON provider_recovery_requests(episode_key, epoch);
 "#,
     },
+    Migration {
+        version: 90,
+        name: "provider_cooldown_safe_cause",
+        sql: r#"
+ALTER TABLE provider_quota_incidents ADD COLUMN cause_json TEXT;
+ALTER TABLE provider_transport_incidents ADD COLUMN cause_json TEXT;
+ALTER TABLE provider_route_throttle_incidents ADD COLUMN cause_json TEXT;
+ALTER TABLE provider_candidate_incidents ADD COLUMN cause_json TEXT;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

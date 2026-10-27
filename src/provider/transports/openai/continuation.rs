@@ -175,6 +175,17 @@ pub(super) fn invalidate_openai_continuation(
     lock_openai_continuation(continuation).windows.remove(scope);
 }
 
+pub(super) fn invalidate_openai_continuation_after_failure(
+    continuation: &Arc<Mutex<OpenAiContinuationState>>,
+    scope: Option<&ContinuationScopeId>,
+    error: &anyhow::Error,
+) {
+    // A rejected local send has not changed the provider's continuation window.
+    if !crate::provider::is_dispatch_guard_rejected(error) {
+        invalidate_openai_continuation(continuation, scope);
+    }
+}
+
 pub(super) fn lock_openai_continuation(
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
 ) -> MutexGuard<'_, OpenAiContinuationState> {

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "runner": "scripts/docker-continuation-interjection.py",
+  "cases": [
+    {
+      "id": "T3753",
+      "coverage": "Portable function-tool continuation reselects an independent healthy candidate without rerunning the tool."
+    },
+    {
+      "id": "I3754",
+      "coverage": "A truly provider-parked source retains its message, owner and deadline while a timer consumes only the fresh interjection."
+    },
+    {
+      "id": "T3772",
+      "coverage": "A real helper HTTP 503 cools the scope; an already-executed native tool continuation waits with zero IO, query/event cause and deadline, then finishes once on the same model."
+    },
+    {
+      "id": "T3772I",
+      "coverage": "An authenticated operator interjection interrupts a real before-provider-continuation cooldown wait; the same turn and model retain native tool context, resume once and deliver one final."
+    },
+    {
+      "id": "R3773",
+      "coverage": "A real post-tool HTTP failure plus concurrent shared A/B HTTP failures retain the scheduler-parked runtime recovery input until deadline, preserve owner and tool evidence, and consume it once.",
+      "excludes": "Does not synthesize the admission-to-send race: Interrupted recovery-input retention after an already-granted admission remains a Rust regression gate."
+    },
+    {
+      "id": "R3773I",
+      "coverage": "An independent authenticated operator root and its response-held interjection finish before the original recovery deadline; the scheduler-parked Queued recovery retains its owner, fingerprint, deadline and exact input lineage, then is consumed once after that deadline.",
+      "excludes": "Does not cover Interrupted recovery after an already-granted admission or replace the legacy I3754 post-tool-parking oracle."
+    }
+  ]
+}

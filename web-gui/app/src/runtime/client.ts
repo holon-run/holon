@@ -2802,6 +2802,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     postureReason,
     currentRunId,
     currentWork,
+    providerCooldownWait: state?.agent.agent.provider_cooldown_wait ?? undefined,
     workspaceSummary,
     attachedWorkspaces,
     tasks,

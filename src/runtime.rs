@@ -21,6 +21,7 @@ mod message_dispatch;
 mod operator;
 mod operator_dispatch;
 mod provider_admission;
+mod provider_cooldown_wait;
 pub(crate) mod provider_recovery;
 mod provider_turn;
 #[cfg(feature = "recovery-acceptance")]
@@ -81,7 +82,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
     },
     time::Duration,
@@ -431,6 +432,8 @@ struct RuntimeInner {
     projection_cache: Mutex<AgentRuntimeProjectionCache>,
     object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
     notify: Notify,
+    operator_interjection_notify: Notify,
+    operator_interjection_revision: Arc<AtomicU64>,
     storage: AppStorage,
     runtime_db: RuntimeDb,
     clock: Arc<dyn clock::Clock>,
@@ -3528,6 +3531,16 @@ impl RuntimeHandle {
             return TransitionApplyResult::default();
         }
         let effects = commit.effects;
+        let operator_input_changed = effects
+            .queued_messages
+            .iter()
+            .any(scheduler::is_operator_interjection_message);
+        if operator_input_changed {
+            // Fence prepared continuations before yielding for queue projection.
+            self.inner
+                .operator_interjection_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
         let mut warnings = Vec::new();
         // A pause holds this guard from its DB commit through source projection.
         // Release it before unrelated cache, publication, or scheduler effects.
@@ -3558,6 +3571,10 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             self.apply_transition_agent_projection(&effects, &mut guard, &mut warnings)
                 .await;
+        }
+        if operator_input_changed {
+            // Closure/scheduler waiters must not consume continuation input wakes.
+            self.inner.operator_interjection_notify.notify_waiters();
         }
         if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
             warnings.push(PostCommitWarning {
@@ -5162,7 +5179,16 @@ impl RuntimeHandle {
                     && !receipt.idempotent_replay
             });
             if queue_admitted && queue_needs_push && queue_status == QueueEntryStatus::Queued {
+                let operator_input = scheduler::is_operator_interjection_message(message);
+                if operator_input {
+                    self.inner
+                        .operator_interjection_revision
+                        .fetch_add(1, Ordering::AcqRel);
+                }
                 guard.queue.push(message.clone());
+                if operator_input {
+                    self.inner.operator_interjection_notify.notify_waiters();
+                }
             }
             if queue_admitted {
                 guard.state = committed_state.clone();
@@ -5466,7 +5492,10 @@ impl RuntimeHandle {
         self.validate_terminal_brief_settlement(terminal_transition)?;
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             let agent_state = {
-                let guard = self.inner.agent.lock().await;
+                let mut guard = self.inner.agent.lock().await;
+                // A terminal transition settles any lingering turn-local
+                // cooldown wait; it must not survive the turn.
+                guard.state.provider_cooldown_wait = None;
                 let mut state = guard.state.clone();
                 state.current_turn_id = Some(terminal_transition.terminal.turn_id.clone());
                 state.last_turn_terminal = Some(terminal_transition.terminal.clone());
@@ -6874,6 +6903,7 @@ impl RuntimeHandle {
                     let failed_state = {
                         let mut guard = self.inner.agent.lock().await;
                         guard.current_run_abort = None;
+                        guard.state.provider_cooldown_wait = None;
                         guard.state.clone()
                     };
                     self.append_state_changed_events(&failed_state)?;
@@ -6887,6 +6917,7 @@ impl RuntimeHandle {
                 let processed_state = {
                     let mut guard = self.inner.agent.lock().await;
                     guard.current_run_abort = None;
+                    guard.state.provider_cooldown_wait = None;
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&processed_state)?;
@@ -6921,6 +6952,7 @@ impl RuntimeHandle {
                         let failed_state = {
                             let mut guard = self.inner.agent.lock().await;
                             guard.current_run_abort = None;
+                            guard.state.provider_cooldown_wait = None;
                             guard.state.clone()
                         };
                         self.append_state_changed_events(&failed_state)?;

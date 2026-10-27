@@ -886,6 +886,15 @@ fn openai_codex_provider_declares_builtin_web_search_capability() {
 
 #[tokio::test]
 async fn openai_responses_uses_incremental_continuation_for_strict_append() {
+    incremental_continuation_after_local_rejection(false).await;
+}
+
+#[tokio::test]
+async fn openai_responses_retains_native_continuation_after_unsent_dispatch_rejection() {
+    incremental_continuation_after_local_rejection(true).await;
+}
+
+async fn incremental_continuation_after_local_rejection(reject_once: bool) {
     let captured_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_for_server = captured_bodies.clone();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -920,10 +929,25 @@ async fn openai_responses_uses_incremental_continuation_for_strict_append() {
         .complete_turn(provider_turn_request_with_prompt_frame())
         .await
         .unwrap();
-    let response = provider
-        .complete_turn(provider_continuation_request_with_prompt_frame())
-        .await
-        .unwrap();
+    let mut request = provider_continuation_request_with_prompt_frame();
+    if reject_once {
+        #[derive(Debug, Default)]
+        struct RejectOnce(AtomicUsize);
+
+        impl crate::provider::ProviderDispatchGuard for RejectOnce {
+            fn before_dispatch(&self) -> anyhow::Result<()> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    anyhow::bail!("local cooldown before IO");
+                }
+                Ok(())
+            }
+        }
+        request.dispatch_guard = Some(Arc::new(RejectOnce::default()));
+        let error = provider.complete_turn(request.clone()).await.unwrap_err();
+        assert!(crate::provider::is_dispatch_guard_rejected(&error));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+    let response = provider.complete_turn(request).await.unwrap();
 
     assert_eq!(
         response

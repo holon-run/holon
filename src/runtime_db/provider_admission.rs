@@ -157,6 +157,19 @@ pub struct ProviderAdmissionBlocked {
     pub not_before: DateTime<Utc>,
 }
 
+/// Safe shared-failure metadata, never an upstream error or request dump.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct ProviderCooldownCause {
+    pub failure_kind: String,
+    pub http_status: Option<u16>,
+    pub occurred_at: DateTime<Utc>,
+    pub server_not_before: Option<DateTime<Utc>>,
+    pub incident_id: Option<String>,
+    pub details_available: bool,
+}
+
 #[derive(Debug)]
 struct ScopeLease {
     scope: ProviderAdmissionScope,
@@ -393,6 +406,69 @@ fn lease_is_valid(
 }
 
 impl RuntimeDb {
+    pub fn provider_cooldown_cause(
+        &self,
+        scope: &ProviderAdmissionScope,
+    ) -> Result<Option<ProviderCooldownCause>> {
+        self.with_read(|connection| {
+            let row = connection
+                .query_row(
+                    &format!(
+                        "SELECT cause_json, last_failure_kind, last_failed_at,
+                            server_not_before, incident_id
+                     FROM {} WHERE identity_key = ?1 AND resolved_at IS NULL",
+                        scope.table()
+                    ),
+                    [scope.key()],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((cause, kind, failed, server, incident)) = row else {
+                return Ok(None);
+            };
+            let parse = |value: &str| -> Result<DateTime<Utc>> {
+                Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+            };
+            let mut cause = match cause {
+                Some(cause) => serde_json::from_str::<ProviderCooldownCause>(&cause)?,
+                None => ProviderCooldownCause {
+                    failure_kind: kind.unwrap_or_else(|| "unknown".into()),
+                    http_status: None,
+                    occurred_at: parse(&failed)?,
+                    server_not_before: server.as_deref().map(parse).transpose()?,
+                    incident_id: None,
+                    details_available: false,
+                },
+            };
+            // Incident identity is local and opaque; diagnostic URLs and raw
+            // provider-supplied strings cannot cross the shared-agent boundary.
+            cause.incident_id = uuid::Uuid::parse_str(&incident)
+                .ok()
+                .map(|id| id.to_string());
+            if !matches!(
+                cause.failure_kind.as_str(),
+                "connection"
+                    | "timeout"
+                    | "rate_limited"
+                    | "server_error"
+                    | "transport"
+                    | "payment_required"
+            ) {
+                cause.failure_kind = "unknown".into();
+                cause.details_available = false;
+            }
+            Ok(Some(cause))
+        })
+    }
+
     pub fn provider_admission_blocked(
         &self,
         scopes: &[ProviderAdmissionScope],
@@ -463,6 +539,28 @@ impl RuntimeDb {
         server_not_before: Option<DateTime<Utc>>,
         model_ref: &str,
     ) -> Result<bool> {
+        self.record_provider_admission_failure_with_cause(
+            lease,
+            failed_scope,
+            policy,
+            now,
+            server_not_before,
+            model_ref,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_provider_admission_failure_with_cause(
+        &self,
+        lease: &ProviderAdmissionLease,
+        failed_scope: &ProviderAdmissionScope,
+        policy: ProviderCooldownPolicy,
+        now: DateTime<Utc>,
+        server_not_before: Option<DateTime<Utc>>,
+        model_ref: &str,
+        cause: Option<&ProviderCooldownCause>,
+    ) -> Result<bool> {
         ensure!(
             matches!(
                 (failed_scope.kind, policy),
@@ -519,7 +617,8 @@ impl RuntimeDb {
                         last_model_ref = ?6, last_failed_at = ?7, resolved_at = NULL,
                         opened_at = CASE WHEN resolved_at IS NOT NULL THEN ?7 ELSE opened_at END,
                         incident_id = CASE WHEN resolved_at IS NOT NULL THEN ?8 ELSE incident_id END,
-                        probe_token = NULL, probe_lease_until = NULL, cooldown_policy = ?9
+                        probe_token = NULL, probe_lease_until = NULL, cooldown_policy = ?9,
+                        cause_json = ?10
                      WHERE identity_key = ?1",
                     failed_scope.table()
                 ),
@@ -527,6 +626,7 @@ impl RuntimeDb {
                     failed_scope.key(), failures, timestamp(deadline), server.map(timestamp),
                     policy.failure_kind(), model_ref, timestamp(now), uuid::Uuid::new_v4().to_string(),
                     policy.as_str(),
+                    cause.map(serde_json::to_string).transpose()?,
                 ],
             )?;
             release_probes(tx, lease, Some(failed_scope))?;
@@ -560,6 +660,70 @@ fn release_probes(
 mod tests {
     use super::*;
 
+    #[test]
+    fn cooldown_cause_survives_restart_without_copying_upstream_errors() -> Result<()> {
+        let (dir, db) = database()?;
+        let scope = transport("shared-cause");
+        let lease = reserve(&db, std::slice::from_ref(&scope), now())?;
+        let deadline = now() + Duration::seconds(11);
+        let cause = ProviderCooldownCause {
+            failure_kind: "connection".into(),
+            http_status: Some(503),
+            occurred_at: now(),
+            server_not_before: Some(deadline),
+            incident_id: None,
+            details_available: true,
+        };
+        assert!(db.record_provider_admission_failure_with_cause(
+            &lease,
+            &scope,
+            ProviderCooldownPolicy::Transport,
+            now(),
+            Some(deadline),
+            "provider/model",
+            Some(&cause),
+        )?);
+        let observed = reopen(&dir)?.provider_cooldown_cause(&scope)?.unwrap();
+        assert_eq!(observed.failure_kind, "connection");
+        assert_eq!(observed.http_status, Some(503));
+        assert_eq!(observed.server_not_before, Some(deadline));
+        assert!(observed.details_available);
+        assert!(uuid::Uuid::parse_str(observed.incident_id.as_deref().unwrap()).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn historical_cooldown_cause_degrades_and_untrusted_classification_is_not_broadcast(
+    ) -> Result<()> {
+        let (_dir, db) = database()?;
+        let scope = transport("legacy-cause");
+        let lease = reserve(&db, std::slice::from_ref(&scope), now())?;
+        assert!(db.record_provider_admission_failure(
+            &lease,
+            &scope,
+            ProviderCooldownPolicy::Transport,
+            now(),
+            None,
+            "provider/model",
+        )?);
+        let cause = db.provider_cooldown_cause(&scope)?.unwrap();
+        assert_eq!(cause.failure_kind, "transport");
+        assert!(!cause.details_available);
+        assert_eq!(cause.http_status, None);
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE provider_transport_incidents
+                 SET last_failure_kind = ?1, incident_id = ?1",
+                ["https://secret.invalid/?token=secret"],
+            )?;
+            Ok(())
+        })?;
+        let cause = db.provider_cooldown_cause(&scope)?.unwrap();
+        assert_eq!(cause.failure_kind, "unknown");
+        assert_eq!(cause.incident_id, None);
+        assert!(!serde_json::to_string(&cause)?.contains("secret"));
+        Ok(())
+    }
     mod payment_required;
 
     fn now() -> DateTime<Utc> {

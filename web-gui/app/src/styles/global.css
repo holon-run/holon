@@ -2649,6 +2649,13 @@ code {
   font-size: 12px;
 }
 
+.provider-cooldown-notice {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.provider-cooldown-notice p { margin: 4px 0; }
+.provider-cooldown-notice > div { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
 .composer-toolbar {
   display: flex;
   align-items: center;

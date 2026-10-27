@@ -949,6 +949,39 @@ describe("observerSyncDiagnostics", () => {
 });
 
 describe("agent snapshot merging", () => {
+  it("clears a cached cooldown wait when the authoritative snapshot has none", () => {
+    const cached = agentSummary({
+      providerCooldownWait: {
+        turn_index: 4,
+        started_at: "2026-10-27T10:00:00Z",
+        not_before: "2026-10-27T11:00:00Z",
+        cause: {},
+      },
+    });
+    expect(mergeBootstrapAgentState(agentSummary(), cached).providerCooldownWait).toBeUndefined();
+  });
+
+  it("refreshes queryable cooldown state for each state-change event", () => {
+    const previous = useRuntimeStore.getState();
+    const refreshAgentState = vi.fn().mockResolvedValue(undefined);
+    useRuntimeStore.setState({ sessionsByAgentId: {}, refreshAgentState });
+    try {
+      for (const eventSeq of [1, 2, 3]) {
+        applyStreamEvents(useRuntimeStore.setState, "cooldown-agent", [{
+          id: `cooldown-event-${eventSeq}`, event_seq: eventSeq,
+          event_log_epoch: "epoch-cooldown", type: "agent_state_changed",
+          payload: eventSeq === 3
+            ? { provider_cooldown_wait_ended: { outcome: "cancelled" } }
+            : { provider_cooldown_wait: { not_before: `2026-10-27T11:0${eventSeq}:00Z` } },
+        }]);
+      }
+      expect(refreshAgentState).toHaveBeenCalledTimes(3);
+      expect(refreshAgentState).toHaveBeenLastCalledWith("cooldown-agent");
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
   it("lets a fresh bootstrap snapshot clear cached running state and counts", () => {
     const cached = agentSummary({
       lifecycle: "awake-running",

@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "openai_stub"))
 from server import call_item, response, text_item  # noqa: E402
 from task_recovery import RecoveryScenario  # noqa: E402
+from continuation_cooldown import consume as consume_continuation_cooldown  # noqa: E402
 
 LOCK = threading.Lock()
 RECORDS: list[dict] = []
@@ -83,6 +84,8 @@ class Mock(BaseHTTPRequestHandler):
             record(layer="mock_http", side=side, status=status, model=payload.get("model"),
                    stream=payload.get("stream", False))
             self.reply(status, body)
+            return
+        if consume_continuation_cooldown(self, payload, side, setting, record):
             return
         status = int(setting(f"STATUS_{side.upper()}", "200"))
         headers = retry_after_headers(side, status)

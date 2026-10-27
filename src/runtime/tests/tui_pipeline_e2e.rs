@@ -95,6 +95,7 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
         recent_operator_notifications: Vec::<OperatorNotificationRecord>::new(),
         recent_brief_count: 0,
         recent_event_count: 0,
+        provider_cooldown_wait: None,
     }
 }
 

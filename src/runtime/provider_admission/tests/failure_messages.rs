@@ -27,12 +27,6 @@ fn local_dispatch_failure_messages_use_typed_reasons_without_changing_diagnostic
             "The model channel is cooling down. This send was blocked.",
         ),
         (
-            LocalDispatchDenial::ChainCooling {
-                not_before: deadline,
-            },
-            "The model channel is cooling down. This send was blocked.",
-        ),
-        (
             LocalDispatchDenial::EpisodeChanged,
             "A local safety check blocked this model send.",
         ),

@@ -289,6 +289,64 @@ mod tests {
     }
 
     #[test]
+    fn cooldown_cause_upgrade_preserves_all_four_incident_scopes() -> Result<()> {
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        migrate_through(&mut connection, 89)?;
+        let tables = [
+            "provider_quota_incidents",
+            "provider_transport_incidents",
+            "provider_route_throttle_incidents",
+            "provider_candidate_incidents",
+        ];
+        for table in tables {
+            connection.execute_batch(&format!(
+                "INSERT INTO {table} (
+                    identity_key, incident_id, revision, consecutive_failures,
+                    next_retry_at, opened_at, last_failed_at, server_not_before,
+                    probe_token, probe_lease_until, cooldown_policy
+                 ) VALUES ('key', 'incident', 9, 4, 'retry', 'opened', 'failed',
+                    'server-floor', 'active-probe', 'lease-end', 'payment_required');"
+            ))?;
+        }
+        migrate_through(&mut connection, 90)?;
+        for table in tables {
+            let preserved = connection.query_row(
+                &format!(
+                    "SELECT revision, next_retry_at, server_not_before, probe_token,
+                        probe_lease_until, cooldown_policy, cause_json
+                     FROM {table} WHERE identity_key = 'key' AND incident_id = 'incident'"
+                ),
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                preserved,
+                (
+                    9,
+                    "retry".into(),
+                    "server-floor".into(),
+                    "active-probe".into(),
+                    "lease-end".into(),
+                    "payment_required".into(),
+                    None,
+                ),
+                "{table}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn reply_settlement_disposition_migration_preserves_existing_obligations() -> Result<()> {
         let mut connection = rusqlite::Connection::open_in_memory()?;
         migrate_through(&mut connection, 78)?;
