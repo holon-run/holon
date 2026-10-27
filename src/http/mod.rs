@@ -239,6 +239,7 @@ pub struct AppState {
     pub(crate) unread_db_jobs: Arc<tokio::sync::Semaphore>,
     pub(crate) app_asset_streams: Arc<tokio::sync::Semaphore>,
     pub(crate) projection_gate: Arc<ProjectionGate>,
+    pub(crate) models_cache: Arc<agents::ModelsResponseCache>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -374,6 +375,7 @@ impl AppState {
         self.tailscale_serve_change = other.tailscale_serve_change.clone();
         self.loopback_http_addr = other.loopback_http_addr;
         self.projection_gate = other.projection_gate.clone();
+        self.models_cache = other.models_cache.clone();
         self
     }
 
@@ -443,6 +445,7 @@ impl AppState {
             unread_db_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
             app_asset_streams: Arc::new(tokio::sync::Semaphore::new(16)),
             projection_gate,
+            models_cache: Arc::new(agents::ModelsResponseCache::new()),
         }
     }
 
@@ -485,6 +488,7 @@ impl AppState {
             unread_db_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
             app_asset_streams: Arc::new(tokio::sync::Semaphore::new(16)),
             projection_gate,
+            models_cache: Arc::new(agents::ModelsResponseCache::new()),
         }
     }
 

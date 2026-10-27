@@ -266,6 +266,19 @@ fingerprint: upgrading an unfinished root cannot reset its budget, cursor,
 operator grant or deadline. Actual configuration changes retain existing chain
 identity semantics.
 
+HTTP 402 is a typed `payment_required` candidate failure and remains fail-fast:
+it never retries the same HTTP candidate in the current request. Its independent
+scope hashes the configured endpoint/transport/proxy path, model route, and
+existing credential identity. It does not assert an account-wide quota failure
+or make other models, credentials, or plan endpoints unavailable. This supplemental
+scope also stays outside the legacy effective-chain fingerprint.
+Both ordinary and probe leases persist the failure; it is never a
+`non_recovery_response` and cannot resolve an episode or replenish its budget.
+Local backoff uses the hard-quota scale (15 minutes initially, capped at six
+hours, with the existing deterministic jitter), without borrowing quota semantics.
+An absolute server deadline remains a lower bound. Expiry permits a fenced,
+budgeted probe, not an unconditional transition to healthy.
+
 An unavailable scope moves from cooling to a leased probe, not directly to
 healthy when its deadline passes. One database transaction reserves every
 applicable scope or none; each reservation binds its revision and probe token.
@@ -287,7 +300,8 @@ When no candidate qualifies, admission parks before creating a model turn;
 durable non-model settlement and inbound storage continue normally.
 
 Automatic recovery includes the initial request in a persistent three-dispatch
-budget, with at most one dispatch per failed network or rate-limit scope.
+budget, with at most one dispatch per failed network, rate-limit, or payment
+candidate scope.
 `rate_limited` records the admitted quota or route-throttle scope and never
 resolves an episode, including when it is the first failure. Subsequent protocol
 or other failures cannot replenish that episode. Operator grants deduplicate
@@ -533,6 +547,21 @@ the provider, context policy, tool surface, and prompt are built. Those surfaces
 all use the same snapshot. `AgentState.pending_fallback_model` remains readable
 for state-schema compatibility, but it is not a model-routing source and new
 execution paths do not write it.
+
+For configured HTTP routes, canonical provider admission interprets the validated
+directive as a preferred candidate, not permission to bypass availability,
+capability, lease, budget, or owner fences. The target must belong to the
+effective chain, including an agent override and the configured fallback policy.
+Recovery never changes the persisted override or implicitly adds the default
+model to an override's chain. An unavailable target may be replaced by another
+eligible candidate; exhaustion parks before creating a model turn.
+
+The admitted route remains the execution authority and is frozen into the same
+turn-local snapshot used by context, tools, lineage, and the actual HTTP request.
+`recovery_turn_started` records the requested route separately from its effective
+`fallback_model_ref` and `admitted_model_ref`, with a bounded `reselection_reason`
+only when the requested and admitted routes differ. Queueing a directive does
+not promise that its target will still be admissible at dispatch time.
 
 ### 5.7 Recovery Task And Owner Are Source-Bound
 

@@ -87,10 +87,13 @@ def consume(handler, payload, side, setting, record):
         fail("cooling", 1 if scenario == "recovery-cooldown-interjection" else 12)
     elif recovery:
         reply(200, "QA_RECOVERY_DONE")
-    elif scenario == "recovery-cooldown-interjection" and "QA_FRESH_COMPETE" in current:
+    elif scenario == "recovery-cooldown-interjection" and (
+            "QA_FRESH_COMPETE" in current
+            or any(output.get("call_id") == "call-fresh-compete" for output in outputs)):
         # R3773I: the competition root is a real operator prompt dispatched to a
         # healthy B; this held response is the barrier during which the follow-up
         # prompt is sent, and the follow-up is admitted before the gated tool runs.
+        # Native incremental requests omit the original operator input.
         if any(output.get("call_id") == "call-fresh-compete" for output in outputs):
             reply(200, "QA_FRESH_DONE")
         else:

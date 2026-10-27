@@ -46,13 +46,14 @@ pub(crate) fn build_provider_from_model_chain_with_override(
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
     let disable_fallback = config.provider_fallback_disabled();
+    let catalog = RuntimeModelCatalog::from_config(config);
 
     for model_ref in provider_chain.iter().take(if disable_fallback {
         1
     } else {
         provider_chain.len()
     }) {
-        match build_candidate_with_override(config, model_ref, parameter_override) {
+        match build_candidate_with_override(config, &catalog, model_ref, parameter_override) {
             Ok(candidate) => {
                 if !candidates
                     .iter()
@@ -78,16 +79,35 @@ pub(crate) fn build_candidate(
     config: &AppConfig,
     route_ref: &ModelRouteRef,
 ) -> Result<ProviderCandidate> {
-    build_candidate_with_override(config, route_ref, None)
+    let catalog = RuntimeModelCatalog::from_config(config);
+    build_candidate_with_catalog(config, &catalog, route_ref)
+}
+
+/// Build a provider candidate against a catalog the caller already resolved.
+///
+/// Availability sweeps resolve many routes from one config; rebuilding the
+/// catalog inside each route turned an O(routes) sweep into O(routes) catalog
+/// builds (#3776).
+pub(crate) fn build_candidate_with_catalog(
+    config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
+    route_ref: &ModelRouteRef,
+) -> Result<ProviderCandidate> {
+    build_candidate_with_override(config, catalog, route_ref, None)
 }
 
 fn build_candidate_with_override(
     config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
     route_ref: &ModelRouteRef,
     parameter_override: Option<ModelRouteParameterOverride<'_>>,
 ) -> Result<ProviderCandidate> {
-    let mut route =
-        resolve_explicit_model_route_for_candidate(config, route_ref, ModelRouteCapability::Turn)?;
+    let mut route = resolve_explicit_model_route_for_candidate_with_catalog(
+        config,
+        catalog,
+        route_ref,
+        ModelRouteCapability::Turn,
+    )?;
     apply_parameter_override(config, &mut route, parameter_override);
     build_candidate_from_model_route(&config.home_dir, &route)
 }
@@ -130,13 +150,29 @@ pub(crate) fn build_candidate_from_model_route(
     })
 }
 
-pub(crate) fn resolve_explicit_model_route_for_candidate(
+#[cfg(test)]
+fn resolve_explicit_model_route_for_candidate(
     config: &AppConfig,
     route_ref: &ModelRouteRef,
     requested_capability: ModelRouteCapability,
 ) -> Result<ResolvedModelRoute> {
+    let catalog = RuntimeModelCatalog::from_config(config);
+    resolve_explicit_model_route_for_candidate_with_catalog(
+        config,
+        &catalog,
+        route_ref,
+        requested_capability,
+    )
+}
+
+fn resolve_explicit_model_route_for_candidate_with_catalog(
+    config: &AppConfig,
+    catalog: &RuntimeModelCatalog,
+    route_ref: &ModelRouteRef,
+    requested_capability: ModelRouteCapability,
+) -> Result<ResolvedModelRoute> {
     let base_context_config = base_context_config_for_candidate(config);
-    RuntimeModelCatalog::from_config(config)
+    catalog
         .resolve_explicit_model_route(&base_context_config, route_ref, requested_capability)
         .ok_or_else(|| {
             anyhow!(

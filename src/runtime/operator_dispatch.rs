@@ -153,8 +153,9 @@ impl RuntimeHandle {
         )
         .await?;
         let mut model_selection = TurnModelSelection::from_message(message)?;
-        model_selection.admitted_model = self
-            .active_provider_admission()?
+        let provider_admission = self.active_provider_admission()?;
+        model_selection.admitted_model = provider_admission
+            .as_ref()
             .map(|admission| admission.model().clone());
         self.reconfigure_provider_for_turn(model_selection.fallback_model())
             .await?;
@@ -183,7 +184,12 @@ impl RuntimeHandle {
                     "message_id": message.id,
                     "turn_id": turn_id,
                     "run_id": run_id,
-                    "fallback_model_ref": recovery.fallback_model_ref,
+                    "fallback_model_ref": model_selection.fallback_model(),
+                    "requested_fallback_model_ref": recovery.fallback_model_ref,
+                    "admitted_model_ref": model_selection.admitted_model,
+                    "reselection_reason": provider_admission
+                        .as_ref()
+                        .and_then(|admission| admission.recovery_reselection_reason()),
                     "source_turn_id": recovery.source_turn_id,
                     "source_message_id": recovery.source_message_id,
                     "root_message_id": source.root_message.id,

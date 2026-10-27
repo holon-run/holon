@@ -11722,7 +11722,7 @@ mod tests {
 
     #[tokio::test]
     async fn canonical_existing_invocation_preserves_target_configuration_and_relations() {
-        let (_home, host) = test_host();
+        let (_home, host) = test_host_with_silent_peer("canonical-existing");
         let parent = host.default_runtime().await.unwrap();
         let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
         parent
@@ -11804,6 +11804,7 @@ mod tests {
         );
         assert_eq!(after_relations, before_relations);
 
+        wait_for_agent_inputs_settled(&target).await;
         let response = send_agent_message(
             &target,
             &parent_agent_id,

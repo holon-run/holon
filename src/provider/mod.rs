@@ -30,13 +30,13 @@ mod transports;
 mod wire_fingerprint;
 
 pub(crate) use catalog::{
-    build_candidate_from_model_route, build_provider_from_model_chain_with_override,
-    ModelRouteParameterOverride,
+    build_candidate_from_model_route, build_candidate_with_catalog,
+    build_provider_from_model_chain_with_override, ModelRouteParameterOverride,
 };
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{
     provider_doctor, resolved_model_availability, resolved_model_providers,
-    resolved_provider_models,
+    resolved_provider_models, resolved_route_availability,
 };
 pub(crate) use diagnostics::{
     provider_models_from_availability_for_runtime,

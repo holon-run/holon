@@ -4193,11 +4193,59 @@ CREATE INDEX idx_provider_recovery_requests_episode
     },
     Migration {
         version: 89,
+        name: "provider_candidate_payment_required",
+        sql: r#"
+CREATE TABLE provider_candidate_incidents (
+  identity_key TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  consecutive_failures INTEGER NOT NULL CHECK (consecutive_failures >= 0),
+  next_retry_at TEXT,
+  last_failure_kind TEXT,
+  last_model_ref TEXT,
+  opened_at TEXT NOT NULL,
+  last_failed_at TEXT NOT NULL,
+  resolved_at TEXT,
+  server_not_before TEXT,
+  probe_token TEXT,
+  probe_lease_until TEXT,
+  cooldown_policy TEXT
+);
+CREATE INDEX idx_provider_candidate_incidents_retry
+  ON provider_candidate_incidents(next_retry_at, consecutive_failures);
+
+CREATE TABLE provider_recovery_requests_v89 (
+  request_id TEXT PRIMARY KEY,
+  episode_key TEXT NOT NULL REFERENCES provider_recovery_episodes(episode_key),
+  epoch INTEGER NOT NULL CHECK (epoch > 0),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  scopes_json TEXT NOT NULL,
+  outcome TEXT CHECK (outcome IN ('available_response', 'non_recovery_response', 'network_failure', 'rate_limited', 'payment_required', 'other_failure')),
+  failed_scope_json TEXT,
+  dispatched_at TEXT NOT NULL,
+  settled_at TEXT
+);
+INSERT INTO provider_recovery_requests_v89 (
+  request_id, episode_key, epoch, revision, scopes_json, outcome,
+  failed_scope_json, dispatched_at, settled_at
+)
+SELECT request_id, episode_key, epoch, revision, scopes_json, outcome,
+       failed_scope_json, dispatched_at, settled_at
+FROM provider_recovery_requests ORDER BY rowid;
+DROP TABLE provider_recovery_requests;
+ALTER TABLE provider_recovery_requests_v89 RENAME TO provider_recovery_requests;
+CREATE INDEX idx_provider_recovery_requests_episode
+  ON provider_recovery_requests(episode_key, epoch);
+"#,
+    },
+    Migration {
+        version: 90,
         name: "provider_cooldown_safe_cause",
         sql: r#"
 ALTER TABLE provider_quota_incidents ADD COLUMN cause_json TEXT;
 ALTER TABLE provider_transport_incidents ADD COLUMN cause_json TEXT;
 ALTER TABLE provider_route_throttle_incidents ADD COLUMN cause_json TEXT;
+ALTER TABLE provider_candidate_incidents ADD COLUMN cause_json TEXT;
 "#,
     },
 ];

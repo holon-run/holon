@@ -1397,6 +1397,7 @@ impl AgentProvider for FallbackProvider {
                                 | super::retry::ProviderFailureKind::Connection
                                 | super::retry::ProviderFailureKind::ServerError
                                 | super::retry::ProviderFailureKind::RateLimited
+                                | super::retry::ProviderFailureKind::PaymentRequired
                         );
                     let should_retry = !shared_recovery
                         && classification.disposition == RetryDisposition::Retryable

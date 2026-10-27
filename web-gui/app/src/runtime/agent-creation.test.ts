@@ -249,4 +249,15 @@ describe("agent creation boundaries", () => {
     expect(await pendingLookup).toEqual({ kind: "stale" });
     expect(progress()).toBeUndefined();
   });
+
+  it("retires the creation entry and keeps late observations from restoring it", async () => {
+    await create();
+    expect(progress()).toBeDefined();
+    useRuntimeStore.getState().dismissAgentCreation("new-agent");
+    expect(progress()).toBeUndefined();
+    // A pending observation must not resurrect the retired banner.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(progress()).toBeUndefined();
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+  });
 });

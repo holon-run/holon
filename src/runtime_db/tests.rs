@@ -240,6 +240,109 @@ mod tests {
             &connection,
             "provider_route_throttle_incidents"
         )?);
+        connection.execute_batch(
+            "INSERT INTO provider_recovery_requests VALUES (
+                'pending', 'legacy', 2, 8, '[]', NULL, NULL, 'dispatched', NULL);",
+        )?;
+        let tables = [
+            "provider_recovery_episodes",
+            "provider_recovery_requests",
+            "provider_queue_parking",
+            "provider_quota_incidents",
+            "provider_transport_incidents",
+            "provider_route_throttle_incidents",
+        ];
+        for table in &tables[3..] {
+            connection.execute(
+                &format!(
+                    "INSERT INTO {table} (
+                        identity_key, incident_id, revision, consecutive_failures,
+                        next_retry_at, opened_at, last_failed_at, server_not_before,
+                        probe_token, probe_lease_until, cooldown_policy
+                     ) VALUES ('legacy-key', 'incident', 9, 4, 'retry', 'opened',
+                        'failed', 'server-floor', 'active-probe', 'lease-end', 'hard_quota')"
+                ),
+                [],
+            )?;
+        }
+        let before: Vec<_> = tables
+            .iter()
+            .map(|table| rows(&connection, table))
+            .collect::<Result<_>>()?;
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 89)
+            .expect("payment required needs an explicit upgrade migration");
+        apply_migration(&mut connection, migration)?;
+        for (table, expected) in tables.iter().zip(before) {
+            assert_eq!(rows(&connection, table)?, expected, "{table}");
+        }
+        connection.execute(
+            "UPDATE provider_recovery_requests SET outcome = 'payment_required',
+             failed_scope_json = '{\"kind\":\"candidate\",\"key\":\"candidate-hash\"}',
+             settled_at = 'settled' WHERE request_id = 'request-4'",
+            [],
+        )?;
+        assert!(!connection.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        assert!(table_exists(&connection, "provider_candidate_incidents")?);
+        Ok(())
+    }
+
+    #[test]
+    fn cooldown_cause_upgrade_preserves_all_four_incident_scopes() -> Result<()> {
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        migrate_through(&mut connection, 89)?;
+        let tables = [
+            "provider_quota_incidents",
+            "provider_transport_incidents",
+            "provider_route_throttle_incidents",
+            "provider_candidate_incidents",
+        ];
+        for table in tables {
+            connection.execute_batch(&format!(
+                "INSERT INTO {table} (
+                    identity_key, incident_id, revision, consecutive_failures,
+                    next_retry_at, opened_at, last_failed_at, server_not_before,
+                    probe_token, probe_lease_until, cooldown_policy
+                 ) VALUES ('key', 'incident', 9, 4, 'retry', 'opened', 'failed',
+                    'server-floor', 'active-probe', 'lease-end', 'payment_required');"
+            ))?;
+        }
+        migrate_through(&mut connection, 90)?;
+        for table in tables {
+            let preserved = connection.query_row(
+                &format!(
+                    "SELECT revision, next_retry_at, server_not_before, probe_token,
+                        probe_lease_until, cooldown_policy, cause_json
+                     FROM {table} WHERE identity_key = 'key' AND incident_id = 'incident'"
+                ),
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                preserved,
+                (
+                    9,
+                    "retry".into(),
+                    "server-floor".into(),
+                    "active-probe".into(),
+                    "lease-end".into(),
+                    "payment_required".into(),
+                    None,
+                ),
+                "{table}"
+            );
+        }
         Ok(())
     }
 
@@ -960,6 +1063,7 @@ mod tests {
              DROP TABLE provider_transport_incidents;
              DROP TABLE provider_quota_incidents;
              DROP TABLE provider_route_throttle_incidents;
+             DROP TABLE provider_candidate_incidents;
              DROP TABLE task_result_recovery_admissions;
              DROP TABLE task_result_settlements;
              DROP INDEX idx_agent_deletion_jobs_status_retry_created;

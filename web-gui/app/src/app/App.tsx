@@ -1,5 +1,6 @@
 import { connectionLocation } from "../runtime/connection-location";
 import type { AgentCreationResult } from "../runtime/agent-creation";
+import { shouldDismissAgentCreation } from "../runtime/agent-creation-dismiss";
 import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
 import { useCopyText } from "../components/ClipboardProvider";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
@@ -255,6 +256,7 @@ export function App() {
   }, [agentCreationContext]);
   const lookupCreatedAgent = useRuntimeStore((state) => state.lookupCreatedAgent);
   const refreshAgentCreation = useRuntimeStore((state) => state.refreshAgentCreation);
+  const dismissAgentCreation = useRuntimeStore((state) => state.dismissAgentCreation);
   const agentCreation = useRuntimeStore((state) => state.selectedAgentId ? state.agentCreations[state.selectedAgentId] : undefined);
   const refreshAgentSkillCatalog = useRuntimeStore((state) => state.refreshAgentSkillCatalog);
   const enableAgentSkill = useRuntimeStore((state) => state.enableAgentSkill);
@@ -292,6 +294,21 @@ export function App() {
     agentAccess.agent?.incarnation,
     agentAccess.status !== "available",
   );
+  // The creation banner reports that the agent was created, not that its
+  // first turn succeeded. It retires once this agent's conversation proves a
+  // settled successful turn; a failed first turn keeps it visible so
+  // "created" never reads as "run failed".
+  const createdAgentId = agentCreation?.creation.identity.agent_id;
+  const createdIncarnation = agentCreation?.creation.identity.incarnation;
+  const agentCreationRetired = createdAgentId !== undefined
+    && createdAgentId === activeAgentId
+    && createdIncarnation === agentAccess.agent?.incarnation
+    && shouldDismissAgentCreation(agentCreation, conversationSession.model.turns);
+  useEffect(() => {
+    if (!agentCreationRetired || !agentCreation) return;
+    dismissAgentCreation(agentCreation.creation.identity.agent_id);
+  }, [agentCreationRetired, agentCreation, dismissAgentCreation]);
+
   const markSelectedAgentConversationRead = useCallback(() => {
     if (!activeAgentId || panelLayout.full || !conversationSession.conversationReady) return false;
     // Called only by a physically visible latest viewport, never by locating

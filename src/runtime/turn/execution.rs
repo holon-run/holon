@@ -540,7 +540,13 @@ impl RuntimeHandle {
                 timeline.attempts.last().is_some_and(|attempt| {
                     matches!(
                         attempt.failure_kind.as_deref(),
-                        Some("timeout" | "connection" | "server_error" | "rate_limited")
+                        Some(
+                            "timeout"
+                                | "connection"
+                                | "server_error"
+                                | "rate_limited"
+                                | "payment_required"
+                        )
                     )
                 })
             })

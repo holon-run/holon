@@ -258,7 +258,7 @@ def _message(snapshot, message_id):
 
 
 def _operator(message):
-    require(message.get("kind") == "prompt"
+    require(message.get("kind") == "operator_prompt"
             and message.get("origin", {}).get("kind") == "operator"
             and message.get("authority_class") == "operator_instruction"
             and message.get("delivery_surface") == "http_control_prompt"
@@ -282,7 +282,7 @@ def _fresh_interjection(events, http, snapshot, fresh_id, turn_id, boundary, tex
             and admitted[0]["payload"].get("boundary") == boundary
             and admitted[0]["payload"].get("authority_class") == "operator_instruction",
             "fresh prompt must be admitted exactly once into the intended turn/boundary")
-    entries = _source_rows(snapshot, "queue_entries_current", fresh_id)
+    entries = _source_rows(snapshot, "queue_entries", fresh_id)
     require(len(entries) == 1 and entries[0].get("status") == "interjected",
             "fresh queue entry must finish Interjected, not independently Processed")
     turns = [turn for turn in _turns(snapshot) if fresh_id in turn.get("input_message_ids", [])]
@@ -318,7 +318,7 @@ def evaluate_native_interjection(events, http, snapshot, observation, message_id
             and _instant(next_wait["started_at"]) >= _instant(wait["started_at"])
             and _instant(reentered["sampled_at"]) < _instant(wait["not_before"]),
             "interjection must reenter the same execution/model with its original deadline")
-    active = _source_rows(reentered["snapshot"], "queue_entries_current", message_id)
+    active = _source_rows(reentered["snapshot"], "queue_entries", message_id)
     require(len(active) == 1 and active[0].get("status") not in ("processed", "interrupted"),
             "original source must stay active across interjection")
     turn, request, admitted = _fresh_interjection(
@@ -438,7 +438,7 @@ def evaluate_recovery_interjection(events, http, snapshot, before, competition):
     for checkpoint in (queued, boundary):
         require(_source_rows(checkpoint, "provider_queue_parking", recovery_id) == parked,
                 "competition changed recovery deadline, fingerprint or episode")
-    fresh_entry = _source_rows(queued, "queue_entries_current", competition["f1_id"])
+    fresh_entry = _source_rows(queued, "queue_entries", competition["f1_id"])
     require(len(fresh_entry) == 1 and fresh_entry[0].get("status") == "queued",
             "fresh follow-up must queue while B holds the fresh root response")
     for mid in (competition["f0_id"], competition["f1_id"]):
@@ -446,7 +446,7 @@ def evaluate_recovery_interjection(events, http, snapshot, before, competition):
                     == _source_rows(snapshot, "messages", mid)
                     for checkpoint in (queued, boundary)),
                 "competition changed the fresh operator inputs")
-    entry = _source_rows(boundary, "queue_entries_current", recovery_id)
+    entry = _source_rows(boundary, "queue_entries", recovery_id)
     require(len(entry) == 1 and entry[0].get("status") == "queued",
             "pre-claim parked recovery must stay Queued throughout competition")
     park_events = [event for event in events if event["type"] == "provider_queue_parked"
@@ -1015,7 +1015,7 @@ class AcceptanceRun(FaultRun):
                         or visible.get("started_at") == original_wait["started_at"]):
                     return None
                 snapshot = self.snapshot()
-                entry = _source_rows(snapshot, "queue_entries_current", fresh["message_id"])
+                entry = _source_rows(snapshot, "queue_entries", fresh["message_id"])
                 if len(entry) != 1 or entry[0].get("status") != "interjected":
                     return None
                 return {"state": current, "snapshot": snapshot,
@@ -1105,7 +1105,7 @@ class AcceptanceRun(FaultRun):
             write_json(self.evidence / "fresh-follow-prompt.json", follow)
             queued = self.snapshot()
             write_json(self.evidence / "competition-queued.json", redact_evidence(queued))
-            entry = _source_rows(queued, "queue_entries_current", follow["message_id"])
+            entry = _source_rows(queued, "queue_entries", follow["message_id"])
             require(len(entry) == 1 and entry[0].get("status") == "queued",
                     "fresh follow-up must queue while B holds the fresh root response")
             self.release(FRESH_GATE)

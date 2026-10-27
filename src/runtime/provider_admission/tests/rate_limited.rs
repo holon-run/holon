@@ -36,10 +36,18 @@ fn supplemental_throttle_scope_preserves_legacy_chain_fingerprint() {
             Sha256::digest(serde_json::to_vec(&legacy).unwrap())
         )
     );
-    assert!(chain
-        .candidates
-        .iter()
-        .all(|candidate| candidate.scopes.len() == 3));
+    for candidate in &chain.candidates {
+        assert!(candidate.quota.is_none());
+        assert_eq!(
+            candidate.scopes,
+            [
+                candidate.connection.clone(),
+                candidate.request.clone(),
+                candidate.payment.clone(),
+                candidate.rate_limit.clone(),
+            ]
+        );
+    }
 }
 
 #[test]

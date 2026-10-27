@@ -57,12 +57,12 @@ def native_evidence():
     ]
     snapshot = {"rows": {
         "messages": [{"message_id": "m-native", "payload_json": '{"text": "QA_NATIVE"}'}],
-        "queue_entries_current": [{"message_id": "m-native", "status": "processed"}],
+        "queue_entries": [{"message_id": "m-native", "status": "processed"}],
         "tool_executions": [{"payload_json": json.dumps({
             "input": {"cmd": "qa-3772-native-gate"}, "status": "success"})}],
     }}
     waiting = copy.deepcopy(snapshot)
-    waiting["rows"]["queue_entries_current"][0]["status"] = "claimed"
+    waiting["rows"]["queue_entries"][0]["status"] = "claimed"
     observation = {
         "state": {"agent": {"agent": {"provider_cooldown_wait": wait}}}, "snapshot": waiting,
         "http_before": http[:2], "http_after": http[:2],
@@ -85,7 +85,7 @@ def recovery_evidence():
     })}
     before = {"rows": {
         "messages": [source],
-        "queue_entries_current": [{"message_id": "m-recovery", "status": "queued"}],
+        "queue_entries": [{"message_id": "m-recovery", "status": "queued"}],
         "provider_queue_parking": [{
             "message_id": "m-recovery", "not_before": "2026-10-27T00:00:12Z"}],
         "tool_executions": [{
@@ -103,7 +103,7 @@ def recovery_evidence():
     }}
     snapshot = copy.deepcopy(before)
     snapshot["rows"]["provider_queue_parking"] = []
-    snapshot["rows"]["queue_entries_current"][0]["status"] = "processed"
+    snapshot["rows"]["queue_entries"][0]["status"] = "processed"
     owner = {"kind": "agent_lifecycle", "agent_id": "qa"}
     snapshot["rows"]["turn_records"] = [{"payload_json": json.dumps(turn)} for turn in [
         {"turn_id": "source-turn", "owner": owner,
@@ -140,7 +140,7 @@ def recovery_evidence():
 
 def canonical_message(mid, text):
     payload = {
-        "id": mid, "agent_id": "qa", "kind": "prompt",
+        "id": mid, "agent_id": "qa", "kind": "operator_prompt",
         "origin": {"kind": "operator"},
         "authority_class": "operator_instruction",
         "delivery_surface": "http_control_prompt",
@@ -161,7 +161,7 @@ def native_interjection_evidence():
     original = canonical_message(mid, "QA_NATIVE")
     fresh = canonical_message("m-fresh", "QA_FRESH_NATIVE")
     snapshot["rows"]["messages"] = [original, fresh]
-    snapshot["rows"]["queue_entries_current"].append({
+    snapshot["rows"]["queue_entries"].append({
         "message_id": "m-fresh", "status": "interjected"})
     snapshot["rows"]["turn_records"] = [{"payload_json": json.dumps({
         "turn_id": "source-turn", "agent_id": "qa",
@@ -191,7 +191,7 @@ def native_interjection_evidence():
     http[-1].update(response="QA_NATIVE_INTERJECT_DONE",
                     interjections=[rendered_fresh("m-fresh", "QA_FRESH_NATIVE")])
     active = copy.deepcopy(snapshot)
-    active["rows"]["queue_entries_current"][0]["status"] = "claimed"
+    active["rows"]["queue_entries"][0]["status"] = "claimed"
     observation["reentered"] = {
         "state": {"agent": {"agent": {"provider_cooldown_wait": next_wait}}},
         "snapshot": active, "sampled_at": "2026-10-27T00:00:05Z",
@@ -218,7 +218,7 @@ def recovery_interjection_evidence():
     snapshot["rows"]["messages"] = copy.deepcopy(before["rows"]["messages"]) + [root, follow]
     snapshot["rows"]["conversation_input_assignments"] = copy.deepcopy(
         before["rows"]["conversation_input_assignments"])
-    snapshot["rows"]["queue_entries_current"].extend([
+    snapshot["rows"]["queue_entries"].extend([
         {"message_id": "m-source", "status": "processed"},
         {"message_id": "m-fresh", "status": "processed"},
         {"message_id": "m-follow", "status": "interjected"},
@@ -240,9 +240,9 @@ def recovery_interjection_evidence():
     boundary = copy.deepcopy(snapshot)
     boundary["rows"]["turn_records"].pop(1)
     boundary["rows"]["provider_queue_parking"] = copy.deepcopy(before["rows"]["provider_queue_parking"])
-    boundary["rows"]["queue_entries_current"][0]["status"] = "queued"
+    boundary["rows"]["queue_entries"][0]["status"] = "queued"
     queued = copy.deepcopy(boundary)
-    queued["rows"]["queue_entries_current"][3]["status"] = "queued"
+    queued["rows"]["queue_entries"][3]["status"] = "queued"
     events[2]["ts"] = "2026-10-27T00:00:30Z"
     events[3]["ts"] = "2026-10-27T00:00:31Z"
     events[:0] = [
@@ -305,6 +305,19 @@ class NativeInterjectionOracleTests(unittest.TestCase):
         self.assertEqual(evaluate_native_interjection(*native_interjection_evidence()),
                          "verified-t3772i-isolated")
 
+    def test_interjection_requires_the_real_queue_snapshot_table(self):
+        args = native_interjection_evidence()
+        rows = args[2]["rows"]
+        rows["queue_entries_current"] = rows.pop("queue_entries")
+        with self.assertRaises(AssertionError):
+            evaluate_native_interjection(*args)
+
+    def test_operator_kind_uses_the_canonical_serialized_variant(self):
+        args = native_interjection_evidence()
+        update_message(args[2], args[-1], kind="prompt")
+        with self.assertRaises(AssertionError):
+            evaluate_native_interjection(*args)
+
     def test_native_provider_window_is_not_required_to_inline_opaque_blocks(self):
         args = native_interjection_evidence()
         args[1][-1].update(previous_response_id="resp_a_native", native_context=[])
@@ -351,7 +364,7 @@ class NativeInterjectionOracleTests(unittest.TestCase):
                     e[2]["payload"][{"wrong_admission_turn": "turn_id", "wrong_boundary": "boundary",
                                       "wrong_fresh_id": "message_id"}[name]] = "wrong"
                 elif name == "wrong_fresh_status":
-                    s["rows"]["queue_entries_current"][1]["status"] = "processed"
+                    s["rows"]["queue_entries"][1]["status"] = "processed"
                 elif name == "independent_fresh_reply":
                     s["rows"]["turn_records"].append({"payload_json": json.dumps({
                         "turn_id": "fresh-turn", "input_message_ids": [fresh]})})
@@ -503,14 +516,14 @@ class RecoveryInterjectionOracleTests(unittest.TestCase):
                 elif name == "assignment":
                     c["snapshot"]["rows"]["conversation_input_assignments"][0]["turn_id"] = "wrong"
                 elif name == "queued_owner":
-                    c["snapshot"]["rows"]["queue_entries_current"][0]["status"] = "interrupted"
+                    c["snapshot"]["rows"]["queue_entries"][0]["status"] = "interrupted"
                 elif name == "preclaimed_recovery":
                     c["snapshot"]["rows"]["turn_records"].append(copy.deepcopy(
                         s["rows"]["turn_records"][1]))
                 elif name == "fresh_not_queued":
-                    c["queued"]["rows"]["queue_entries_current"][3]["status"] = "processed"
+                    c["queued"]["rows"]["queue_entries"][3]["status"] = "processed"
                 elif name == "fresh_not_interjected":
-                    s["rows"]["queue_entries_current"][3]["status"] = "processed"
+                    s["rows"]["queue_entries"][3]["status"] = "processed"
                 elif name in ("fresh_wrong_turn", "fresh_wrong_boundary"):
                     e[2]["payload"][
                         "turn_id" if name == "fresh_wrong_turn" else "boundary"] = "wrong"
@@ -600,7 +613,7 @@ class NativeOracleTests(unittest.TestCase):
             "rerun_tool": lambda e, h, s, o: s["rows"]["tool_executions"].append(
                 s["rows"]["tool_executions"][0]),
             "source_parked": lambda e, h, s, o: o["snapshot"]["rows"][
-                "queue_entries_current"][0].update(status="interrupted"),
+                "queue_entries"][0].update(status="interrupted"),
             "terminal_repair": lambda e, h, s, o: e.append({
                 "type": "turn_terminal", "payload": {"kind": "provider_failed_needs_recovery"}}),
             "replay": lambda e, h, s, o: e.append({"type": "turn_replay_started"}),
@@ -642,7 +655,7 @@ class RecoveryOracleTests(unittest.TestCase):
                 elif name == "missing_parking":
                     b["rows"]["provider_queue_parking"] = []
                 elif name == "consumed":
-                    b["rows"]["queue_entries_current"][0]["status"] = "processed"
+                    b["rows"]["queue_entries"][0]["status"] = "processed"
                 elif name == "missing_fault":
                     h.pop(0)
                 elif name == "early":
@@ -668,7 +681,7 @@ class RecoveryOracleTests(unittest.TestCase):
                     turn["input_message_ids"].append("unrelated")
                     s["rows"]["turn_records"][1]["payload_json"] = json.dumps(turn)
                 elif name == "not_processed":
-                    s["rows"]["queue_entries_current"][0]["status"] = "queued"
+                    s["rows"]["queue_entries"][0]["status"] = "queued"
                 elif name in ("input_only_marker", "tool_error", "wrong_tool_turn"):
                     for checkpoint in (s, b):
                         row = checkpoint["rows"]["tool_executions"][0]
@@ -754,6 +767,26 @@ class ProviderFixtureTests(unittest.TestCase):
         handler = Mock()
         self.assertFalse(consume(handler, {}, "a", lambda key, default: "", Mock()))
         handler.reply.assert_not_called()
+
+    def test_fresh_native_continuation_without_root_text_does_not_fail_source(self):
+        reply, records = self.request({
+            "previous_response_id": "resp_b_fresh",
+            "input": [{"type": "function_call_output", "call_id": "call-fresh-compete",
+                       "output": "QA_FRESH_TOOL_DONE"}],
+        }, scenario="recovery-cooldown-interjection", side="b")
+        self.assertEqual(reply.call_args.args[0], 200)
+        self.assertEqual(records.call_count, 1)
+        self.assertEqual(records.call_args.kwargs["response"], "QA_FRESH_DONE")
+        self.assertEqual(records.call_args.kwargs["current_input"], [])
+
+    def test_unrelated_native_output_cannot_take_fresh_success_path(self):
+        reply, records = self.request({
+            "previous_response_id": "resp_b_fresh",
+            "input": [{"type": "function_call_output", "call_id": "call-native",
+                       "output": "QA_FRESH_TOOL_DONE"}],
+        }, scenario="recovery-cooldown-interjection", side="b")
+        self.assertEqual(reply.call_args.args[0], 503)
+        self.assertEqual(records.call_args.kwargs["response"], "source_failure")
 
     def test_manifest_matches_real_runner_cases(self):
         manifest = json.loads((ROOT / "tests/e2e/docker/continuation_interjection_manifest.json")
@@ -877,6 +910,17 @@ class FaultProxyHttpTests(unittest.TestCase):
         self.assertEqual([row["response"] for row in self.records],
                          ["fresh_response_held", "fresh_tool_call"])
         self.assertEqual([row["side"] for row in self.records], ["b", "b"])
+
+    def test_real_http_fresh_native_continuation_without_root_text(self):
+        self.settings.update(SCENARIO="recovery-cooldown-interjection")
+        status, _, _ = self.request({
+            "previous_response_id": "resp_b_fresh",
+            "input": [{"type": "function_call_output", "call_id": "call-fresh-compete",
+                       "output": "QA_FRESH_TOOL_DONE"}],
+        }, "b")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["response"] for row in self.records], ["QA_FRESH_DONE"])
+        self.assertEqual([row["side"] for row in self.records], ["b"])
 
     def test_helper_fault_does_not_reject_source_recovery_or_released_helper(self):
         self.settings.update(SCENARIO="recovery-cooldown", HOLD_SOURCE_FAILURE=True)
