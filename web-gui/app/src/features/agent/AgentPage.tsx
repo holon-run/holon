@@ -24,6 +24,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ComposerOptionPicker } from "./ComposerOptionPicker";
 import { CurrentWorkBar } from "./CurrentWorkBar";
+import { ProviderCooldownNotice } from "./ProviderCooldownNotice";
 import { isPlainLeftClick, pathForRoute } from "../../app/routes";
 import { ConversationSyncStatus, ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
@@ -902,6 +903,10 @@ export function AgentPage({
 
           <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
             conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
+          <ProviderCooldownNotice wait={activeAgent.providerCooldownWait}
+            stopping={abortingRun || !activeAgent.currentRunId}
+            onStop={() => void stopCurrentRun()}
+            onInterject={() => composerTextareaRef.current?.focus()} />
           {sendDisabledReason ? <div className="composer-status" role="status">{sendDisabledReason}</div> : null}
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}

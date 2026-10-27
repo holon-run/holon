@@ -1,4 +1,5 @@
 mod candidate_reselection;
+mod cooldown_wait;
 mod failure_messages;
 mod local_dispatch;
 mod probe_frontier;

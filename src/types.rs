@@ -2908,6 +2908,12 @@ pub struct AgentState {
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_budget: Option<TurnBudget>,
+    /// In-memory sub-state of the active execution: this agent is locally
+    /// waiting for a shared provider cooldown deadline before retrying the
+    /// same candidate. Never persisted, so a restart never reports a stale
+    /// wait; cleared when the owning turn settles.
+    #[serde(skip)]
+    pub provider_cooldown_wait: Option<ProviderCooldownWait>,
 }
 
 /// Turn budget set by `run_once` to signal the maximum number of turns
@@ -2917,6 +2923,94 @@ pub struct AgentState {
 pub struct TurnBudget {
     pub max_turns: u64,
     pub run_start_turn_index: u64,
+}
+
+/// Active execution sub-state for a turn-local provider cooldown wait
+/// (#3772 option A). Describes what the runtime is waiting for and the
+/// earliest retry time; it is not a terminal state, creates no scheduling
+/// wake, and never calls the model by itself.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ProviderCooldownWait {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub turn_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub model: Option<ModelRouteRef>,
+    pub started_at: DateTime<Utc>,
+    /// Authoritative absolute deadline; the earliest retry attempt.
+    pub not_before: DateTime<Utc>,
+    #[serde(default)]
+    pub cause: ProviderCooldownCauseSummary,
+}
+
+/// Sanitized origin of a shared cooldown. Carries only classification
+/// metadata: no raw upstream error text, no URLs, and no other agent's
+/// request content. Missing fields degrade honestly instead of being
+/// reconstructed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ProviderCooldownCauseSummary {
+    /// Failure classification allowlist: connection | timeout | rate_limited |
+    /// server_error | transport. None when no cause record is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<ProviderCooldownRetryAfter>,
+    /// Local, opaque incident identity for authorized diagnostics lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incident_id: Option<String>,
+    /// Honest degradation marker, e.g. "cause record unavailable".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ProviderCooldownRetryAfter {
+    pub source: ProviderCooldownRetryAfterSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCooldownRetryAfterSource {
+    ServerHeader,
+    LocalBackoff,
+}
+
+/// Why an active provider cooldown wait ended.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCooldownWaitEndOutcome {
+    /// Deadline reached, revalidation passed, dispatch retried.
+    Resumed,
+    /// New operator input returned to the same turn's budgeted input boundary.
+    Interjected,
+    /// Stop, owner closure, or source replacement aborted the wait.
+    Cancelled,
+    /// Revalidation at the deadline failed; the original denial path holds.
+    ValidationFailed,
+    /// Replaced by a newer wait or cleared by turn settlement.
+    Superseded,
+}
+
+/// Terminal transition record for a provider cooldown wait, carried on the
+/// final `agent_state_changed` event of the wait.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ProviderCooldownWaitEnded {
+    pub outcome: ProviderCooldownWaitEndOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub ended_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2949,6 +3043,13 @@ pub struct AgentStateChangedEvent {
     pub active_workspace_occupancy_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub worktree_active: bool,
+    /// Active turn-local provider cooldown wait, when the execution is
+    /// currently waiting for a shared cooldown deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_cooldown_wait: Option<ProviderCooldownWait>,
+    /// Present only on the event that clears an active cooldown wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_cooldown_wait_ended: Option<ProviderCooldownWaitEnded>,
 }
 
 impl AgentStateChangedEvent {
@@ -2975,6 +3076,8 @@ impl AgentStateChangedEvent {
             active_workspace_occupancy_id: active_workspace
                 .and_then(|entry| entry.occupancy_id.clone()),
             worktree_active: state.worktree_session.is_some(),
+            provider_cooldown_wait: state.provider_cooldown_wait.clone(),
+            provider_cooldown_wait_ended: None,
         }
     }
 }
@@ -3057,6 +3160,7 @@ impl AgentState {
             last_turn_terminal: None,
             last_runtime_failure: None,
             turn_budget: None,
+            provider_cooldown_wait: None,
         }
     }
 }
@@ -6121,6 +6225,9 @@ pub struct AgentSummary {
     pub recent_operator_notifications: Vec<OperatorNotificationRecord>,
     pub recent_brief_count: usize,
     pub recent_event_count: usize,
+    /// Active turn-local provider cooldown wait sub-state, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_cooldown_wait: Option<ProviderCooldownWait>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -6307,6 +6414,7 @@ impl AgentListEntry {
             recent_operator_notifications: Vec::new(),
             recent_brief_count: 0,
             recent_event_count: 0,
+            provider_cooldown_wait: None,
         }
     }
 }

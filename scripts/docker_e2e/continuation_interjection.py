@@ -1,4 +1,4 @@
-"""Isolated-daemon acceptance for #3753 and #3754.
+"""Isolated-daemon acceptance for #3753, #3754, #3772 and #3773.
 
 T3753: A produces a tool call, A cools before the continuation, independent B
 must continue the same turn with the original tool result and a single delivery.
@@ -19,10 +19,185 @@ from pathlib import Path
 from .fallback_storm import FaultRun, SCRIPT
 from .runner import redact_evidence, require, write_json
 
-CASES = ("T3753", "I3754")
+CASES = ("T3753", "I3754", "T3772", "R3773")
 TOOL_GATE = "qa-3753-gate"
 INTERJECT_GATE = "qa-3754-gate"
 PARK_GATE = "qa-3754-park-gate"
+NATIVE_GATE = "qa-3772-native-gate"
+
+
+def _native_tools(snapshot):
+    return [row for row in _rows(snapshot, "tool_executions")
+            if NATIVE_GATE in json.dumps(row)]
+
+
+def _recovery_sources(snapshot):
+    sources = []
+    for row in _rows(snapshot, "messages"):
+        payload = json.loads(row.get("payload_json") or "{}")
+        if (row.get("agent_id") == "qa"
+                and payload.get("kind") == "internal_followup"
+                and payload.get("authority_class") == "runtime_instruction"
+                and payload.get("origin") == {
+                    "kind": "system", "subsystem": "model_lineage_recovery",
+                }):
+            sources.append(row)
+    return sources
+
+
+def evaluate_native_cooldown(events, http, snapshot, observation, message_id):
+    """Require a real fault, an IO-free active wait, and one unchanged continuation."""
+    waiting = observation["snapshot"]
+    for checkpoint in (snapshot, waiting):
+        _complete_snapshot(checkpoint)
+    state = observation["state"]
+    wait = state.get("provider_cooldown_wait")
+    require(wait is not None and wait.get("turn_id") and wait.get("attempt_id"),
+            "query must expose a turn/attempt-bound cooldown wait")
+    require("qa-a" in str(wait.get("model")), "native continuation changed model")
+    require(_instant(wait["not_before"]) > _instant(wait["started_at"]),
+            "wait must expose an authoritative future deadline")
+    require(observation["http_before"] == observation["http_after"]
+            and observation["tcp_before"] == observation["tcp_after"],
+            "cooldown observation must contain zero HTTP and TCP IO")
+    require(observation["requests_before"] == observation["requests_after"],
+            "cooldown wait must not charge a durable provider request")
+    require(_instant(observation["sampled_until"]) < _instant(wait["not_before"]),
+            "zero-IO sample must precede the authoritative deadline")
+    require(observation["elapsed_seconds"] >= 1,
+            "zero-IO observation needs a real bounded observation interval")
+    source = _entry_with(waiting, "QA_NATIVE")
+    require(source is not None and source["message_id"] == message_id
+            and source["status"] not in ("interrupted", "processed"),
+            "native source must remain active, not parked or prematurely consumed")
+    require(not _source_rows(waiting, "provider_queue_parking", message_id),
+            "turn-local wait must not park its source")
+    cause = wait.get("cause", {})
+    require(cause.get("failure_kind") == "server_error"
+            and cause.get("http_status") == 503 and cause.get("occurred_at"),
+            "wait cause must describe the actual helper HTTP 503")
+    require(cause.get("retry_after", {}).get("source") == "server_header",
+            "cause must expose the real Retry-After classification")
+    require("fixture-only diagnostic" not in json.dumps(wait),
+            "query leaked raw provider diagnostics")
+    changed = [event for event in events if event["type"] == "agent_state_changed"
+               and event.get("payload", {}).get("provider_cooldown_wait")]
+    require(changed and any(event["payload"]["provider_cooldown_wait"] == wait
+                            for event in changed),
+            "events must expose the same cause and deadline as the query")
+    ended = [event for event in events if event["type"] == "agent_state_changed"
+             and event.get("payload", {}).get("provider_cooldown_wait_ended")]
+    require(len(ended) == 1
+            and ended[0]["payload"]["provider_cooldown_wait_ended"].get("outcome") == "resumed",
+            "cooldown wait must end once by resuming, not terminal repair")
+    failures = [row for row in http if row.get("response") == "cooling"
+                and row.get("side") == "a" and row.get("status") == 503]
+    require(failures, "missing real helper HTTP failure")
+    initial = [row for row in http if row.get("response") == "native_tool_call"]
+    continued = [row for row in http if row.get("tool_output")]
+    require(len(initial) == len(continued) == 1
+            and initial[0]["side"] == continued[0]["side"] == "a"
+            and initial[0].get("model") == continued[0].get("model"),
+            "native round and its single continuation must use the exact same model")
+    continuation = continued[0]
+    native = continuation.get("native_context", [])
+    require(continuation.get("previous_response_id") == "resp_a_native"
+            or any(item.get("encrypted_content") == "qa-native-opaque"
+                   and item.get("content") == [{
+                       "type": "reasoning_text", "text": "QA_NATIVE_REASONING",
+                   }] for item in native),
+            "native provider context was lost or rebuilt without opaque state")
+    outputs = continuation.get("tool_outputs", [])
+    require(len(outputs) == 1 and outputs[0].get("call_id") == "call-native"
+            and "QA_NATIVE_TOOL_DONE" in str(outputs[0].get("output")),
+            "continuation must carry the original tool result exactly once")
+    require(datetime.fromtimestamp(continuation["at"], timezone.utc)
+            >= _instant(wait["not_before"]), "continuation dispatched before deadline")
+    terminals = [event for event in events if event["type"] == "turn_terminal"]
+    require(len(terminals) == 1 and len(_completed(events)) == 1
+            and terminals[0]["payload"].get("turn_id") == wait["turn_id"]
+            and terminals[0]["payload"].get("last_assistant_message") == "QA_NATIVE_DONE",
+            "the original turn must complete once without a recovery/repair terminal")
+    require(len(_result_briefs(events)) == 1, "expected one user-facing result")
+    require(not any(event["type"] in ("turn_replay_started", "provider_candidate_reselected")
+                    for event in events), "native continuation must not replay or reselect")
+    tools = _native_tools(snapshot)
+    require(len(tools) == 1
+            and json.loads(tools[0]["payload_json"]).get("status") == "success",
+            "native tool must execute successfully exactly once")
+    processed = [event for event in events if event["type"] == "queue_entry_settled"
+                 and event.get("payload", {}).get("message_id") == message_id
+                 and event["payload"].get("status") == "processed"]
+    require(len(processed) == 1
+            and _entry_with(snapshot, "QA_NATIVE")["status"] == "processed",
+            "source must be consumed exactly once")
+    require(not _recovery_sources(snapshot), "turn-local wait created a repair input")
+    return "verified-t3772-isolated"
+
+
+def evaluate_recovery_cooldown(events, http, snapshot, before):
+    """Recovery input must survive a second, real shared-scope failure."""
+    for checkpoint in (snapshot, before):
+        _complete_snapshot(checkpoint)
+    sources = _recovery_sources(before)
+    require(len(sources) == 1, "expected one real runtime recovery source")
+    source = sources[0]
+    mid = source["message_id"]
+    require(_source_rows(snapshot, "messages", mid) == [source],
+            "recovery must preserve the canonical recovery input byte-for-byte")
+    parked = _source_rows(before, "provider_queue_parking", mid)
+    require(len(parked) == 1, "recovery input must really park before its deadline")
+    entry = next((row for row in _queue_rows(before) if row["message_id"] == mid), None)
+    require(entry is not None and entry["status"] == "queued",
+            "scheduler-parked recovery input must remain Queued until admission")
+    resumed = [row for row in http if mid in row.get("recovery_input", [])]
+    require(len(resumed) == 1 and resumed[0].get("response") == "QA_RECOVERY_DONE"
+            and resumed[0].get("has_tool_evidence"),
+            "recovery input must dispatch once with original tool evidence")
+    require(datetime.fromtimestamp(resumed[0]["at"], timezone.utc)
+            >= _instant(parked[0]["not_before"]), "recovery dispatched before its deadline")
+    require(any(row.get("response") == "source_failure"
+                and row.get("status") == 503 for row in http),
+            "missing original post-tool HTTP failure")
+    require({row["side"] for row in http if row.get("response") == "cooling"
+             and row.get("status") == 503} == {"a", "b"},
+            "compound fault must use real shared-scope HTTP failures on both candidates")
+    processed = [event for event in events if event["type"] == "queue_entry_settled"
+                 and event.get("payload", {}).get("message_id") == mid
+                 and event["payload"].get("status") == "processed"]
+    require(len(processed) == 1 and not _source_rows(snapshot, "provider_queue_parking", mid),
+            "retained recovery input must be consumed once and unparked")
+    final_entry = next((row for row in _queue_rows(snapshot)
+                        if row["message_id"] == mid), None)
+    require(final_entry is not None and final_entry["status"] == "processed",
+            "retained recovery input must finish in canonical Processed state")
+    claims = [event for event in events if event["type"] == "queue_entry_claimed"
+              and event.get("payload", {}).get("message_id") == mid]
+    require(len(claims) == 1
+            and _instant(claims[0]["ts"]) >= _instant(parked[0]["not_before"]),
+            "scheduler must claim the retained input exactly once after its deadline")
+    require(not any(event["type"] == "turn_replay_started"
+                    and event.get("payload", {}).get("message_id") == mid
+                    for event in events), "scheduler-parked input must not invent a replay")
+    tools = _native_tools(snapshot)
+    require(len(tools) == 1
+            and json.loads(tools[0]["payload_json"]).get("status") == "success",
+            "recovery must preserve one successful tool execution")
+    require(len(_completed(events)) == len(_result_briefs(events)) == 1
+            and _completed(events)[0]["payload"].get("last_assistant_message")
+            == "QA_RECOVERY_DONE", "recovery must deliver once")
+    require(not any(event["type"] == "turn_terminal"
+                    and event.get("payload", {}).get("kind") == "aborted"
+                    for event in events), "recovery must not abort")
+    failed = [turn for turn in _turns(snapshot) if turn.get("terminal", {}).get("kind")
+              == "provider_failed_needs_recovery"]
+    completed_id = _completed(events)[0]["payload"].get("turn_id")
+    completed = [turn for turn in _turns(snapshot) if turn.get("turn_id") == completed_id]
+    require(len(failed) == len(completed) == 1 and failed[0].get("owner") is not None
+            and failed[0]["owner"] == completed[0].get("owner")
+            and completed[0].get("input_message_ids") == [mid],
+            "recovery must inherit the failed source owner and consume only its own input")
+    return "verified-r3773-isolated"
 
 
 def _rows(snapshot, name):
@@ -257,7 +432,10 @@ def evaluate_recovery(events, snapshot, before):
 class AcceptanceRun(FaultRun):
     def __init__(self, args, case):
         super().__init__(args, case)
-        self.scenario = "tool-continuation" if case == "T3753" else "interjection"
+        self.scenario = {
+            "T3753": "tool-continuation", "I3754": "interjection",
+            "T3772": "native-cooldown", "R3773": "recovery-cooldown",
+        }[case]
 
     def configure(self, **settings):
         payload = json.dumps(settings)
@@ -362,7 +540,8 @@ class AcceptanceRun(FaultRun):
 
     def begin(self, gate, issue):
         self.start()
-        fixture_names = ("fault_proxy/server.py", "openai_stub/server.py")
+        fixture_names = ("fault_proxy/server.py", "openai_stub/server.py",
+                         "openai_stub/continuation_cooldown.py")
         fixture_root = Path(__file__).resolve().parents[2] / "tests/e2e/docker"
         expected = {name: hashlib.sha256((fixture_root / name).read_bytes()).hexdigest()
                     for name in fixture_names}
@@ -455,10 +634,98 @@ class AcceptanceRun(FaultRun):
         write_json(self.evidence / "snapshot.json", redact_evidence(snapshot))
         return evaluate_recovery(events["events"], snapshot, before)
 
+    def native_source(self):
+        cursor = self.create_and_bootstrap()
+        self.create_and_bootstrap("qa2")
+        prompt = self.api("POST", "/api/control/agents/qa/prompt", {"text": "QA_NATIVE"})
+        write_json(self.evidence / "prompt.json", prompt)
+        self.wait_until(lambda: any(row.get("response") == "native_tool_call"
+                                    for row in self.mock_records()), 30, "native tool call")
+        return cursor, prompt
+
+    def run_t3772(self):
+        self.begin(NATIVE_GATE, "#3772")
+        cursor, prompt = self.native_source()
+        helper_cursor = max(event["event_seq"] for event in self.events("qa2")["events"])
+        self.api("POST", "/api/control/agents/qa2/prompt", {"text": "QA_COOL_NATIVE"})
+        self.wait_until(self.cooling_fence, 15, "real shared-scope cooling fence")
+        self.wait_completed("qa2", helper_cursor)
+        self.release(NATIVE_GATE)
+
+        def waiting():
+            state = self.api("GET", "/api/agents/qa/state")
+            return state if state.get("provider_cooldown_wait") else None
+
+        state = self.wait_until(waiting, 15, "queryable native cooldown wait")
+        before = self.snapshot()
+        _, http_before, tcp_before = self.observe()
+        started = time.monotonic()
+        time.sleep(1.1)
+        _, http_after, tcp_after = self.observe()
+        after = self.snapshot()
+        observation = {
+            "state": state, "snapshot": before,
+            "http_before": http_before, "http_after": http_after,
+            "tcp_before": tcp_before, "tcp_after": tcp_after,
+            "requests_before": _rows(before, "provider_recovery_requests"),
+            "requests_after": _rows(after, "provider_recovery_requests"),
+            "sampled_until": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": time.monotonic() - started,
+        }
+        write_json(self.evidence / "cooldown-observation.json", redact_evidence(observation))
+        events = self.wait_completed("qa", cursor)
+        final_state = self.api("GET", "/api/agents/qa/state")
+        require(not final_state.get("provider_cooldown_wait"), "completed wait was not cleared")
+        self.docker("stop", "--time", "5", self.daemon)
+        http, snapshot = self.mock_records(), self.snapshot()
+        write_json(self.evidence / "events.json", redact_evidence(events))
+        write_json(self.evidence / "http.json", http)
+        write_json(self.evidence / "snapshot.json", redact_evidence(snapshot))
+        return evaluate_native_cooldown(events["events"], http, snapshot,
+                                        observation, prompt["message_id"])
+
+    def run_r3773(self):
+        self.begin(NATIVE_GATE, "#3773")
+        self.configure(SCENARIO=self.scenario, HOLD_SOURCE_FAILURE=True)
+        cursor, _ = self.native_source()
+        self.release(NATIVE_GATE)
+        self.wait_until(lambda: any(row.get("response") == "source_failure_held"
+                                    for row in self.mock_records()), 30,
+                        "real source continuation HTTP before shared failure")
+        self.api("POST", "/api/control/agents/qa2/prompt", {"text": "QA_COOL_RECOVERY"})
+        self.wait_until(lambda: self.cooling_fence()
+                        and self.cooling_fence("qa-b@default/gpt-5.4"),
+                        15, "real A and B shared-scope failures")
+        self.configure(SCENARIO=self.scenario, HOLD_SOURCE_FAILURE=False)
+
+        def recovery_parked():
+            snapshot = self.snapshot()
+            sources = _recovery_sources(snapshot)
+            if len(sources) != 1:
+                return None
+            mid = sources[0]["message_id"]
+            entry = next((row for row in _queue_rows(snapshot)
+                          if row["message_id"] == mid), None)
+            return snapshot if (entry and entry["status"] == "queued"
+                                and _source_rows(snapshot, "provider_queue_parking", mid)) else None
+
+        before = self.wait_until(recovery_parked, 10, "retained scheduler-parked recovery input")
+        write_json(self.evidence / "recovery-parked.json", redact_evidence(before))
+        events = self.wait_completed("qa", cursor)
+        self.docker("stop", "--time", "5", self.daemon)
+        http, snapshot = self.mock_records(), self.snapshot()
+        write_json(self.evidence / "events.json", redact_evidence(events))
+        write_json(self.evidence / "http.json", http)
+        write_json(self.evidence / "snapshot.json", redact_evidence(snapshot))
+        return evaluate_recovery_cooldown(events["events"], http, snapshot, before)
+
     def run(self):
         status, error = None, None
         try:
-            status = self.run_t3753() if self.case == "T3753" else self.run_i3754()
+            status = {
+                "T3753": self.run_t3753, "I3754": self.run_i3754,
+                "T3772": self.run_t3772, "R3773": self.run_r3773,
+            }[self.case]()
         except Exception as failure:
             error = failure
         finally:

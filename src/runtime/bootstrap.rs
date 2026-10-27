@@ -810,6 +810,8 @@ impl RuntimeHandle {
                 projection_cache: Mutex::new(projection_cache),
                 object_query_cache: Arc::new(crate::object_query_cache::ObjectQueryCache::new(256)),
                 notify: Notify::new(),
+                operator_interjection_notify: Notify::new(),
+                operator_interjection_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 storage,
                 runtime_db,
                 clock,

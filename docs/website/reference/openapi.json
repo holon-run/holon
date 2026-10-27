@@ -2602,6 +2602,128 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "provider_cooldown_wait": {
+                    "description": "Active turn-local provider cooldown wait, when one is in flight.",
+                    "properties": {
+                      "attempt_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cause": {
+                        "default": {},
+                        "description": "Sanitized origin of a shared cooldown. Carries only classification\n metadata: no raw upstream error text, no URLs, and no other agent's\n request content. Missing fields degrade honestly instead of being\n reconstructed.",
+                        "properties": {
+                          "detail_unavailable_reason": {
+                            "description": "Honest degradation marker, e.g. \"cause record unavailable\".",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "failure_kind": {
+                            "description": "Failure classification allowlist: connection | timeout | rate_limited |\n server_error | transport. None when no cause record is available.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "http_status": {
+                            "format": "uint16",
+                            "maximum": 65535,
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "incident_id": {
+                            "description": "Local, opaque incident identity for authorized diagnostics lookup.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "occurred_at": {
+                            "format": "date-time",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "retry_after": {
+                            "properties": {
+                              "policy": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "seconds": {
+                                "format": "uint64",
+                                "minimum": 0,
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "source": {
+                                "enum": [
+                                  "server_header",
+                                  "local_backoff"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "source"
+                            ],
+                            "type": [
+                              "object",
+                              "null"
+                            ]
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "model": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "not_before": {
+                        "description": "Authoritative absolute deadline; the earliest retry attempt.",
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "started_at": {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      "turn_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "turn_index": {
+                        "default": 0,
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "started_at",
+                      "not_before"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
                   "sleeping_until": {
                     "format": "date-time",
                     "type": [

@@ -164,6 +164,9 @@ pub struct SlimAgentRuntimeDto {
     pub current_turn_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
+    /// Active turn-local provider cooldown wait, when one is in flight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_cooldown_wait: Option<crate::types::ProviderCooldownWait>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn_terminal: Option<TurnTerminalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,6 +359,7 @@ impl From<&AgentState> for SlimAgentRuntimeDto {
             current_turn_id: agent.current_turn_id.clone(),
             current_turn_work_item_id: agent.current_turn_work_item_id.clone(),
             current_work_item_id: agent.current_work_item_id.clone(),
+            provider_cooldown_wait: agent.provider_cooldown_wait.clone(),
             last_turn_terminal: None,
             last_runtime_failure: None,
         }
@@ -602,6 +606,7 @@ impl SlimAgentDto {
         summary.agent.current_work_item_id = self.agent.current_work_item_id;
         summary.agent.last_turn_terminal = self.agent.last_turn_terminal;
         summary.agent.last_runtime_failure = self.agent.last_runtime_failure;
+        summary.provider_cooldown_wait = self.agent.provider_cooldown_wait;
         summary.active_task_count = self.active_task_count;
         summary.closure = ClosureDecision {
             outcome: self.closure.outcome,

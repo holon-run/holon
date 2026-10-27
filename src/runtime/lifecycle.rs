@@ -737,6 +737,7 @@ impl RuntimeHandle {
         };
         let summary = AgentSummary {
             identity,
+            provider_cooldown_wait: agent.provider_cooldown_wait.clone(),
             lifecycle: crate::types::AgentLifecycleHint::from_status(
                 &agent.id,
                 agent.status.clone(),

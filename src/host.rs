@@ -3268,6 +3268,9 @@ impl RuntimeHost {
                 .read_recent_events(100)
                 .map_err(PublicAgentError::Runtime)?
                 .len(),
+            // The wait sub-state lives only in the active execution's
+            // memory; a restarted or unloaded agent never reports one.
+            provider_cooldown_wait: None,
         };
         Ok(summary)
     }

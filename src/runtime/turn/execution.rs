@@ -135,6 +135,20 @@ enum ProviderRoundResult {
     Terminal(AgentLoopOutcome),
 }
 
+enum ProviderRoundDispatch {
+    Completed(Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>),
+    Reselect(ModelRouteRef, Option<ProviderAttemptTimeline>),
+    Interjected(Option<ProviderAttemptTimeline>),
+}
+
+struct CoolingInputBoundary<'a> {
+    agent_id: &'a str,
+    round: usize,
+    prompt: &'a EffectivePrompt,
+    rounds: &'a mut [TurnRoundRecord],
+    tools: &'a [ToolSpec],
+}
+
 fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
     let encoded = serde_json::to_vec(tools).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(encoded))
@@ -971,6 +985,124 @@ impl RuntimeHandle {
         }
     }
 
+    async fn complete_turn_with_cooling_recovery(
+        &self,
+        provider: Arc<dyn AgentProvider>,
+        request: ProviderTurnRequest,
+        side_effect_boundary: bool,
+        may_reselect: bool,
+        excluded: &mut std::collections::BTreeSet<String>,
+        prior_attempts: Option<&ProviderAttemptTimeline>,
+        input: CoolingInputBoundary<'_>,
+    ) -> (ProviderRoundDispatch, DateTime<Utc>, DateTime<Utc>, u64) {
+        let started_at = Utc::now();
+        let started = Instant::now();
+        let mut retained_attempts = prior_attempts.cloned();
+        let mut observed_interjections = std::collections::BTreeSet::new();
+        let mut interject = false;
+        let dispatch = loop {
+            let input_revision = self
+                .inner
+                .operator_interjection_revision
+                .load(std::sync::atomic::Ordering::Acquire);
+            let pending_input = if interject {
+                true
+            } else {
+                match self
+                    .has_unseen_cooling_interjection(input.round, &mut observed_interjections)
+                    .await
+                {
+                    Ok(pending) => pending,
+                    Err(error) => break ProviderRoundDispatch::Completed(Err(error)),
+                }
+            };
+            interject = false;
+            if pending_input {
+                let budget = self
+                    .operator_interjection_budget(
+                        input.prompt,
+                        input.rounds,
+                        input.tools,
+                        &[],
+                        &[],
+                        &[],
+                    )
+                    .await;
+                match self
+                    .append_operator_interjections_to_last_round(
+                        input.agent_id,
+                        input.round,
+                        scheduler::InterjectionBoundary::BeforeProviderContinuation,
+                        input.rounds,
+                        budget,
+                    )
+                    .await
+                {
+                    Ok(true) => break ProviderRoundDispatch::Interjected(retained_attempts),
+                    Ok(false) => {}
+                    Err(error) => break ProviderRoundDispatch::Completed(Err(error)),
+                }
+            }
+            if input.round > 1 {
+                let fence = self.active_provider_admission().and_then(|admission| {
+                    admission.map_or(Ok(()), |admission| {
+                        admission.fence_operator_interjections(
+                            self.inner.operator_interjection_revision.clone(),
+                            input_revision,
+                        )
+                    })
+                });
+                if let Err(error) = fence {
+                    break ProviderRoundDispatch::Completed(Err(error));
+                }
+            }
+            let (result, _, _, _) = self
+                .complete_turn_with_timing(provider.clone(), request.clone(), side_effect_boundary)
+                .await;
+            let result = merge_reselected_provider_attempts(retained_attempts.as_ref(), result);
+            let error = match result {
+                Err(error) if crate::provider::is_dispatch_guard_rejected(&error) => error,
+                result => break ProviderRoundDispatch::Completed(result),
+            };
+            let timeline = provider_attempt_timeline(&error).cloned();
+            if super::super::provider_admission::is_continuation_input_changed(&error) {
+                retained_attempts = timeline;
+                interject = true;
+                continue;
+            }
+            match self
+                .continue_cooling_provider(
+                    error,
+                    excluded,
+                    may_reselect,
+                    input.round,
+                    &mut observed_interjections,
+                )
+                .await
+            {
+                Ok(super::super::provider_admission::CoolingContinuation::Reselect(model)) => {
+                    break ProviderRoundDispatch::Reselect(model, timeline);
+                }
+                Ok(super::super::provider_admission::CoolingContinuation::RetrySame) => {
+                    // Keep the exact request, including native blocks and tool
+                    // results. Reprojection/compaction must not run again.
+                    retained_attempts = timeline;
+                }
+                Ok(super::super::provider_admission::CoolingContinuation::Interject) => {
+                    retained_attempts = timeline;
+                    interject = true;
+                }
+                Err(error) => break ProviderRoundDispatch::Completed(Err(error)),
+            }
+        };
+        (
+            dispatch,
+            started_at,
+            Utc::now(),
+            started.elapsed().as_millis() as u64,
+        )
+    }
+
     pub(super) async fn complete_turn_with_timing(
         &self,
         provider: std::sync::Arc<dyn AgentProvider>,
@@ -1044,6 +1176,35 @@ impl RuntimeHandle {
             },
         )
         .await
+    }
+
+    pub(in crate::runtime) async fn has_unseen_cooling_interjection(
+        &self,
+        round: usize,
+        observed: &mut std::collections::BTreeSet<String>,
+    ) -> Result<bool> {
+        if round <= 1 {
+            return Ok(false);
+        }
+        let guard = self.inner.agent.lock().await;
+        while let Some(message) = guard.queue.peek_next_matching(|message| {
+            scheduler::is_operator_interjection_message(message) && !observed.contains(&message.id)
+        }) {
+            observed.insert(message.id.clone());
+            if matches!(
+                self.operator_interjection_plan(
+                    &guard.state.id,
+                    &guard.state,
+                    message,
+                    round,
+                    scheduler::InterjectionBoundary::BeforeProviderContinuation.as_str(),
+                )?,
+                OperatorInterjectionPlan::Admit
+            ) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn operator_interjection_budget(
@@ -2413,8 +2574,41 @@ impl TurnExecution<'_> {
                         context_build_started_at,
                     );
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request, !completed_rounds.is_empty() || last_assistant_message.is_some()))
-                            .await;
+                        Box::pin(runtime.complete_turn_with_cooling_recovery(
+                            provider.clone(), request,
+                            !completed_rounds.is_empty() || last_assistant_message.is_some(),
+                            continuation_supports_candidate_reselection(&completed_rounds),
+                            &mut excluded_candidates, reselected_attempts.as_ref(),
+                            CoolingInputBoundary {
+                                agent_id, round, prompt: &effective_prompt,
+                                rounds: &mut completed_rounds, tools: &available_tools,
+                            },
+                        )).await;
+                    let result = match result {
+                        ProviderRoundDispatch::Completed(result) => result,
+                        ProviderRoundDispatch::Interjected(timeline) => {
+                            reselected_attempts = timeline;
+                            continue 'provider_round;
+                        }
+                        ProviderRoundDispatch::Reselect(model, timeline) => {
+                            reselected_attempts = timeline;
+                            runtime.reconfigure_provider_for_turn(Some(&model)).await?;
+                            (provider, available_tools, _, native_web_search, _) = runtime
+                                .provider_tool_selection_for_turn(Some(&model)).await?;
+                            turn_model_state = {
+                                let guard = runtime.inner.agent.lock().await;
+                                runtime.model_state_for_turn(&guard.state, Some(&model))
+                            };
+                            context_config = runtime.current_context_config().await;
+                            projection_budget = effective_prompt.history_reprojection_budget(
+                                context_config.turn_projection_budget(),
+                            );
+                            projection_fallback_reason = provider_projection_fallback_reason(
+                                provider.as_ref(), projection_selector,
+                            );
+                            continue 'provider_round;
+                        }
+                    };
                     record_provider_round_span(
                         trace_context.as_ref(),
                         agent_id,
@@ -2427,8 +2621,6 @@ impl TurnExecution<'_> {
                             runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
                         }
                     }
-                    let result =
-                        merge_reselected_provider_attempts(reselected_attempts.as_ref(), result);
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => {
                             let identities = if runtime.active_provider_admission()?.is_some() {
@@ -2492,38 +2684,10 @@ impl TurnExecution<'_> {
                                 return Err(err);
                             }
                             if crate::provider::is_dispatch_guard_rejected(&err) {
-                                let timeline = provider_attempt_timeline(&err).cloned();
-                                let selection = if continuation_supports_candidate_reselection(&completed_rounds) {
-                                    runtime.reselect_cooling_provider(err, &mut excluded_candidates).await
-                                } else {
-                                    Err(err)
-                                };
-                                let model = match selection {
-                                    Ok(model) => model,
-                                    Err(err) => {
-                                        if let Some(timeline) = timeline.as_ref() {
-                                            runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
-                                        }
-                                        return Err(err);
-                                    }
-                                };
-                                reselected_attempts = timeline;
-                                runtime.reconfigure_provider_for_turn(Some(&model)).await?;
-                                (provider, available_tools, _, native_web_search, _) = runtime
-                                    .provider_tool_selection_for_turn(Some(&model))
-                                    .await?;
-                                turn_model_state = {
-                                    let guard = runtime.inner.agent.lock().await;
-                                    runtime.model_state_for_turn(&guard.state, Some(&model))
-                                };
-                                context_config = runtime.current_context_config().await;
-                                projection_budget = effective_prompt.history_reprojection_budget(
-                                    context_config.turn_projection_budget(),
-                                );
-                                projection_fallback_reason = provider_projection_fallback_reason(
-                                    provider.as_ref(), projection_selector,
-                                );
-                                continue 'provider_round;
+                                if let Some(timeline) = provider_attempt_timeline(&err) {
+                                    runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
+                                }
+                                return Err(err);
                             }
                             if let Some(recovered_prompt) = runtime.try_context_length_recovery(
                                 agent_id,
@@ -2870,8 +3034,41 @@ impl TurnExecution<'_> {
                         context_build_started_at,
                     );
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request, !completed_rounds.is_empty() || last_assistant_message.is_some()))
-                            .await;
+                        Box::pin(runtime.complete_turn_with_cooling_recovery(
+                            provider.clone(), request,
+                            !completed_rounds.is_empty() || last_assistant_message.is_some(),
+                            continuation_supports_candidate_reselection(&completed_rounds),
+                            &mut excluded_candidates, reselected_attempts.as_ref(),
+                            CoolingInputBoundary {
+                                agent_id, round, prompt: &effective_prompt,
+                                rounds: &mut completed_rounds, tools: &available_tools,
+                            },
+                        )).await;
+                    let result = match result {
+                        ProviderRoundDispatch::Completed(result) => result,
+                        ProviderRoundDispatch::Interjected(timeline) => {
+                            reselected_attempts = timeline;
+                            continue 'provider_round;
+                        }
+                        ProviderRoundDispatch::Reselect(model, timeline) => {
+                            reselected_attempts = timeline;
+                            runtime.reconfigure_provider_for_turn(Some(&model)).await?;
+                            (provider, available_tools, _, native_web_search, _) = runtime
+                                .provider_tool_selection_for_turn(Some(&model)).await?;
+                            turn_model_state = {
+                                let guard = runtime.inner.agent.lock().await;
+                                runtime.model_state_for_turn(&guard.state, Some(&model))
+                            };
+                            context_config = runtime.current_context_config().await;
+                            projection_budget = effective_prompt.history_reprojection_budget(
+                                context_config.turn_projection_budget(),
+                            );
+                            projection_fallback_reason = provider_projection_fallback_reason(
+                                provider.as_ref(), projection_selector,
+                            );
+                            continue 'provider_round;
+                        }
+                    };
                     record_provider_round_span(
                         trace_context.as_ref(),
                         agent_id,
@@ -2884,8 +3081,6 @@ impl TurnExecution<'_> {
                             runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
                         }
                     }
-                    let result =
-                        merge_reselected_provider_attempts(reselected_attempts.as_ref(), result);
                     break Ok(match result {
                         Ok((response, attempt_timeline)) => ProviderRoundResult::Completed((
                             response,
@@ -2914,38 +3109,10 @@ impl TurnExecution<'_> {
                                 return Err(err);
                             }
                             if crate::provider::is_dispatch_guard_rejected(&err) {
-                                let timeline = provider_attempt_timeline(&err).cloned();
-                                let selection = if continuation_supports_candidate_reselection(&completed_rounds) {
-                                    runtime.reselect_cooling_provider(err, &mut excluded_candidates).await
-                                } else {
-                                    Err(err)
-                                };
-                                let model = match selection {
-                                    Ok(model) => model,
-                                    Err(err) => {
-                                        if let Some(timeline) = timeline.as_ref() {
-                                            runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
-                                        }
-                                        return Err(err);
-                                    }
-                                };
-                                reselected_attempts = timeline;
-                                runtime.reconfigure_provider_for_turn(Some(&model)).await?;
-                                (provider, available_tools, _, native_web_search, _) = runtime
-                                    .provider_tool_selection_for_turn(Some(&model))
-                                    .await?;
-                                turn_model_state = {
-                                    let guard = runtime.inner.agent.lock().await;
-                                    runtime.model_state_for_turn(&guard.state, Some(&model))
-                                };
-                                context_config = runtime.current_context_config().await;
-                                projection_budget = effective_prompt.history_reprojection_budget(
-                                    context_config.turn_projection_budget(),
-                                );
-                                projection_fallback_reason = provider_projection_fallback_reason(
-                                    provider.as_ref(), projection_selector,
-                                );
-                                continue 'provider_round;
+                                if let Some(timeline) = provider_attempt_timeline(&err) {
+                                    runtime.append_provider_attempt_failure_events(agent_id, round, timeline).await?;
+                                }
+                                return Err(err);
                             }
                             if let Some(recovered_prompt) = runtime.try_context_length_recovery(
                                 agent_id,

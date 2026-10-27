@@ -384,6 +384,7 @@ mod tests {
             recent_operator_notifications: Vec::new(),
             recent_brief_count: 0,
             recent_event_count: 0,
+            provider_cooldown_wait: None,
         }
     }
 

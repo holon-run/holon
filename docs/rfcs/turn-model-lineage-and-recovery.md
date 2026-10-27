@@ -379,6 +379,42 @@ candidate cooldown before a turn's first round keeps the existing parking
 contract and resumes the same source at the original deadline, so restart and
 interrupted-replay recovery stay unchanged.
 
+When a continuation cannot select an independent healthy candidate (including
+provider-native history), typed `ScopeCooling` may instead wait within the
+current execution. This requires a confirmed unsent request, no in-flight or
+unknown outcome, and unchanged canonical authority. Release only undispatched
+claims; retain the immutable round request, native blocks, tool results, model,
+attempt and recovery root. Never replay the source or rerun a tool. A deadline
+is the earliest recheck, not a promise of IO: re-read shared availability and
+pass all original execution, source, owner, cancellation, episode and budget
+guards before sending. Waiting cannot refund prior requests, charge new ones,
+advance candidate cursors, renew epochs or extend an episode's failure floor.
+Extended cooldowns use their authoritative absolute deadline; expired or
+repeated local denials cannot create a busy loop. Explicit stop cancels the wait.
+Operator interjections use an independent input broadcast and return to the
+original round's budgeted input boundary without replaying its tools. A final
+dispatch input-version fence rejects continuations prepared before newer
+operator input, including input arriving during OAuth refresh or compaction.
+The fence does not charge a request or bypass authority and budget checks.
+There is no new arbitrary cooldown timeout.
+
+This wait is an active execution substate, not source parking, completion or
+a scheduler wake. Expose its current turn/attempt/model, start time, earliest
+recheck and safe shared-cooldown cause through a queryable snapshot and
+state-change events. Emit entry, deadline/cause changes and exit, not per-second
+heartbeats or model-generated briefs. Refresh/reconnect must recover current
+state; terminal execution and restart must not leave stale waiting projections.
+Distinguish resumption, cancellation and fence rejection. The cause describes
+an earlier shared failure, not a new HTTP failure by this turn; publish only
+captured classification/status/time/Retry-After and local incident correlation,
+never raw errors, requests, response bodies or diagnostic URLs. Missing
+historical details must remain explicitly unavailable.
+
+Turn-local waiting retains execution memory and ownership. It adds no durable
+exact-round checkpoint or cross-daemon-restart continuation permission: existing
+recovery and side-effect replay fences remain unchanged. Releasing execution
+while preserving an exact native round across restart is a separate contract.
+
 An operator interjection never adopts a source that canonical state marks
 `Interrupted`. Such a source stays in the live queue for its own recovery
 replay; the interjection drain skips it and still admits later queued inputs, so

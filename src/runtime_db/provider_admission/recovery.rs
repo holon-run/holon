@@ -562,6 +562,30 @@ impl RuntimeDb {
         self.with_read(|connection| read_episode(connection, key))
     }
 
+    /// A wait may recheck authority without reserving a probe or charging IO.
+    pub fn provider_recovery_attempt_rejection(
+        &self,
+        episode: &ProviderRecoveryEpisode,
+        attempt: &ExecutionAttempt,
+    ) -> Result<Option<ProviderRecoveryDispatchDenial>> {
+        use ProviderRecoveryDispatchDenial as Denial;
+        self.transaction(|tx| {
+            let Some(actual) = read_episode(tx, &episode.key)? else {
+                return Ok(Some(Denial::StaleEpisode));
+            };
+            if actual.epoch != episode.epoch || actual.revision != episode.revision {
+                return Ok(Some(Denial::StaleEpisode));
+            }
+            if actual.state != ProviderRecoveryBudgetState::Ready {
+                return Ok(Some(Denial::EpisodePaused));
+            }
+            if actual.request_count >= MAX_REQUESTS {
+                return Ok(Some(Denial::BudgetExhausted));
+            }
+            Ok(dispatch_attempt_rejection(tx, &actual, attempt)?.map(Denial::StaleExecution))
+        })
+    }
+
     /// Screen candidates without reserving admission or changing recovery budgets.
     pub fn provider_recovery_candidate_attempted(
         &self,
