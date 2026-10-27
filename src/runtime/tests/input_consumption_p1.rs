@@ -8,6 +8,7 @@ use crate::types::{
 
 mod recovery_batching;
 mod recovery_diagnostics;
+mod rejected_producers;
 mod task_rejoin_recovery;
 
 #[derive(Default)]
