@@ -124,6 +124,14 @@ human decisions, and recheck results visible. It does not send outreach, write
 CRM changes, change pricing, or make renewal or legal commitments without
 explicit approval of the exact proposal.
 
+## Finance operations
+
+`finance-ops-steward` maintains an authorized invoice tracking queue, expense
+compliance ledger, and SaaS subscription renewal calendar. It keeps line-item
+discrepancies, missing documentation, and upcoming renewal deadlines visible. It
+does not initiate payments or fund transfers, cancel subscriptions, or certify
+tax filings without explicit operator approval.
+
 ## Marketing operations
 
 `marketing-steward` maintains product-marketing context, content queues,
