@@ -5900,7 +5900,7 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn recovery_candidate_agent_ids_include_dequeued_and_interrupted_entries() -> Result<()> {
+    fn recovery_candidate_agent_ids_include_all_pending_queue_states() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let now = Utc::now();
@@ -5909,6 +5909,10 @@ CREATE TABLE working_memory_deltas (
             "agent-dequeued",
             "agent-interrupted",
             "agent-processed",
+            "agent-aborted",
+            "agent-dropped",
+            "agent-quarantined",
+            "agent-interjected",
         ] {
             db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
         }
@@ -5918,6 +5922,7 @@ CREATE TABLE working_memory_deltas (
         db.agent_identities().upsert(&deleted_identity)?;
         for (message_id, agent_id, status) in [
             ("msg-queued", "agent-queued", QueueEntryStatus::Queued),
+            ("msg-queued-again", "agent-queued", QueueEntryStatus::Queued),
             ("msg-dequeued", "agent-dequeued", QueueEntryStatus::Dequeued),
             (
                 "msg-interrupted",
@@ -5928,6 +5933,23 @@ CREATE TABLE working_memory_deltas (
                 "msg-processed",
                 "agent-processed",
                 QueueEntryStatus::Processed,
+            ),
+            ("msg-aborted", "agent-aborted", QueueEntryStatus::Aborted),
+            ("msg-dropped", "agent-dropped", QueueEntryStatus::Dropped),
+            (
+                "msg-quarantined",
+                "agent-quarantined",
+                QueueEntryStatus::Quarantined,
+            ),
+            (
+                "msg-interjected",
+                "agent-interjected",
+                QueueEntryStatus::Interjected,
+            ),
+            (
+                "msg-deleted-queued",
+                "agent-deleted",
+                QueueEntryStatus::Queued,
             ),
             (
                 "msg-deleted",
@@ -5947,7 +5969,7 @@ CREATE TABLE working_memory_deltas (
 
         assert_eq!(
             db.queue_entries().recovery_candidate_agent_ids()?,
-            vec!["agent-dequeued", "agent-interrupted"]
+            vec!["agent-dequeued", "agent-interrupted", "agent-queued"]
         );
         assert!(db
             .queue_entries()

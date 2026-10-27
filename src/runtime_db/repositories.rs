@@ -3026,6 +3026,7 @@ impl QueueEntryRepository<'_> {
 
     pub fn recovery_candidate_agent_ids(&self) -> Result<Vec<String>> {
         self.db.with_read(|connection| {
+            let queued_status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
             let dequeued_status = enum_string(&crate::types::QueueEntryStatus::Dequeued)?;
             let interrupted_status = enum_string(&crate::types::QueueEntryStatus::Interrupted)?;
             let mut statement = connection.prepare(
@@ -3034,13 +3035,13 @@ impl QueueEntryRepository<'_> {
              JOIN agent_identities i
                ON i.agent_id = q.agent_id
               AND i.status = 'active'
-             WHERE q.status IN (?1, ?2)
+             WHERE q.status IN (?1, ?2, ?3)
              ORDER BY q.agent_id ASC",
             )?;
-            let rows = statement
-                .query_map(params![dequeued_status, interrupted_status], |row| {
-                    row.get::<_, String>(0)
-                })?;
+            let rows = statement.query_map(
+                params![queued_status, dequeued_status, interrupted_status],
+                |row| row.get::<_, String>(0),
+            )?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(Into::into)
         })

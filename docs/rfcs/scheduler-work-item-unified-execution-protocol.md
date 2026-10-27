@@ -420,6 +420,13 @@ accept later operator input. This discovery does not start stopped agents or
 revive deleting/deleted identities. The sweep runs only before live executions
 are admitted, never as an online repair on admission failure.
 
+Queue candidate discovery includes `Queued` as well as `Dequeued` and
+`Interrupted`: a committed admission can outlive the process before its first
+claim or any execution, task, timer, or wait exists. Distinct active owners use
+the same startup activation and bootstrap path; discovery is not authority to
+clear a WorkItem blocker, bypass Stop, or replay a consumed source. Repeating
+startup must not redispatch already processed input.
+
 ## Atomic Handoffs
 
 Each of the following is one business transition, not a command sequence:
