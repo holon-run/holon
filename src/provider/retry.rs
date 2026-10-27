@@ -31,6 +31,7 @@ pub(crate) enum ProviderFailureKind {
     Connection,
     CredentialRefreshBusy,
     RateLimited,
+    PaymentRequired,
     ServerError,
     EmptyResponse,
     AuthError,
@@ -122,6 +123,7 @@ impl ProviderFailureKind {
             Self::Connection => "connection",
             Self::CredentialRefreshBusy => "credential_refresh_busy",
             Self::RateLimited => "rate_limited",
+            Self::PaymentRequired => "payment_required",
             Self::ServerError => "server_error",
             Self::EmptyResponse => "empty_response",
             Self::AuthError => "auth_error",
@@ -149,7 +151,9 @@ pub(crate) fn provider_fallback_disposition(
         ProviderFailureKind::Timeout | ProviderFailureKind::Connection => {
             ProviderFallbackDisposition::Deferred
         }
-        ProviderFailureKind::RateLimited => ProviderFallbackDisposition::Deferred,
+        ProviderFailureKind::RateLimited | ProviderFailureKind::PaymentRequired => {
+            ProviderFallbackDisposition::Deferred
+        }
         _ => ProviderFallbackDisposition::Immediate,
     }
 }
@@ -174,6 +178,7 @@ pub(crate) fn provider_retry_policy_json() -> Value {
             ProviderFailureKind::EmptyResponse.as_str(),
         ],
         "fail_fast_failure_kinds": [
+            ProviderFailureKind::PaymentRequired.as_str(),
             ProviderFailureKind::AuthError.as_str(),
             ProviderFailureKind::ContractError.as_str(),
             ProviderFailureKind::InvalidResponse.as_str(),
@@ -620,6 +625,10 @@ pub(crate) fn classify_status_error_with_trace(
     let deterministic_error =
         is_known_deterministic_provider_error(detail.as_ref(), Some(body.as_str()));
     let classification = match status {
+        StatusCode::PAYMENT_REQUIRED => ProviderFailureClassification {
+            kind: ProviderFailureKind::PaymentRequired,
+            disposition: RetryDisposition::FailFast,
+        },
         StatusCode::TOO_MANY_REQUESTS => ProviderFailureClassification {
             kind: ProviderFailureKind::RateLimited,
             disposition: RetryDisposition::Retryable,
@@ -1756,6 +1765,67 @@ mod tests {
                 source: ProviderRetryDelaySource::ComputedBackoff
             }
         );
+    }
+
+    #[test]
+    fn payment_required_is_typed_fail_fast_even_with_deterministic_body() {
+        for body in [
+            r#"{"error":{"code":"personal-team-blocked:spending-limit","message":"You have reached your spending limit"}}"#,
+            r#"{"error":{"code":"context_length_exceeded","message":"context length exceeded"}}"#,
+        ] {
+            let error = classify_status_error_with_trace(
+                "request failed",
+                "response_status",
+                Some("xai"),
+                Some("xai@default/grok-4.7"),
+                Some("https://api.x.ai/v1/responses"),
+                StatusCode::PAYMENT_REQUIRED,
+                body.into(),
+                None,
+                super::ProviderRetryAfter::from_delay(Duration::from_secs(1800)),
+            );
+            let transport = error.downcast_ref::<ProviderTransportError>().unwrap();
+            assert_eq!(
+                transport.classification.kind,
+                ProviderFailureKind::PaymentRequired
+            );
+            assert_eq!(
+                transport.classification.disposition,
+                super::RetryDisposition::FailFast
+            );
+            assert_eq!(transport.retry_after, Some(Duration::from_secs(1800)));
+            assert!(transport.diagnostics.as_ref().unwrap().throttle.is_none());
+            assert_eq!(
+                provider_fallback_disposition(transport.classification.kind),
+                super::ProviderFallbackDisposition::Deferred
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_client_errors_are_not_payment_failures() {
+        for status in [400, 401, 403, 404, 422] {
+            let error = classify_status_error_with_trace(
+                "request failed",
+                "response_status",
+                Some("xai"),
+                Some("xai@default/grok-4.7"),
+                None,
+                StatusCode::from_u16(status).unwrap(),
+                r#"{"error":{"message":"request rejected"}}"#.into(),
+                None,
+                None,
+            );
+            let transport = error.downcast_ref::<ProviderTransportError>().unwrap();
+            assert_eq!(
+                transport.classification.kind,
+                if matches!(status, 401 | 403) {
+                    ProviderFailureKind::AuthError
+                } else {
+                    ProviderFailureKind::ContractError
+                }
+            );
+        }
     }
 
     #[test]

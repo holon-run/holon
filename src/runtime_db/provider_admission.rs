@@ -21,6 +21,7 @@ enum ScopeKind {
     Quota,
     Transport,
     RouteThrottle,
+    Candidate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -52,6 +53,10 @@ impl ProviderAdmissionScope {
         )
     }
 
+    pub fn candidate(configured_identity: &str) -> Result<Self> {
+        Self::configured(ScopeKind::Candidate, "candidate", configured_identity)
+    }
+
     fn configured(kind: ScopeKind, namespace: &str, configured_identity: &str) -> Result<Self> {
         ensure!(
             !namespace.trim().is_empty() && !configured_identity.trim().is_empty(),
@@ -76,6 +81,7 @@ impl ProviderAdmissionScope {
             ScopeKind::Quota => "provider_quota_incidents",
             ScopeKind::Transport => "provider_transport_incidents",
             ScopeKind::RouteThrottle => "provider_route_throttle_incidents",
+            ScopeKind::Candidate => "provider_candidate_incidents",
         }
     }
 }
@@ -84,6 +90,7 @@ impl ProviderAdmissionScope {
 pub enum ProviderCooldownPolicy {
     TransientQuota,
     HardQuota,
+    PaymentRequired,
     Transport,
 }
 
@@ -91,6 +98,7 @@ impl ProviderCooldownPolicy {
     fn failure_kind(self) -> &'static str {
         match self {
             Self::TransientQuota | Self::HardQuota => "rate_limited",
+            Self::PaymentRequired => "payment_required",
             Self::Transport => "transport",
         }
     }
@@ -99,6 +107,7 @@ impl ProviderCooldownPolicy {
         match self {
             Self::TransientQuota => "transient_quota",
             Self::HardQuota => "hard_quota",
+            Self::PaymentRequired => "payment_required",
             Self::Transport => "transport",
         }
     }
@@ -107,6 +116,7 @@ impl ProviderCooldownPolicy {
         match value {
             "transient_quota" => Ok(Self::TransientQuota),
             "hard_quota" => Ok(Self::HardQuota),
+            "payment_required" => Ok(Self::PaymentRequired),
             "transport" => Ok(Self::Transport),
             _ => anyhow::bail!("invalid persisted provider cooldown policy"),
         }
@@ -116,7 +126,7 @@ impl ProviderCooldownPolicy {
         let exponent = failures.saturating_sub(1).clamp(0, 31) as u32;
         let (base_ms, cap_ms, jitter_percent) = match self {
             Self::TransientQuota => (250_i64.saturating_mul(1_i64 << exponent), 30_000, 0),
-            Self::HardQuota => (
+            Self::HardQuota | Self::PaymentRequired => (
                 900_000_i64.saturating_mul(1_i64 << exponent),
                 21_600_000,
                 10,
@@ -193,7 +203,9 @@ impl ScopeState {
             return None;
         }
         self.next_retry_at
-            .filter(|_| !allow_policy_probe)
+            .filter(|_| {
+                !allow_policy_probe || self.policy == Some(ProviderCooldownPolicy::PaymentRequired)
+            })
             .into_iter()
             .chain(self.server_not_before)
             .chain(self.probe_lease_until)
@@ -452,8 +464,18 @@ impl RuntimeDb {
         model_ref: &str,
     ) -> Result<bool> {
         ensure!(
-            (failed_scope.kind == ScopeKind::Transport)
-                == (policy == ProviderCooldownPolicy::Transport),
+            matches!(
+                (failed_scope.kind, policy),
+                (ScopeKind::Transport, ProviderCooldownPolicy::Transport)
+                    | (
+                        ScopeKind::Candidate,
+                        ProviderCooldownPolicy::PaymentRequired
+                    )
+                    | (
+                        ScopeKind::Quota | ScopeKind::RouteThrottle,
+                        ProviderCooldownPolicy::TransientQuota | ProviderCooldownPolicy::HardQuota
+                    )
+            ),
             "provider cooldown policy does not match its scope"
         );
         let scope = lease
@@ -537,6 +559,8 @@ fn release_probes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod payment_required;
 
     fn now() -> DateTime<Utc> {
         "2026-10-24T17:00:00Z".parse().unwrap()
